@@ -1,40 +1,38 @@
 # AI Sandbox Environment
 
-一个基于 **OpenAI Gym** 的通用 AI 沙箱环境，用于模拟、评估和分析大语言模型（LLM）在不同任务与场景下的表现。
+现有的Sandbox场景局限（computer use， code use），
 
-本项目旨在为研究者和开发者提供一个统一的平台，用于：
+一个通用 AI 沙箱开发套件，拥有一套通用接口，可兼容任意任务、环境和评估手段的xx技术平台
 
-* 兼容任意任务、环境、奖励函数
-* 集成LLM作为智能体
-* 记录和可视化运行过程
+本项目旨在为大模型和智能体开发者提供一个统一的平台。对于大模型开发者来说，开发人员可以在该平台上测试不同任务不同环境基座模型Agentic表现，对于具体业务的智能体开发者来说可以在一套统一的Pipeline上测试和选型不同的模型，最终所有的测试结果可以被固化为模型训练数据，不断提升模型能力。
 
-## AI Sandbox 特性
+## Quick Start
 
-1. 模块化通用环境构建
-    
-    * 基于OpenAI Gym的抽象接口，模块化解耦设计
+### 垂直领域大模型业务开发者（一个环境评测多个模型）
 
-    * 支持用户自定义**任务设定**、**奖励函数**、**动作空间** 和 **观察空间**
+```python
+from simulator import UserSimulator
+from models import model_list
 
-    * 兼容任意类型的任务和模拟环境（工具调用、数字世界、物理时间和混合世界）
+llm_list = ModelAPI(['gpt-4o-mini', 'Qwen-2.5-VL-72B'])
 
-2. LLM Agent 集成
+sim = UserSimulator(llm_list)
 
-    * 支持通过 **API调用** 或 **vLLM 部署** 接入大语言模型
+logger, report, dataset = sim.run()  
+```
 
-    * 智能体可直接与环境交互，完成指定任务
+### 基座模型开发者（一个模型评测多个环境）
 
-3. AI透明可观测
+```python
+from simulator import ExampleSimulator
 
-    * 记录智能体与环境每一步交互中的关键变量（Action，State，Reward）
+llm = LLM() # 自定义的LLM
 
-    * 提供统一日志格式，接入数据库，方便数据分析
+sim = ExampleSimulator(llm)
 
-    * 可视化环境运行过程与智能体表现，实现透明观测界面使AI行为可解释
+logger, report, dataset = sim.run()
+```
 
-4. 训练数据共享
-
-    * 结合Reward构建正负样本收集训练数据
 
 ## 模块说明
 
