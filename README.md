@@ -10,33 +10,52 @@
 
 ### 垂直领域大模型业务开发者（一个环境评测多个模型）
 
+（这类开发者设计环境，但不懂模型，准备好自己的环境后，评测大模型）
+
 ```python
-from simulator import UserSimulator
-from models import model_list
+import Gym
+from simulator import Simulator
+from models import ModelAPI
+from envs import EnvAPI
+from tasks import Task
 
 llm_list = ModelAPI(['gpt-4o-mini', 'Qwen-2.5-VL-72B'])
+user_env = Gym.make('user_env_name') # 自定义的环境
+env_api = EnvAPI(user_env) # 环境调用包装成API
 
-sim = UserSimulator(llm_list)
+sim = Simulator(env_api, llm_list)
 
-logger, report, dataset = sim.run()  
+task = Task('user_env_task.json')
+
+logger, report, dataset = sim.run(task)  
 ```
 
 ### 基座模型开发者（一个模型评测多个环境）
 
+（这类开发者需要测试和提升模型，但不懂环境，准备好自己的模型后，选择一些适配的环境开始模拟）
+
 ```python
-from simulator import ExampleSimulator
+from vllm import LLM
+from simulator import Simulator
+from models import ModelAPI
+from envs import EnvAPI
+from tasks import Task
 
-llm = LLM() # 自定义的LLM
+llm = LLM('user_model_name') # 自定义的LLM
+llm_api = ModelAPI(llm) # 模型调用包装成API
+env_list = EnvAPI(['minecraft-v0', 'android_world-v0'])
 
-sim = ExampleSimulator(llm)
+sim = Simulator(env_list, llm_api)
 
-logger, report, dataset = sim.run()
+task_list = Task(['mincraft-v0-default-task.json', 'android_world-v0-default-task.json'])
+
+loggers, reports, datasets = sim.run(task_list)
 ```
 
 
 ## 模块说明
 
-![模块关系图](fig/relationship.png "模块关系图")
+![模块关系图](fig/ai_sandbox_v1.jpeg "模块关系图")
 
 ### Task 模块
 
@@ -74,7 +93,7 @@ class BaseTask(ABC):
         pass
 ```
 
-### Reward 模块
+<!-- ### Reward 模块
 
 在 Reward 模块中，支持任意评估手段，其主要功能是：
 
@@ -89,7 +108,7 @@ class BaseReward(ABC):
     @abstractmethod
     def compute(self, old_state, action, new_state):
         pass
-```
+``` -->
 
 ### Environment 模块
 
