@@ -1,0 +1,4 @@
+env/data
+=10.1
+**/__pycache__
+**.egg-info

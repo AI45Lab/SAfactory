@@ -1,0 +1,18 @@
+[project]
+name = "sqlgymserver"
+version = "0.0.1"
+description = ""
+authors = [
+    {name = "chenxinquan", email = "chenxinquan@pjlab.org.cn"},
+]
+dependencies = [
+    "sqlgym==0.1.2",
+    "fastapi",
+    "uvicorn"
+]
+requires-python = ">=3.8"
+readme = "README.md"
+license = "MIT"
+
+[project.scripts]
+sqlgymlaunch = "sqlgym_server:launch"
