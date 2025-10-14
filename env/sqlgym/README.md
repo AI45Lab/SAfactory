@@ -4,7 +4,6 @@
 
 ``` sh
 cd env/sqlgym
-# pip install .
 pip install -e .
 ```
 
