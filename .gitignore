@@ -3,3 +3,5 @@ env/data
 **/__pycache__
 **.egg-info
 .vscode
+visualize
+gif_generate.py

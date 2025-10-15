@@ -5,7 +5,10 @@ import numpy as np
 import pandas as pd
 from typing import Optional, Dict, Any, List, Tuple
 import re
+import os
 from .utils import Actions, Positions
+from .visualizer import StepMultiPlotSaver
+from .gif_creator import StepGifCreator
 
 class TradingGym(gym.Env):
 
@@ -69,6 +72,10 @@ class TradingGym(gym.Env):
             1: 'Long'
         }
 
+        # 存储价格日期数据
+        self.price_dates = self.price_df.index.tolist()
+        self.image_saver = StepMultiPlotSaver(output_dir="/mnt/shared-storage-user/chenxinquan/ai_sandbox/visualize")
+
     # -------------------------
     # 处理数据，按日期合并为一个DataFrame
     # -------------------------
@@ -110,6 +117,14 @@ class TradingGym(gym.Env):
         self._total_profit = 1.  # unit
         self._first_rendering = True
         self.history = {}
+        self.current_step = 0
+        self.price_history: List[float] = []  # 价格历史
+        self.position_history: List[int] = []  # 仓位历史 (0=空仓/短仓, 1=多仓)
+        self.step_reward_history: List[float] = []  # 单步奖励历史
+        self.total_reward_history: List[float] = []  # 累积奖励历史
+        self.total_profit_history: List[float] = []  # 累积利润历史
+        self.total_reward = 0.0
+        self.total_profit = 0.0
 
         observation = self._get_observation_with_text()
         info = self._get_info()
@@ -152,10 +167,74 @@ class TradingGym(gym.Env):
         info = self._get_info()
         self._update_history(info)
 
-        if self.render_mode == 'human':
-            self._render_frame()
+        # 获取当前价格
+        current_price = self._get_current_price()
+        self.price_history.append(current_price)
+        
+        # 处理动作（0=空仓/短仓，1=多仓）
+        self.position_history.append(action)
+
+        self.total_reward += step_reward
+        # 记录历史数据
+        self.step_reward_history.append(step_reward)
+        self.total_reward_history.append(self.total_reward)
+        self.total_profit_history.append(self._total_profit)
+
+        self.image_saver.render_step(
+            step=self.current_step,
+            price_data=np.array(self.price_history),
+            price_dates=self.price_dates[:self.current_step+1],
+            positions=self.position_history,
+            step_rewards=self.step_reward_history,
+            total_rewards=self.total_reward_history,
+            total_profits=self.total_profit_history,
+            current_total_reward=self.total_reward,
+            current_total_profit=self.total_profit
+        )
+
+        self.current_step += 1
 
         return observation, step_reward, False, self._truncated, info
+    
+    def generate_gif(self, 
+                    output_path: Optional[str] = None, 
+                    duration: int = 200, 
+                    loop: int = 0) -> str:
+        """
+        将所有步骤图片合并为GIF
+        
+        参数:
+            output_path: 输出GIF路径，None则自动生成
+            duration: 每帧持续时间（毫秒）
+            loop: 循环次数，0表示无限循环
+            
+        返回:
+            生成的GIF文件路径
+        """
+        if not self.image_saver:
+            raise ValueError("未启用图片保存模式，请在初始化时设置render_mode='save_images'")
+            
+        image_paths = self.image_saver.get_image_paths()
+        if not image_paths:
+            raise ValueError("没有保存的步骤图片，无法生成GIF")
+            
+        # 自动生成输出路径（如果未指定）
+        if not output_path:
+            # 使用图片保存目录作为GIF输出目录
+            if self.image_saver.output_dir:
+                output_dir = self.image_saver.output_dir
+            else:
+                output_dir = os.path.dirname(image_paths[0])
+                
+            output_path = os.path.join(output_dir, f"trading_simulation_{self.image_saver.session_id}.gif")
+        
+        # 生成GIF
+        return StepGifCreator.create_gif(
+            image_paths=image_paths,
+            output_path=output_path,
+            duration=duration,
+            loop=loop
+        )
     
     def _get_info(self):
         return dict(
@@ -167,6 +246,9 @@ class TradingGym(gym.Env):
 
     def _get_observation(self):
         return self.price_df.iloc[(self._current_index-self.window_size+1): self._current_index+1][['Date','Close']]
+    
+    def _get_current_price(self):
+        return self.current_price
 
     # -------------------------
     # 新：把 text prompt 加入观测
@@ -295,6 +377,7 @@ class TradingGym(gym.Env):
     def _calculate_reward(self, action):
         step_reward = 0
         current_price = self.price_df.iloc[self._current_index]['Close']
+        self.current_price = current_price
         next_price = self.price_df.iloc[self._current_index + 1]['Close']
         if action == Actions.Buy.value:
             step_reward = next_price - current_price

@@ -11,6 +11,13 @@
             "request": "launch",
             "program": "/mnt/shared-storage-user/chenxinquan/ai_sandbox/examples/base_eval.py",
             "console": "integratedTerminal"
+        },
+        {
+            "name": "gif generate",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/mnt/shared-storage-user/chenxinquan/ai_sandbox/gif_generate.py",
+            "console": "integratedTerminal"
         }
     ]
 }
