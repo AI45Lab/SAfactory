@@ -5,26 +5,64 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
 sys.path.append(project_root)
 import argparse
+from datetime import datetime
 from typing import List, Dict
 from controller import APIAgentvllm
 from clients import TradingEnvClient
 from clients.base_env_client import StepOutput
+from db.config import engine
+from db import InteractionStep, InteractionSession, SessionLocal, init_db
+
 
 def run_simulation(env_client: TradingEnvClient, env_name: str, agent: APIAgentvllm, results: Dict[str, List[StepOutput]]):
-    """在单个环境上运行模拟"""
+    """在单个环境上运行模拟并记录日志"""
+    db = None
     try:
         print(f"开始在环境 {env_name} 上的模拟")
         step_outputs = []
+
+        db = SessionLocal()
+        
+        # 创建交互会话记录
+        env_id = env_client.env_ids[env_name]
+        interaction_session = InteractionSession(
+            env_name=env_name,
+            env_id=env_id,
+            model_name=agent.model,
+            start_time=datetime.utcnow(),
+            total_reward=0.0,  # 初始化总奖励
+            completed=False
+        )
+        db.add(interaction_session)
+        db.commit()
+        # 刷新会话以获取自动生成的ID
+        db.refresh(interaction_session)
         
         # 重置环境
         step_output = env_client.reset(env_name)
         step_outputs.append(step_output)
         
+        step_number = 0
         while not step_output.done:
+            step_number += 1
             prompt = step_output.state["text"]["text"]
             response = agent.generate(prompt)
+
             step_output = env_client.step(response, env_name)
             step_outputs.append(step_output)
+
+            # 记录步骤信息
+            interaction_step = InteractionStep(
+                session_id=interaction_session.id,
+                step_number=step_number,
+                env_state=prompt,
+                llm_prompt=prompt,
+                llm_response=response,
+                reward=step_output.reward,
+                done=step_output.done
+            )
+            db.add(interaction_step)
+            db.commit()
             print(f"环境 {env_name} - 奖励: {step_output.reward}, 完成状态: {step_output.done}")
             
         results[env_name] = step_outputs
@@ -33,8 +71,13 @@ def run_simulation(env_client: TradingEnvClient, env_name: str, agent: APIAgentv
     except Exception as e:
         print(f"环境 {env_name} 模拟出错: {str(e)}")
         results[env_name] = []
+    finally:
+        db.close()
 
 def main(args):
+    # 初始化数据库（创建所有表）
+    init_db()
+
     # 初始化API代理
     api_agent = APIAgentvllm(
         api_key=args.api_key,

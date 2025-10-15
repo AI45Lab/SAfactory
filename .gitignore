@@ -5,3 +5,4 @@ env/data
 .vscode
 visualize
 gif_generate.py
+*.db
