@@ -133,8 +133,8 @@ if __name__ == "__main__":
     parser.add_argument('--base_url', type=str, default="http://localhost:8001/v1")
     parser.add_argument('--temperature', type=float, default=0.3)
     parser.add_argument('--timeout', type=int, default=300)
-    parser.add_argument('--env_server_base', type=str, default="http://127.0.0.1:36002")
-    parser.add_argument('--num_envs', type=int, default=2, help="同时运行的环境数量")
+    parser.add_argument('--env_server_base', type=str, default="http://127.0.0.1:36003")
+    parser.add_argument('--num_envs', type=int, default=1, help="同时运行的环境数量")
     args = parser.parse_args()
     print(args)
     

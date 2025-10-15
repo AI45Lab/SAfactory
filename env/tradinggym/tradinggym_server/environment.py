@@ -189,7 +189,9 @@ class TradingGym(gym.Env):
             total_rewards=self.total_reward_history,
             total_profits=self.total_profit_history,
             current_total_reward=self.total_reward,
-            current_total_profit=self.total_profit
+            current_total_profit=self._total_profit,
+            action=self.action_dict[action],
+            explanation=explanation
         )
 
         self.current_step += 1
