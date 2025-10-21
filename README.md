@@ -9,90 +9,105 @@
 
 ## 🚀 Quick Start
 
-<!-- ### 垂直领域大模型业务开发者（一个环境评测多个模型）
-
-（这类开发者设计环境，但不懂模型，准备好自己的环境后，评测大模型）
-
-```python
-import Gym
-from simulator import Simulator
-from models import ModelAPI
-from envs import EnvAPI
-from tasks import Task
-
-llm_list = ModelAPI(['gpt-4o-mini', 'Qwen-2.5-VL-72B'])
-user_env = Gym.make('user_env_name') # 自定义的环境
-env_api = EnvAPI(user_env) # 环境调用包装成API
-
-sim = Simulator(env_api, llm_list)
-
-task = Task('user_env_task.json')
-
-logger, report, dataset = sim.run(task)  
-```
-
-### 基座模型开发者（一个模型评测多个环境）
-
-（这类开发者需要测试和提升模型，但不懂环境，准备好自己的模型后，选择一些适配的环境开始模拟）
-
-```python
-from vllm import LLM
-from simulator import Simulator
-from models import ModelAPI
-from envs import EnvAPI
-from tasks import Task
-
-llm = LLM('user_model_name') # 自定义的LLM
-llm_api = ModelAPI(llm) # 模型调用包装成API
-env_list = EnvAPI(['minecraft-v0', 'android_world-v0'])
-
-sim = Simulator(env_list, llm_api)
-
-task_list = Task(['mincraft-v0-default-task.json', 'android_world-v0-default-task.json'])
-
-loggers, reports, datasets = sim.run(task_list)
-``` -->
-
-### 1. 示例环境Trading的部署指南
-
-Trading环境模拟真实股票交易场景，部署步骤如下：
+### 安装依赖
 
 ```bash
-# 安装环境依赖
-cd env/agentenv-trading
+# 克隆仓库
+git clone https://gitee.pjlab.org.cn/L2/safeai/kilab/AISandbox.git
+cd AISandbox
+
+# 安装核心依赖
 pip install -e .
-
-# 启动环境服务
-tradinglaunch --host 0.0.0.0 --port 36002
 ```
-服务启动后将在`36002`端口提供 API 接口，可通过`http://localhost:36002`访问。
 
-### 2. 新环境的集成指南
+### 运行交易环境示例
 
-#### 接口规范
+```bash
+python examples/base_eval.py \
+  --env-config-csv "/mnt/shared-storage-user/chenxinquan/ai_sandbox/examples/env_configs.csv" \
+  --db-path "sqlite://stock_8_envs.db" \
+  --max-workers 8 \
+  --max-steps 1000 \
+  --agent-api-key "EMPTY" \
+  --agent-base-url "http://localhost:8001/v1" \
+  --agent-model "Qwen3-30B-Instruct" \
+  --agent-temperature 0.3
+```
+
+## 🔥 自定义环境开发
+
+### 1. 核心概念
+
+- **环境（Environment）**：模拟真实世界场景的交互系统，提供观察状态和接收动作
+- **智能体（Agent）**：基于LLM的决策主体，通过环境观察做出决策
+- **任务（Task）**：设定环境和智能体，定义仿真目标、奖励规则和评估标准的配置
+- **交互器（Simulator）**：协调环境与智能体交互的核心控制器
+
+### 2. 自定义环境与环境注册
+
+#### 2.1 接口规范
 
 一个标准的`Env`环境需要实现以下核心功能接口
 
-| 组件 | 说明 |
+<!-- | 组件 | 说明 |
 | :---------- | :---------------------------------------- |
-| **观察空间** | 定义智能体可以从环境中获取的信息的格式、范围和类型 |
-| **动作空间** | 定义智能体可以执行的动作的类型和范围            |
-| `reset()`   | 重置环境到初始状态，返回初始观测和辅助信息       |
-| `step(action)` | 执行动作并返回：下一观测、奖励值、终止状态、截断状态、环境信息 |
-| `render()`（可选） | 可视化环境状态            |
-| `close()`（可选） | 清理环境资源            |
+| `observation_space` | 定义智能体可以从环境中获取信息的格式、范围和类型，例如`当日股价`，`股市情绪推文` |
+| `action_space` | 定义智能体可以执行的动作的类型和范围，例如 `买入` 和 `卖出`            |
+| `get_task_prompt` | 生成指导LLM决策的自然语言提示，例如 `最大化股市收益`           |
+| `reset()`   | 重置环境到初始状态，返回`初始状态`      |
+| `step(action)` | 接收并执行动作，更新环境状态，返回`下一观测`、`奖励值`、`终止状态`、`截断状态`、`环境信息` |
+| `render()` （可选）| 可视化环境状态，返回当前步骤环境可视化渲染图            |
+| `close()`（可选） | 清理环境并释放资源            | -->
 
-#### 集成步骤
-1. 实现上述标准接口，确保环境输出格式统一
-2. 在`clients`目录下创建环境客户端类，继承`BaseEnvClient`
-3. 实现客户端与环境服务的交互方法
-4. 编写环境启动脚本，遵循`[env]launch`命名规范
+<table>
+    <tr>
+        <td>类型</td>
+        <td>组件</td>
+        <td>说明</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Prompt</td>
+        <td>observation_space</td>
+        <td>定义智能体可以从环境中获取信息的格式、范围和类型，例如当日股价，股市情绪推文</td>
+    </tr>
+    <tr>
+        <td>action_space</td>
+        <td>定义智能体可以执行的动作的类型和范围，例如 买入 和 卖出</td>
+    </tr>
+    <tr>
+        <td>get_task_prompt</td>
+        <td>生成指导LLM决策的自然语言提示，例如 最大化股市收益</td>
+    </tr>
+    <tr>
+        <td rowspan="4">Function</td>
+        <td>reset()</td>
+        <td>重置环境到初始状态，返回初始状态</td>
+    </tr>
+    <tr>
+        <td>step(action)</td>
+        <td>接收并执行动作，更新环境状态，返回下一观测、奖励值、终止状态、截断状态、环境信息</td>
+    </tr>
+    <tr>
+        <td>render() （可选）</td>
+        <td>可视化环境状态，返回当前步骤环境可视化渲染图</td>
+    </tr>
+    <tr>
+        <td>close()（可选）</td>
+        <td>清理环境并释放资源</td>
+    </tr>
+</table>
 
-### 3. 交互模拟的说明
+在`env/`目录下创建`your_env.py`，继承基础环境类`core.env.BaseEnv`
 
-交互模拟是本项目的核心功能，实现了LLM与环境的多步交互过程，具体说明如下：
+#### 2.2 环境注册
 
-#### 模拟流程
+调用`env/env_registry.py`，对创建的环境进行注册
+
+```bash
+python env/env_registry.py --env_name 'your_env_name' --env_path 'env/your_env/your_env.py'
+```
+
+### 3. 交互模拟
 
   - 初始化LLM代理和环境客户端
   - 创建指定数量的环境实例
@@ -103,41 +118,39 @@ tradinglaunch --host 0.0.0.0 --port 36002
     - 记录当前步骤的Prompt、Response、Reward等信息
     - 将Response发送给环境，更新状态
 
-#### 运行模拟
-
-在启动环境服务和 LLM 推理服务后，执行以下命令：
-
 ```bash
-python base_eval.py \
-  --model_name "Qwen3-30B-Instruct" \
-  --base_url "http://localhost:8001/v1" \
+python trading_example.py \
+  --env_name "your_env_name" \
   --env_server_base "http://127.0.0.1:36002" \
+  --model_name "LLM_name" \
+  --base_url "http://localhost:8001/v1" \
+  --api_key "EMPTY" \
   --num_envs 2
 ```
 
-### 4. 可视化部分的说明
+## 📺 交互与指标可视化
 
 项目提供多维度可视化能力，直观展示交互过程：
 
 1. 环境状态可视化
 
-  环境会在每一步保存状态图片，最终合成GIF展示完整过程
+  若环境实现了`render()`方法，环境会在每一步保存状态图片，最终合成GIF展示完整过程
 
-2. 性能指标可视化
+2. 交互流程可视化
 
-  支持生成奖励曲线、步骤分布等统计图表，便于分析智能体表现
+  可展示智能体每一步的决策
 
-3. 交互流程可视化
+3. 性能指标可视化
 
-  可展示“观察 - 决策 - 执行 - 反馈” 的完整闭环过程
+  支持生成奖励曲线等统计图表，便于分析智能体表现
 
 ![trading模拟可视化](fig/visualize.gif "trading模拟可视化")
 
-### 5. 交互数据 log 记录的说明
+## 📰 交互数据 log 记录
 
 项目使用 SQLite 数据库记录 LLM 与环境的交互数据，便于后续分析和查询：
 
-#### 数据存储结构
+### 数据存储结构
 
 - **`interaction_sessions`表**：存储会话级元数据
   - 环境名称、模型名称、开始时间、结束时间、总奖励、完成状态等。
@@ -146,13 +159,13 @@ python base_eval.py \
   - 会话 ID、步骤编号、时间戳、环境状态
   - Prompt、Response、奖励值、完成状态等。
 
-#### 日志记录流程
+### 日志记录流程
 
   - 每个环境的模拟开始时，创建一条会话记录
   - 每一步交互都会创建一条步骤记录，包含当前步的 Prompt、Response 和 Reward 等信息
   - 模拟完成后，更新会话记录的总奖励、结束时间和完成状态
 
-#### 日志查询方法
+### 日志查询方法
 
 ```bash
 # 列出最近的会话

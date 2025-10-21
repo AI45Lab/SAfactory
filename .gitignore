@@ -2,7 +2,11 @@ env/data
 =10.1
 **/__pycache__
 **.egg-info
-.vscode
+.vscode/
 visualize
 gif_generate.py
+visual_db.ipynb
 *.db
+*.db-shm
+*.db-wal
+data/
