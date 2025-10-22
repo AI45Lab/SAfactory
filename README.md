@@ -72,7 +72,7 @@ bash examples/run_8_trading_envs.sh
         <td>接收LLM回复解析动作并执行，更新环境状态，返回下一观测、奖励值、终止状态、截断状态、环境信息</td>
     </tr>
     <tr>
-        <td>render() （可选）</td>
+        <td>render()</td>
         <td>可视化环境状态，返回当前步骤环境可视化渲染图</td>
     </tr>
     <tr>
@@ -97,7 +97,8 @@ class TradingGym(BaseEnv):
 随后在`examples/base_eval.py`或`入口函数`中导入新类完成注册，例如，
 
 ```python
-from env.tradinggym.trading_env import TradingGym  # 导入环境来注册
+# 导入环境来注册
+from env.tradinggym.trading_env import TradingGym  
 ```
 
 可通过`core.env.env_register`中的 `list_registered_envs`方法来查看环境是否被注册
@@ -109,7 +110,7 @@ from env.tradinggym.trading_env import TradingGym  # 导入环境来注册
 ```bash
 # 环境测试脚本
 python examples/base_eval.py \
-  #环境配置yaml文件
+  # 环境配置yaml文件
   --env-config-yaml "/mnt/shared-storage-user/chenxinquan/ai_sandbox/examples/configs/trading_env_configs.yaml" \
   # 环境并行数量
   --max-workers 8 \
