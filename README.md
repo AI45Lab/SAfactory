@@ -17,21 +17,16 @@ git clone https://gitee.pjlab.org.cn/L2/safeai/kilab/AISandbox.git
 cd AISandbox
 
 # 安装核心依赖
-pip install -e .
+pip install -r requirements.txt
 ```
 
 ### 运行交易环境示例
 
+运行脚本前先使用推理框架（例如`vLLM`，`SGLang`）部署`LLM`并在`examples/run_8_trading_envs.sh`中配置`agent-api-key` `agent-base-url` `agent-model` `agent-temperature`。
+
 ```bash
-python examples/base_eval.py \
-  --env-config-csv "/mnt/shared-storage-user/chenxinquan/ai_sandbox/examples/env_configs.csv" \
-  --db-path "sqlite://stock_8_envs.db" \
-  --max-workers 8 \
-  --max-steps 1000 \
-  --agent-api-key "EMPTY" \
-  --agent-base-url "http://localhost:8001/v1" \
-  --agent-model "Qwen3-30B-Instruct" \
-  --agent-temperature 0.3
+# 脚本运行
+bash examples/run_8_trading_envs.sh
 ```
 
 ## 🔥 自定义环境开发
@@ -40,24 +35,13 @@ python examples/base_eval.py \
 
 - **环境（Environment）**：模拟真实世界场景的交互系统，提供观察状态和接收动作
 - **智能体（Agent）**：基于LLM的决策主体，通过环境观察做出决策
-- **任务（Task）**：设定环境和智能体，定义仿真目标、奖励规则和评估标准的配置
-- **交互器（Simulator）**：协调环境与智能体交互的核心控制器
+- **交互器（Interactor）**：协调环境与智能体交互的核心控制器
 
 ### 2. 自定义环境与环境注册
 
 #### 2.1 接口规范
 
-一个标准的`Env`环境需要实现以下核心功能接口
-
-<!-- | 组件 | 说明 |
-| :---------- | :---------------------------------------- |
-| `observation_space` | 定义智能体可以从环境中获取信息的格式、范围和类型，例如`当日股价`，`股市情绪推文` |
-| `action_space` | 定义智能体可以执行的动作的类型和范围，例如 `买入` 和 `卖出`            |
-| `get_task_prompt` | 生成指导LLM决策的自然语言提示，例如 `最大化股市收益`           |
-| `reset()`   | 重置环境到初始状态，返回`初始状态`      |
-| `step(action)` | 接收并执行动作，更新环境状态，返回`下一观测`、`奖励值`、`终止状态`、`截断状态`、`环境信息` |
-| `render()` （可选）| 可视化环境状态，返回当前步骤环境可视化渲染图            |
-| `close()`（可选） | 清理环境并释放资源            | -->
+一个标准的`Env`环境需要继承`core.env.base_env`中的`BaseEnv`并实现以下核心功能接口
 
 <table>
     <tr>
@@ -76,7 +60,7 @@ python examples/base_eval.py \
     </tr>
     <tr>
         <td>get_task_prompt</td>
-        <td>生成指导LLM决策的自然语言提示，例如 最大化股市收益</td>
+        <td>生成指导LLM决策的自然语言提示，并告知LLM的环境状态以及可用动作，例如 最大化股市收益</td>
     </tr>
     <tr>
         <td rowspan="4">Function</td>
@@ -85,10 +69,10 @@ python examples/base_eval.py \
     </tr>
     <tr>
         <td>step(action)</td>
-        <td>接收并执行动作，更新环境状态，返回下一观测、奖励值、终止状态、截断状态、环境信息</td>
+        <td>接收LLM回复解析动作并执行，更新环境状态，返回下一观测、奖励值、终止状态、截断状态、环境信息</td>
     </tr>
     <tr>
-        <td>render() （可选）</td>
+        <td>render()</td>
         <td>可视化环境状态，返回当前步骤环境可视化渲染图</td>
     </tr>
     <tr>
@@ -97,35 +81,46 @@ python examples/base_eval.py \
     </tr>
 </table>
 
-在`env/`目录下创建`your_env.py`，继承基础环境类`core.env.BaseEnv`
-
 #### 2.2 环境注册
 
-调用`env/env_registry.py`，对创建的环境进行注册
+环境类创建完成后导入`core.env.env_register`中的`register_env`方法并修饰新建的环境类，参数为环境的注册名，例如，
 
-```bash
-python env/env_registry.py --env_name 'your_env_name' --env_path 'env/your_env/your_env.py'
+```python
+# 导入register_env方法并修饰新建环境类，"trading_gym"为注册名
+@register_env("trading_gym")
+class TradingGym(BaseEnv):
+
+    def __init__():
+      pass
 ```
+
+随后在`examples/base_eval.py`或`入口函数`中导入新类完成注册，例如，
+
+```python
+# 导入环境来注册
+from env.tradinggym.trading_env import TradingGym  
+```
+
+可通过`core.env.env_register`中的 `list_registered_envs`方法来查看环境是否被注册
 
 ### 3. 交互模拟
 
-  - 初始化LLM代理和环境客户端
-  - 创建指定数量的环境实例
-  - 对于每个环境，创建一下交互会话记录
-  - 在每个环境中，循环执行以下步骤直到环境完成：
-    - 从环境获取状态，提取Prompt
-    - 调用LLM生成Response
-    - 记录当前步骤的Prompt、Response、Reward等信息
-    - 将Response发送给环境，更新状态
+`examples/base_eval.py`提供了基础的环境测试脚本，注册新环境后可实现全自动交互模拟，下面为示例以及参数解释，其中`env-config-yaml` 环境配置文件中每个环境应包含两个参数`env_name`和`env_params`，`env_params`中包含新创建的环境类中的所有参数配置。
 
 ```bash
-python trading_example.py \
-  --env_name "your_env_name" \
-  --env_server_base "http://127.0.0.1:36002" \
-  --model_name "LLM_name" \
-  --base_url "http://localhost:8001/v1" \
-  --api_key "EMPTY" \
-  --num_envs 2
+# 环境测试脚本
+python examples/base_eval.py \
+  # 环境配置yaml文件
+  --env-config-yaml "/mnt/shared-storage-user/chenxinquan/ai_sandbox/examples/configs/trading_env_configs.yaml" \
+  # 环境并行数量
+  --max-workers 8 \
+  # 环境最大运行步长
+  --max-steps 1000 \
+  # Agent相关配置
+  --agent-api-key "EMPTY" \
+  --agent-base-url "http://localhost:8001/v1" \
+  --agent-model "Qwen3-30B-Instruct" \
+  --agent-temperature 0.3
 ```
 
 ## 📺 交互与指标可视化
