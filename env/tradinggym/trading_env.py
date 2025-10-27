@@ -83,6 +83,7 @@ class TradingGym(BaseEnv):
         
         # 检查终止条件
         self._truncated = self._current_date == self._end_date
+        self.done = self._truncated
         
         # 计算奖励与更新状态
         step_reward = self._calculate_reward(self.current_action)

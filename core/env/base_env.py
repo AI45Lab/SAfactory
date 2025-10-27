@@ -21,7 +21,10 @@ class BaseEnv(gym.Env, ABC):
     可选实现方法：
     - close(): 释放环境资源
     """
-    
+    def __init__(self):
+        super().__init__()
+        self.done = False
+
     @abstractmethod
     def reset(self, seed: Optional[int] = None) -> ResetOutput:
         """
@@ -59,3 +62,9 @@ class BaseEnv(gym.Env, ABC):
     def close(self) -> None:
         """可选：关闭环境并释放资源"""
         pass
+
+    def isDone(self) -> bool:
+        return self.done
+    
+    def isHealth(self) -> bool:
+        return True
