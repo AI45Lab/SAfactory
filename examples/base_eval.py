@@ -15,7 +15,7 @@ from core.data_manager.manager import DataManager
 from core.data_manager.models import EnvironmentConfig  # 导入模型类
 from core.env.env_register import list_registered_envs
 
-DB_PATH = "sqlite://trading_envs.db"
+DB_PATH = "sqlite://trading_multi_envs.db"
 
 def parse_args():
     """解析命令行参数"""
@@ -35,6 +35,8 @@ def parse_args():
                       help="最大并行环境数量")
     parser.add_argument("--max-steps", type=int, default=1000,
                       help="每个环境的最大交互步数")
+    parser.add_argument("--visual-save-path", type=str, default="/mnt/shared-storage-user/chenxinquan/ai_sandbox/visualize/test1021",
+                      help="步进可视化保存文件夹")
     
     # Agent配置
     parser.add_argument("--agent-api-key", type=str, default="EMPTY",
@@ -72,6 +74,7 @@ def load_yaml_configs(yaml_path):
         try:
             config = {
                 "env_name": env["env_name"].strip(),
+                "env_num": env["env_num"],
                 "env_params": env.get("env_params", {})
             }
             configs.append(config)
@@ -87,43 +90,69 @@ async def sync_configs_to_db(yaml_configs, dry_run):
 
     # 数据库现有配置：通过(env_name + env_params)判断唯一性（避免重复生成env_id）
     db_configs = await EnvironmentConfig.all()
-    # 构建唯一标识：env_name + 用户参数的哈希值（确保配置完全一致时不重复创建）
-    def get_config_key(env_name, env_params):
+    # 构建唯一标识：env_name + 用户参数的哈希值 + 序号 （区分同配置的不同实例）
+    def get_config_key(env_name, env_params, index):
         import json
-        return f"{env_name}_{hash(json.dumps(env_params, sort_keys=True))}"
-    db_config_keys = {get_config_key(c.env_name, c.env_params): c for c in db_configs}
+        params_hash = hash(json.dumps(env_params, sort_keys=True))
+        return f"{env_name}_{params_hash}_{index}"
+    
+    # 现有配置键值映射（包含序号）
+    db_config_keys = {}
+    for cfg in db_configs:
+        # 从现有记录反推序号（同一配置的实例按创建顺序排序）
+        same_configs = [c for c in db_configs 
+                       if c.env_name == cfg.env_name 
+                       and c.env_params == cfg.env_params]
+        index = same_configs.index(cfg) + 1  # 序号从1开始
+        key = get_config_key(cfg.env_name, cfg.env_params, index)
+        db_config_keys[key] = cfg
 
     added, updated, deleted = 0, 0, 0
 
-    # 处理新增和更新
+    # 处理新增和更新（支持多实例）
     for cfg in yaml_configs:
         env_name = cfg["env_name"].strip()
         env_params = cfg.get("env_params", {})
-        config_key = get_config_key(env_name, env_params)
+        env_num = cfg.get("env_num", 1)  # 默认创建1个实例
+        if not isinstance(env_num, int) or env_num < 1:
+            raise ValueError(f"env_num必须是正整数，{env_name}配置错误")
 
-        if config_key not in db_config_keys:
-            # 新增配置：自动生成env_id
-            if not dry_run:
-                await EnvironmentConfig.create(
-                    env_name=env_name,
-                    env_params=env_params  # env_id自动生成
-                )
-            added += 1
-            print(f"新增环境配置：{env_name}（自动生成env_id）")
-        else:
-            # 配置未变，无需更新
-            print(f"环境配置已存在：{env_name}（使用现有env_id）")
+        # 为每个序号创建实例
+        for index in range(1, env_num + 1):
+            config_key = get_config_key(env_name, env_params, index)
+            
+            if config_key not in db_config_keys:
+                # 新增实例：自动生成env_id
+                if not dry_run:
+                    await EnvironmentConfig.create(
+                        env_name=env_name,
+                        env_params=env_params  # env_id自动生成
+                    )
+                added += 1
+                print(f"新增环境配置实例：{env_name}（序号：{index}/{env_num}，自动生成env_id）")
+            else:
+                # 实例已存在，无需操作
+                print(f"环境配置实例已存在：{env_name}（序号：{index}/{env_num}，使用现有env_id）")
 
-    # 处理删除：数据库中存在但YAML中不存在的配置
-    yaml_config_keys = {get_config_key(c["env_name"], c.get("env_params", {})) for c in yaml_configs}
+    # 处理删除：数据库中存在但YAML中不需要的实例
+    yaml_config_keys = set()
+    for cfg in yaml_configs:
+        env_name = cfg["env_name"].strip()
+        env_params = cfg.get("env_params", {})
+        env_num = cfg.get("env_num", 1)
+        for index in range(1, env_num + 1):
+            key = get_config_key(env_name, env_params, index)
+            yaml_config_keys.add(key)
+
+    # 删除不在YAML配置中的实例
     for config_key, db_cfg in db_config_keys.items():
         if config_key not in yaml_config_keys:
             if not dry_run:
                 await db_cfg.delete()
             deleted += 1
-            print(f"删除环境配置：{db_cfg.env_name}（env_id: {db_cfg.env_id}）")
+            print(f"删除环境配置实例：{db_cfg.env_name}（env_id: {db_cfg.env_id}）")
 
-    print(f"\n配置同步结果：新增{added} | 保留{len(yaml_configs)-added} | 删除{deleted}")
+    print(f"\n配置同步结果：新增{added} | 保留{len(yaml_config_keys)-added} | 删除{deleted}")
     await data_manager.close()
     return not dry_run
 
@@ -162,7 +191,8 @@ async def run_interaction(args):
         agent=agent,
         data_manager=data_manager,
         max_workers=args.max_workers,
-        max_steps=args.max_steps
+        max_steps=args.max_steps,
+        visual_save_path=args.visual_save_path
     )
     
     results = await interactor.run_all_environments()

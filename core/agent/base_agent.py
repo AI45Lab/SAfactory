@@ -1,4 +1,5 @@
 from openai import OpenAI
+from core.types.base import PromptOutput
 
 
 class APIAgent:
@@ -13,12 +14,23 @@ class APIAgent:
         self.model = model
         self.temperature = temperature
 
-    def generate(self, prompt):
+    def generate(self, prompt_output: PromptOutput) -> str:
+        # 将PromtOutput转换为OpenAI API所需要的字典格式
+        messages = []
+        system_msg = {
+            "role": prompt_output.system_message.role,
+            "content": [item.root.model_dump() for item in prompt_output.system_message.content]
+        }
+        messages.append(system_msg)
+        user_msg = {
+            "role": prompt_output.user_message.role,
+            "content": [item.root.model_dump() for item in prompt_output.user_message.content]
+        }
+        messages.append(user_msg)
+        
         response = self.client.chat.completions.create(
             model=self.model,
-            messages=[
-                {"role": "user", "content": prompt},
-            ],
+            messages=messages,
             temperature=self.temperature,
         )
         resp = response.choices[0].message.content

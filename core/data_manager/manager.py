@@ -3,6 +3,7 @@ from tortoise import Tortoise
 from .models import EnvironmentConfig, InteractionSession, InteractionStep
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
+from core.types.base import PromptOutput, serialize_prompt_output
 
 class DataManager:
     def __init__(self, db_url: str = "sqlite://trading_envs.db"):
@@ -98,16 +99,21 @@ class DataManager:
         self,
         session: InteractionSession,
         step_id: int,
-        prompt: str,
+        prompt: str | PromptOutput,
         response: str,
         reward: float,
         env_state: Optional[str] = None,
         done: bool = False
     ) -> InteractionStep:
+        if isinstance(prompt, PromptOutput):
+            prompt_str = serialize_prompt_output(prompt)
+        else:
+            prompt_str = prompt
+        
         return await InteractionStep.create(
             session=session,
             step_id=step_id,
-            prompt=prompt,
+            prompt=prompt_str,
             response=response,
             reward=reward,
             env_state=env_state,

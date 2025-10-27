@@ -1,7 +1,8 @@
 import gymnasium as gym
 from gymnasium.spaces import Space
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional, List
+from core.types.base import ResetOutput, StepOutput, RenderOutput, PromptOutput
 
 class BaseEnv(gym.Env, ABC):
     """
@@ -22,23 +23,39 @@ class BaseEnv(gym.Env, ABC):
     """
     
     @abstractmethod
-    def reset(self, seed = None):
-        super().reset(seed=seed)
-    
-    @abstractmethod
-    def step(self, action):
+    def reset(self, seed: Optional[int] = None) -> ResetOutput:
+        """
+        重置环境到初始状态
+        :param seed: 随机种子
+        :return: 包含初始观测和信息的ResetOutput
+        """
         pass
     
     @abstractmethod
-    def get_task_prompt(self) -> str:
-        """生成任务提示信息，基于当前观测和动作"""
+    def step(self, action: str) -> StepOutput:
+        """
+        执行动作并返回环境反馈
+        :param action: 智能体的回复
+        :return: 包含新观测、奖励、终止状态、环境信息等的StepOutput对象
+        """
         pass
     
     @abstractmethod
-    def render(self):
-        """每个step后根据环境状态渲染并返回一张图"""
+    def get_task_prompt(self) -> PromptOutput:
+        """
+        生成任务提示信息
+        :return: 自然语言提示字符串
+        """
         pass
     
-    def close(self):
+    @abstractmethod
+    def render(self) -> RenderOutput:
+        """
+        渲染环境状态
+        :return: 包含图像路径和步骤的RenderOutput对象
+        """
+        pass
+    
+    def close(self) -> None:
         """可选：关闭环境并释放资源"""
-        super().close()
+        pass

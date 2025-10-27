@@ -1,5 +1,6 @@
 import re
 import os
+import io
 import uuid
 import tempfile
 import numpy as np
@@ -11,6 +12,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from time import time
 from matplotlib.font_manager import FontProperties
 
+from core.types.base import ResetOutput, StepOutput, RenderOutput, PromptOutput, TextContent, ImageContent, OpenAIMessage, MessageContent
 from core.env.base_env import BaseEnv
 from core.env.env_register import register_env
 
@@ -32,17 +34,13 @@ class TradingGym(BaseEnv):
 
     def __init__(
         self,
-        env_id: str,
         data_dir: str,
-        visual_save_path: str,
         price_filename: str,
         tweet_filename: Optional[str] = None,
         window_size: int = 7, # 智能体能看到过去window_size天的历史数据
     ):
         super().__init__()
-        self.env_id = env_id
         self.price_df = self._read_csv(os.path.join(data_dir, price_filename))
-        self.visual_save_path = visual_save_path
         self.window_size = window_size
 
         # 初始化价格，文本内容
@@ -52,12 +50,12 @@ class TradingGym(BaseEnv):
         # 动作与观测空间定义
         self.action_space = gym.spaces.Discrete(len(Actions))
         self.observation_space = gym.spaces.Dict({
-            "prices_features": gym.spaces.Box(
+            "history_prices": gym.spaces.Box(
                 low=-1e10, high=1e10, 
                 shape=self.shape, 
                 dtype=np.float32
             ),
-            "text": gym.spaces.Text(max_length=100_000_000)
+            "tweet_texts": gym.spaces.Text(max_length=100_000_000)
         })
 
         # 初始化状态变量
@@ -70,15 +68,15 @@ class TradingGym(BaseEnv):
         self.action_dict = {0: 'Sell', 1: 'Buy'}
         self.position_dict = {0: 'Short', 1: 'Long'}
 
-    def reset(self, seed: Optional[int] = None):
+    def reset(self, seed: Optional[int] = None) -> ResetOutput:
         self._reset_state()
         
-        observation = self._get_observation_with_text()
+        observation = self._get_observation()
         info = self._get_info()
 
-        return observation, info
+        return ResetOutput(observation=observation, info=info)
     
-    def step(self, action: Any) -> Tuple[Dict, float, bool, bool, Dict]:
+    def step(self, action: str) -> StepOutput:
         """执行一步环境交互"""
         self.current_action, self.current_explanation = self.parse_llm_response(action)
         self._print_step_info(self.current_action)
@@ -103,19 +101,19 @@ class TradingGym(BaseEnv):
         self._update_history(step_reward)
         self._record_step_data(self.current_action, step_reward)
 
-        return (
-            self._get_observation_with_text(),
-            step_reward,
-            False,  # terminated始终为False（由truncated控制结束）
-            self._truncated,
-            self._get_info()
+        return StepOutput(
+            observation=self._get_observation(),
+            reward=step_reward,
+            terminated=False,
+            truncated=self._truncated,
+            info=self._get_info()
         )
     
-    def get_task_prompt(self):
+    def get_task_prompt(self) -> PromptOutput:
         return self._build_stock_sentiment_prompt()
     
-    def render(self, img_filename) -> None:
-        """渲染环境状态"""
+    def render(self) -> RenderOutput:
+        """渲染环境状态，返回base64格式图片输出"""
         step_fig = self.render_step.render_step(
             step=self.current_step,
             price_data=np.array(self.price_history),
@@ -130,10 +128,19 @@ class TradingGym(BaseEnv):
             explanation=self.current_explanation
         )
 
-        img_path = os.path.join(self.visual_save_path, img_filename)
-        img_dir = os.path.dirname(img_path)
-        os.makedirs(img_dir, exist_ok=True)
-        step_fig.savefig(img_path, dpi=100, bbox_inches='tight')
+        buffer = io.BytesIO()
+        step_fig.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
+        buffer.seek(0)
+        image_data = buffer.read()
+        buffer.close()
+
+        # 释放图形资源（避免内存泄漏）
+        plt.close(step_fig)
+
+        return RenderOutput(
+            image_data=image_data,
+            step=self.current_step
+        )
 
     def close(self) -> None:
         """关闭环境，释放资源"""
@@ -218,38 +225,75 @@ class TradingGym(BaseEnv):
         # 价格日期列表
         self.price_dates = self.price_df.index.tolist() if not self.price_df.empty else []
 
-    def _get_observation_with_text(self) -> Dict[str, Any]:
+    def _get_observation(self) -> Dict[str, Any]:
         """获取包含文本提示的观测"""
         return {
-            "prices_history": self._get_observation(),
-            "text": self._build_stock_sentiment_prompt()
+            "history_prices": self._get_history_price(),
+            "tweet_texts": self._get_tweet_texts()
         }
 
-    def _build_stock_sentiment_prompt(self) -> str:
-        """构建股票情绪分析提示"""
-        prompt = [
-            f"You are a financial analysis assistant. Today is {self._current_date}. "
-            f"Analyze stock {self.ticker_name} using the past {self.window_size} days of prices and tweets. "
+    def _build_stock_sentiment_prompt(self) -> PromptOutput:
+        """构建符合OpenAI消息格式的股票情绪分析提示"""
+        # 构建system消息
+        system_content = TextContent(
+            text="You are a financial analysis assistant. Analyze stock trends based on provided data "
+                 "and predict if the price will rise (1) or fall (0) tomorrow. Output must follow the specified format."
+        )
+        system_message = OpenAIMessage(
+            role="system",
+            content=[MessageContent(root=system_content)]
+        )
+
+        # 构建user消息
+        user_texts = [
+            f"Today is {self._current_date}. Analyze stock {self.ticker_name} using the past {self.window_size} days of prices and tweets. "
             "Predict if the price will rise (1) or fall (0) tomorrow.",
             "Historical data:"
         ]
-        
-        # 添加历史数据
-        start_idx = self._current_index - self.window_size
-        for _, row in self.price_merge.iloc[start_idx:self._current_index+1].iterrows():
-            prompt.append(self._format_row_data(row))
-        
-        # 添加输出格式要求
-        prompt.extend([
+        user_texts.extend(self._get_tweet_texts())
+        user_texts.extend([
             "\nPredict the next day's trend (up=1, down=0) with reasoning.",
             "IMPORTANT: Output MUST be in this format:",
             "LINE1: TRENDS: <0 or 1>",
             "LINE2: EXPLANATION: <concise reason>",
             "Only output these 2 lines."
         ])
-        
-        return "\n".join(prompt)
+
+        # 组装user消息
+        user_content: List[MessageContent] = [
+            MessageContent(root=TextContent(text="\n".join(user_texts)))
+        ]
+
+        # 图片模态示例
+        # image_content = ImageContent(
+        #     image_url={"url": f"data:image/png;base64,{self.render().image_data}"}
+        # )
+        # user_content.append(MessageContent(root=image_content))
+
+        user_message = OpenAIMessage(
+            role="user",
+            content=user_content
+        )
+
+        return PromptOutput(
+            system_message=system_message,
+            user_message=user_message
+        )
     
+    def _get_history_price(self) -> pd.DataFrame:
+        """获取价格观测"""
+        return self.price_df.iloc[
+            (self._current_index - self.window_size + 1): self._current_index + 1
+        ][['Date', 'Close']]
+    
+    def _get_tweet_texts(self) -> str:
+        """获取历史推文"""
+        history_info_list = []
+        start_idx = self._current_index - self.window_size
+        for _, row in self.price_merge.iloc[start_idx:self._current_index+1].iterrows():
+            history_info_list.append(self._format_row_data(row))
+        return history_info_list
+
     def _format_row_data(self, row: pd.Series) -> str:
         """格式化行数据为字符串"""
         # 价格信息
@@ -269,12 +313,6 @@ class TradingGym(BaseEnv):
             senti_str = " | No tweets today"
             
         return price_str + senti_str
-    
-    def _get_observation(self) -> pd.DataFrame:
-        """获取价格观测"""
-        return self.price_df.iloc[
-            (self._current_index - self.window_size + 1): self._current_index + 1
-        ][['Date', 'Close']]
     
     def _get_current_price(self) -> float:
         """获取当前价格"""
@@ -333,7 +371,6 @@ class TradingGym(BaseEnv):
     def _print_step_info(self, action: int) -> None:
         """打印步骤信息"""
         print("-" * 80)
-        print(f"Env id: {self.env_id}")
         print(f"Current date: {self._current_date}")
         print(f"Current position: {self._position}")
         print(f"Today's action: {self.action_dict[action]}")

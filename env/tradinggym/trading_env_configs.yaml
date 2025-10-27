@@ -1,64 +1,64 @@
 environments:
   - env_name: trading_gym
+    env_num: 2
     env_params:
       data_dir: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/data/trading"
       price_filename: "AMZN.csv"
       tweet_filename: "amzn_stockmo.csv"
-      visual_save_path: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/visualize/test1021"
       window_size: 7
 
   - env_name: trading_gym
+    env_num: 1
     env_params:
       data_dir: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/data/trading"
       price_filename: "AAPL.csv"
       tweet_filename: "aapl_stockmo.csv"
-      visual_save_path: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/visualize/test1021"
       window_size: 7
 
   - env_name: trading_gym
+    env_num: 2
     env_params:
       data_dir: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/data/trading"
       price_filename: "GOOG.csv"
       tweet_filename: "goog_stockmo.csv"
-      visual_save_path: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/visualize/test1021"
       window_size: 7
 
   - env_name: trading_gym
+    env_num: 4
     env_params:
       data_dir: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/data/trading"
       price_filename: "ABNB.csv"
       tweet_filename: "abnb_stockmo.csv"
-      visual_save_path: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/visualize/test1021"
       window_size: 7
 
   - env_name: trading_gym
+    env_num: 1
     env_params:
       data_dir: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/data/trading"
       price_filename: "TSM.csv"
       tweet_filename: "tsm_stockmo.csv"
-      visual_save_path: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/visualize/test1021"
       window_size: 7
 
   - env_name: trading_gym
+    env_num: 1
     env_params:
       data_dir: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/data/trading"
       price_filename: "NFLX.csv"
       tweet_filename: "nflx_stockmo.csv"
-      visual_save_path: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/visualize/test1021"
       window_size: 7
 
   - env_name: trading_gym
+    env_num: 1
     env_params:
       data_dir: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/data/trading"
       price_filename: "NVDA.csv"
       tweet_filename: "nvda_stockmo.csv"
-      visual_save_path: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/visualize/test1021"
       window_size: 7
 
   - env_name: trading_gym
+    env_num: 2
     env_params:
       data_dir: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/data/trading"
       price_filename: "TSLA.csv"
       tweet_filename: "tsla_stockmo.csv"
-      visual_save_path: "/mnt/shared-storage-user/chenxinquan/ai_sandbox/visualize/test1021"
       window_size: 7

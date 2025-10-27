@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import os
 from typing import List, Dict, Tuple, Type
 from .agent.base_agent import APIAgent
@@ -12,12 +13,14 @@ class Interactor:
         agent: APIAgent,
         data_manager: DataManager,
         max_workers: int = 5,
-        max_steps: int = 1000
+        max_steps: int = 1000,
+        visual_save_path: str = None
     ):
         self.agent = agent
         self.data_manager = data_manager
         self.max_workers = max_workers  # 最大并行环境数
         self.max_steps = max_steps      # 每个环境最大交互步数
+        self.visual_save_path = visual_save_path
 
     async def _init_environment(
         self, 
@@ -28,12 +31,11 @@ class Interactor:
         env_class: Type[object] = get_env_class(env_config.env_name)
         
         # 2. 解析环境参数
-        env_id = env_config.env_id
         env_params = env_config.env_params.copy()
         
         # 3. 动态传入所有环境参数
         try:
-            return env_class(env_id=env_id, **env_params)
+            return env_class(**env_params)
         except TypeError as e:
             raise ValueError(
                 f"初始化环境 {env_config.env_name} 失败：参数不匹配。"
@@ -62,19 +64,39 @@ class Interactor:
 
             # 3. 交互循环（假设所有环境都实现了step方法）
             while not done and step_id <= self.max_steps:
-                prompt = obs["text"]
+                prompt = env.get_task_prompt()
                 
                 # Agent生成响应
                 response = await asyncio.to_thread(
                     self.agent.generate, 
-                    prompt=prompt
+                    prompt_output=prompt
                 )
 
                 # 环境执行动作（统一接口假设：step返回(state, reward, done, info)）
-                obs, reward, _, done, _ = env.step(response)
+                step_output = env.step(response)
+                reward = step_output.reward
+                terminated = step_output.terminated
+                truncated = step_output.truncated
+                done = terminated or truncated
 
                 img_filename = f"env_{env_config.env_id}/step_{step_id:04d}.png"
-                env.render(img_filename)
+                render_output = env.render()
+                base64_str = render_output.image_base64
+                if not base64_str:
+                    raise ValueError("RenderOutput中未包含有效的base64图片数据")
+                
+                # 2. 解码Base64字符串为二进制数据
+                # 注意：Base64字符串可能包含前缀（如 'data:image/png;base64,'），需先去除
+                if 'base64,' in base64_str:
+                    base64_str = base64_str.split('base64,')[1]  # 提取纯Base64部分
+                image_bytes = base64.b64decode(base64_str)
+
+                save_path = os.path.join(self.visual_save_path, img_filename)
+                save_dir = os.path.dirname(save_path)
+                os.makedirs(save_dir, exist_ok=True)
+
+                with open(save_path, 'wb') as f:
+                    f.write(image_bytes)
 
                 # 记录交互步骤
                 await self.data_manager.record_step(
