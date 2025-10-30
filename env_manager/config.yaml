@@ -1,0 +1,19 @@
+server:
+  host: "127.0.0.1"
+  port: 8083
+
+ray:
+  actor_num_cpus: 0.03
+  max_concurrency: 1
+
+
+database:
+  driver: "sqlite"
+  sqlite_path: "/Users/bin-mac/Gitlab/AISandbox/db/test.db"
+
+pool_size: 200
+
+
+environments:
+  trading_gym:
+    entrypoint: "env.tradinggym.trading_env:TradingGym"
