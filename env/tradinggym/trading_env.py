@@ -78,6 +78,7 @@ class TradingGym(BaseEnv):
     
     def step(self, action: str) -> StepOutput:
         """执行一步环境交互"""
+        super().step(action=action)
         self.current_action, self.current_explanation = self.parse_llm_response(action)
         self._print_step_info(self.current_action)
         

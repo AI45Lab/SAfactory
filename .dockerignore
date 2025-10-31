@@ -1,3 +1,5 @@
+.git
+.gitignore
 env/data
 =10.1
 **/__pycache__
@@ -9,5 +11,4 @@ visual_db.ipynb
 *.db
 *.db-shm
 *.db-wal
-data/
-examples/test_env.py
+data/bird

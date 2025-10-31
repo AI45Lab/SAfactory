@@ -36,28 +36,40 @@ class PromptOutput(BaseModel):
     user_message: OpenAIMessage
 
 class RenderOutput(BaseModel):
-    # 图片二进制数据（可选，适合内存中直接传递）
-    image_data: Optional[bytes] = None
-    # Base64编码的图片字符串（可选，适合网络传输或JSON序列化）
-    image_base64: Optional[str] = None
-    # 图片保存路径（可选，适合需要持久化存储的场景）
-    image_path: Optional[str] = None
+    # 生成步骤编号
     step: int
+
+    # 图片相关字段
+    image_data: Optional[bytes] = None  # 图片二进制数据（内存传递）
+    image_base64: Optional[str] = None  # Base64编码图片（网络传输）
+    image_path: Optional[str] = None    # 图片保存路径（持久化）
+    
+    # 文本相关字段
+    text_content: Optional[str] = None  # 单段文本内容
+    text_list: Optional[List[str]] = None  # 多段文本列表
+    text_dict: Optional[Dict[str, Any]] = None # 字典格式文本
 
     class Config:
         arbitrary_types_allowed = True  # 允许bytes类型
         json_encoders = {
-            bytes: lambda v: base64.b64encode(v).decode('utf-8')  # 自动将bytes转为Base64字符串用于JSON输出
+            bytes: lambda v: base64.b64encode(v).decode('utf-8')  # bytes自动转Base64
         }
 
     def __init__(self, **data):
-        # 确保至少提供一种图片数据形式
-        if not any(key in data for key in ['image_data', 'image_base64', 'image_path']):
-            raise ValueError("RenderOutput must contain either image_data, image_base64, or image_path")
+        # 确保至少提供一种数据形式（图片或文本）
+        has_image = any(key in data for key in ['image_data', 'image_base64', 'image_path'])
+        has_text = any(key in data for key in ['text_content', 'text_list'])
         
-        # 自动转换：如果提供了image_data，自动生成image_base64（方便序列化）
+        if not (has_image or has_text):
+            raise ValueError("RenderOutput must contain either image data (image_data/image_base64/image_path) or text data (text_content/text_list)")
+        
+        # 图片数据自动转换：如果提供image_data且无image_base64，自动生成
         if 'image_data' in data and 'image_base64' not in data:
             data['image_base64'] = base64.b64encode(data['image_data']).decode('utf-8')
+        
+        # 文本数据校验：避免同时提供单段文本和文本列表（可选约束，根据需求调整）
+        if 'text_content' in data and 'text_list' in data:
+            raise ValueError("Cannot provide both text_content and text_list simultaneously")
         
         super().__init__(** data)
 
