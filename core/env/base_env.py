@@ -55,7 +55,7 @@ class BaseEnv(gym.Env, ABC):
     def render(self) -> RenderOutput:
         """
         渲染环境状态
-        :return: 包含图像路径和步骤的RenderOutput对象
+        :return: 包含step id和需要可视化的图像和文字的RenderOutput对象
         """
         pass
     
