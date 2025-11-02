@@ -9,3 +9,25 @@ environments:
       google_api_key: ""
       gl: "us"
       hl: "en"
+
+  - env_name: search
+    env_num: 1
+    env_params:
+      dataset_path: "datasets/search/sample_questions.jsonl"
+      question_index: 1
+      max_turns: 3
+      topk: 3
+      google_api_key: ""
+      gl: "us"
+      hl: "en"
+
+  - env_name: search
+    env_num: 1
+    env_params:
+      dataset_path: "datasets/search/sample_questions.jsonl"
+      question_index: 2
+      max_turns: 3
+      topk: 3
+      google_api_key: ""
+      gl: "us"
+      hl: "en"
