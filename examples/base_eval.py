@@ -175,7 +175,15 @@ async def run_interaction(args):
 
     print(f"\n将运行以下激活环境（共{len(active_envs)}个）：")
     for env in active_envs:
-        print(f"  - {env.env_name}_{env.env_id}（数据：{env.env_params['price_filename']}）")
+        params = env.env_params or {}
+        data_desc = (
+            params.get("price_filename")
+            or params.get("dataset_path")
+            or params.get("data_dir")
+            or params.get("question")
+            or "N/A"
+        )
+        print(f"  - {env.env_name}_{env.env_id}（数据：{data_desc}）")
 
     # 初始化Agent
     agent = APIAgent(
