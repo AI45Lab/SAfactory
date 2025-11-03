@@ -38,8 +38,9 @@ class TradingGym(BaseEnv):
         price_filename: str,
         tweet_filename: Optional[str] = None,
         window_size: int = 7, # 智能体能看到过去window_size天的历史数据
+        ** kwargs
     ):
-        super().__init__()
+        super().__init__(**kwargs)
         self.price_df = self._read_csv(os.path.join(data_dir, price_filename))
         self.window_size = window_size
 

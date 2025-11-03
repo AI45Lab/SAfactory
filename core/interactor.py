@@ -32,10 +32,12 @@ class Interactor:
         
         # 2. 解析环境参数
         env_params = env_config.env_params.copy()
+        env_id = env_config.env_id
+        env_name = env_config.env_name
         
         # 3. 动态传入所有环境参数
         try:
-            return env_class(**env_params)
+            return env_class(env_id=env_id, env_name=env_name, **env_params)
         except TypeError as e:
             raise ValueError(
                 f"初始化环境 {env_config.env_name} 失败：参数不匹配。"

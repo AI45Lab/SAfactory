@@ -21,9 +21,11 @@ class BaseEnv(gym.Env, ABC):
     可选实现方法：
     - close(): 释放环境资源
     """
-    def __init__(self):
+    def __init__(self, env_id: str = "", env_name: str = ""):
         super().__init__()
         self.done = False
+        self.env_id = env_id
+        self.env_name = env_name
 
     @abstractmethod
     def reset(self, seed: Optional[int] = None) -> ResetOutput:
