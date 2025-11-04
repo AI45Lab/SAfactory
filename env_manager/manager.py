@@ -33,7 +33,8 @@ class EnvPoolManager:
         self.conn = conn
 
         # ---- pool sizing ----
-        self.pool_size: int = int(self.cfg.get("pool_size", 0) or 0)
+        # default pool size 5
+        self.pool_size: int = int(self.cfg.get("pool_size", 0) or 5)
         # Batch size and max inflight spawns - tune for your cluster size:
         spawn_cfg = dict(self.cfg.get("spawn", {}) or {})
         self._batch_size: int = int(spawn_cfg.get("batch_size", 64))       # spawn this many at a time

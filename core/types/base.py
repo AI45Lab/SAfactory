@@ -1,20 +1,73 @@
+from __future__ import annotations
+
 from typing import Dict, Any, Tuple, Optional, List, Union
-from pydantic import BaseModel, RootModel
+from pydantic import BaseModel, RootModel, ConfigDict, field_validator, model_validator
 import base64
 import json
 import numpy as np
+import pandas as pd
+
+
+def _safe(v: Any) -> Any:
+    # primitives
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+
+    # numpy scalars & arrays
+    if isinstance(v, np.generic):
+        return v.item()
+    if isinstance(v, np.ndarray):
+        return v.tolist()
+
+    # pandas
+    if pd is not None:
+        if isinstance(v, pd.DataFrame):
+            return v.to_dict(orient="records")
+        if isinstance(v, pd.Series):
+            return v.to_dict()
+
+    # bytes -> base64 string
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return base64.b64encode(bytes(v)).decode("ascii")
+
+    # mappings / sequences
+    if isinstance(v, dict):
+        return {k: _safe(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_safe(x) for x in v]
+
+    # fallback: leave as-is; if it shows up, it will fail fast and we can add a case
+    return v
 
 # 定义环境相关的数据类型
 class ResetOutput(BaseModel):
+    """
+    observation/info may contain pandas/np/bytes; we convert them to JSON-safe
+    values *before* the model is created, so every instance is safe to serialize.
+    """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     observation: Dict[str, Any]
     info: Dict[str, Any]
 
+    @field_validator('observation', 'info', mode='before')
+    @classmethod
+    def _sanitize(cls, v):
+        return _safe(v)
+
 class StepOutput(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     observation: Dict[str, Any]
     reward: float
     terminated: bool
     truncated: bool
     info: Dict[str, Any]
+
+    @field_validator('observation', 'info', mode='before')
+    @classmethod
+    def _sanitize(cls, v):
+        return _safe(v)
 
 class ImageContent(BaseModel):
     type: str = "image_url"
@@ -99,3 +152,18 @@ def deserialize_prompt_output(json_str: str) -> PromptOutput:
     # 修复嵌套结构中的root字段格式
     fixed_dict = _fix_root_fields(prompt_dict)
     return PromptOutput(**fixed_dict)
+
+def dumps_json_bytes(obj: Union[BaseModel, Dict[str, Any]]) -> bytes:
+    """
+    Serialize a pydantic model (v2 or v1) or plain dict to JSON bytes.
+    Assumes your ResetOutput/StepOutput/RenderOutput already sanitize pandas/np/bytes
+    at construction (as you just implemented).
+    """
+    if isinstance(obj, BaseModel):
+        if hasattr(obj, "model_dump_json"):  # Pydantic v2
+            return obj.model_dump_json(by_alias=True, exclude_none=True).encode("utf-8")
+        # Pydantic v1 fallback
+        return obj.json(by_alias=True, exclude_none=True, ensure_ascii=False,
+                        separators=(",", ":")).encode("utf-8")
+    # plain dict
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

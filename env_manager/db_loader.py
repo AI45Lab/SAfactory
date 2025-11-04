@@ -8,10 +8,13 @@ def get_connection(cfg: dict) -> sqlite3.Connection:
     if driver != "sqlite":
         raise NotImplementedError(f"Only sqlite is supported right now (got {driver})")
 
-    db_path = db_cfg.get("sqlite_path") or "trading_envs.db"
-    conn = sqlite3.connect(db_path)
-    print(f"Connected to database: {db_path}")
-    return conn
+    db_path = db_cfg.get("sqlite_path")
+    if db_path:
+        conn = sqlite3.connect(db_path)
+        print(f"Connected to database: {db_path}")
+        return conn
+    else:
+        raise Exception("No database path specified")
 
 
 def get_active_data(conn: sqlite3.Connection, limit: int, offset: int) -> List[Dict[str, Any]]:
@@ -20,7 +23,7 @@ def get_active_data(conn: sqlite3.Connection, limit: int, offset: int) -> List[D
         id, env_name, env_id, data_dir,
         price_filename, tweet_filename,
         visual_save_path, window_size, is_active
-    FROM env_configs
+    FROM configs
     WHERE is_active = 1
     ORDER BY id ASC
     LIMIT ? OFFSET ?;
@@ -35,7 +38,7 @@ def compose_create_kwargs(row: Dict[str, Any]) -> Dict[str, Any]:
         "data_dir": row["data_dir"],
         "price_filename": row["price_filename"],
         "tweet_filename": row["tweet_filename"],
-        "visual_save_path": row["visual_save_path"],
+        # "visual_save_path": row["visual_save_path"],
         "window_size": int(row["window_size"]),
         "env_id": row["env_id"],
     }

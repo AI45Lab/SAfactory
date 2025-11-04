@@ -1,16 +1,24 @@
+import os
+import sys
+current_file_path = os.path.abspath(__file__)
+examples_dir = os.path.dirname(current_file_path)
+project_root = os.path.dirname(examples_dir)
+sys.path.append(project_root)
+
 import asyncio
 from typing import Dict, Tuple, Any, Optional
 import uvicorn
 import yaml
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 import ray
 
 from db_loader import get_connection
 from manager import EnvPoolManager, ActorRec
 
+from core.types.base import ResetOutput, StepOutput, RenderOutput
 
-def load_config(path="config.yaml") -> dict:
+def load_config(path="env_manager/config.yaml") -> dict:
     with open(path, "r") as f:
         return yaml.safe_load(f)
 
@@ -120,14 +128,15 @@ async def pool_status():
     actors = await POOL.list_status(parallelism=LIST_STATUS_PAR)
     return {"actors": actors}
 
-@app.post("/{env}/{id}/reset")
+@app.post("/{env}/{id}/reset", response_model=ResetOutput)
 async def reset(env: str, id: int):
     rec = _rec_or_404(env, id)
     lock = await _lock_for(env, id)
     async with lock:
         ref = rec.handle.reset.remote()
         try:
-            return await _await_ref(ref, timeout=RAY_CALL_TIMEOUT_S)
+            payload:bytes= await _await_ref(ref, timeout=RAY_CALL_TIMEOUT_S)
+            return Response(content=payload, media_type="application/json")
         except Exception as e:
             # Remove and trigger refill on crash; surface a clean error
             # await POOL.close_and_remove(env, id)
@@ -141,7 +150,8 @@ async def step(env: str, id: int, body: StepBody):
     async with lock:
         ref = rec.handle.step.remote(body.action)
         try:
-            return await _await_ref(ref, timeout=timeout)
+            payload: bytes=await _await_ref(ref, timeout=timeout)
+            return Response(content=payload, media_type="application/json")
         except Exception as e:
             # await POOL.close_and_remove(env, id)
             raise _map_ray_error(e)
@@ -153,7 +163,8 @@ async def render(env: str, id: int):
     async with lock:
         ref = rec.handle.render.remote()
         try:
-            return await _await_ref(ref, timeout=RAY_CALL_TIMEOUT_S)
+            payload:bytes= await _await_ref(ref, timeout=RAY_CALL_TIMEOUT_S)
+            return Response(content=payload, media_type="application/json")
         except Exception as e:
             # await POOL.close_and_remove(env, id)
             raise _map_ray_error(e)

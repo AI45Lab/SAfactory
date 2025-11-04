@@ -215,7 +215,7 @@ class TradingGym(BaseEnv):
         
         # 历史记录
         self.current_step = 0
-        self.current_action = None
+        self.current_action = 0
         self.current_explanation = None
         self.price_history: List[float] = []
         self.position_history: List[int] = []

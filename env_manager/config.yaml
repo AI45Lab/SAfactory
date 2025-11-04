@@ -9,9 +9,9 @@ ray:
 
 database:
   driver: "sqlite"
-  sqlite_path: "/Users/bin-mac/Gitlab/AISandbox/db/test.db"
+  sqlite_path: "/Users/bin-mac/Gitlab/AIEvoBox/db/test.db"
 
-pool_size: 200
+pool_size: 2
 
 
 environments:
