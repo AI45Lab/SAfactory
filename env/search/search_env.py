@@ -302,8 +302,9 @@ class SearchEnv(BaseEnv):
         gl: str = "us",
         hl: str = "en",
         proxy: Optional[str] = None,
+        ** kwargs
     ) -> None:
-        super().__init__()
+        super().__init__(**kwargs)
         logger.info("Initializing SearchEnv environment")
         logger.info(f"Parameters: dataset_path={dataset_path}, question_index={question_index}, "
                     f"max_turns={max_turns}, topk={topk}, gl={gl}, hl={hl}")

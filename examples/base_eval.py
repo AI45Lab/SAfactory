@@ -9,13 +9,14 @@ import csv
 import asyncio
 import pandas as pd
 from env.tradinggym.trading_env import TradingGym  # 导入环境来注册
+from env.search.search_env import SearchEnv
 from core.agent.base_agent import APIAgent
 from core.interactor import Interactor
 from core.data_manager.manager import DataManager
 from core.data_manager.models import EnvironmentConfig  # 导入模型类
 from core.env.env_register import list_registered_envs
 
-DB_PATH = "sqlite://trading_multi_envs.db"
+DB_PATH = "sqlite://search_envs.db"
 
 def parse_args():
     """解析命令行参数"""

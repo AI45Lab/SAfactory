@@ -10,7 +10,7 @@ python "${PROJECT_ROOT}/examples/base_eval.py" \
   --max-steps 10 \
   --visual-save-path "${PROJECT_ROOT}/visualize/search_eval" \
   --agent-api-key "EMPTY" \
-  --agent-base-url "http://100.97.172.157:30000/v1" \
-  --agent-model "Qwen/Qwen2.5-7B-Instruct" \
+  --agent-base-url "http://localhost:8001/v1" \
+  --agent-model "Qwen3-30B-Instruct" \
   --agent-temperature 0.3 \
   "$@"
