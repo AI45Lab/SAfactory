@@ -1,0 +1,34 @@
+environments:
+  - env_name: search
+    env_num: 1
+    env_params:
+      dataset_path: "env/search/sample_questions.jsonl"
+      question_index: 0
+      max_turns: 3
+      topk: 3
+      # yes, i know it's very bad to put the api key here, but it's for testing only
+      google_api_key: "ac0b02f6c50c87a5738065b4b2e057ff332c2cde"
+      gl: "us"
+      hl: "en"
+
+  - env_name: search
+    env_num: 1
+    env_params:
+      dataset_path: "env/search/sample_questions.jsonl"
+      question_index: 1
+      max_turns: 3
+      topk: 3
+      google_api_key: "ac0b02f6c50c87a5738065b4b2e057ff332c2cde"
+      gl: "us"
+      hl: "en"
+
+  - env_name: search
+    env_num: 1
+    env_params:
+      dataset_path: "env/search/sample_questions.jsonl"
+      question_index: 2
+      max_turns: 3
+      topk: 3
+      google_api_key: "ac0b02f6c50c87a5738065b4b2e057ff332c2cde"
+      gl: "us"
+      hl: "en"

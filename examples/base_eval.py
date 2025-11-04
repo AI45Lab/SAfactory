@@ -9,13 +9,14 @@ import csv
 import asyncio
 import pandas as pd
 from env.tradinggym.trading_env import TradingGym  # 导入环境来注册
+from env.search.search_env import SearchEnv
 from core.agent.base_agent import APIAgent
 from core.interactor import Interactor
 from core.data_manager.manager import DataManager
 from core.data_manager.models import EnvironmentConfig  # 导入模型类
 from core.env.env_register import list_registered_envs
 
-DB_PATH = "sqlite://trading_multi_envs.db"
+DB_PATH = "sqlite://search_envs.db"
 
 def parse_args():
     """解析命令行参数"""
@@ -175,7 +176,15 @@ async def run_interaction(args):
 
     print(f"\n将运行以下激活环境（共{len(active_envs)}个）：")
     for env in active_envs:
-        print(f"  - {env.env_name}_{env.env_id}（数据：{env.env_params['price_filename']}）")
+        params = env.env_params or {}
+        data_desc = (
+            params.get("price_filename")
+            or params.get("dataset_path")
+            or params.get("data_dir")
+            or params.get("question")
+            or "N/A"
+        )
+        print(f"  - {env.env_name}_{env.env_id}（数据：{data_desc}）")
 
     # 初始化Agent
     agent = APIAgent(
