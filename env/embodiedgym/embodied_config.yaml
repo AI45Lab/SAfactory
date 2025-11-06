@@ -1,0 +1,53 @@
+environments:
+  # Base evaluation set - 基础评测集
+  - env_name: embodied_alfred
+    env_image: embodiedbench/alfred:latest  # 可选的 Docker 镜像
+    env_num: 2  # 创建 2 个并行实例
+    env_params:
+      eval_set: "base"
+      down_sample_ratio: 1.0
+      resolution: 500
+      detection_box: false
+      max_episode_steps: 30
+      max_invalid_actions: 10
+      exp_name: "aievobox_alfred_base"
+
+  # Long horizon evaluation set - 长期规划评测集
+  - env_name: embodied_alfred
+    env_image: embodiedbench/alfred:latest
+    env_num: 1
+    env_params:
+      eval_set: "long_horizon"
+      down_sample_ratio: 1.0
+      resolution: 500
+      detection_box: false
+      max_episode_steps: 50  # 长期任务需要更多步数
+      max_invalid_actions: 15
+      exp_name: "aievobox_alfred_long"
+
+  # Spatial reasoning evaluation set - 空间推理评测集
+  - env_name: embodied_alfred
+    env_image: embodiedbench/alfred:latest
+    env_num: 1
+    env_params:
+      eval_set: "spatial"
+      down_sample_ratio: 1.0
+      resolution: 500
+      detection_box: false
+      max_episode_steps: 30
+      max_invalid_actions: 10
+      exp_name: "aievobox_alfred_spatial"
+
+# 配置说明:
+# - env_name: 必须与注册的环境名称一致 ("embodied_alfred")
+# - env_num: 该配置创建的环境实例数量
+# - env_params: 传递给 EmbodiedAlfredGym.__init__() 的参数
+#   - eval_set: 评测集名称，可选值: 'base', 'common_sense', 'complex_instruction', 
+#               'spatial', 'visual_appearance', 'long_horizon'
+#   - down_sample_ratio: 数据采样比例 (0.0-1.0)，1.0 表示使用全部数据
+#   - resolution: 图像分辨率 (建议 300-800)
+#   - detection_box: 是否在图像上显示物体检测框
+#   - max_episode_steps: 每个 episode 的最大步数
+#   - max_invalid_actions: 最大连续无效动作数
+#   - exp_name: 实验名称，用于日志和结果保存
+
