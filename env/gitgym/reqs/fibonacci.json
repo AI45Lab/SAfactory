@@ -1,0 +1,153 @@
+{
+  "project_name": "Fibonacci Sequence",
+  "description": "算法项目：实现斐波那契数列。给定一个整数 n，返回第 n 个斐波那契数。这是经典的动态规划或递归问题。",
+  "project_problem": {
+    "problem_id": "PROJECT_FIBONACCI",
+    "title": "Fibonacci Number",
+    "difficulty": "Easy",
+    "time_limit": "1.0s",
+    "memory_limit": "256MB",
+    "source": "Algorithm Project (Classic DP/Recursion)"
+  },
+  "problem_statement": {
+    "description": "斐波那契数列的定义：F(0) = 0, F(1) = 1, F(n) = F(n-1) + F(n-2) (n >= 2)。\n\n给定一个整数 n，计算并返回第 n 个斐波那契数。",
+    "input_format": "函数应接受一个参数：\n- n: int - 要计算的斐波那契数的位置（索引）\n\n约束条件：\n- 0 <= n <= 30",
+    "output_format": "函数应返回一个整数，表示第 n 个斐波那契数。",
+    "sample_input_output": [
+      {
+        "input": "n = 0",
+        "output": "0",
+        "explanation": "F(0) = 0"
+      },
+      {
+        "input": "n = 1",
+        "output": "1",
+        "explanation": "F(1) = 1"
+      },
+      {
+        "input": "n = 2",
+        "output": "1",
+        "explanation": "F(2) = F(1) + F(0) = 1 + 0 = 1"
+      },
+      {
+        "input": "n = 3",
+        "output": "2",
+        "explanation": "F(3) = F(2) + F(1) = 1 + 1 = 2"
+      },
+      {
+        "input": "n = 4",
+        "output": "3",
+        "explanation": "F(4) = F(3) + F(2) = 2 + 1 = 3"
+      },
+      {
+        "input": "n = 5",
+        "output": "5",
+        "explanation": "F(5) = F(4) + F(3) = 3 + 2 = 5"
+      }
+    ]
+  },
+  "algorithm_hints": [
+    "可以使用递归：fib(n) = fib(n-1) + fib(n-2)，但效率较低",
+    "推荐使用动态规划：自底向上计算，避免重复计算",
+    "也可以使用迭代方法：只保存前两个值，空间复杂度 O(1)",
+    "时间复杂度：O(n)",
+    "空间复杂度：O(1) 或 O(n)",
+    "边界条件：n=0 返回 0，n=1 返回 1"
+  ],
+  "constraints": {
+    "time_complexity": "O(n)",
+    "space_complexity": "O(1) 或 O(n)",
+    "edge_cases": [
+      "n = 0",
+      "n = 1",
+      "n = 2",
+      "n = 30 (最大值)"
+    ]
+  },
+  "files": [
+    {
+      "name": "fibonacci.py",
+      "description": "实现斐波那契数列算法",
+      "requirements": [
+        "实现函数 fibonacci(n: int) -> int",
+        "使用动态规划或迭代方法（推荐）",
+        "时间复杂度必须为 O(n)",
+        "正确处理所有边界情况（n=0, n=1等）",
+        "必须能够处理最大规模输入（n=30）"
+      ],
+      "function_signature": "def fibonacci(n: int) -> int:",
+      "project_test_categories": [
+        {
+          "category": "Sample Cases",
+          "weight": 30,
+          "description": "基本样例测试"
+        },
+        {
+          "category": "Edge Cases",
+          "weight": 20,
+          "description": "边界情况测试"
+        },
+        {
+          "category": "Medium Cases",
+          "weight": 30,
+          "description": "中等规模测试（10 <= n <= 20）"
+        },
+        {
+          "category": "Large Cases",
+          "weight": 20,
+          "description": "大规模测试（20 < n <= 30）"
+        }
+      ],
+      "examples": [
+        {
+          "description": "基本示例",
+          "code": "from fibonacci import fibonacci\nresult = fibonacci(5)\nassert result == 5"
+        },
+        {
+          "description": "边界情况",
+          "code": "from fibonacci import fibonacci\nassert fibonacci(0) == 0\nassert fibonacci(1) == 1"
+        }
+      ],
+      "edge_cases": [
+        {
+          "case": "n = 0",
+          "description": "第一个斐波那契数",
+          "expected_behavior": "返回 0"
+        },
+        {
+          "case": "n = 1",
+          "description": "第二个斐波那契数",
+          "expected_behavior": "返回 1"
+        },
+        {
+          "case": "n = 2",
+          "description": "第三个斐波那契数",
+          "expected_behavior": "返回 1"
+        },
+        {
+          "case": "n = 30",
+          "description": "最大输入值",
+          "expected_behavior": "返回 F(30) = 832040"
+        }
+      ],
+      "common_issues": [
+        {
+          "issue": "递归实现效率低",
+          "description": "纯递归会导致大量重复计算，在大输入时超时",
+          "solution": "使用动态规划或迭代方法，自底向上计算"
+        },
+        {
+          "issue": "边界条件处理错误",
+          "description": "没有正确处理 n=0 或 n=1 的情况",
+          "solution": "在函数开始时检查 n==0 或 n==1，直接返回对应值"
+        },
+        {
+          "issue": "索引错误",
+          "description": "数组索引或循环范围错误",
+          "solution": "确保循环从 2 开始到 n（包含 n）"
+        }
+      ]
+    }
+  ]
+}
+

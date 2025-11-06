@@ -1,0 +1,83 @@
+{
+  "project_name": "IOI 2016 – Aliens（参数化搜索 + DP + CHT）",
+  "description": "在 m×m 网格上有 n 个兴趣点 (r_i, c_i)。允许拍摄至多 k 张“主对角线对角”的轴对齐正方形照片（其两相对顶点在主对角线 y=x 上），目标是在覆盖所有兴趣点的前提下，使被拍摄的格子并集大小最小。",
+  "project_problem": {
+    "problem_id": "PROJECT_ALIENS",
+    "title": "Minimize Union Area with ≤K Diagonal-Aligned Squares",
+    "difficulty": "Hard",
+    "time_limit": "2.0s",
+    "memory_limit": "512MB",
+    "source": "IOI 2016 – Aliens"
+  },
+  "problem_statement": {
+    "description": "给定 n 个兴趣点坐标 (r_i, c_i)，网格大小 m（0 ≤ r_i, c_i < m）。你可以选择至多 k 个轴对齐正方形，其两个相对顶点需落在主对角线 y=x 上，即一个正方形可由区间 [s, t]（s ≤ t）唯一表示，覆盖 [s, t]×[s, t] 的所有格子，面积为 (t−s+1)^2。要求用不超过 k 个这样的正方形覆盖所有兴趣点，并最小化这些正方形并集所覆盖的格子数，输出该最小值。\n\n本题以格子为单位计数；一张照片由整数端点 s,t（0 ≤ s ≤ t < m）确定，覆盖 [s,t]×[s,t] 的所有格子，面积为 (t−s+1)^2。输出为所选照片并集覆盖的不同格子总数（同一格子被多张照片覆盖只计一次）。",
+    "input_format": "函数应接受：\n- n: int（兴趣点个数）\n- m: int（网格边长，坐标范围 [0, m)）\n- k: int（允许的正方形数量上限）\n- points: List[Tuple[int, int]]（n 个坐标，可能存在重复点，视为同一格子）",
+    "output_format": "返回一个整数，为满足覆盖全部兴趣点时，被拍摄格子并集的最小大小。若 n=0（无点），结果为 0。",
+    "sample_input_output": [
+      {
+        "input": "n=5, m=7, k=2, points=[(0,3),(4,4),(4,6),(4,5),(4,6)]",
+        "output": "25"
+      },
+      {
+        "input": "n=2, m=6, k=2, points=[(1,4),(4,1)]",
+        "output": "16"
+      },
+      {
+        "input": "n=1, m=5, k=1, points=[(2,2)]",
+        "output": "1"
+      }
+    ]
+  },
+  "constraints": {
+    "time_complexity": "O(n log n)",
+    "space_complexity": "O(n)",
+    "edge_cases": [
+      "n=0：答案为 0",
+      "所有点均在主对角线：若 k 足够，可用若干 1×1；若 k=1 取最小包络",
+      "多点重合：应去重或合并",
+      "k=1：取包含所有点的最小正方形"
+    ]
+  },
+  "files": [
+    {
+      "name": "aliens.py",
+      "description": "实现函数 min_total_cells，返回覆盖所有点所需的最小面积。",
+      "requirements": [
+        "函数签名：min_total_cells(n: int, m: int, k: int, points: list[tuple[int,int]]) -> int",
+        "输出整数：最小并集面积"
+      ],
+      "function_signature": "def min_total_cells(n: int, m: int, k: int, points: list[tuple[int,int]]) -> int:",
+      "examples": [
+        {
+          "description": "样例1",
+          "code": "from aliens import min_total_cells\nn,m,k=5,7,2\npts=[(0,3),(4,4),(4,6),(4,5),(4,6)]\nassert min_total_cells(n,m,k,pts)==25"
+        },
+        {
+          "description": "样例2",
+          "code": "from aliens import min_total_cells\nn,m,k=2,6,2\npts=[(1,4),(4,1)]\nassert min_total_cells(n,m,k,pts)==16"
+        },
+        {
+          "description": "样例3",
+          "code": "from aliens import min_total_cells\nn,m,k=1,5,1\npts=[(2,2)]\nassert min_total_cells(n,m,k,pts)==1"
+        }
+      ]
+    }
+  ],
+  "algorithm_hints": [
+    "1. 先把二维点映射成一维坐标（常用 u = max(r,c)），去重并排序；",
+    "2. 目标变成：用 ≤k 个区间 [L,R] 覆盖所有离散的 u，总代价 ∑(R−L+1)^2 最小；",
+    "3. 在这个一维问题上做正确的动态规划/参数化搜索，天然避免重叠重复计数（因为每段是连续的 [L,R]）；",
+    "4. 复杂度不能含对 m 的线性枚举。",
+    "5. 使用参数化搜索（WQS Trick）：对每开一段收罚 λ，最小化 cost + λ×segments；对固定 λ 做线性 DP，可得最优代价与使用段数 cnt(λ)。通过调整 λ 直到 cnt(λ)=k。",
+    "6. 设 f[i] 为前 i 个点的最小代价，转移 f[i]=min_{j<i}{f[j]+(u_i−u_{j+1}+1)^2−λ}。",
+    "7. 展开平方项可转成线性形式，用 Convex Hull Trick (CHT) 优化转移到 O(log n)。",
+    "8. 点需去重并排序；计算 prefix sums；λ 越大段数越少。",
+    "9. 校验：k=1 时应等于 (max(u)−min(u)+1)^2；k≥n 时应等于 ∑每点1。"
+  ],
+  "common_debug_tips": [
+    "检查 dp 初始化，f[0]=−λ 是否合适。",
+    "调试时输出 (λ, cnt(λ)) 曲线，确保段数随 λ 单调递减。",
+    "若出现负面积或错位，常因 (t−s+1) 与索引 off-by-one。",
+    "可先实现 O(nk) 版验证正确性，再替换为 WQS + CHT 优化版本。"
+  ]
+}

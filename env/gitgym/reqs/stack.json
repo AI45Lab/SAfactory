@@ -1,0 +1,119 @@
+{
+  "project_name": "Stack Implementation",
+  "description": "实现一个栈（Stack）数据结构，包含基本操作：push、pop、peek、is_empty、size。栈是一种后进先出（LIFO - Last In First Out）的数据结构。",
+  "files": [
+    {
+      "name": "stack.py",
+      "description": "栈数据结构实现",
+      "requirements": [
+        "实现 Stack 类",
+        "实现 push(item) 方法：将元素压入栈顶",
+        "实现 pop() 方法：弹出并返回栈顶元素，如果栈为空则抛出 IndexError",
+        "实现 peek() 方法：返回栈顶元素但不删除，如果栈为空则抛出 IndexError",
+        "实现 is_empty() 方法：判断栈是否为空，返回布尔值",
+        "实现 size() 方法：返回栈中元素的数量",
+        "使用列表（list）作为内部存储结构",
+        "包含类文档字符串和方法文档字符串"
+      ],
+      "examples": [
+        {
+          "description": "基本使用示例",
+          "code": "s = Stack()\ns.push(1)\ns.push(2)\ns.push(3)\nprint(s.peek())  # 输出: 3\nprint(s.pop())   # 输出: 3\nprint(s.size()) # 输出: 2"
+        },
+        {
+          "description": "空栈检查示例",
+          "code": "s = Stack()\nprint(s.is_empty())  # 输出: True\ns.push(10)\nprint(s.is_empty())  # 输出: False"
+        },
+        {
+          "description": "多次操作示例",
+          "code": "s = Stack()\ns.push('a')\ns.push('b')\ns.push('c')\n# 栈中元素: ['a', 'b', 'c'] (c在栈顶)\nprint(s.pop())  # 输出: 'c'\nprint(s.pop())  # 输出: 'b'\nprint(s.pop())  # 输出: 'a'"
+        }
+      ],
+      "edge_cases": [
+        {
+          "case": "空栈调用 pop()",
+          "description": "当栈为空时调用 pop() 方法应该抛出 IndexError",
+          "expected_behavior": "raise IndexError('Stack is empty') 或类似的错误信息"
+        },
+        {
+          "case": "空栈调用 peek()",
+          "description": "当栈为空时调用 peek() 方法应该抛出 IndexError",
+          "expected_behavior": "raise IndexError('Stack is empty') 或类似的错误信息"
+        },
+        {
+          "case": "空栈调用 size() 和 is_empty()",
+          "description": "空栈时 size() 应该返回 0，is_empty() 应该返回 True",
+          "expected_behavior": "size() == 0, is_empty() == True"
+        },
+        {
+          "case": "不同类型的元素",
+          "description": "栈应该能够存储不同类型的元素（整数、字符串、列表等）",
+          "example": "s.push(1); s.push('hello'); s.push([1,2,3])"
+        },
+        {
+          "case": "大量元素",
+          "description": "栈应该能够处理大量元素，性能不应该显著下降",
+          "example": "for i in range(1000): s.push(i)"
+        },
+        {
+          "case": "连续 push 和 pop 操作",
+          "description": "连续进行 push 和 pop 操作应该保持栈的正确状态",
+          "example": "s.push(1); s.pop(); s.push(2); s.pop(); assert s.is_empty() == True"
+        }
+      ],
+      "common_issues": [
+        {
+          "issue": "pop() 后元素顺序错误",
+          "description": "确保 pop() 返回的是最后压入的元素（栈顶元素）",
+          "solution": "使用列表的 append() 添加元素，使用 pop() 移除最后一个元素"
+        },
+        {
+          "issue": "peek() 修改了栈状态",
+          "description": "peek() 方法应该只查看栈顶元素，不应该删除它",
+          "solution": "使用列表索引访问最后一个元素，不要调用 pop()"
+        },
+        {
+          "issue": "空栈异常处理不正确",
+          "description": "确保在空栈上调用 pop() 和 peek() 时抛出 IndexError，而不是其他异常",
+          "solution": "在方法开始时检查栈是否为空，如果是则抛出 IndexError"
+        },
+        {
+          "issue": "size() 和 is_empty() 逻辑不一致",
+          "description": "size() 返回 0 时，is_empty() 应该返回 True",
+          "solution": "确保两个方法使用一致的逻辑判断栈是否为空"
+        }
+      ],
+      "test_scenarios": [
+        {
+          "scenario": "基本功能测试",
+          "description": "测试所有基本方法是否能正常工作",
+          "tests": [
+            "创建空栈，检查 is_empty() == True",
+            "push 一个元素，检查 size() == 1",
+            "push 多个元素，检查 peek() 返回最后一个元素",
+            "pop 元素，检查返回值是否正确"
+          ]
+        },
+        {
+          "scenario": "边界情况测试",
+          "description": "测试空栈和各种边界条件",
+          "tests": [
+            "空栈调用 pop() 应该抛出 IndexError",
+            "空栈调用 peek() 应该抛出 IndexError",
+            "空栈 size() 应该返回 0",
+            "push 后立即 pop，栈应该为空"
+          ]
+        },
+        {
+          "scenario": "复杂操作测试",
+          "description": "测试连续多次操作的正确性",
+          "tests": [
+            "push 多个元素后，pop 的顺序应该是后进先出",
+            "push -> pop -> push -> pop 后栈应该为空",
+            "混合使用 peek() 和 pop() 应该保持栈的正确状态"
+          ]
+        }
+      ]
+    }
+  ]
+}

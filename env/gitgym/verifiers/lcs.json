@@ -1,0 +1,19 @@
+{
+  "tests": [
+    {
+      "category": "Sample Cases",
+      "description": "样例1",
+      "code": "from lcs import longest_common_subsequence; assert longest_common_subsequence(\"abcde\", \"ace\") == 3"
+    },
+    {
+      "category": "Sample Cases",
+      "description": "样例2：相同字符串",
+      "code": "from lcs import longest_common_subsequence; assert longest_common_subsequence(\"abc\", \"abc\") == 3"
+    },
+    {
+      "category": "Sample Cases",
+      "description": "样例3：完全不同",
+      "code": "from lcs import longest_common_subsequence; assert longest_common_subsequence(\"abc\", \"def\") == 0"
+    }
+  ]
+}
