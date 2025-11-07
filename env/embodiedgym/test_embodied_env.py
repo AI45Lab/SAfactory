@@ -58,7 +58,11 @@ def test_reset():
         print("✓ Reset 成功")
         print(f"  - 观测键: {list(reset_output.observation.keys())}")
         print(f"  - 任务指令: {reset_output.info['instruction'][:100]}...")
-        print(f"  - 图像形状: {reset_output.observation['head_rgb'].shape}")
+        head_rgb = reset_output.observation['head_rgb']
+        if hasattr(head_rgb, 'shape'):
+            print(f"  - 图像形状: {head_rgb.shape}")
+        else:
+            print(f"  - 图像类型: {type(head_rgb)}")
         
         env.close()
         return True
