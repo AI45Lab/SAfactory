@@ -1,0 +1,46 @@
+{
+  "tests": [
+    {
+      "code": "from stack import Stack; s = Stack(); assert s.is_empty() == True"
+    },
+    {
+      "code": "from stack import Stack; s = Stack(); s.push(1); assert s.is_empty() == False"
+    },
+    {
+      "code": "from stack import Stack; s = Stack(); s.push(1); assert s.size() == 1"
+    },
+    {
+      "code": "from stack import Stack; s = Stack(); s.push(1); s.push(2); assert s.size() == 2"
+    },
+    {
+      "code": "from stack import Stack; s = Stack(); s.push(1); assert s.peek() == 1"
+    },
+    {
+      "code": "from stack import Stack; s = Stack(); s.push(1); s.push(2); assert s.peek() == 2"
+    },
+    {
+      "code": "from stack import Stack; s = Stack(); s.push(1); assert s.pop() == 1"
+    },
+    {
+      "code": "from stack import Stack; s = Stack(); s.push(1); s.push(2); assert s.pop() == 2"
+    },
+    {
+      "code": "from stack import Stack; s = Stack(); s.push(1); s.push(2); s.pop(); assert s.peek() == 1"
+    },
+    {
+      "code": "from stack import Stack; s = Stack(); s.push(1); s.push(2); s.pop(); s.pop(); assert s.is_empty() == True"
+    },
+    {
+      "code": "from stack import Stack; s = Stack(); s.push('a'); s.push('b'); s.push('c'); assert s.size() == 3"
+    },
+    {
+      "code": "from stack import Stack; s = Stack(); s.push('a'); s.push('b'); s.push('c'); assert s.pop() == 'c' and s.pop() == 'b' and s.pop() == 'a'"
+    },
+    {
+      "code": "from stack import Stack; s = Stack(); try:\n    s.pop()\n    assert False, 'Should raise IndexError'\nexcept IndexError:\n    assert True"
+    },
+    {
+      "code": "from stack import Stack; s = Stack(); try:\n    s.peek()\n    assert False, 'Should raise IndexError'\nexcept IndexError:\n    assert True"
+    }
+  ]
+}

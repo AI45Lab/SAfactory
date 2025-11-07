@@ -1,0 +1,68 @@
+{
+  "tests": [
+    {
+      "category": "Samples",
+      "description": "官方样例1",
+      "code": "from aliens import min_total_cells; n,m,k=5,7,2; pts=[(0,3),(4,4),(4,6),(4,5),(4,6)]; assert min_total_cells(n,m,k,pts)==25"
+    },
+    {
+      "category": "Samples",
+      "description": "官方样例2",
+      "code": "from aliens import min_total_cells; n,m,k=2,6,2; pts=[(1,4),(4,1)]; assert min_total_cells(n,m,k,pts)==16"
+    },
+
+    {
+      "category": "Edge",
+      "description": "单点在主对角线（1×1）",
+      "code": "from aliens import min_total_cells; n,m,k=1,5,1; pts=[(2,2)]; assert min_total_cells(n,m,k,pts)==1"
+    },
+    {
+      "category": "Edge",
+      "description": "重复点（去重后两格，k=2）",
+      "code": "from aliens import min_total_cells; n,m,k=4,10,2; pts=[(5,5),(5,5),(5,5),(6,6)]; assert min_total_cells(n,m,k,pts)==2"
+    },
+    {
+      "category": "Edge",
+      "description": "k 足够大（每点各 1×1）",
+      "code": "from aliens import min_total_cells; n,m,k=5,12,5; pts=[(0,0),(0,5),(5,5),(7,7),(11,11)]; assert min_total_cells(n,m,k,pts)==5"
+    },
+    {
+      "category": "Edge",
+      "description": "k=1 必须一个大正方形全包",
+      "code": "from aliens import min_total_cells; n,m,k=5,12,1; pts=[(0,0),(0,5),(5,5),(7,7),(11,11)]; assert min_total_cells(n,m,k,pts)==144"
+    },
+
+    {
+      "category": "Structured",
+      "description": "对称离对角线较远（需 3×3）",
+      "code": "from aliens import min_total_cells; n,m,k=2,7,1; pts=[(0,2),(2,0)]; assert min_total_cells(n,m,k,pts)==9"
+    },
+    {
+      "category": "Structured",
+      "description": "对称近对角线（同一 2×2 可覆盖）",
+      "code": "from aliens import min_total_cells; n,m,k=2,6,1; pts=[(2,3),(3,2)]; assert min_total_cells(n,m,k,pts)==4"
+    },
+    {
+      "category": "Structured",
+      "description": "k 变化的效应：两点在对角线上",
+      "code": "from aliens import min_total_cells; n,m=2,6; pts=[(2,2),(3,3)]; assert min_total_cells(n,m,1,pts)==4 and min_total_cells(n,m,2,pts)==2"
+    },
+
+    {
+      "category": "Clusters",
+      "description": "两簇相距较远：k=2 显著优于 k=1",
+      "code": "from aliens import min_total_cells; m=12; pts=[(0,0),(0,1),(1,1),(5,5)]; assert min_total_cells(4,m,2,pts)==5 and min_total_cells(4,m,1,pts)==36"
+    },
+
+    {
+      "category": "Sanity",
+      "description": "已在对角线上的多点，k=1 选最小包络正方形",
+      "code": "from aliens import min_total_cells; n,m,k=3,20,1; pts=[(2,2),(5,5),(9,9)]; # 覆盖 [2,9] => 8x8=64\nassert min_total_cells(n,m,k,pts)==64"
+    },
+    {
+      "category": "Sanity",
+      "description": "混合点：1×1 + 2×2 的组合更优于单大方形",
+      "code": "from aliens import min_total_cells; n,m,k=3,10,2; pts=[(2,2),(2,3),(9,9)]; # (2,2)/(2,3) 用 [2,4] 2x2=4, (9,9) 用 1 => 5\nassert min_total_cells(n,m,k,pts)==5"
+    }
+  ]
+}

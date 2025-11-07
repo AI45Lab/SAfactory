@@ -1,0 +1,100 @@
+{
+  "tests": [
+    {
+      "category": "Sample Cases",
+      "description": "样例1：n=0",
+      "code": "from fibonacci import fibonacci; assert fibonacci(0) == 0"
+    },
+    {
+      "category": "Sample Cases",
+      "description": "样例2：n=1",
+      "code": "from fibonacci import fibonacci; assert fibonacci(1) == 1"
+    },
+    {
+      "category": "Sample Cases",
+      "description": "样例3：n=2",
+      "code": "from fibonacci import fibonacci; assert fibonacci(2) == 1"
+    },
+    {
+      "category": "Sample Cases",
+      "description": "样例4：n=3",
+      "code": "from fibonacci import fibonacci; assert fibonacci(3) == 2"
+    },
+    {
+      "category": "Sample Cases",
+      "description": "样例5：n=4",
+      "code": "from fibonacci import fibonacci; assert fibonacci(4) == 3"
+    },
+    {
+      "category": "Sample Cases",
+      "description": "样例6：n=5",
+      "code": "from fibonacci import fibonacci; assert fibonacci(5) == 5"
+    },
+    {
+      "category": "Sample Cases",
+      "description": "样例7：n=6",
+      "code": "from fibonacci import fibonacci; assert fibonacci(6) == 8"
+    },
+    {
+      "category": "Sample Cases",
+      "description": "样例8：n=7",
+      "code": "from fibonacci import fibonacci; assert fibonacci(7) == 13"
+    },
+    {
+      "category": "Edge Cases",
+      "description": "边界：n=0",
+      "code": "from fibonacci import fibonacci; assert fibonacci(0) == 0"
+    },
+    {
+      "category": "Edge Cases",
+      "description": "边界：n=1",
+      "code": "from fibonacci import fibonacci; assert fibonacci(1) == 1"
+    },
+    {
+      "category": "Edge Cases",
+      "description": "边界：n=2",
+      "code": "from fibonacci import fibonacci; assert fibonacci(2) == 1"
+    },
+    {
+      "category": "Edge Cases",
+      "description": "边界：n=30（最大值）",
+      "code": "from fibonacci import fibonacci; assert fibonacci(30) == 832040"
+    },
+    {
+      "category": "Medium Cases",
+      "description": "中等规模：n=10",
+      "code": "from fibonacci import fibonacci; assert fibonacci(10) == 55"
+    },
+    {
+      "category": "Medium Cases",
+      "description": "中等规模：n=15",
+      "code": "from fibonacci import fibonacci; assert fibonacci(15) == 610"
+    },
+    {
+      "category": "Medium Cases",
+      "description": "中等规模：n=20",
+      "code": "from fibonacci import fibonacci; assert fibonacci(20) == 6765"
+    },
+    {
+      "category": "Large Cases",
+      "description": "大规模：n=25",
+      "code": "from fibonacci import fibonacci; assert fibonacci(25) == 75025"
+    },
+    {
+      "category": "Large Cases",
+      "description": "大规模：n=30",
+      "code": "from fibonacci import fibonacci; assert fibonacci(30) == 832040"
+    },
+    {
+      "category": "Algorithm Correctness",
+      "description": "算法正确性：连续值测试",
+      "code": "from fibonacci import fibonacci; assert fibonacci(8) == 21 and fibonacci(9) == 34 and fibonacci(10) == 55"
+    },
+    {
+      "category": "Algorithm Correctness",
+      "description": "算法正确性：递推关系验证",
+      "code": "from fibonacci import fibonacci; n = 15; assert fibonacci(n) == fibonacci(n-1) + fibonacci(n-2)"
+    }
+  ]
+}
+
