@@ -1,0 +1,181 @@
+{
+  "project_name": "Longest Common Subsequence",
+  "description": "算法项目：最长公共子序列（LCS）问题。给定两个字符串，找到它们的最长公共子序列的长度。这是经典的动态规划问题，需要高效的算法实现。",
+  "project_problem": {
+    "problem_id": "PROJECT_LCS",
+    "title": "Longest Common Subsequence",
+    "difficulty": "Hard",
+    "time_limit": "2.0s",
+    "memory_limit": "512MB",
+    "source": "Algorithm Project (Classic DP)"
+  },
+  "problem_statement": {
+    "description": "给定两个字符串 text1 和 text2，返回这两个字符串的最长公共子序列（LCS）的长度。\n\n子序列：可以通过删除某些（或不删除）字符而不改变剩余字符的相对顺序来从字符串中派生出来的序列。例如，\"ace\" 是 \"abcde\" 的子序列，但 \"aec\" 不是 \"abcde\" 的子序列。\n\n如果两个字符串没有公共子序列，则返回 0。",
+    "input_format": "函数应接受两个参数：\n- text1: str - 第一个字符串\n- text2: str - 第二个字符串\n\n约束条件：\n- 1 <= len(text1), len(text2) <= 1000\n- text1 和 text2 仅由小写英文字母组成",
+    "output_format": "函数应返回一个整数，表示两个字符串的最长公共子序列的长度。",
+    "sample_input_output": [
+      {
+        "input": "text1 = \"abcde\", text2 = \"ace\"",
+        "output": "3",
+        "explanation": "最长公共子序列是 \"ace\"，长度为 3。"
+      },
+      {
+        "input": "text1 = \"abc\", text2 = \"abc\"",
+        "output": "3",
+        "explanation": "最长公共子序列是 \"abc\"，长度为 3。"
+      },
+      {
+        "input": "text1 = \"abc\", text2 = \"def\"",
+        "output": "0",
+        "explanation": "两个字符串没有公共子序列，返回 0。"
+      },
+      {
+        "input": "text1 = \"abcdefghij\", text2 = \"acegi\"",
+        "output": "5",
+        "explanation": "最长公共子序列是 \"acegi\"，长度为 5。"
+      }
+    ]
+  },
+  "algorithm_hints": [
+    "使用二维动态规划：dp[i][j] 表示 text1[0:i] 和 text2[0:j] 的最长公共子序列长度",
+    "状态转移方程：",
+    "  - 如果 text1[i-1] == text2[j-1]: dp[i][j] = dp[i-1][j-1] + 1",
+    "  - 否则: dp[i][j] = max(dp[i-1][j], dp[i][j-1])",
+    "时间复杂度：O(n*m)，其中 n=len(text1), m=len(text2)",
+    "空间复杂度：可以使用滚动数组优化到 O(min(n, m))",
+    "边界条件：dp[0][j] = 0 和 dp[i][0] = 0（空字符串的LCS为0）"
+  ],
+  "constraints": {
+    "time_complexity": "O(n*m)",
+    "space_complexity": "O(n*m) 或优化到 O(min(n, m))",
+    "edge_cases": [
+      "两个字符串完全相同",
+      "两个字符串完全不同",
+      "一个字符串是另一个的子序列",
+      "两个字符串都只有一个字符",
+      "两个字符串长度差异很大（一个很长，一个很短）",
+      "字符串包含重复字符",
+      "最大规模：两个字符串都接近1000字符"
+    ]
+  },
+  "files": [
+    {
+      "name": "lcs.py",
+      "description": "实现最长公共子序列算法",
+      "requirements": [
+        "实现函数 longest_common_subsequence(text1: str, text2: str) -> int",
+        "使用动态规划方法",
+        "时间复杂度必须为 O(n*m)",
+        "正确处理所有边界情况",
+        "必须能够处理最大规模输入（两个字符串各1000字符）",
+        "代码必须清晰，包含必要的注释"
+      ],
+      "function_signature": "def longest_common_subsequence(text1: str, text2: str) -> int:",
+      "project_test_categories": [
+        {
+          "category": "Sample Cases",
+          "weight": 15,
+          "description": "基本样例测试"
+        },
+        {
+          "category": "Small Cases",
+          "weight": 25,
+          "description": "小规模测试（n, m <= 50）"
+        },
+        {
+          "category": "Medium Cases",
+          "weight": 30,
+          "description": "中等规模测试（50 < n, m <= 200）"
+        },
+        {
+          "category": "Large Cases",
+          "weight": 20,
+          "description": "大规模测试（200 < n, m <= 1000）"
+        },
+        {
+          "category": "Edge Cases",
+          "weight": 10,
+          "description": "边界情况测试"
+        }
+      ],
+      "examples": [
+        {
+          "description": "基本示例",
+          "code": "from lcs import longest_common_subsequence\nresult = longest_common_subsequence(\"abcde\", \"ace\")\nassert result == 3"
+        },
+        {
+          "description": "相同字符串",
+          "code": "from lcs import longest_common_subsequence\nresult = longest_common_subsequence(\"abc\", \"abc\")\nassert result == 3"
+        },
+        {
+          "description": "完全不同",
+          "code": "from lcs import longest_common_subsequence\nresult = longest_common_subsequence(\"abc\", \"def\")\nassert result == 0"
+        }
+      ],
+      "edge_cases": [
+        {
+          "case": "两个字符串完全相同",
+          "description": "text1 == text2，应该返回字符串长度",
+          "expected_behavior": "返回 len(text1)"
+        },
+        {
+          "case": "两个字符串完全不同",
+          "description": "text1 和 text2 没有共同字符，应该返回 0",
+          "expected_behavior": "返回 0"
+        },
+        {
+          "case": "一个字符串是另一个的子序列",
+          "description": "text2 的所有字符都在 text1 中按顺序出现",
+          "expected_behavior": "返回 len(text2)"
+        },
+        {
+          "case": "单字符字符串",
+          "description": "两个字符串都只有一个字符",
+          "expected_behavior": "如果相同返回1，否则返回0"
+        },
+        {
+          "case": "长度差异很大",
+          "description": "text1长度接近1000，text2长度很小",
+          "expected_behavior": "算法仍然高效运行"
+        },
+        {
+          "case": "包含重复字符",
+          "description": "字符串包含重复字符，如 \"aaa\" 和 \"aa\"",
+          "expected_behavior": "正确处理重复字符的情况"
+        },
+        {
+          "case": "最大规模",
+          "description": "两个字符串都接近1000字符，需要验证性能",
+          "expected_behavior": "在2秒内完成计算"
+        }
+      ],
+      "common_issues": [
+        {
+          "issue": "使用递归导致超时",
+          "description": "递归实现的LCS会导致大量重复计算，在大规模输入时超时",
+          "solution": "必须使用动态规划的迭代方法，自底向上填充DP表"
+        },
+        {
+          "issue": "索引错误",
+          "description": "DP数组的索引与字符串索引的对应关系容易出错",
+          "solution": "dp[i][j] 表示 text1[0:i] 和 text2[0:j] 的LCS，注意字符串索引从0开始，DP索引从1开始"
+        },
+        {
+          "issue": "边界条件处理错误",
+          "description": "空字符串的情况没有正确处理",
+          "solution": "dp[0][j] = 0 和 dp[i][0] = 0 必须正确初始化"
+        },
+        {
+          "issue": "内存使用过大",
+          "description": "对于大规模输入，二维DP数组可能占用过多内存",
+          "solution": "可以使用滚动数组优化，只保留当前行和上一行，将空间复杂度优化到O(min(n, m))"
+        },
+        {
+          "issue": "状态转移方程错误",
+          "description": "字符匹配和不匹配时的状态转移逻辑错误",
+          "solution": "匹配时：dp[i][j] = dp[i-1][j-1] + 1；不匹配时：dp[i][j] = max(dp[i-1][j], dp[i][j-1])"
+        }
+      ]
+    }
+  ]
+}
