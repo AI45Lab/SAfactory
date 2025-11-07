@@ -1,4 +1,4 @@
-python examples/embodied_eval.py \
+python examples/base_eval.py \
   --env-config-yaml "/mnt/shared-storage-user/evobox-share/gaozhenkun/gzk/AIEvoBox/env/embodiedgym/embodied_config.yaml" \
   --max-workers 4 \
   --max-steps 30 \
