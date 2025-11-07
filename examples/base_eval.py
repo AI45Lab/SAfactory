@@ -9,6 +9,7 @@ import csv
 import asyncio
 import pandas as pd
 from env.tradinggym.trading_env import TradingGym  # 导入环境来注册
+from env.search.search_env import SearchEnv
 from env.embodiedgym.embodied_env import EmbodiedAlfredGym  # 导入 Alfred 环境来注册
 from core.agent.base_agent import APIAgent
 from core.interactor import Interactor

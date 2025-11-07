@@ -51,7 +51,8 @@ class EmbodiedAlfredGym(BaseEnv):
         max_episode_steps: int = 30,
         max_invalid_actions: int = 10,
         alfred_data_path: Optional[str] = None,
-        exp_name: str = 'aievobox_alfred'
+        exp_name: str = 'aievobox_alfred',
+        ** kwargs
     ):
         """
         初始化 Alfred 环境适配器
@@ -67,7 +68,7 @@ class EmbodiedAlfredGym(BaseEnv):
             alfred_data_path: Alfred 数据集路径（可选）
             exp_name: 实验名称
         """
-        super().__init__()
+        super().__init__(**kwargs)
         
         if EBAlfEnv is None:
             raise RuntimeError("EBAlfEnv 未成功导入，请检查 EmbodiedBench 安装")
