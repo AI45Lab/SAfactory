@@ -99,7 +99,7 @@ class DataManager:
         self,
         session: InteractionSession,
         step_id: int,
-        prompt: str | PromptOutput,
+        prompt: PromptOutput,
         response: str,
         reward: float,
         env_state: Optional[str] = None,
