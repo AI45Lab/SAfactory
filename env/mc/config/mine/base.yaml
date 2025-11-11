@@ -1,0 +1,33 @@
+seed: 19961103
+random_tp_range: 1000
+
+fast_reset: True
+start_time: 0
+time_limit: 1000
+candidate_preferred_spawn_biome: 
+  - plains
+candidate_weather: 
+  - clear
+
+camera_config:
+  camera_binsize: 1
+  camera_maxval: 10
+  camera_mu: 20
+  camera_quantization_scheme: "mu_law"
+
+origin_resolution: [640, 360]
+resize_resolution: [640, 360]
+
+need_crafting_table: False
+need_gui: False
+inventory_distraction_level: "zero"
+
+task_conf:
+  - name: "mine"
+    text: "mine item" 
+
+worker:
+  "mine"
+
+init_inventory: []
+mobs: []
