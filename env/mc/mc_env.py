@@ -33,9 +33,13 @@ class MCGym(BaseEnv):
         self.instructions = ""  # 初始化 instructions
         self.simulator: MinecraftSim = self.init_sim(env_config)
         self.init_fov()
+        self.current_step = 0  # 跟踪当前步数
+        self.last_obs = None  # 保存最后一次观察
     
     def step(self, action: str) -> StepOutput:
         result = self.simulator.step(action)
+        self.last_obs = result.obs  # 保存观察状态
+        self.current_step += 1  # 更新步数
         return StepOutput(
             observation=result.obs,
             reward=result.reward,
@@ -46,6 +50,8 @@ class MCGym(BaseEnv):
         
     def reset(self, seed: int | None = None) -> ResetOutput:
         result = self.simulator.reset()
+        self.last_obs = result.obs  # 保存观察状态
+        self.current_step = 0  # 重置步数
         return ResetOutput(observation=result.obs, info=result.info)
     
     def close(self) -> None:
@@ -55,7 +61,46 @@ class MCGym(BaseEnv):
         return super().get_task_prompt()
     
     def render(self) -> RenderOutput:
-        return super().render()
+        """渲染当前环境状态，返回 POV 图像
+        
+        Returns:
+            RenderOutput: 包含当前 POV 图像的渲染输出
+        """
+        import io
+        import numpy as np
+        from PIL import Image
+        
+        if self.last_obs is None:
+            raise RuntimeError("No observation available. Call reset() first.")
+        
+        # 从观察中获取图像数据
+        # MinecraftSim 的 obs 是字典，包含 'image' 键
+        if isinstance(self.last_obs, dict) and 'image' in self.last_obs:
+            image_array = self.last_obs['image']
+        else:
+            raise ValueError(f"Unexpected observation format: {type(self.last_obs)}")
+        
+        # 确保是 numpy 数组并转换为 uint8
+        if isinstance(image_array, np.ndarray):
+            if image_array.dtype != np.uint8:
+                image_array = image_array.astype(np.uint8)
+        else:
+            raise ValueError(f"Expected numpy array, got {type(image_array)}")
+        
+        # 转换为 PIL Image
+        img = Image.fromarray(image_array, 'RGB')
+        
+        # 转换为字节流
+        buffer = io.BytesIO()
+        img.save(buffer, format='PNG')
+        buffer.seek(0)
+        image_data = buffer.read()
+        buffer.close()
+        
+        return RenderOutput(
+            step=self.current_step,
+            image_data=image_data
+        )
     
     def action_string_to_dict(self, action_input, **kwargs) -> tuple:
         """执行动作
@@ -189,7 +234,6 @@ class MCGym(BaseEnv):
                 return_numpy=True        # 返回 np.array([int])
             )
             self._obs_shape = (obs_h, obs_w, 3)
-            self.last_obs = None
 
         finally:
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
