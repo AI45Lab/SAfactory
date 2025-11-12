@@ -1,0 +1,389 @@
+SLF4J: Failed to load class "org.slf4j.impl.StaticLoggerBinder".
+SLF4J: Defaulting to no-operation (NOP) logger implementation
+SLF4J: See http://www.slf4j.org/codes.html#StaticLoggerBinder for further details.
+[09:27:15] [main/INFO]: [OptiFine] (Reflector) Field not found: World.tileEntitiesToBeRemoved
+[09:27:15] [main/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.eventbus.api.Event$Result
+[09:27:15] [main/INFO]: [OptiFine] (Reflector) Method not present: net.minecraftforge.common.extensions.IForgeBlockState.hasTileEntity
+[09:27:15] [main/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.common.extensions.IForgeEntity
+[09:27:15] [main/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.fml.CrashReportExtender
+[09:27:15] [main/INFO]: [OptiFine] (Reflector) Method not present: net.minecraft.tags.ItemTags.createOptional
+[09:27:17] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.ForgeHooksClient
+[09:27:17] [Render thread/INFO]: Environment: authHost='https://authserver.mojang.com', accountsHost='https://api.mojang.com', sessionHost='https://sessionserver.mojang.com', servicesHost='https://api.minecraftservices.com', name='PROD'
+[09:27:17] [Render thread/INFO]: Using offline social interactions mode
+[09:27:17] [Render thread/INFO]: Setting user: Player786
+[09:27:17] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.settings.KeyConflictContext
+[09:27:17] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraft.launchwrapper.Launch
+[09:27:17] [Render thread/INFO]: Backend library: LWJGL version 3.2.1 SNAPSHOT
+[09:27:18] [Render thread/INFO]: [OptiFine] 
+[09:27:18] [Render thread/INFO]: [OptiFine] OptiFine_1.16.5_HD_U_G8
+[09:27:18] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: optifine.OptiFineResourceLocator
+[09:27:18] [Render thread/INFO]: [OptiFine] Build: null
+[09:27:18] [Render thread/INFO]: [OptiFine] OS: Linux (amd64) version 5.4.250-2-velinux1u1-amd64
+[09:27:18] [Render thread/INFO]: [OptiFine] Java: 1.8.0_452, Private Build
+[09:27:18] [Render thread/INFO]: [OptiFine] VM: OpenJDK 64-Bit Server VM (mixed mode), Private Build
+[09:27:18] [Render thread/INFO]: [OptiFine] LWJGL: 3.3.0 X11 GLX EGL clock_gettime evdev shared
+[09:27:18] [Render thread/INFO]: [OptiFine] OpenGL: llvmpipe (LLVM 12.0.0, 256 bits), version 3.1 Mesa 21.2.6, Mesa/X.org
+[09:27:18] [Render thread/INFO]: [OptiFine] OpenGL Version: 3.1.0
+[09:27:18] [Render thread/INFO]: [OptiFine] Maximum texture size: 16384x16384
+[09:27:18] [VersionCheck/INFO]: [OptiFine] Checking for new version
+[09:27:18] [Render thread/INFO]: [Shaders] OpenGL Version: 3.1 Mesa 21.2.6
+[09:27:18] [Render thread/INFO]: [Shaders] Vendor:  Mesa/X.org
+[09:27:18] [Render thread/INFO]: [Shaders] Renderer: llvmpipe (LLVM 12.0.0, 256 bits)
+[09:27:18] [Render thread/INFO]: [Shaders] Capabilities:  2.0  2.1  3.0  -  - 
+[09:27:18] [Render thread/INFO]: [Shaders] GL_MAX_DRAW_BUFFERS: 8
+[09:27:18] [Render thread/INFO]: [Shaders] GL_MAX_COLOR_ATTACHMENTS_EXT: 8
+[09:27:18] [Render thread/INFO]: [Shaders] GL_MAX_TEXTURE_IMAGE_UNITS: 32
+[09:27:18] [Render thread/INFO]: [Shaders] Load shaders configuration.
+[09:27:18] [Render thread/INFO]: [Shaders] Save shaders configuration.
+[09:27:18] [Render thread/INFO]: [Shaders] No shaderpack loaded.
+[09:27:18] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.fml.common.Loader
+[09:27:18] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.ItemModelMesherForge
+[09:27:18] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.model.pipeline.ForgeBlockModelRenderer
+[09:27:18] [Render thread/WARN]: ERROR : Couldn't load Narrator library : Unable to load library 'fliteWrapper': Native library (linux-x86-64/libfliteWrapper.so) not found in resource path ([file:/fs-computility-new/nuclear/leishanzhe/repo/mc/build/offline-mcprec-6.13.jar])
+[09:27:18] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.fml.client.gui.screen.ModListScreen
+[09:27:18] [Render thread/INFO]: Reloading ResourceManager: Default
+[09:27:18] [Render thread/INFO]: [OptiFine] *** Reloading textures ***
+[09:27:18] [Render thread/INFO]: [OptiFine] Resource packs: Default
+[09:27:21] [VersionCheck/INFO]: [OptiFine] Version found: G7
+[09:27:21] [Worker-Main-13/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.model.ModelLoaderRegistry
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraft.client.renderer.RenderTypeLookup.canRenderInLayer
+[09:27:21] [Render thread/INFO]: [OptiFine] *** Reflector Forge ***
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: mods.betterfoliage.client.BetterFoliageClient
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.fml.BrandingControl
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.common.capabilities.ICapabilityProvider
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.common.capabilities.CapabilityProvider
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.fml.client.ClientModLoader
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.event.world.ChunkDataEvent$Save
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.event.world.ChunkEvent$Load
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.event.world.ChunkEvent$Unload
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.fml.client.ClientHooks
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.event.GuiScreenEvent$DrawScreenEvent$Pre
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.event.GuiScreenEvent$DrawScreenEvent$Post
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraftforge.fml.loading.progress.EarlyProgressVisualization.handOffWindow
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.event.entity.EntityLeaveWorldEvent
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.event.EntityViewRenderEvent$CameraSetup
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.event.EntityViewRenderEvent$FogColors
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.event.EntityViewRenderEvent$RenderFogEvent
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.event.entity.EntityJoinWorldEvent
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraftforge.eventbus.api.Event.isCanceled
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraftforge.eventbus.api.Event.getResult
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.eventbus.api.IEventBus
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.common.extensions.IForgeBlock
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraft.client.renderer.BlockModelShapes.getTexture
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraftforge.common.extensions.IForgeBlockState.addDestroyEffects
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraftforge.common.extensions.IForgeBlockState.addHitEffects
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraftforge.common.extensions.IForgeBlockState.getLightValue
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraftforge.common.extensions.IForgeBlockState.getSoundType
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraftforge.common.extensions.IForgeBlockState.getStateAtViewpoint
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraftforge.common.extensions.IForgeBlockState.isAir
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraftforge.common.extensions.IForgeBlockState.shouldDisplayFluidOverlay
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.common.extensions.IForgeFluid
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.fluids.FluidAttributes
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraft.entity.EntityType.getTags
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.event.ForgeEventFactory
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraft.fluid.Fluid.getTags
+[09:27:21] [Worker-Main-9/INFO]: [OptiFine] Multitexture: false
+[09:27:21] [Worker-Main-11/INFO]: [OptiFine] Multitexture: false
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.common.ForgeHooks
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.common.ForgeConfig
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.common.ForgeConfig$Client
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.common.ForgeConfigSpec
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.common.ForgeConfigSpec$ConfigValue
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraft.world.chunk.IChunk.getWorldForge
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.common.extensions.IForgeItem
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.common.extensions.IForgeItemStack
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.fml.ForgeI18n
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraft.client.settings.KeyBinding.setKeyConflictContext
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraft.client.settings.KeyBinding.setKeyModifierAndCode
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraft.client.settings.KeyBinding.getKeyModifier
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.common.extensions.IForgeEffectInstance
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.registries.ForgeRegistryEntry
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraft.client.renderer.RenderTypeLookup.canRenderInLayer
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Constructor not present: net.minecraft.world.server.Ticket, params: class net.minecraft.world.server.TicketType, int, class java.lang.Object, boolean
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraft.world.server.Ticket.isForceTicks
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.common.extensions.IForgeTileEntity
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraft.client.world.DimensionRenderInfo.getCloudRenderHandler
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraft.client.world.DimensionRenderInfo.getSkyRenderHandler
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraft.client.world.DimensionRenderInfo.getWeatherParticleRenderHandler
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Method not present: net.minecraft.client.world.DimensionRenderInfo.getWeatherRenderHandler
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.IRenderHandler
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.settings.KeyModifier
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.model.pipeline.LightUtil
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.common.MinecraftForge
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.MinecraftForgeClient
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.fml.common.ModContainer
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.gui.NotificationModUpdateScreen
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.entity.PartEntity
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.event.entity.PlaySoundAtEntityEvent
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.event.RenderBlockOverlayEvent$OverlayType
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.fml.client.registry.RenderingRegistry
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.event.RenderGameOverlayEvent$BossInfo
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.event.RenderItemInFrameEvent
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.event.RenderLivingEvent$Pre
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.event.RenderLivingEvent$Post
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.event.RenderNameplateEvent
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.client.event.ScreenshotEvent
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.fml.server.ServerLifecycleHooks
+[09:27:21] [Render thread/INFO]: [OptiFine] (Reflector) Class not present: net.minecraftforge.event.world.WorldEvent$Load
+[09:27:21] [Render thread/INFO]: [OptiFine] *** Reflector Vanilla ***
+[09:27:21] [Worker-Main-12/INFO]: [OptiFine] Multitexture: false
+[09:27:22] [Realms Notification Availability checker #1/INFO]: Could not authorize you against Realms server: java.lang.RuntimeException: Failed to parse into SignedJWT: null
+[09:27:22] [Worker-Main-13/INFO]: [OptiFine] Multitexture: false
+[09:27:22] [Worker-Main-13/INFO]: [OptiFine] Multipass connected textures: false
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Mipmap levels: 4
+[09:27:23] [Worker-Main-8/ERROR]: Using missing texture, unable to load minecraft:optifine/ctm/default/empty.png : java.io.FileNotFoundException: minecraft:optifine/ctm/default/empty.png
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Multitexture: false
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Sprite size: 64
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Mipmap levels: 6
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Multitexture: false
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Sprite size: 64
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Mipmap levels: 6
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Multitexture: false
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Sprite size: 64
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Mipmap levels: 6
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Multitexture: false
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Sprite size: 64
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Mipmap levels: 6
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Multitexture: false
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Sprite size: 64
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Mipmap levels: 6
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Multitexture: false
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Sprite size: 64
+[09:27:23] [Worker-Main-13/INFO]: [OptiFine] Mipmap levels: 6
+ALSA lib confmisc.c:767:(parse_card) cannot find card '0'
+ALSA lib conf.c:4732:(_snd_config_evaluate) function snd_func_card_driver returned error: No such file or directory
+ALSA lib confmisc.c:392:(snd_func_concat) error evaluating strings
+ALSA lib conf.c:4732:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1246:(snd_func_refer) error evaluating name
+ALSA lib conf.c:4732:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5220:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2642:(snd_pcm_open_noupdate) Unknown PCM default
+AL lib: (EE) ALCplaybackAlsa_open: Could not open playback device 'default': No such file or directory
+ALSA lib confmisc.c:767:(parse_card) cannot find card '0'
+ALSA lib conf.c:4732:(_snd_config_evaluate) function snd_func_card_driver returned error: No such file or directory
+ALSA lib confmisc.c:392:(snd_func_concat) error evaluating strings
+ALSA lib conf.c:4732:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1246:(snd_func_refer) error evaluating name
+ALSA lib conf.c:4732:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5220:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2642:(snd_pcm_open_noupdate) Unknown PCM default
+AL lib: (EE) ALCplaybackAlsa_open: Could not open playback device 'default': No such file or directory
+ALSA lib confmisc.c:767:(parse_card) cannot find card '0'
+ALSA lib conf.c:4732:(_snd_config_evaluate) function snd_func_card_driver returned error: No such file or directory
+ALSA lib confmisc.c:392:(snd_func_concat) error evaluating strings
+ALSA lib conf.c:4732:(_snd_config_evaluate) function snd_func_concat returned error: No such file or directory
+ALSA lib confmisc.c:1246:(snd_func_refer) error evaluating name
+ALSA lib conf.c:4732:(_snd_config_evaluate) function snd_func_refer returned error: No such file or directory
+ALSA lib conf.c:5220:(snd_config_expand) Evaluate error: No such file or directory
+ALSA lib pcm.c:2642:(snd_pcm_open_noupdate) Unknown PCM default
+AL lib: (EE) ALCplaybackAlsa_open: Could not open playback device 'default': No such file or directory
+[09:27:23] [Render thread/ERROR]: Error starting SoundSystem. Turning off sounds & music
+java.lang.IllegalStateException: Failed to open OpenAL device
+	at net.minecraft.client.audio.SoundSystem.openDevice(SoundSystem.java:135) ~[offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.audio.SoundSystem.init(SoundSystem.java:51) ~[offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.audio.SoundEngine.load(SoundEngine.java:83) ~[offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.audio.SoundEngine.reload(SoundEngine.java:77) ~[offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.audio.SoundHandler.apply(SoundHandler.java:110) ~[offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.audio.SoundHandler.apply(SoundHandler.java:34) ~[offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.resources.ReloadListener.lambda$reload$1(ReloadListener.java:17) ~[offline-mcprec-6.13.jar:?]
+	at java.util.concurrent.CompletableFuture.uniAccept(CompletableFuture.java:670) ~[?:1.8.0_452]
+	at java.util.concurrent.CompletableFuture$UniAccept.tryFire(CompletableFuture.java:646) ~[?:1.8.0_452]
+	at java.util.concurrent.CompletableFuture$Completion.run(CompletableFuture.java:456) ~[?:1.8.0_452]
+	at net.minecraft.resources.AsyncReloader.lambda$null$3(AsyncReloader.java:71) ~[offline-mcprec-6.13.jar:?]
+	at net.minecraft.util.concurrent.ThreadTaskExecutor.execute(ThreadTaskExecutor.java:92) ~[offline-mcprec-6.13.jar:?]
+	at net.minecraft.resources.AsyncReloader.lambda$new$4(AsyncReloader.java:70) ~[offline-mcprec-6.13.jar:?]
+	at java.util.concurrent.CompletableFuture$UniCompletion.claim(CompletableFuture.java:543) ~[?:1.8.0_452]
+	at java.util.concurrent.CompletableFuture.uniAccept(CompletableFuture.java:667) ~[?:1.8.0_452]
+	at java.util.concurrent.CompletableFuture$UniAccept.tryFire(CompletableFuture.java:646) ~[?:1.8.0_452]
+	at java.util.concurrent.CompletableFuture.postComplete(CompletableFuture.java:488) ~[?:1.8.0_452]
+	at java.util.concurrent.CompletableFuture.postFire(CompletableFuture.java:575) ~[?:1.8.0_452]
+	at java.util.concurrent.CompletableFuture$UniAccept.tryFire(CompletableFuture.java:649) ~[?:1.8.0_452]
+	at java.util.concurrent.CompletableFuture$Completion.run(CompletableFuture.java:456) ~[?:1.8.0_452]
+	at com.mojang.blaze3d.systems.RenderSystem.replayQueue(RenderSystem.java:101) [offline-mcprec-6.13.jar:?]
+	at com.mojang.blaze3d.systems.RenderSystem.flipFrame(RenderSystem.java:90) [offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.MainWindow.flipFrame(MainWindow.java:356) [offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.Minecraft.runGameLoop(Minecraft.java:1027) [offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.Minecraft.run(Minecraft.java:614) [offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.main.Main.main(Main.java:196) [offline-mcprec-6.13.jar:?]
+[09:27:23] [Render thread/INFO]: Created: 1024x512x4 minecraft:textures/atlas/blocks.png-atlas
+[09:27:23] [Render thread/WARN]: [OptiFine] Missing CTM sprite: minecraft:optifine/ctm/default/empty
+[09:27:23] [Render thread/INFO]: [OptiFine] Animated sprites: 43
+[09:27:23] [Render thread/INFO]: Created: 256x128x4 minecraft:textures/atlas/signs.png-atlas
+[09:27:23] [Render thread/INFO]: [OptiFine] Animated sprites: 0
+[09:27:23] [Render thread/INFO]: Created: 512x512x4 minecraft:textures/atlas/banner_patterns.png-atlas
+[09:27:23] [Render thread/INFO]: [OptiFine] Animated sprites: 0
+[09:27:23] [Render thread/INFO]: Created: 512x512x4 minecraft:textures/atlas/shield_patterns.png-atlas
+[09:27:23] [Render thread/INFO]: [OptiFine] Animated sprites: 0
+[09:27:23] [Render thread/INFO]: Created: 256x256x4 minecraft:textures/atlas/chest.png-atlas
+[09:27:23] [Render thread/INFO]: [OptiFine] Animated sprites: 0
+[09:27:23] [Render thread/INFO]: Created: 512x256x4 minecraft:textures/atlas/beds.png-atlas
+[09:27:23] [Render thread/INFO]: [OptiFine] Animated sprites: 0
+[09:27:23] [Render thread/INFO]: Created: 512x256x4 minecraft:textures/atlas/shulker_boxes.png-atlas
+[09:27:23] [Render thread/INFO]: [OptiFine] Animated sprites: 0
+[09:27:24] [Render thread/INFO]: Created: 256x256x0 minecraft:textures/atlas/particles.png-atlas
+[09:27:24] [Render thread/INFO]: [OptiFine] Animated sprites: 0
+[09:27:24] [Render thread/INFO]: Created: 256x256x0 minecraft:textures/atlas/paintings.png-atlas
+[09:27:24] [Render thread/INFO]: [OptiFine] Animated sprites: 0
+[09:27:24] [Render thread/INFO]: Created: 128x128x0 minecraft:textures/atlas/mob_effects.png-atlas
+[09:27:24] [Render thread/INFO]: [OptiFine] Animated sprites: 0
+[09:27:24] [Render thread/INFO]: [OptiFine] *** Reloading custom textures ***
+[09:27:24] [Render thread/INFO]: [OptiFine] Disable Forge light pipeline
+[09:27:25] [Thread-5/INFO]: [STDOUT]: ***** Start MalmoEnvServer on port 12546
+[09:27:25] [Thread-5/INFO]: [STDOUT]: CLIENT enter state: DORMANT
+[09:27:25] [Thread-5/INFO]: [STDOUT]: SERVER enter state: DORMANT
+[09:27:25] [EnvServerSocketHandler/INFO]: Received Mission token a27e1cce-cee1-4eff-978f-5e8dec64ef10:0:0:1:true:0
+[09:27:25] [EnvServerSocketHandler/INFO]: Received mission init command  <MissionInit xmlns="http://ProjectMalmo.microsoft.com" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" SchemaVersion="" PlatformVersion="0.37.0"><Mission><About><Summary>MineRLHumanSurvival-v0</Summary></About><ModSettings><MsPerTick>50</MsPerTick></ModSettings><ServerSection><ServerInitialConditions><Time><AllowPassageOfTime>true</AllowPassageOfTime></Time><AllowSpawning>true</AllowSpawning></ServerInitialConditions><ServerHandlers><DefaultWorldGenerator forceReset="true" generatorOptions="{}"/><ServerQuitWhenAnyAgentFinishes/></ServerHandlers></ServerSection><AgentSection mode="Survival"><Name>MineRLAgent0</Name><AgentStart><LowLevelInputs>true</LowLevelInputs><GuiScale>1.0</GuiScale><GammaSetting>2.0</GammaSetting><FOVSetting>70.0</FOVSetting><FakeCursorSize>16</FakeCursorSize><Inventory/><PreferredSpawnBiome>plains</PreferredSpawnBiome></AgentStart><AgentHandlers><FileBasedPerformanceProducer/><PauseCommand/><VideoProducer want_depth="false"><Width>640</Width><Height>360</Height></VideoProducer><ObservationFromFullInventory flat="false"/><ObservationFromEquippedItem/><ObservationFromFullStats/><ObservationFromFullStats/><HumanLevelCommands/><CameraCommands/><ChatCommands/><IsGuiOpen/></AgentHandlers></AgentSection></Mission><ExperimentUID>a27e1cce-cee1-4eff-978f-5e8dec64ef10</ExperimentUID><ClientRole>0</ClientRole><ClientAgentConnection><ClientIPAddress>127.0.0.1</ClientIPAddress><ClientMissionControlPort>0</ClientMissionControlPort><ClientCommandsPort>0</ClientCommandsPort><AgentIPAddress>127.0.0.1</AgentIPAddress><AgentMissionControlPort>0</AgentMissionControlPort><AgentVideoPort>0</AgentVideoPort><AgentDepthPort>0</AgentDepthPort><AgentLuminancePort>0</AgentLuminancePort><AgentObservationsPort>0</AgentObservationsPort><AgentRewardsPort>0</AgentRewardsPort><AgentColourMapPort>0</AgentColourMapPort></ClientAgentConnection></MissionInit>
+[09:27:26] [EnvServerSocketHandler/INFO]: [STDOUT]: Setting width, height to 640, 360
+[09:27:26] [EnvServerSocketHandler/INFO]: [STDOUT]: Gamma: 2.0
+[09:27:26] [EnvServerSocketHandler/INFO]: [STDOUT]: FOV: 70.0
+[09:27:26] [EnvServerSocketHandler/INFO]: [STDOUT]: GuiScale: 1.0
+[09:27:26] [Render thread/WARN]: Ambiguity between arguments [teleport, destination] and [teleport, targets] with inputs: [Player, 0123, @e, dd12be42-52a9-4a91-a8a1-11c01849e498]
+[09:27:26] [Render thread/WARN]: Ambiguity between arguments [teleport, location] and [teleport, destination] with inputs: [0.1 -0.5 .9, 0 0 0]
+[09:27:26] [Render thread/WARN]: Ambiguity between arguments [teleport, location] and [teleport, targets] with inputs: [0.1 -0.5 .9, 0 0 0]
+[09:27:26] [Render thread/WARN]: Ambiguity between arguments [teleport, targets] and [teleport, destination] with inputs: [Player, 0123, dd12be42-52a9-4a91-a8a1-11c01849e498]
+[09:27:26] [Render thread/WARN]: Ambiguity between arguments [teleport, targets, location] and [teleport, targets, destination] with inputs: [0.1 -0.5 .9, 0 0 0]
+[09:27:26] [Render thread/INFO]: Reloading ResourceManager: Default
+[09:27:26] [Render thread/INFO]: Loaded 7 recipes
+[09:27:26] [Render thread/INFO]: Loaded 927 advancements
+[09:27:27] [Render thread/INFO]: Environment: authHost='https://authserver.mojang.com', accountsHost='https://api.mojang.com', sessionHost='https://sessionserver.mojang.com', servicesHost='https://api.minecraftservices.com', name='PROD'
+[09:27:27] [Render thread/INFO]: Starting integrated minecraft server version 1.16.5
+[09:27:27] [Render thread/INFO]: Generating keypair
+[09:27:34] [Render thread/INFO]: Preparing start region for dimension minecraft:overworld
+[09:27:42] [Render thread/INFO]: Changing view distance to 7, from 10
+[09:27:43] [Render thread/INFO]: MineRLAgent0[local:E:c9a8f0e2] logged in with entity id 196 at (3394.5, 65.0, -3685.5)
+[09:27:43] [Render thread/INFO]: MineRLAgent0 joined the game
+[09:27:43] [Render thread/INFO]: [STDOUT]: *** creating fake mouse cursor ***
+[09:27:43] [Render thread/INFO]: Preparing spawn area: 0%
+[09:27:43] [Render thread/INFO]: Time elapsed: 3 ms
+[09:27:43] [Render thread/INFO]: [STDOUT]: Starting new video null
+[09:27:43] [Render thread/INFO]: Saving and pausing game...
+[09:27:43] [Render thread/INFO]: Saving chunks for level 'ServerLevel[mcpworld4906bb6a5b06]'/minecraft:overworld
+[09:27:44] [Render thread/INFO]: Saving chunks for level 'ServerLevel[mcpworld4906bb6a5b06]'/minecraft:the_nether
+[09:27:44] [Render thread/INFO]: Saving chunks for level 'ServerLevel[mcpworld4906bb6a5b06]'/minecraft:the_end
+[09:27:44] [Render thread/WARN]: Failed to load texture: minecraft:optifine/ctm/default/empty.png
+java.io.FileNotFoundException: minecraft:optifine/ctm/default/empty.png
+	at net.minecraft.resources.FallbackResourceManager.getResource(FallbackResourceManager.java:66) ~[offline-mcprec-6.13.jar:?]
+	at net.minecraft.resources.SimpleReloadableResourceManager.getResource(SimpleReloadableResourceManager.java:63) ~[offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.renderer.texture.SimpleTexture$TextureData.getTextureData(SimpleTexture.java:96) ~[offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.renderer.texture.SimpleTexture.getTextureData(SimpleTexture.java:72) ~[offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.renderer.texture.SimpleTexture.loadTexture(SimpleTexture.java:32) ~[offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.renderer.texture.DownloadingTexture.lambda$loadTexture$2(DownloadingTexture.java:95) ~[offline-mcprec-6.13.jar:?]
+	at net.minecraft.util.concurrent.ThreadTaskExecutor.run(ThreadTaskExecutor.java:150) [offline-mcprec-6.13.jar:?]
+	at net.minecraft.util.concurrent.RecursiveEventLoop.run(RecursiveEventLoop.java:22) [offline-mcprec-6.13.jar:?]
+	at net.minecraft.util.concurrent.ThreadTaskExecutor.driveOne(ThreadTaskExecutor.java:124) [offline-mcprec-6.13.jar:?]
+	at net.minecraft.util.concurrent.ThreadTaskExecutor.drainTasks(ThreadTaskExecutor.java:107) [offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.Minecraft.runGameLoop(Minecraft.java:966) [offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.Minecraft.run(Minecraft.java:614) [offline-mcprec-6.13.jar:?]
+	at net.minecraft.client.main.Main.main(Main.java:196) [offline-mcprec-6.13.jar:?]
+[09:27:44] [Render thread/INFO]: Loaded 0 advancements
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [Render thread/INFO]: [MineRLAgent0: Set the time to 13000]
+[09:27:45] [Render thread/INFO]: [CHAT] Set the time to 13000
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [Render thread/INFO]: [MineRLAgent0: Summoned new Zombie]
+[09:27:45] [Render thread/INFO]: [CHAT] Summoned new Zombie
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [Render thread/INFO]: [MineRLAgent0: Summoned new Zombie]
+[09:27:45] [Render thread/INFO]: [CHAT] Summoned new Zombie
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:45] [Render thread/INFO]: [MineRLAgent0: Summoned new Zombie]
+[09:27:45] [Render thread/INFO]: [CHAT] Summoned new Zombie
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:45] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:46] [Render thread/INFO]: [MineRLAgent0: Gamerule sendCommandFeedback is now set to: false]
+[09:27:46] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:46] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:46] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:46] [Render thread/INFO]: [MineRLAgent0: Replaced a slot on MineRLAgent0 with [Diamond Sword]]
+[09:27:46] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:46] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:46] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:46] [Render thread/INFO]: MineRLAgent0 has made the advancement [Cover Me With Diamonds]
+[09:27:46] [Render thread/INFO]: [MineRLAgent0: Replaced a slot on MineRLAgent0 with [Diamond Helmet]]
+[09:27:46] [Render thread/INFO]: [CHAT] MineRLAgent0 has made the advancement [Cover Me With Diamonds]
+[09:27:46] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:46] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:46] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:46] [Render thread/INFO]: [MineRLAgent0: Replaced a slot on MineRLAgent0 with [Diamond Chestplate]]
+[09:27:46] [Render thread/INFO]: Loaded 7 advancements
+[09:27:46] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:46] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:46] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:47] [Render thread/INFO]: [MineRLAgent0: Replaced a slot on MineRLAgent0 with [Diamond Leggings]]
+[09:27:47] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:47] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:47] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:47] [Render thread/INFO]: [MineRLAgent0: Replaced a slot on MineRLAgent0 with [Diamond Boots]]
+[09:27:47] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:47] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:47] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:47] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_rest
+[09:27:47] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.play_one_minute
+[09:27:47] [EnvServerSocketHandler/INFO]: [STDOUT]: custom.time_since_death
+[09:27:49] [EnvServerSocketHandler/INFO]: [STDOUT]: *** Stopping the replay, returning control to the inputs

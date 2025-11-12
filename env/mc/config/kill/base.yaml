@@ -18,8 +18,8 @@ camera_config:
   camera_mu: 20
   camera_quantization_scheme: "mu_law"
 
-origin_resolution: [1920, 1080]
-resize_resolution: [1920, 1080]
+origin_resolution: [1280, 720]
+resize_resolution: [1280, 720]
 
 need_crafting_table: False
 need_gui: False

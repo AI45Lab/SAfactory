@@ -1,16 +1,34 @@
 from typing import Tuple
 from pathlib import Path
 import yaml
+import sys
+
+# 添加 MineStudio 到路径（在导入之前）
+_current_file = Path(__file__).resolve()
+_mc_env_dir = _current_file.parent
+_minestudio_path = _mc_env_dir / "MineStudio"
+if _minestudio_path.exists() and str(_minestudio_path) not in sys.path:
+    sys.path.insert(0, str(_minestudio_path))
+
+# Gym compatibility: Make gymnasium available as 'gym'
+try:
+    import gymnasium
+    sys.modules['gym'] = gymnasium
+    if hasattr(gymnasium, 'spaces'):
+        sys.modules['gym.spaces'] = gymnasium.spaces
+except ImportError:
+    pass  # If gymnasium not available, try with gym
+
 from core.types.base import ResetOutput, StepOutput, RenderOutput, PromptOutput, TextContent, ImageContent, OpenAIMessage, MessageContent
 from core.env.base_env import BaseEnv
 from core.env.env_register import register_env
-from MineStudio.minestudio.simulator.entry import MinecraftSim
-from utils.action_converter import ActionFromLLMConverter
-from utils.sim_callbacks_loader import load_simulator_setup_from_yaml
-from utils.mc_prompt import gen_sys_prompt
+from minestudio.simulator.entry import MinecraftSim
+from env.mc.utils.action_converter import ActionFromLLMConverter
+from env.mc.utils.sim_callbacks_loader import load_simulator_setup_from_yaml
+from env.mc.utils.mc_prompt import gen_sys_prompt
 from rich import print, console
 
-from MineStudio.minestudio.simulator.callbacks import (
+from minestudio.simulator.callbacks import (
     SpeedTestCallback,
     RecordCallback,
     SummonMobsCallback,
@@ -31,28 +49,50 @@ class MCGym(BaseEnv):
         super().__init__(env_id, env_name)
         self.env_config = env_config
         self.instructions = ""  # 初始化 instructions
-        self.simulator: MinecraftSim = self.init_sim(env_config)
+        self.obs_size = (360, 640)  # 默认值 (height, width)，会在 init_simulator 中更新
+        self.simulator: MinecraftSim = self.init_simulator(env_config)
         self.init_fov()
         self.current_step = 0  # 跟踪当前步数
         self.last_obs = None  # 保存最后一次观察
+        # 初始化动作转换器
+        self.action_converter = ActionFromLLMConverter(
+            hfov_deg=self.current_hfov,
+            vfov_deg=self.current_vfov,
+            return_numpy=True,      # MinecraftSim 需要 numpy 数组格式
+            map_camera_to_11=True   # 将 21×21 camera bins 映射到 11×11（VPT 格式）
+        )
     
     def step(self, action: str) -> StepOutput:
-        result = self.simulator.step(action)
-        self.last_obs = result.obs  # 保存观察状态
-        self.current_step += 1  # 更新步数
+        # 转换字符串 action 为字典
+        if isinstance(action, str):
+            # 优先从 last_obs 获取实际图像形状，否则使用配置的 obs_size
+            if self.last_obs and 'image' in self.last_obs:
+                img = self.last_obs['image']
+                image_shape = img.shape[:2] if hasattr(img, 'shape') else self.obs_size
+            else:
+                image_shape = self.obs_size
+            action = self.action_converter.convert(action, image_shape)
+        
+        # 执行动作
+        obs, reward, terminated, truncated, info = self.simulator.step(action)
+        
+        # 更新状态
+        self.last_obs = obs
+        self.current_step += 1
+        
         return StepOutput(
-            observation=result.obs,
-            reward=result.reward,
-            terminated=result.terminated,
-            truncated=result.truncated,
-            info=result.info,
+            observation=obs,
+            reward=reward,
+            terminated=terminated,
+            truncated=truncated,
+            info=info,
         )
         
     def reset(self, seed: int | None = None) -> ResetOutput:
-        result = self.simulator.reset()
-        self.last_obs = result.obs  # 保存观察状态
-        self.current_step = 0  # 重置步数
-        return ResetOutput(observation=result.obs, info=result.info)
+        obs, info = self.simulator.reset()
+        self.last_obs = obs
+        self.current_step = 0
+        return ResetOutput(observation=obs, info=info)
     
     def close(self) -> None:
         self.simulator.close()
@@ -205,6 +245,9 @@ class MCGym(BaseEnv):
                     start_weather=fast_reset_weather
                 ))
                 # rich_console.log(f"[mc_simulator] Added FastResetCallback: biomes={fast_reset_biomes}, range={fast_reset_range}")
+            # 保存 obs_size 用于 FOV 计算和动作转换
+            self.obs_size = (obs_h, obs_w)  # (height, width)
+            
             simulator = MinecraftSim(
                 obs_size=(obs_w, obs_h),
                 preferred_spawn_biome=preferred_biome,
@@ -258,7 +301,8 @@ class MCGym(BaseEnv):
                 return vfov_deg
         # compute current FOVs for prompt/mapping
         self.current_hfov = self.hfov_deg
-        self.current_vfov = _derive_vfov_if_needed((720, 1280, 3), self.hfov_deg, self.vfov_deg)
+        # 使用实际的 obs_size 计算 VFOV
+        self.current_vfov = _derive_vfov_if_needed(self.obs_size, self.hfov_deg, self.vfov_deg)
         # compute half ranges for explicit guidance
         try:
             self.hfov_half = round((self.current_hfov or 70.0) * 0.5, 2)
