@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import json
 import os
 from typing import List, Dict, Tuple, Type
 from .agent.base_agent import APIAgent
@@ -85,54 +84,21 @@ class Interactor:
                 img_filename = f"env_{env_config.env_id}/step_{step_id:04d}.png"
                 render_output = env.render()
                 base64_str = render_output.image_base64
-                text_content = render_output.text_content
-                text_dict = render_output.text_dict
-                if base64_str:
-                    # 2. 解码Base64字符串为二进制数据
-                    # 注意：Base64字符串可能包含前缀（如 'data:image/png;base64,'），需先去除
-                    if 'base64,' in base64_str:
-                        base64_str = base64_str.split('base64,')[1]  # 提取纯Base64部分
-                    image_bytes = base64.b64decode(base64_str)
-                    img_filename = f"env_{env_config.env_id}/step_{step_id:04d}.png"
-                    save_path = os.path.join(self.visual_save_path, img_filename)
-                    save_dir = os.path.dirname(save_path)
-                    os.makedirs(save_dir, exist_ok=True)
+                if not base64_str:
+                    raise ValueError("RenderOutput中未包含有效的base64图片数据")
+                
+                # 2. 解码Base64字符串为二进制数据
+                # 注意：Base64字符串可能包含前缀（如 'data:image/png;base64,'），需先去除
+                if 'base64,' in base64_str:
+                    base64_str = base64_str.split('base64,')[1]  # 提取纯Base64部分
+                image_bytes = base64.b64decode(base64_str)
 
-                    with open(save_path, 'wb') as f:
-                        f.write(image_bytes)
+                save_path = os.path.join(self.visual_save_path, img_filename)
+                save_dir = os.path.dirname(save_path)
+                os.makedirs(save_dir, exist_ok=True)
 
-                if text_content:
-                    txt_filename = f"env_{env_config.env_id}.txt"
-                    save_path = os.path.join(self.visual_save_path, txt_filename)
-                    save_dir = os.path.dirname(save_path)
-                    os.makedirs(save_dir, exist_ok=True)
-                    with open(save_path, "a", encoding="utf-8") as file:
-                        file.write(f"step_{step_id:04d}: " + text_content + "\n")
-
-                if text_dict:
-                    # 保存字典数据为JSON文件，按环境ID区分，每个步骤追加更新
-                    json_filename = f"env_{env_config.env_id}.json"
-                    save_path = os.path.join(self.visual_save_path, json_filename)
-                    save_dir = os.path.dirname(save_path)
-                    os.makedirs(save_dir, exist_ok=True)
-                    
-                    # 读取已有数据（如果文件存在）
-                    existing_data = {}
-                    if os.path.exists(save_path):
-                        with open(save_path, 'r', encoding='utf-8') as f:
-                            try:
-                                existing_data = json.load(f)
-                            except json.JSONDecodeError:
-                                # 处理文件损坏情况，保留损坏文件并新建
-                                os.rename(save_path, f"{save_path}.corrupted")
-                                existing_data = {}
-                    
-                    # 将当前步骤的字典数据添加到现有数据中（以步骤ID为键）
-                    existing_data[f"step_{step_id:04d}"] = text_dict
-                    
-                    # 写入更新后的数据
-                    with open(save_path, 'w', encoding='utf-8') as f:
-                        json.dump(existing_data, f, ensure_ascii=False, indent=2)
+                with open(save_path, 'wb') as f:
+                    f.write(image_bytes)
 
                 # 记录交互步骤
                 await self.data_manager.record_step(
