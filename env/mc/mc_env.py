@@ -98,7 +98,7 @@ class MCGym(BaseEnv):
         self.simulator.close()
     
     def get_task_prompt(self) -> PromptOutput:
-        return super().get_task_prompt()
+        return self.build_prompt()
     
     def render(self) -> RenderOutput:
         """渲染当前环境状态，返回 POV 图像
@@ -331,10 +331,31 @@ class MCGym(BaseEnv):
             content=[TextContent(type="text", text=sys_prompt_text)]
         )
         
-        # 构建 user_message（暂时为空，可以根据需要添加）
+        # 构建 user_message，包含当前 POV 图像
+        user_content = []
+        
+        # 添加当前 POV 图像（如果有观察）
+        if self.last_obs is not None:
+            render_output = self.render()
+            # 确保 base64 图像使用正确的 data URL 格式
+            base64_str = render_output.image_base64
+            if not base64_str.startswith('data:'):
+                base64_str = f"data:image/png;base64,{base64_str}"
+            user_content.append(
+                ImageContent(
+                    type="image_url",
+                    image_url={"url": base64_str}
+                )
+            )
+        
+        # 添加提示文本
+        user_content.append(
+            TextContent(type="text", text="Based on the current view, what action should I take?")
+        )
+        
         user_message = OpenAIMessage(
             role="user",
-            content=[TextContent(type="text", text="")]
+            content=user_content
         )
         
         return PromptOutput(

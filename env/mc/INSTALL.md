@@ -72,7 +72,81 @@ print("✓ 安装成功！")
 
 ## ⚠️ 常见问题
 
-### 1. ModuleNotFoundError: No module named 'minecraft_data'
+### 0. xvfb-run 命令未找到错误
+
+**问题**：运行环境时报错：
+```
+xvfb-run: command not found
+```
+或者完整错误信息：
+```
+/fs-computility-new/nuclear/leishanzhe/repo/AIEvoBox/env/mc/MineStudio/minestudio/simulator/minerl/env/launchClient.sh: line 38: xvfb-run: command not found
+```
+
+**原因**：
+- 缺少 Xvfb (X Virtual Framebuffer)，这是在无显示器的服务器环境中运行 Minecraft 图形界面所必需的系统依赖
+
+**解决方案**：
+
+根据你的 Linux 发行版安装 xvfb：
+
+**Ubuntu/Debian 系统：**
+```bash
+sudo apt-get update
+sudo apt-get install -y xvfb
+```
+
+**CentOS/RHEL 系统：**
+```bash
+sudo yum install -y xorg-x11-server-Xvfb
+```
+
+**Fedora 系统：**
+```bash
+sudo dnf install -y xorg-x11-server-Xvfb
+```
+
+**验证安装：**
+```bash
+which xvfb-run
+# 应该输出: /usr/bin/xvfb-run
+```
+
+安装完成后重新运行你的脚本即可。
+
+### 1. 环境未注册错误
+
+**问题**：运行 `base_eval.py` 时报错：
+```
+程序运行失败：环境 'mc_gym' 未注册，请先使用 @register_env 装饰器注册
+```
+
+**原因**：
+- Python 装饰器 `@register_env` 只有在模块被导入时才会执行
+- `base_eval.py` 没有导入 `MCGym` 类，导致装饰器未执行，环境未注册
+
+**解决方案**：
+
+在 `AIEvoBox/examples/base_eval.py` 中添加导入（**已修复**）：
+
+```python
+from env.mc.mc_env import MCGym  # 导入 Minecraft 环境来注册
+```
+
+**验证**：
+```bash
+cd /fs-computility-new/nuclear/leishanzhe/repo/AIEvoBox
+bash examples/run_1_mc_envs.sh
+```
+
+运行后应该看到 `mc_gym` 在已注册环境列表中：
+```
+已注册的环境类型：['trading_gym', 'search', 'core_git_env', 'embodied_alfred', 'mc_gym']
+```
+
+---
+
+### 2. ModuleNotFoundError: No module named 'minecraft_data'
 
 **问题**：缺少 minecraft_data 模块
 
@@ -81,7 +155,7 @@ print("✓ 安装成功！")
 pip install minecraft-data
 ```
 
-### 2. gym 安装失败 (import gym 错误)
+### 3. gym 安装失败 (import gym 错误)
 
 **问题**：`ModuleNotFoundError: No module named 'gym'`
 
@@ -98,7 +172,7 @@ pip install gymnasium>=0.26.0 shimmy[gym-v21]>=0.2.1
 
 `mc_env.py` 中已自动处理兼容性，将 gymnasium 映射为 gym 模块。
 
-### 3. CUDA 运行时错误 (gpu_utils.py)
+### 4. CUDA 运行时错误 (gpu_utils.py)
 
 **问题**：`ImportError: cannot import name 'cuda' from 'cuda'`
 
@@ -131,7 +205,7 @@ python -c "from cuda import cuda, cudart; print('CUDA OK')"
 - ✓ 环境初始化成功 - 所有 Python 依赖已解决
 - ✗ 模拟器运行失败 - 需要解决 CUDA 环境问题
 
-### 4. Java JAXB 错误 (Minecraft 运行时)
+### 5. Java JAXB 错误 (Minecraft 运行时)
 
 **问题**：`java.lang.NoClassDefFoundError: javax/xml/bind/JAXBException`
 
@@ -169,7 +243,7 @@ export PATH=$JAVA_HOME/bin:$PATH
 # 添加 --add-modules java.xml.bind 参数
 ```
 
-### 5. 动作格式转换问题
+### 6. 动作格式转换问题
 
 **问题 A**：`TypeError: string indices must be integers` 在 `action["buttons"]`
 
@@ -211,7 +285,7 @@ else:
     action_dict = action
 ```
 
-### 6. MinecraftSim 返回值类型问题
+### 7. MinecraftSim 返回值类型问题
 
 **问题**：`AttributeError: 'tuple' object has no attribute 'obs'`
 
@@ -242,7 +316,7 @@ if isinstance(result, tuple):
         obs, reward, terminated, truncated, info = result
 ```
 
-### 7. Minecraft 运行时警告（可忽略）
+### 8. Minecraft 运行时警告（可忽略）
 
 以下错误和警告是**正常的**，不影响模拟器功能：
 
@@ -284,7 +358,7 @@ INFO - Minecraft process ready
 INFO - Logging output of Minecraft to ./logs/mc_...log
 ```
 
-### 8. cuda-python 安装失败
+### 9. cuda-python 安装失败
 
 **问题**：pip install cuda-python 失败
 
@@ -294,7 +368,7 @@ INFO - Logging output of Minecraft to ./logs/mc_...log
 pip install -r requirements.txt --ignore-installed cuda-python || true
 ```
 
-### 3. torch 版本冲突
+### 10. torch 版本冲突
 
 **问题**：PyTorch 版本不兼容
 
@@ -307,7 +381,7 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 pip install -r requirements.txt
 ```
 
-### 4. pyrender 安装失败
+### 11. pyrender 安装失败
 
 **问题**：pyrender==0.1.25 依赖复杂
 
