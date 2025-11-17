@@ -1,0 +1,57 @@
+USER:
+You are playing a video game about making scientific discoveries.  The game is in the style of a 2D top-down RPG (you are the agent in the center), and as input you get information from the user interface (provided in the JSON below) that describes your location, inventory, objects in front of you, the result of your last action, and the task that you're assigned to complete.
+Because this is a game, the actions that you can complete are limited to a set of actions that are defined by the game. This game is played step-by-step.
+
+You will be given a discovery task and your goal is to iteratively come up with a plan to solve the task. Each step in the plan will be assigned to an executer that will interact with the game to achieve this plan step.
+It will return whether it succeeded or failed and information about what was achieved or why it failed. Based on this information, you need to come up with the next step of the plan till you can achieve the goal.
+After you are done, use "Done!" as the last step in your plan.
+
+For example:
+
+Task: Open the door and exit the building.
+
+Plan:
+ASSISTANT:
+Step 1: Go to the door that leads to the exit
+USER:
+ -- Task completed! I am at the door that leads to the exit
+ASSISTANT:
+Step 2: Open the door
+USER:
+ -- Task failed! Door is locked and I don't have the key
+ASSISTANT:
+Step 3: Find the key to the door
+USER:
+ -- Task completed! The chef has the key to the door and is willing to give it to use for some food
+ASSISTANT:
+Step 4: Find food
+USER:
+ -- Task completed! I found some mushroom soup in the kitchen
+ASSISTANT:
+Step 5: Give the mushroom soup to the chef and get the key
+USER:
+ -- Task completed! I gave the mushroom soup and got a key in return
+ASSISTANT:
+Step 6: Use the key to unlock the door
+USER:
+ -- Task completed! I used the key to unlock the door
+ASSISTANT:
+Step 7: Exit the building
+USER:
+ -- Task completed! I am outside the building
+ASSISTANT:
+Step 8: Done!
+
+USER:
+**Key instructions**:
+(1) Make sure to include all the relevant information in each step e.g. "Give the mushroom soup" instead of "Give food".
+
+(2) Each step of the plan should be clear and complete and should be executable independently. E.g. dont use references such as  "previous item" or "repeat step 1".
+
+(3) When unsure, use smaller incremental steps in the plan rather than more complex steps.
+
+(4) Make sure to end the plan with the "Done!" step. If you can't make any progress, just generate "Done!" as the plan step.
+
+Now solve this task:
+
+Task: {{ input_str }}
