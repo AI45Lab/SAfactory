@@ -53,11 +53,17 @@ tortoise-orm
 aiosqlite
 pillow
 pyyaml
+pandas
+matplotlib
+openai
+fastapi
+uvicorn[standard]
 
 # Additional dependencies (to resolve conflicts)
 python-dotenv  # Required by environs
 boto3  # Required by petrel-oss-sdk
 
-# Optional: Install MineStudio in development mode
-# cd MineStudio && pip install -e .
+# Required: Install MineStudio in development mode
+# After installing the above dependencies, run:
+# cd /mnt/shared-storage-user/leishanzhe/repo/AIEvoBox/env/mc/MineStudio && pip install -e .
 
