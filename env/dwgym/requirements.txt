@@ -1,0 +1,7 @@
+# DiscoveryWorld Environment Requirements\
+pygame
+pathfinding
+psutil
+termcolor
+tiktoken
+matplotlib

@@ -1,0 +1,9 @@
+pygame
+pathfinding
+psutil
+openai
+numpy
+termcolor
+tiktoken
+matplotlib
+git+https://github.com/allenai/recoma.git@b262ab5476841551c5d6874e8ddecef78c71a072
