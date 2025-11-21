@@ -1,0 +1,53 @@
+include requirements.txt
+include README.md
+include LICENSE
+
+recursive-include discoveryworld/data *
+
+prune discoveryworld/assets/
+include discoveryworld/assets/spriteIndex.json
+
+include discoveryworld/assets/generated/flowerpot1_32.png
+include discoveryworld/assets/pixymoon/CuteRPG_Castle_New/32x32/CuteRPG_Castle_New.png
+include discoveryworld/assets/pixymoon/CuteRPG_Caves/32x32/CuteRPG_Caves.png
+include discoveryworld/assets/pixymoon/CuteRPG_Desert/32x32/CuteRPG_Desert_Inside.png
+include discoveryworld/assets/pixymoon/CuteRPG_Desert/32x32/CuteRPG_Desert_Outside_modified.png
+include discoveryworld/assets/pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy_01_04_greyscale.png
+include discoveryworld/assets/pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy_01_04.png
+include discoveryworld/assets/pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy06_04_greyscale.png
+include discoveryworld/assets/pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy06_04.png
+include discoveryworld/assets/pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy10_2_greyscale.png
+include discoveryworld/assets/pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy10_2.png
+include discoveryworld/assets/pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy11_01_greyscale.png
+include discoveryworld/assets/pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy11_01.png
+include discoveryworld/assets/pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy14_03_greyscale.png
+include discoveryworld/assets/pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy14_03.png
+include discoveryworld/assets/pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy16_03_greyscale.png
+include discoveryworld/assets/pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy16_03.png
+include discoveryworld/assets/pixymoon/CuteRPG_Forest/32x32/CuteRPG_Forest_modified2.png
+include discoveryworld/assets/pixymoon/CuteRPG_Houses/32x32/CuteRPG_Houses_A-modified1.png
+include discoveryworld/assets/pixymoon/CuteRPG_Houses/32x32/CuteRPG_Houses_C.png
+include discoveryworld/assets/pixymoon/CuteRPG_Interior/32x32/CuteRPG_Interior_custom.png
+include discoveryworld/assets/pixymoon/CuteRPG_Sprites/Characters/Character_009.png
+include discoveryworld/assets/pixymoon/CuteRPG_Sprites/Characters/Character_015.png
+include discoveryworld/assets/pixymoon/CuteRPG_Sprites/Characters/Character_016.png
+include discoveryworld/assets/pixymoon/CuteRPG_Sprites/Characters/Character_017.png
+include discoveryworld/assets/pixymoon/CuteRPG_Sprites/Characters/Character_018.png
+include discoveryworld/assets/pixymoon/CuteRPG_Sprites/Characters/Character_032.png
+include discoveryworld/assets/pixymoon/CuteRPG_Sprites/Characters/Character_035.png
+include discoveryworld/assets/pixymoon/CuteRPG_Village/32x32/CuteRPG_Village_House.png
+include discoveryworld/assets/pixymoon/CuteRPG_Village/32x32/CuteRPG_Village.png
+include discoveryworld/assets/placeholder/holes.png
+include discoveryworld/assets/placeholder/instruments1.png
+include discoveryworld/assets/placeholder/instruments2.png
+include discoveryworld/assets/placeholder/missing.png
+include discoveryworld/assets/placeholder/placeholder.png
+include discoveryworld/assets/placeholder/pot.png
+include discoveryworld/assets/placeholder/statue-01-04.png
+include discoveryworld/assets/placeholder/statue-06-04.png
+include discoveryworld/assets/placeholder/statue-10-2.png
+include discoveryworld/assets/placeholder/statue-11-01.png
+include discoveryworld/assets/placeholder/statue-14-03.png
+include discoveryworld/assets/placeholder/statue-16-03.png
+include discoveryworld/assets/placeholder/statue2.png
+include discoveryworld/assets/placeholder/ui.png

@@ -1,0 +1,1009 @@
+[
+    {
+        "sheetName": "house1",
+        "filename": "pixymoon/CuteRPG_Interior/32x32/CuteRPG_Interior_custom.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "wall_tl":  { "baseTile": [3, 0],  "size": [1, 1] },
+                "wall_tr":  { "baseTile": [4, 0],  "size": [1, 1] },
+                "wall_bl":  { "baseTile": [3, 1],  "size": [1, 1] },
+                "wall_br":  { "baseTile": [4, 1],  "size": [1, 1] },
+                "wall_t":   { "baseTile": [1, 4],  "size": [1, 1] },
+                "wall_b":   { "baseTile": [1, 1],  "size": [1, 1] },
+                "wall_l":   { "baseTile": [2, 3],  "size": [1, 1] },
+                "wall_r":   { "baseTile": [0, 3],  "size": [1, 1] },
+
+                "wall_horiz":           { "baseTile": [1, 2],  "size": [1, 1] },
+                "wall_horiz_door_l":    { "baseTile": [4, 2],  "size": [1, 1] },
+                "wall_horiz_door_r":    { "baseTile": [3, 2],  "size": [1, 1] },
+
+                "floor":      { "baseTile": [3, 3],  "size": [1, 1] },
+
+                "table":      { "baseTile": [0, 5],  "size": [1, 1] },
+                "chair_l":    { "baseTile": [5, 5],  "size": [1, 1] },
+                "chair_r":    { "baseTile": [4, 5],  "size": [1, 1] },
+                "chair_u":    { "baseTile": [5, 6],  "size": [1, 1] },
+                "chair_d":    { "baseTile": [4, 6],  "size": [1, 1] },
+
+                "chair_u_back": { "baseTile": [5, 7],  "size": [1, 1] },
+
+                "stove_off":    { "baseTile": [2, 12],  "size": [1, 1] },
+                "stove_on":     { "baseTile": [0, 12],  "size": [1, 1] },
+                "stove_open":   { "baseTile": [1, 12],  "size": [1, 1] },
+                "stove_on_open":{ "baseTile": [0, 13],  "size": [1, 1] },
+
+                "sink_off":     { "baseTile": [1, 14],  "size": [1, 1] },
+                "sink_on":      { "baseTile": [1, 15],  "size": [1, 1] },
+
+                "fridge_closed":   { "baseTile": [4, 12],  "size": [1, 2] },
+                "fridge_open":     { "baseTile": [5, 12],  "size": [1, 2] },
+
+                "bed_ud":          { "baseTile": [0, 9],  "size": [1, 2] },
+                "bed_lr":          { "baseTile": [2, 11],  "size": [2, 1] },
+
+                "table_bedside":   { "baseTile": [4, 11],  "size": [1, 1] },
+
+                "coin": { "baseTile": [6, 5],  "size": [1, 1] },
+
+                "test1": { "baseTile": [4, 4],  "size": [1, 1] },
+
+                "bookcase": { "baseTile": [13, 12],  "size": [1, 2] }
+            },
+        "composites":
+            {
+                "wall_tl": {"wall_horiz": [0, 0], "wall_tl": [0, 0]},
+                "wall_bl": {"wall_horiz": [0, 0], "wall_bl": [0, 0]},
+
+                "wall1": {"wall_horiz": [0, 1], "wall_b": [0, 0]},
+                "wall2": {"wall_horiz": [0, 1], "wall_b": [0, 0]}
+            }
+    },
+    {
+        "sheetName": "house2",
+        "filename": "pixymoon/CuteRPG_Houses/32x32/CuteRPG_Houses_A-modified1.png",
+        "tileSize": [32, 32],
+        "offset": [0, 0],
+        "sprites":
+            {
+                "wall_tl":  { "baseTile": [0, 2],  "size": [1, 1] },
+                "wall_tr":  { "baseTile": [4, 2],  "size": [1, 1] },
+                "wall_bl":  { "baseTile": [0, 5],  "size": [1, 1] },
+                "wall_br":  { "baseTile": [4, 5],  "size": [1, 1] },
+                "wall_t":   { "baseTile": [1, 2],  "size": [1, 1] },
+                "wall_b":   { "baseTile": [1, 2],  "size": [1, 1] },
+                "wall_l":   { "baseTile": [0, 3],  "size": [1, 1] },
+                "wall_r":   { "baseTile": [4, 3],  "size": [1, 1] },
+
+                "wall_int_lrb":   { "baseTile": [9, 2],  "size": [1, 1] },
+                "wall_int_lrt":   { "baseTile": [9, 10],  "size": [1, 1] },
+                "wall_int_tbr":   { "baseTile": [5, 8],  "size": [1, 1] },
+                "wall_int_tbl":   { "baseTile": [11, 8],  "size": [1, 1] },
+                "wall_int_4way":  { "baseTile": [9, 8],  "size": [1, 1] },
+                "wall_int_tb":  { "baseTile": [9, 7],  "size": [1, 1] },
+                "wall_int_lr":  { "baseTile": [10, 8],  "size": [1, 1] },
+                "wall_int_tb_opening_t":  { "baseTile": [9, 4],  "size": [1, 1] },
+                "wall_int_tb_opening_b":  { "baseTile": [9, 6],  "size": [1, 1] },
+                "wall_int_lr_opening_l":  { "baseTile": [8, 8],  "size": [1, 1] },
+                "wall_int_lr_opening_r":  { "baseTile": [6, 8],  "size": [1, 1] },
+
+                "floor":    { "baseTile": [2, 3],  "size": [1, 1] },
+
+                "door_closed":     { "baseTile": [0, 1],  "size": [1, 1] },
+                "door_open":       { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+
+            }
+    },
+    {
+        "sheetName": "desert1",
+        "filename": "pixymoon/CuteRPG_Desert/32x32/CuteRPG_Desert_Outside_modified.png",
+        "tileSize": [32, 32],
+        "sprites":
+        {
+            "sand":         { "baseTile": [1, 0],  "size": [1, 1] },
+
+            "rock1":         { "baseTile": [10, 7],  "size": [1, 1] },
+            "rock2":         { "baseTile": [10, 8],  "size": [1, 1] },
+            "rock3":         { "baseTile": [10, 9],  "size": [1, 1] },
+            "rock4":         { "baseTile": [10, 10],  "size": [1, 1] },
+            "rock5":         { "baseTile": [10, 11],  "size": [1, 1] },
+
+            "cactus_top":   { "baseTile": [7, 0],  "size": [1, 1] },
+            "cactus_bottom":{ "baseTile": [7, 1],  "size": [1, 1] },
+
+            "cactus1_top_left":   { "baseTile": [8, 0],  "size": [1, 1] },
+            "cactus1_bottom_left":{ "baseTile": [8, 1],  "size": [1, 1] },
+            "cactus1_top_right":   { "baseTile": [9, 0],  "size": [1, 1] },
+            "cactus1_bottom_right":{ "baseTile": [9, 1],  "size": [1, 1] },
+
+            "cactus4_top":   { "baseTile": [10, 0],  "size": [1, 1] },
+            "cactus4_bottom":{ "baseTile": [10, 1],  "size": [1, 1] },
+
+            "path_c":       { "baseTile": [3, 3],  "size": [1, 1] },
+            "path_l":       { "baseTile": [2, 3],  "size": [1, 1] },
+            "path_r":       { "baseTile": [4, 3],  "size": [1, 1] },
+            "path_t":       { "baseTile": [3, 2],  "size": [1, 1] },
+            "path_b":       { "baseTile": [3, 4],  "size": [1, 1] },
+
+            "path_tl":      { "baseTile": [2, 2],  "size": [1, 1] },
+            "path_tr":      { "baseTile": [4, 2],  "size": [1, 1] },
+            "path_bl":      { "baseTile": [2, 4],  "size": [1, 1] },
+            "path_br":      { "baseTile": [4, 4],  "size": [1, 1] },
+
+            "path_lr":      { "baseTile": [0, 4],  "size": [1, 1] },
+            "path_tb":      { "baseTile": [1, 4],  "size": [1, 1] },
+
+            "path_1way_r":  { "baseTile": [0, 5],  "size": [1, 1] },
+            "path_1way_b":  { "baseTile": [1, 5],  "size": [1, 1] },
+            "path_1way_l":  { "baseTile": [2, 5],  "size": [1, 1] },
+            "path_1way_t":  { "baseTile": [3, 5],  "size": [1, 1] },
+
+            "path_single":  { "baseTile": [2, 12],  "size": [1, 1] }
+
+        },
+        "composites": {}
+    },
+    {
+        "sheetName": "desert1",
+        "filename": "pixymoon/CuteRPG_Desert/32x32/CuteRPG_Desert_Inside.png",
+        "tileSize": [32, 32],
+        "sprites":
+        {
+
+            "sand_bump":    { "baseTile": [1, 2],  "size": [1, 1] }
+        },
+        "composites": {}
+    },
+    {
+        "sheetName": "launchSite2",
+        "filename": "pixymoon/CuteRPG_Village/32x32/CuteRPG_Village_House.png",
+        "tileSize": [32, 32],
+        "sprites":
+        {
+
+            "pad_bl":    { "baseTile": [35, 18],  "size": [1, 1] },
+            "pad_bc":    { "baseTile": [36, 18],  "size": [1, 1] },
+            "pad_br":    { "baseTile": [39, 18],  "size": [1, 1] },
+            "pad_tl":    { "baseTile": [35, 14],  "size": [1, 1] },
+            "pad_tc":    { "baseTile": [36, 14],  "size": [1, 1] },
+            "pad_tr":    { "baseTile": [39, 14],  "size": [1, 1] },
+            "pad_lc":    { "baseTile": [35, 16],  "size": [1, 1] },
+            "pad_cc":    { "baseTile": [37, 16],  "size": [1, 1] },
+            "pad_rc":    { "baseTile": [39, 16],  "size": [1, 1] }
+        },
+        "composites": {}
+    },
+    {
+        "sheetName": "launchSite",
+        "filename": "pixymoon/CuteRPG_Houses/32x32/CuteRPG_Houses_C.png",
+        "tileSize": [32, 32],
+        "sprites":
+        {
+
+            "pad_bl":    { "baseTile": [12, 28],  "size": [1, 1] },
+            "pad_bc":    { "baseTile": [13, 28],  "size": [1, 1] },
+            "pad_br":    { "baseTile": [15, 28],  "size": [1, 1] },
+            "pad_tl":    { "baseTile": [12, 25],  "size": [1, 1] },
+            "pad_tc":    { "baseTile": [13, 25],  "size": [1, 1] },
+            "pad_tr":    { "baseTile": [15, 25],  "size": [1, 1] },
+            "pad_lc":    { "baseTile": [12, 26],  "size": [1, 1] },
+            "pad_cc":    { "baseTile": [13, 26],  "size": [1, 1] },
+            "pad_rc":    { "baseTile": [15, 26],  "size": [1, 1] }
+        },
+        "composites": {}
+    },
+    {
+        "sheetName": "launchSite",
+        "filename": "placeholder/instruments2.png",
+        "tileSize": [32, 32],
+        "sprites":
+        {
+
+            "rocket_top":           { "baseTile": [1, 2],  "size": [1, 1] },
+            "rocket_bottom":        { "baseTile": [1, 3],  "size": [1, 1] },
+            "rocket_top_fire":      { "baseTile": [0, 2],  "size": [1, 1] },
+            "rocket_bottom_fire":   { "baseTile": [0, 3],  "size": [1, 1] },
+            "rocket_fire":          { "baseTile": [0, 4],  "size": [1, 1] },
+
+            "rocket_flip_top":           { "baseTile": [1, 2],  "size": [1, 1], "angle": 180 },
+            "rocket_flip_bottom":        { "baseTile": [1, 3],  "size": [1, 1], "angle": 180 },
+            "rocket_flip_top_fire":      { "baseTile": [0, 2],  "size": [1, 1], "angle": 180 },
+            "rocket_flip_bottom_fire":   { "baseTile": [0, 3],  "size": [1, 1], "angle": 180 },
+            "rocket_flip_fire":          { "baseTile": [0, 4],  "size": [1, 1], "angle": 180 },
+
+            "monitor_tl":         { "baseTile": [2, 2],  "size": [1, 1] },
+            "monitor_t":          { "baseTile": [3, 2],  "size": [1, 1] },
+            "monitor_tr":         { "baseTile": [4, 2],  "size": [1, 1] },
+            "monitor_bl":         { "baseTile": [2, 3],  "size": [1, 1] },
+            "monitor_b":          { "baseTile": [3, 3],  "size": [1, 1] },
+            "monitor_br":         { "baseTile": [4, 3],  "size": [1, 1] },
+
+            "fuel_tank_A_t":      { "baseTile": [5, 2],  "size": [1, 1] },
+            "fuel_tank_A_c":      { "baseTile": [5, 3],  "size": [1, 1] },
+            "fuel_tank_A_b":      { "baseTile": [5, 4],  "size": [1, 1] },
+
+            "fuel_tank_B_t":      { "baseTile": [6, 2],  "size": [1, 1] },
+            "fuel_tank_B_c":      { "baseTile": [6, 3],  "size": [1, 1] },
+            "fuel_tank_B_b":      { "baseTile": [6, 4],  "size": [1, 1] },
+
+            "fuel_tank_C_t":      { "baseTile": [7, 2],  "size": [1, 1] },
+            "fuel_tank_C_c":      { "baseTile": [7, 3],  "size": [1, 1] },
+            "fuel_tank_C_b":      { "baseTile": [7, 4],  "size": [1, 1] }
+
+
+        },
+        "composites": {}
+    },
+    {
+        "sheetName": "forest1",
+        "filename": "pixymoon/CuteRPG_Forest/32x32/CuteRPG_Forest_modified2.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "grass":    { "baseTile": [1, 2],  "size": [1, 1] },
+
+                "plant1":   { "baseTile": [7, 2],  "size": [1, 1] },
+                "plant2":   { "baseTile": [7, 5],  "size": [1, 1] },
+                "plant3":   { "baseTile": [7, 9],  "size": [1, 1] },
+                "plant4":   { "baseTile": [7, 10],  "size": [1, 1] },
+                "plant1b":   { "baseTile": [8, 2],  "size": [1, 1] },
+                "plant2b":   { "baseTile": [8, 5],  "size": [1, 1] },
+                "plant3b":   { "baseTile": [8, 9],  "size": [1, 1] },
+                "plant4b":   { "baseTile": [8, 10],  "size": [1, 1] },
+                "plant1c":   { "baseTile": [9, 2],  "size": [1, 1] },
+                "plant2c":   { "baseTile": [9, 5],  "size": [1, 1] },
+                "plant3c":   { "baseTile": [9, 9],  "size": [1, 1] },
+                "plant4c":   { "baseTile": [9, 10],  "size": [1, 1] },
+
+                "tree_big":         { "baseTile": [16, 2],  "size": [1, 2] },
+                "tree_big_trunk":   { "baseTile": [16, 3],  "size": [1, 1] },
+                "tree_big_leaves":  { "baseTile": [16, 2],  "size": [1, 1] },
+
+                "mushroom_yellow":  { "baseTile": [5, 8],  "size": [1, 1] },
+                "mushroom_pink":    { "baseTile": [7, 8],  "size": [1, 1] },
+                "mushroom_red":     { "baseTile": [9, 8],  "size": [1, 1] },
+                "mushroom_green":   { "baseTile": [11, 8],  "size": [1, 1] },
+
+                "path_c":       { "baseTile": [1, 14],  "size": [1, 1] },
+                "path_l":       { "baseTile": [0, 14],  "size": [1, 1] },
+                "path_r":       { "baseTile": [2, 14],  "size": [1, 1] },
+                "path_t":       { "baseTile": [1, 13],  "size": [1, 1] },
+                "path_b":       { "baseTile": [1, 15],  "size": [1, 1] },
+
+                "path_tl":      { "baseTile": [0, 13],  "size": [1, 1] },
+                "path_tr":      { "baseTile": [2, 13],  "size": [1, 1] },
+                "path_bl":      { "baseTile": [0, 15],  "size": [1, 1] },
+                "path_br":      { "baseTile": [2, 15],  "size": [1, 1] },
+
+                "path_lr":      { "baseTile": [0, 17],  "size": [1, 1] },
+                "path_tb":      { "baseTile": [1, 17],  "size": [1, 1] },
+
+                "path_1way_r":  { "baseTile": [0, 18],  "size": [1, 1] },
+                "path_1way_b":  { "baseTile": [1, 18],  "size": [1, 1] },
+                "path_1way_l":  { "baseTile": [2, 18],  "size": [1, 1] },
+                "path_1way_t":  { "baseTile": [3, 18],  "size": [1, 1] },
+
+                "path_single":  { "baseTile": [2, 12],  "size": [1, 1] },
+
+                "soil_c":       { "baseTile": [1, 22],  "size": [1, 1] },
+                "soil_l":       { "baseTile": [0, 22],  "size": [1, 1] },
+                "soil_r":       { "baseTile": [2, 22],  "size": [1, 1] },
+                "soil_t":       { "baseTile": [1, 21],  "size": [1, 1] },
+                "soil_b":       { "baseTile": [1, 23],  "size": [1, 1] },
+
+                "soil_tl":      { "baseTile": [0, 21],  "size": [1, 1] },
+                "soil_tr":      { "baseTile": [2, 21],  "size": [1, 1] },
+                "soil_bl":      { "baseTile": [0, 23],  "size": [1, 1] },
+                "soil_br":      { "baseTile": [2, 23],  "size": [1, 1] },
+
+                "soil_single":  { "baseTile": [2, 20],  "size": [1, 1] }
+
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "village1",
+        "filename": "pixymoon/CuteRPG_Village/32x32/CuteRPG_Village.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "sign_nowriting":    { "baseTile": [10, 4],  "size": [1, 1] },
+                "sign_writing":      { "baseTile": [11, 4],  "size": [1, 1] },
+                "sign_writing1":     { "baseTile": [13, 2],  "size": [1, 1] },
+                "sign_writing2":     { "baseTile": [13, 3],  "size": [1, 1] },
+
+                "sign_village":      { "baseTile": [5, 4],  "size": [3, 2] },
+                "sign_village_bl":   { "baseTile": [5, 5],  "size": [1, 1] },
+                "sign_village_mid":  { "baseTile": [6, 5],  "size": [1, 1] },
+                "sign_village_br":   { "baseTile": [7, 5],  "size": [1, 1] },
+                "sign_village_top":  { "baseTile": [5, 4],  "size": [3, 1] },
+
+                "fence_l":      { "baseTile": [5, 14],  "size": [1, 1] },
+                "fence_r":       { "baseTile": [7, 14],  "size": [1, 1] },
+                "fence_t":       { "baseTile": [6, 13],  "size": [1, 1] },
+                "fence_b":       { "baseTile": [6, 15],  "size": [1, 1] },
+
+                "fence_tl":      { "baseTile": [5, 13],  "size": [1, 1] },
+                "fence_tr":      { "baseTile": [7, 13],  "size": [1, 1] },
+                "fence_bl":      { "baseTile": [5, 15],  "size": [1, 1] },
+                "fence_br":      { "baseTile": [7, 15],  "size": [1, 1] },
+
+                "fence_1way_r":  { "baseTile": [9, 14],  "size": [1, 1] },
+                "fence_1way_b":  { "baseTile": [8, 15],  "size": [1, 1] },
+                "fence_1way_l":  { "baseTile": [8, 14],  "size": [1, 1] },
+                "fence_1way_t":  { "baseTile": [9, 15],  "size": [1, 1] },
+
+                "fence_single":  { "baseTile": [7, 12],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "cave1",
+        "filename": "pixymoon/CuteRPG_Caves/32x32/CuteRPG_Caves.png",
+        "tileSize": [32, 32],
+        "offset": [0, 0],
+        "sprites":
+            {
+                "wall_tl":  { "baseTile": [6, 9],  "size": [1, 1] },
+                "wall_tr":  { "baseTile": [8, 9],  "size": [1, 1] },
+                "wall_bl":  { "baseTile": [6, 11],  "size": [1, 1] },
+                "wall_br":  { "baseTile": [8, 11],  "size": [1, 1] },
+                "wall_t":   { "baseTile": [7, 11],  "size": [1, 1] },
+                "wall_b":   { "baseTile": [7, 9],  "size": [1, 1] },
+                "wall_l":   { "baseTile": [6, 10],  "size": [1, 1] },
+                "wall_r":   { "baseTile": [8, 10],  "size": [1, 1] },
+
+                "rock_floor":    { "baseTile": [4, 1],  "size": [1, 1] },
+
+                "rock_glowing":  { "baseTile": [23, 0],  "size": [1, 1] },
+                "rock_luminous":  { "baseTile": [21, 0],  "size": [1, 1] },
+                "rock_small":    { "baseTile": [23, 3],  "size": [1, 1] },
+                "rock_medium":   { "baseTile": [27, 3],  "size": [1, 1] },
+                "rock_large":    { "baseTile": [29, 3],  "size": [1, 1] }
+
+            },
+        "composites":
+            {
+
+            }
+    },
+    {
+        "sheetName": "launchSite",
+        "filename": "pixymoon/CuteRPG_Castle_New/32x32/CuteRPG_Castle_New.png",
+        "tileSize": [32, 32],
+        "offset": [0, 0],
+        "sprites":
+            {
+                "wall_tl":  { "baseTile": [1, 7],  "size": [1, 1] },
+                "wall_tr":  { "baseTile": [1, 7],  "size": [1, 1] },
+                "wall_bl":  { "baseTile": [0, 13],  "size": [1, 1] },
+                "wall_br":  { "baseTile": [2, 13],  "size": [1, 1] },
+                "wall_t":   { "baseTile": [1, 7],  "size": [1, 1] },
+                "wall_c":   { "baseTile": [1, 12],  "size": [1, 1] },
+                "wall_b":   { "baseTile": [1, 13],  "size": [1, 1] },
+                "wall_l":   { "baseTile": [0, 12],  "size": [1, 1] },
+                "wall_r":   { "baseTile": [2, 12],  "size": [1, 1] },
+
+                "load_cell_tl":  { "baseTile": [0, 14],  "size": [1, 1] },
+                "load_cell_t":   { "baseTile": [1, 14],  "size": [1, 1] },
+                "load_cell_tr":  { "baseTile": [2, 14],  "size": [1, 1] },
+                "load_cell_bl":   { "baseTile": [0, 15],  "size": [1, 1] },
+                "load_cell_b":   { "baseTile": [1, 15],  "size": [1, 1] },
+                "load_cell_br":   { "baseTile": [2, 15],  "size": [1, 1] },
+
+                "topwall_0,5":   { "baseTile": [0, 5],  "size": [1, 1] },
+                "topwall_1,5":   { "baseTile": [1, 5],  "size": [1, 1] },
+                "topwall_2,5":   { "baseTile": [2, 5],  "size": [1, 1] },
+                "topwall_0,6":   { "baseTile": [0, 6],  "size": [1, 1] },
+                "topwall_1,6":   { "baseTile": [1, 6],  "size": [1, 1] },
+                "topwall_2,6":   { "baseTile": [2, 6],  "size": [1, 1] },
+                "topwall_0,7":   { "baseTile": [0, 7],  "size": [1, 1] },
+                "topwall_1,7":   { "baseTile": [1, 7],  "size": [1, 1] },
+                "topwall_2,7":   { "baseTile": [2, 7],  "size": [1, 1] }
+
+            },
+        "composites":
+            {
+
+            }
+    },
+    {
+        "sheetName": "placeholder",
+        "filename": "placeholder/placeholder.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "1":    { "baseTile": [0, 0],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "instruments",
+        "filename": "placeholder/instruments1.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "petri_dish_empty":     { "baseTile": [3, 0],  "size": [1, 1] },
+                "petri_dish_full":      { "baseTile": [3, 1],  "size": [1, 1] },
+                "sample":               { "baseTile": [3, 2],  "size": [1, 1] },
+                "microscope":           { "baseTile": [4, 0],  "size": [1, 1] },
+                "spectrometer":         { "baseTile": [4, 1],  "size": [1, 1] },
+                "thermometer":          { "baseTile": [4, 2],  "size": [1, 1] },
+                "ph_meter":             { "baseTile": [4, 3],  "size": [1, 1] },
+                "sampler":              { "baseTile": [5, 0],  "size": [1, 1] },
+                "radiation_meter":      { "baseTile": [5, 1],  "size": [1, 1] },
+                "magnetometer":         { "baseTile": [5, 2],  "size": [1, 1] },
+                "co2_meter":            { "baseTile": [5, 3],  "size": [1, 1] },
+                "centrifuge":           { "baseTile": [6, 0],  "size": [1, 1] },
+                "weather_meter":        { "baseTile": [6, 1],  "size": [1, 1] },
+                "npk_fieldtest":        { "baseTile": [6, 2],  "size": [1, 1] },
+                "npk_labtest":          { "baseTile": [6, 3],  "size": [1, 1] },
+                "radioactive_symbol":   { "baseTile": [1, 4],  "size": [1, 1] },
+
+                "fertilizer_pellet":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "fertilizer_bag":       { "baseTile": [3, 3],  "size": [1, 1] },
+
+                "chemical_dispenser":   { "baseTile": [3, 4],  "size": [1, 1] },
+                "bottle_cleaner":       { "baseTile": [3, 5],  "size": [1, 1] },
+                "key_rusty":            { "baseTile": [2, 4],  "size": [1, 1] },
+                "key":                  { "baseTile": [2, 5],  "size": [1, 1] },
+                "key_white":            { "baseTile": [2, 5],  "size": [1, 1], "color": "white" },
+                "key_red":              { "baseTile": [2, 5],  "size": [1, 1], "color": "red" },
+                "key_green":            { "baseTile": [2, 5],  "size": [1, 1], "color": "green" },
+                "key_blue":             { "baseTile": [2, 5],  "size": [1, 1], "color": "blue" },
+                "key_yellow":           { "baseTile": [2, 5],  "size": [1, 1], "color": "yellow" },
+                "key_pink":             { "baseTile": [2, 5],  "size": [1, 1], "color": "deeppink" },
+                "key_orange":           { "baseTile": [2, 5],  "size": [1, 1], "color": "orange" },
+
+                "quantum_crystal":      { "baseTile": [6, 5],  "size": [1, 1] },
+                "crystal_reactor_off":  { "baseTile": [6, 4],  "size": [1, 1] },
+                "crystal_reactor_on":   { "baseTile": [7, 4],  "size": [1, 1] },
+                "generator_left":       { "baseTile": [5, 7],  "size": [1, 1] },
+                "generator_right":      { "baseTile": [7, 7],  "size": [1, 1] },
+                "generator_center_off": { "baseTile": [0, 7],  "size": [1, 1] },
+                "generator_center_25":  { "baseTile": [1, 7],  "size": [1, 1] },
+                "generator_center_50":  { "baseTile": [2, 7],  "size": [1, 1] },
+                "generator_center_75":  { "baseTile": [3, 7],  "size": [1, 1] },
+                "generator_center_on":  { "baseTile": [6, 7],  "size": [1, 1] },
+                "densitometer":         { "baseTile": [4, 6],  "size": [1, 1] },
+
+                "soil_controller":      { "baseTile": [4, 1],  "size": [1, 1] },
+                "radiocarbon_meter":    { "baseTile": [4, 4],  "size": [1, 1] },
+                "generic_meter":        { "baseTile": [4, 5],  "size": [1, 1] },
+                "flag":                 { "baseTile": [3, 6],  "size": [1, 1] },
+
+                "stone_hammer":         { "baseTile": [5, 4],  "size": [1, 1] },
+                "bronze_chisel":         { "baseTile": [5, 5],  "size": [1, 1] },
+                "iron_tongs":           { "baseTile": [5, 6],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "instruments2",
+        "filename": "placeholder/instruments2.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "flag_pole_top":     { "baseTile": [0, 0],  "size": [1, 1] },
+                "flag_pole_middle":  { "baseTile": [3, 0],  "size": [1, 1] },
+                "flag_pole_bottom":  { "baseTile": [1, 0],  "size": [1, 1] },
+                "flag_top":          { "baseTile": [2, 0],  "size": [1, 1] },
+                "flag_bottom":       { "baseTile": [2, 1],  "size": [1, 1] },
+
+                "floppy_disk":       { "baseTile": [4, 0],  "size": [1, 1] },
+                "box":               { "baseTile": [5, 0],  "size": [1, 1] },
+
+                "stick":             { "baseTile": [6, 0],  "size": [1, 1] },
+                "measuring_tape":    { "baseTile": [7, 0],  "size": [1, 1] },
+                "speed_square":      { "baseTile": [7, 1],  "size": [1, 1] },
+                "pendulum":          { "baseTile": [7, 5],  "size": [1, 2] },
+                "pendulum_top":      { "baseTile": [7, 5],  "size": [1, 1] },
+                "pendulum_bottom":   { "baseTile": [7, 6],  "size": [1, 1] },
+
+                "rocketry_book":        { "baseTile": [2, 4],  "size": [1, 1] },
+                "load_cell_interface":  { "baseTile": [1, 4],  "size": [1, 1] },
+
+                "mushroom_white":  { "baseTile": [4, 1],  "size": [1, 1], "color": "white" },
+                "mushroom_red":    { "baseTile": [4, 1],  "size": [1, 1], "color": "red" },
+                "mushroom_green":  { "baseTile": [4, 1],  "size": [1, 1], "color": "green" },
+                "mushroom_blue":   { "baseTile": [4, 1],  "size": [1, 1], "color": "blue" },
+                "mushroom_yellow": { "baseTile": [4, 1],  "size": [1, 1], "color": "yellow" },
+                "mushroom_pink":  { "baseTile": [4, 1],  "size": [1, 1], "color": "deeppink" },
+                "mushroom_orange": { "baseTile": [4, 1],  "size": [1, 1], "color": "orange" },
+
+                "flower_white":  { "baseTile": [5, 1],  "size": [1, 1], "color": "white" },
+                "flower_red":    { "baseTile": [5, 1],  "size": [1, 1], "color": "red" },
+                "flower_green":  { "baseTile": [5, 1],  "size": [1, 1], "color": "green" },
+                "flower_blue":   { "baseTile": [5, 1],  "size": [1, 1], "color": "blue" },
+                "flower_yellow": { "baseTile": [5, 1],  "size": [1, 1], "color": "yellow" },
+                "flower_pink":  { "baseTile": [5, 1],  "size": [1, 1], "color": "deeppink" },
+                "flower_orange": { "baseTile": [5, 1],  "size": [1, 1], "color": "orange" }
+
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "statue",
+        "filename": "placeholder/statue2.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "statue1":    { "baseTile": [0, 0],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "statue-01-04",
+        "filename": "placeholder/statue-01-04.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "statue1":    { "baseTile": [0, 0],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "statue-06-04",
+        "filename": "placeholder/statue-06-04.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "statue1":    { "baseTile": [0, 0],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "statue-10-2",
+        "filename": "placeholder/statue-10-2.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "statue1":    { "baseTile": [0, 0],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "statue-11-01",
+        "filename": "placeholder/statue-11-01.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "statue1":    { "baseTile": [0, 0],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "statue-14-03",
+        "filename": "placeholder/statue-14-03.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "statue1":    { "baseTile": [0, 0],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "statue-16-03",
+        "filename": "placeholder/statue-16-03.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "statue1":    { "baseTile": [0, 0],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "placeholder",
+        "filename": "placeholder/pot.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "pot_empty":    { "baseTile": [0, 0],  "size": [1, 1] },
+                "pot_full1":    { "baseTile": [0, 1],  "size": [1, 1] },
+                "pot_full2":    { "baseTile": [0, 2],  "size": [1, 1] },
+                "pot_full3":    { "baseTile": [0, 3],  "size": [1, 1] },
+                "paint_white":  { "baseTile": [1, 3],  "size": [1, 1], "color": "white" },
+                "paint_red":    { "baseTile": [1, 3],  "size": [1, 1], "color": "red" },
+                "paint_green":  { "baseTile": [1, 3],  "size": [1, 1], "color": "green" },
+                "paint_blue":   { "baseTile": [1, 3],  "size": [1, 1], "color": "blue" },
+                "paint_yellow": { "baseTile": [1, 3],  "size": [1, 1], "color": "yellow" },
+                "paint_pink":   { "baseTile": [1, 3],  "size": [1, 1], "color": "deeppink" },
+                "paint_orange": { "baseTile": [1, 3],  "size": [1, 1], "color": "orange" },
+                "sick":         { "baseTile": [1, 0],  "size": [1, 1] },
+                "shovel":       { "baseTile": [1, 1],  "size": [1, 1] },
+                "seed":         { "baseTile": [1, 2],  "size": [1, 1] },
+                "jar_empty":    { "baseTile": [2, 0],  "size": [1, 1] },
+                "jar_full1":    { "baseTile": [2, 1],  "size": [1, 1] },
+                "jar_full2":    { "baseTile": [2, 2],  "size": [1, 1] },
+                "jar_full3":    { "baseTile": [2, 3],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "placeholder",
+        "filename": "placeholder/holes.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "hole":         { "baseTile": [0, 0],  "size": [1, 1] },
+                "dirt_pile":    { "baseTile": [1, 0],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "generated",
+        "filename": "generated/flowerpot1_32.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "flowerpot":    { "baseTile": [0, 0],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "character32",
+        "filename": "pixymoon/CuteRPG_Sprites/Characters/Character_032.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "character18",
+        "filename": "pixymoon/CuteRPG_Sprites/Characters/Character_018.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "character17",
+        "filename": "pixymoon/CuteRPG_Sprites/Characters/Character_017.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "character16",
+        "filename": "pixymoon/CuteRPG_Sprites/Characters/Character_016.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "character15",
+        "filename": "pixymoon/CuteRPG_Sprites/Characters/Character_015.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "ui",
+        "filename": "placeholder/ui.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "inventory_background":         { "baseTile": [0, 0],  "size": [1, 1] },
+                "inventory_selected":           { "baseTile": [0, 1],  "size": [1, 1] },
+                "inventory_env_selected":       { "baseTile": [1, 1],  "size": [1, 1] },
+                "inventory_background_env":     { "baseTile": [0, 2],  "size": [1, 1] },
+                "inventory_empty":              { "baseTile": [0, 3],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "missing",
+        "filename": "placeholder/missing.png",
+        "tileSize": [32, 32],
+        "sprites":
+            {
+                "missing":    { "baseTile": [0, 0],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "enemy06_04",
+        "filename": "pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy06_04.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "enemy06_04_greyscale",
+        "filename": "pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy06_04_greyscale.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "enemy01_04",
+        "filename": "pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy_01_04.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "enemy01_04_greyscale",
+        "filename": "pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy_01_04_greyscale.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "enemy10_02",
+        "filename": "pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy10_2.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "enemy10_02_greyscale",
+        "filename": "pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy10_2_greyscale.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "enemy11_01",
+        "filename": "pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy11_01.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "enemy11_01_greyscale",
+        "filename": "pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy11_01_greyscale.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "enemy14_03",
+        "filename": "pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy14_03.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "enemy14_03_greyscale",
+        "filename": "pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy14_03_greyscale.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "enemy16_03",
+        "filename": "pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy16_03.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "enemy16_03_greyscale",
+        "filename": "pixymoon/CuteRPG_Enemies/Enemies_Sprite_Sheets/Enemy16_03_greyscale.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "character35",
+        "filename": "pixymoon/CuteRPG_Sprites/Characters/Character_035.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [1, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [1, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [1, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [1, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    },
+    {
+        "sheetName": "character9",
+        "filename": "pixymoon/CuteRPG_Sprites/Characters/Character_009.png",
+        "tileSize": [24, 24],
+        "padTo": [32, 32],
+        "sprites":
+            {
+                "agent_facing_north":    { "baseTile": [5, 3],  "size": [1, 1] },
+                "agent_facing_east":     { "baseTile": [5, 2],  "size": [1, 1] },
+                "agent_facing_south":    { "baseTile": [5, 0],  "size": [1, 1] },
+                "agent_facing_west":     { "baseTile": [5, 1],  "size": [1, 1] }
+            },
+        "composites":
+            {
+            }
+    }
+
+]

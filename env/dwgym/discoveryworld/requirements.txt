@@ -1,0 +1,8 @@
+pygame
+pathfinding
+psutil
+openai
+numpy
+termcolor
+tiktoken
+matplotlib
