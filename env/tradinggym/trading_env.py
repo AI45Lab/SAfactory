@@ -38,11 +38,21 @@ class TradingGym(BaseEnv):
         price_filename: str,
         tweet_filename: Optional[str] = None,
         window_size: int = 7, # 智能体能看到过去window_size天的历史数据
+        max_steps: Optional[int] = None,  # 可选：达到最大步数时提前结束
         ** kwargs
     ):
         super().__init__(**kwargs)
         self.price_df = self._read_csv(os.path.join(data_dir, price_filename))
         self.window_size = window_size
+        # 允许通过参数或环境变量控制本 episode 最大步数（None 表示不限制）
+        if max_steps is None:
+            try:
+                env_max = os.environ.get("TRADING_MAX_STEPS")
+                self._max_steps: Optional[int] = int(env_max) if env_max else None
+            except Exception:
+                self._max_steps = None
+        else:
+            self._max_steps = int(max_steps)
 
         # 初始化价格，文本内容
         self.price_merge, self.price_date = self._process_data(data_dir=data_dir, tweet_filename=tweet_filename)
@@ -83,7 +93,7 @@ class TradingGym(BaseEnv):
         self.current_action, self.current_explanation = self.parse_llm_response(action)
         self._print_step_info(self.current_action)
         
-        # 检查终止条件
+        # 检查终止条件（到达数据集末尾）
         self._truncated = self._current_date == self._end_date
         self.done = self._truncated
         
@@ -99,6 +109,11 @@ class TradingGym(BaseEnv):
         self._current_index += 1
         self._current_date = self.price_date[self._current_index]
         self.current_step += 1
+
+        # 若配置了最大步数：达到或超过时也视为 episode 结束
+        if self._max_steps is not None and self.current_step >= self._max_steps:
+            self._truncated = True
+            self.done = True
         
         # 更新历史记录
         self._update_history(step_reward)
