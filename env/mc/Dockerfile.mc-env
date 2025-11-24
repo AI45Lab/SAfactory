@@ -1,0 +1,75 @@
+ARG RAY_BASE_IMAGE=registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:base
+ARG PROJECT_ROOT=/mnt/shared-storage-user/leishanzhe/repo/AIEvoBox
+FROM ${RAY_BASE_IMAGE} AS runtime
+ARG PROJECT_ROOT
+USER root
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System dependencies for rendering, OpenCV, Pyro, etc.
+RUN rm -f /etc/apt/sources.list.d/cuda*.list /etc/apt/sources.list.d/nvidia*.list || true && \
+    sed -i '/developer\.download\.nvidia/d' /etc/apt/sources.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        xvfb \
+        openjdk-8-jre-headless \
+        ffmpeg \
+        libgl1 \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        libxi6 \
+        libxrandr2 \
+        libxcursor1 \
+        libxinerama1 \
+        libvulkan1 \
+        libsdl2-dev \
+        mesa-utils \
+        build-essential \
+        cmake \
+        git \
+        curl \
+        python3-dev \
+        pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies first for better layer caching.
+COPY env/mc/requirements.txt /tmp/requirements_mc.txt
+RUN mkdir -p /etc/pip.conf.d && \
+    cat <<'EOF' >/etc/pip.conf
+[global]
+timeout = 60
+index-url = http://mirrors.h.pjlab.org.cn/pypi/simple/
+extra-index-url = http://pypi.i.h.pjlab.org.cn/brain/dev/+simple
+trusted-host = mirrors.h.pjlab.org.cn pypi.i.h.pjlab.org.cn
+EOF
+ARG USE_LOCAL_WHEELS=false
+ARG WHEEL_DIR=/tmp/pip_wheels
+COPY pip_wheels ${WHEEL_DIR}
+RUN if [ "${USE_LOCAL_WHEELS}" = "true" ] && [ -d "${WHEEL_DIR}" ] && [ "$(ls -A ${WHEEL_DIR})" ]; then \
+        pip install --no-cache-dir --no-index --find-links ${WHEEL_DIR} -r /tmp/requirements_mc.txt ; \
+    else \
+        pip install --no-cache-dir --upgrade pip && \
+        pip install --no-cache-dir -r /tmp/requirements_mc.txt ; \
+    fi
+
+# Mirror the host absolute path inside the container.
+RUN mkdir -p ${PROJECT_ROOT}
+WORKDIR ${PROJECT_ROOT}
+COPY . ${PROJECT_ROOT}
+
+# Install MineStudio in editable mode.
+RUN pip install --no-cache-dir -e env/mc/MineStudio
+
+ENV MINESTUDIO_DIR=${PROJECT_ROOT}/env/mc/MineStudio/minestudio \
+    MINECRAFT_JAR_PATH=${PROJECT_ROOT}/env/mc/build/offline-mcprec-6.13.jar \
+    PYTHONPATH=${PROJECT_ROOT} \
+    MC_ENV_CONFIG=env/mc/config/kill/kill_zombie.yaml \
+    UVICORN_HOST=0.0.0.0 \
+    UVICORN_PORT=8000
+
+EXPOSE 8000
+
+CMD ["bash", "-lc", "uvicorn env.mc.service.app:app --host ${UVICORN_HOST} --port ${UVICORN_PORT}"]
+

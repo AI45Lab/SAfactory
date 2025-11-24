@@ -1,0 +1,34 @@
+defaults:
+  - base
+  - _self_
+
+seed: 3001859308298079279
+teleport:
+  x: 31
+  y: 64
+  z: 61
+command: 
+  - "/time set night"
+
+task_conf:
+  - name: "kill_entity"
+    text: "kill_entity:skeleton" 
+
+reward_conf: 
+  - event: "kill_entity"
+    max_reward_times: 1
+    reward: 1.0
+    objects: 
+      - "skeleton"
+    identity: "kill skeleton"
+
+mobs: 
+  - name: "skeleton"
+    number: 1
+    range_x:  [-2, 2]
+    range_z:  [3, 10]
+
+init_inventory:
+  - slot: 0
+    type: "diamond_sword"
+    quantity: 1

@@ -1,0 +1,48 @@
+defaults:
+  - base
+  - _self_
+
+seed: 3001859308298079279
+teleport:
+  x: 31
+  y: 64
+  z: 61
+command: 
+  - "/time set night"
+  - "/summon minecraft:zombie ~2 ~ ~5 {Health:1.0f,Attributes:[{Name:generic.max_health,Base:10.0}]}"
+  - "/summon minecraft:zombie ~-2 ~ ~7 {Health:1.0f,Attributes:[{Name:generic.max_health,Base:10.0}]}"
+  - "/summon minecraft:zombie ~0 ~ ~8 {Health:1.0f,Attributes:[{Name:generic.max_health,Base:10.0}]}"
+
+need_gui: False
+
+task_conf:
+  - name: "kill_entity"
+    text: "kill_entity:zombie" 
+
+
+reward_conf: 
+  - event: "kill_entity"
+    max_reward_times: 2
+    reward: 1.0
+    objects: 
+      - "zombie"
+    identity: "kill zombie"
+
+mobs: []
+
+init_inventory:
+  - slot: 0
+    type: "diamond_sword"
+    quantity: 1
+  - slot: 39
+    type: "diamond_helmet"
+    quantity: 1
+  - slot: 38
+    type: "diamond_chestplate"
+    quantity: 1
+  - slot: 37
+    type: "diamond_leggings"
+    quantity: 1
+  - slot: 36
+    type: "diamond_boots"
+    quantity: 1

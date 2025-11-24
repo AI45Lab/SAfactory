@@ -1,0 +1,26 @@
+defaults:
+  - base
+  - _self_
+
+candidate_preferred_spawn_biome: 
+  - "forest"
+
+task_conf:
+  - name: "mine"
+    text: "mine_block:stone" 
+
+reward_conf:
+  - event: "mine_block"
+    max_reward_times: 1
+    reward: 1.0
+    objects: 
+      - "stone"
+    identity: "craft stone"
+
+init_inventory: 
+  - slot: 0
+    type: "stone_shovel"
+    quantity: 1
+  - slot: 1
+    type: "stone_pickaxe"
+    quantity: 1
