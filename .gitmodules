@@ -1,0 +1,5 @@
+[submodule "env/mc/MineStudio"]
+	path = env/mc/MineStudio
+	url = git@github.com:CraftJarvis/MineStudio.git
+	ignore = all
+

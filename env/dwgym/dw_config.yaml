@@ -1,0 +1,90 @@
+environments:
+  - env_name: discoveryworld
+    env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
+    env_num: 1
+    env_params:
+      thread_id: 11
+      scenario_name: "Proteomics"
+      difficulty: "Easy"
+      seed: 0
+      max_steps: 50
+      use_vision: true
+      capture_frames: true  
+      narrate_actions: true  
+      verbose: false
+      max_history_length: 20
+
+  - env_name: discoveryworld
+    env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
+    env_num: 1
+    env_params:
+      thread_id: 12
+      scenario_name: "Proteomics"
+      difficulty: "Normal"
+      seed: 0
+      max_steps: 100
+      use_vision: true
+      capture_frames: true  
+      narrate_actions: true  
+      verbose: false 
+      max_history_length: 20
+
+#  - env_name: discoveryworld
+#    env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
+#    env_num: 1
+#    env_params:
+#      thread_id: 13
+#      scenario_name: "Proteomics"
+#      difficulty: "Challenge"
+#      seed: 0
+#      max_steps: 150
+#      use_vision: true
+#      capture_frames: true
+#      narrate_actions: true
+#      verbose: true
+#      max_history_length: 20
+
+#  - env_name: discoveryworld
+#    env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
+#    env_num: 1
+#    env_params:
+#      thread_id: 14
+#      scenario_name: "Reactor Lab"
+#      difficulty: "Easy"
+#      seed: 0
+#      max_steps: 50
+#      use_vision: true
+#      capture_frames: true
+#      narrate_actions: true
+#      verbose: true
+#      max_history_length: 20
+
+#  - env_name: discoveryworld
+#    env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
+#    env_num: 1
+#    env_params:
+#      thread_id: 15
+#      scenario_name: "Reactor Lab"
+#      difficulty: "Normal"
+#      seed: 0
+#      max_steps: 100
+#      use_vision: true
+#      capture_frames: true
+#      narrate_actions: true
+#      verbose: true
+#      max_history_length: 20
+
+#  - env_name: discoveryworld
+#    env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
+#    env_num: 1
+#    env_params:
+#      thread_id: 16
+#      scenario_name: "Reactor Lab"
+#      difficulty: "Challenge"
+#      seed: 0
+#      max_steps: 150
+#      use_vision: true
+#      capture_frames: true
+#      narrate_actions: true
+#      verbose: true
+#      max_history_length: 20

@@ -12,7 +12,11 @@ from env.tradinggym.trading_env import TradingGym  # 导入环境来注册
 from env.search.search_env import SearchEnv
 from env.gitgym.git_env import GitGym
 from env.embodiedgym.embodied_env import EmbodiedAlfredGym  # 导入 Alfred 环境来注册
-from env.mc.mc_env import MCGym  # 导入 Minecraft 环境来注册
+from env.dabstep.dabstep_env import DABStepEnv
+<<<<<<< HEAD
+=======
+from env.dwgym.dw_env import DiscoveryWorldEnv
+>>>>>>> origin
 from core.agent.base_agent import APIAgent
 from core.interactor import Interactor
 from core.data_manager.manager import DataManager
