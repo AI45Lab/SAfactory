@@ -11,3 +11,4 @@ visual_db.ipynb
 *.db-wal
 data/
 examples/test_env.py
+env/mc/MineStudio/MineStudio
