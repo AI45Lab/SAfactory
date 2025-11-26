@@ -1,0 +1,13 @@
+*
+*/
+
+# Except these directories
+!dabstep_benchmark/
+!pack/
+
+# And make sure to include everything inside them
+!dabstep_benchmark/**
+!pack/**
+
+# Don't ignore this .gitignore file itself
+!.gitignore

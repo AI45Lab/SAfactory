@@ -1,6 +1,5 @@
 environments:
   - env_name: dabstepgym
-    env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
     env_num: 1
     env_params:
       data_dir: "env/dabstep/agent_core"
@@ -8,12 +7,11 @@ environments:
       split: "dev"
       limit: 1
       shard_index: 0
-      num_shards: 2
+      num_shards: 8
       max_steps: 10
       timeout: 60
 
   - env_name: dabstepgym
-    env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
     env_num: 1
     env_params:
       data_dir: "env/dabstep/agent_core"
@@ -21,6 +19,78 @@ environments:
       split: "dev"
       limit: 1
       shard_index: 1
-      num_shards: 2
+      num_shards: 8
+      max_steps: 10
+      timeout: 60
+
+  - env_name: dabstepgym
+    env_num: 1
+    env_params:
+      data_dir: "env/dabstep/agent_core"
+      artifacts_dir: "env/dabstep/artifacts"
+      split: "dev"
+      limit: 1
+      shard_index: 2
+      num_shards: 8
+      max_steps: 10
+      timeout: 60
+
+  - env_name: dabstepgym
+    env_num: 1
+    env_params:
+      data_dir: "env/dabstep/agent_core"
+      artifacts_dir: "env/dabstep/artifacts"
+      split: "dev"
+      limit: 1
+      shard_index: 3
+      num_shards: 8
+      max_steps: 10
+      timeout: 60
+
+  - env_name: dabstepgym
+    env_num: 1
+    env_params:
+      data_dir: "env/dabstep/agent_core"
+      artifacts_dir: "env/dabstep/artifacts"
+      split: "dev"
+      limit: 1
+      shard_index: 4
+      num_shards: 8
+      max_steps: 10
+      timeout: 60
+
+  - env_name: dabstepgym
+    env_num: 1
+    env_params:
+      data_dir: "env/dabstep/agent_core"
+      artifacts_dir: "env/dabstep/artifacts"
+      split: "dev"
+      limit: 1
+      shard_index: 5
+      num_shards: 8
+      max_steps: 10
+      timeout: 60
+
+  - env_name: dabstepgym
+    env_num: 1
+    env_params:
+      data_dir: "env/dabstep/agent_core"
+      artifacts_dir: "env/dabstep/artifacts"
+      split: "dev"
+      limit: 1
+      shard_index: 6
+      num_shards: 8
+      max_steps: 10
+      timeout: 60
+
+  - env_name: dabstepgym
+    env_num: 1
+    env_params:
+      data_dir: "env/dabstep/agent_core"
+      artifacts_dir: "env/dabstep/artifacts"
+      split: "dev"
+      limit: 1
+      shard_index: 7
+      num_shards: 8
       max_steps: 10
       timeout: 60
