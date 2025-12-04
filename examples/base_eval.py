@@ -14,6 +14,7 @@ from env.gitgym.git_env import GitGym
 from env.embodiedgym.embodied_env import EmbodiedAlfredGym  # 导入 Alfred 环境来注册
 from env.dabstep.dabstep_env import DABStepEnv
 from env.dwgym.dw_env import DiscoveryWorldEnv
+from env.osgym.os_env import OSGym
 from core.agent.base_agent import APIAgent
 from core.interactor import Interactor
 from core.data_manager.manager import DataManager

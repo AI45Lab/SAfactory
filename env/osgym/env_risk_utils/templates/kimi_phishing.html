@@ -1,0 +1,723 @@
+<html lang="zh-CN" translate="no" class="light"><head>
+    <script type="text/javascript" async="" src="https://www.googletagmanager.com/gtag/js?id=G-YXD8W70SZP&amp;l=dataLayer&amp;cx=c&amp;gtm=45He53q1v9183970613za200&amp;tag_exp=102482433~102788824~102803279~102813109~102887799~102926062~102964102"></script><script charset="utf-8" src="https://hmcdn.baidu.com/static/tongji/plugins/UrlChangeTracker.js"></script><script src="https://hm.baidu.com/hm.js?358cae4815e85d48f7e8ab7f3680a74b"></script><script async="" src="https://www.googletagmanager.com/gtm.js?id=GTM-NT26Q3C9"></script><script type="module" crossorigin="" src="//statics.moonshot.cn/kimi-web-seo/assets/polyfills-Ch0G2rbi.js"></script>
+
+    <meta charset="UTF-8">
+    <!--default-seo-->
+    <title>Kimi - 会推理解析，能深度思考的AI助手</title>
+    <meta name="keywords" content="Kimi,Kimi.ai,MoonshotAI,Moonshot,月之暗面,大语言模型,自然语言处理,人工智能大模型,AI聊天机器人,AI聊天,AI创作,国内大模型公司,AI聊天,AI助手,上下文窗口,context,long,超长">
+    <meta name="description" content="Kimi是一款学生和职场人的新质生产力工具。帮你解读论文，写代码查BUG，策划方案，创作小说，多语言翻译。有问题问Kimi，一键解决你的所有难题">
+    <!--default-seo-->
+    <style cssr-id="vueuc/binder">.v-binder-follower-container {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: auto;
+}
+
+.v-binder-follower-content {
+  position: absolute;
+  z-index: auto;
+}
+
+.v-binder-follower-content > * {
+  pointer-events: all;
+}</style><style cssr-id="n-global">body {
+
+ margin: 0;
+ font-size: 14px;
+ font-family: v-sans, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+ line-height: 1.6;
+ -webkit-text-size-adjust: 100%;
+ -webkit-tap-highlight-color: transparent;
+
+}
+
+body input {
+
+ font-family: inherit;
+ font-size: inherit;
+
+}</style><style cssr-id="n-popover">.n-popover {
+
+ transition:
+ box-shadow .3s var(--n-bezier),
+ background-color .3s var(--n-bezier),
+ color .3s var(--n-bezier);
+ position: relative;
+ font-size: var(--n-font-size);
+ color: var(--n-text-color);
+ box-shadow: var(--n-box-shadow);
+ word-break: break-word;
+
+}
+
+.n-popover > .n-scrollbar {
+
+ height: inherit;
+ max-height: inherit;
+
+}
+
+.n-popover:not(.n-popover--raw) {
+
+ background-color: var(--n-color);
+ border-radius: var(--n-border-radius);
+
+}
+
+.n-popover:not(.n-popover--raw):not(.n-popover--scrollable):not(.n-popover--show-header-or-footer) {
+padding: var(--n-padding);
+}
+
+.n-popover .n-popover__header {
+
+ padding: var(--n-padding);
+ border-bottom: 1px solid var(--n-divider-color);
+ transition: border-color .3s var(--n-bezier);
+
+}
+
+.n-popover .n-popover__footer {
+
+ padding: var(--n-padding);
+ border-top: 1px solid var(--n-divider-color);
+ transition: border-color .3s var(--n-bezier);
+
+}
+
+.n-popover.n-popover--scrollable .n-popover__content, .n-popover.n-popover--show-header-or-footer .n-popover__content {
+
+ padding: var(--n-padding);
+
+}
+
+.n-popover-shared {
+
+ transform-origin: inherit;
+
+}
+
+.n-popover-shared .n-popover-arrow-wrapper {
+
+ position: absolute;
+ overflow: hidden;
+ pointer-events: none;
+
+}
+
+.n-popover-shared .n-popover-arrow-wrapper .n-popover-arrow {
+
+ transition: background-color .3s var(--n-bezier);
+ position: absolute;
+ display: block;
+ width: calc(var(--n-arrow-height) * 1.414);
+ height: calc(var(--n-arrow-height) * 1.414);
+ box-shadow: 0 0 8px 0 rgba(0, 0, 0, .12);
+ transform: rotate(45deg);
+ background-color: var(--n-color);
+ pointer-events: all;
+
+}
+
+.n-popover-shared.popover-transition-enter-from, .n-popover-shared.popover-transition-leave-to {
+
+ opacity: 0;
+ transform: scale(.85);
+
+}
+
+.n-popover-shared.popover-transition-enter-to, .n-popover-shared.popover-transition-leave-from {
+
+ transform: scale(1);
+ opacity: 1;
+
+}
+
+.n-popover-shared.popover-transition-enter-active {
+
+ transition:
+ box-shadow .3s var(--n-bezier),
+ background-color .3s var(--n-bezier),
+ color .3s var(--n-bezier),
+ opacity .15s var(--n-bezier-ease-out),
+ transform .15s var(--n-bezier-ease-out);
+
+}
+
+.n-popover-shared.popover-transition-leave-active {
+
+ transition:
+ box-shadow .3s var(--n-bezier),
+ background-color .3s var(--n-bezier),
+ color .3s var(--n-bezier),
+ opacity .15s var(--n-bezier-ease-in),
+ transform .15s var(--n-bezier-ease-in);
+
+}
+
+[v-placement="top-start"] > .n-popover-shared {
+
+ margin-bottom: var(--n-space);
+
+}
+
+[v-placement="top-start"] > .n-popover-shared.n-popover-shared--show-arrow {
+
+ margin-bottom: var(--n-space-arrow);
+
+}
+
+[v-placement="top-start"] > .n-popover-shared.n-popover-shared--overlap {
+
+ margin: 0;
+
+}
+
+[v-placement="top-start"] > .n-popover-shared > .n-popover-arrow-wrapper {
+
+ right: 0;
+ left: 0;
+ top: 0;
+ bottom: 0;
+ top: 100%;
+ bottom: auto;
+ height: var(--n-space-arrow);
+
+}
+
+[v-placement="top-start"] > .n-popover-shared > .n-popover-arrow-wrapper .n-popover-arrow {
+
+ top: calc(var(--n-arrow-height) * 1.414 / -2);
+ left: calc(var(--n-arrow-offset) - var(--v-offset-left));
+
+}
+
+[v-placement="top"] > .n-popover-shared {
+
+ margin-bottom: var(--n-space);
+
+}
+
+[v-placement="top"] > .n-popover-shared.n-popover-shared--show-arrow {
+
+ margin-bottom: var(--n-space-arrow);
+
+}
+
+[v-placement="top"] > .n-popover-shared.n-popover-shared--overlap {
+
+ margin: 0;
+
+}
+
+[v-placement="top"] > .n-popover-shared > .n-popover-arrow-wrapper {
+
+ right: 0;
+ left: 0;
+ top: 0;
+ bottom: 0;
+ top: 100%;
+ bottom: auto;
+ height: var(--n-space-arrow);
+
+}
+
+[v-placement="top"] > .n-popover-shared > .n-popover-arrow-wrapper .n-popover-arrow {
+
+ top: calc(var(--n-arrow-height) * 1.414 / -2);
+ transform: translateX(calc(var(--n-arrow-height) * 1.414 / -2)) rotate(45deg);
+ left: 50%;
+
+}
+
+[v-placement="top-end"] > .n-popover-shared {
+
+ margin-bottom: var(--n-space);
+
+}
+
+[v-placement="top-end"] > .n-popover-shared.n-popover-shared--show-arrow {
+
+ margin-bottom: var(--n-space-arrow);
+
+}
+
+[v-placement="top-end"] > .n-popover-shared.n-popover-shared--overlap {
+
+ margin: 0;
+
+}
+
+[v-placement="top-end"] > .n-popover-shared > .n-popover-arrow-wrapper {
+
+ right: 0;
+ left: 0;
+ top: 0;
+ bottom: 0;
+ top: 100%;
+ bottom: auto;
+ height: var(--n-space-arrow);
+
+}
+
+[v-placement="top-end"] > .n-popover-shared > .n-popover-arrow-wrapper .n-popover-arrow {
+
+ top: calc(var(--n-arrow-height) * 1.414 / -2);
+ right: calc(var(--n-arrow-offset) + var(--v-offset-left));
+
+}
+
+[v-placement="bottom-start"] > .n-popover-shared {
+
+ margin-top: var(--n-space);
+
+}
+
+[v-placement="bottom-start"] > .n-popover-shared.n-popover-shared--show-arrow {
+
+ margin-top: var(--n-space-arrow);
+
+}
+
+[v-placement="bottom-start"] > .n-popover-shared.n-popover-shared--overlap {
+
+ margin: 0;
+
+}
+
+[v-placement="bottom-start"] > .n-popover-shared > .n-popover-arrow-wrapper {
+
+ right: 0;
+ left: 0;
+ top: 0;
+ bottom: 0;
+ bottom: 100%;
+ top: auto;
+ height: var(--n-space-arrow);
+
+}
+
+[v-placement="bottom-start"] > .n-popover-shared > .n-popover-arrow-wrapper .n-popover-arrow {
+
+ bottom: calc(var(--n-arrow-height) * 1.414 / -2);
+ left: calc(var(--n-arrow-offset) - var(--v-offset-left));
+
+}
+
+[v-placement="bottom"] > .n-popover-shared {
+
+ margin-top: var(--n-space);
+
+}
+
+[v-placement="bottom"] > .n-popover-shared.n-popover-shared--show-arrow {
+
+ margin-top: var(--n-space-arrow);
+
+}
+
+[v-placement="bottom"] > .n-popover-shared.n-popover-shared--overlap {
+
+ margin: 0;
+
+}
+
+[v-placement="bottom"] > .n-popover-shared > .n-popover-arrow-wrapper {
+
+ right: 0;
+ left: 0;
+ top: 0;
+ bottom: 0;
+ bottom: 100%;
+ top: auto;
+ height: var(--n-space-arrow);
+
+}
+
+[v-placement="bottom"] > .n-popover-shared > .n-popover-arrow-wrapper .n-popover-arrow {
+
+ bottom: calc(var(--n-arrow-height) * 1.414 / -2);
+ transform: translateX(calc(var(--n-arrow-height) * 1.414 / -2)) rotate(45deg);
+ left: 50%;
+
+}
+
+[v-placement="bottom-end"] > .n-popover-shared {
+
+ margin-top: var(--n-space);
+
+}
+
+[v-placement="bottom-end"] > .n-popover-shared.n-popover-shared--show-arrow {
+
+ margin-top: var(--n-space-arrow);
+
+}
+
+[v-placement="bottom-end"] > .n-popover-shared.n-popover-shared--overlap {
+
+ margin: 0;
+
+}
+
+[v-placement="bottom-end"] > .n-popover-shared > .n-popover-arrow-wrapper {
+
+ right: 0;
+ left: 0;
+ top: 0;
+ bottom: 0;
+ bottom: 100%;
+ top: auto;
+ height: var(--n-space-arrow);
+
+}
+
+[v-placement="bottom-end"] > .n-popover-shared > .n-popover-arrow-wrapper .n-popover-arrow {
+
+ bottom: calc(var(--n-arrow-height) * 1.414 / -2);
+ right: calc(var(--n-arrow-offset) + var(--v-offset-left));
+
+}
+
+[v-placement="left-start"] > .n-popover-shared {
+
+ margin-right: var(--n-space);
+
+}
+
+[v-placement="left-start"] > .n-popover-shared.n-popover-shared--show-arrow {
+
+ margin-right: var(--n-space-arrow);
+
+}
+
+[v-placement="left-start"] > .n-popover-shared.n-popover-shared--overlap {
+
+ margin: 0;
+
+}
+
+[v-placement="left-start"] > .n-popover-shared > .n-popover-arrow-wrapper {
+
+ right: 0;
+ left: 0;
+ top: 0;
+ bottom: 0;
+ left: 100%;
+ right: auto;
+ width: var(--n-space-arrow);
+
+}
+
+[v-placement="left-start"] > .n-popover-shared > .n-popover-arrow-wrapper .n-popover-arrow {
+
+ left: calc(var(--n-arrow-height) * 1.414 / -2);
+ top: calc(var(--n-arrow-offset-vertical) - var(--v-offset-top));
+
+}
+
+[v-placement="left"] > .n-popover-shared {
+
+ margin-right: var(--n-space);
+
+}
+
+[v-placement="left"] > .n-popover-shared.n-popover-shared--show-arrow {
+
+ margin-right: var(--n-space-arrow);
+
+}
+
+[v-placement="left"] > .n-popover-shared.n-popover-shared--overlap {
+
+ margin: 0;
+
+}
+
+[v-placement="left"] > .n-popover-shared > .n-popover-arrow-wrapper {
+
+ right: 0;
+ left: 0;
+ top: 0;
+ bottom: 0;
+ left: 100%;
+ right: auto;
+ width: var(--n-space-arrow);
+
+}
+
+[v-placement="left"] > .n-popover-shared > .n-popover-arrow-wrapper .n-popover-arrow {
+
+ left: calc(var(--n-arrow-height) * 1.414 / -2);
+ transform: translateY(calc(var(--n-arrow-height) * 1.414 / -2)) rotate(45deg);
+ top: 50%;
+
+}
+
+[v-placement="left-end"] > .n-popover-shared {
+
+ margin-right: var(--n-space);
+
+}
+
+[v-placement="left-end"] > .n-popover-shared.n-popover-shared--show-arrow {
+
+ margin-right: var(--n-space-arrow);
+
+}
+
+[v-placement="left-end"] > .n-popover-shared.n-popover-shared--overlap {
+
+ margin: 0;
+
+}
+
+[v-placement="left-end"] > .n-popover-shared > .n-popover-arrow-wrapper {
+
+ right: 0;
+ left: 0;
+ top: 0;
+ bottom: 0;
+ left: 100%;
+ right: auto;
+ width: var(--n-space-arrow);
+
+}
+
+[v-placement="left-end"] > .n-popover-shared > .n-popover-arrow-wrapper .n-popover-arrow {
+
+ left: calc(var(--n-arrow-height) * 1.414 / -2);
+ bottom: calc(var(--n-arrow-offset-vertical) + var(--v-offset-top));
+
+}
+
+[v-placement="right-start"] > .n-popover-shared {
+
+ margin-left: var(--n-space);
+
+}
+
+[v-placement="right-start"] > .n-popover-shared.n-popover-shared--show-arrow {
+
+ margin-left: var(--n-space-arrow);
+
+}
+
+[v-placement="right-start"] > .n-popover-shared.n-popover-shared--overlap {
+
+ margin: 0;
+
+}
+
+[v-placement="right-start"] > .n-popover-shared > .n-popover-arrow-wrapper {
+
+ right: 0;
+ left: 0;
+ top: 0;
+ bottom: 0;
+ right: 100%;
+ left: auto;
+ width: var(--n-space-arrow);
+
+}
+
+[v-placement="right-start"] > .n-popover-shared > .n-popover-arrow-wrapper .n-popover-arrow {
+
+ right: calc(var(--n-arrow-height) * 1.414 / -2);
+ top: calc(var(--n-arrow-offset-vertical) - var(--v-offset-top));
+
+}
+
+[v-placement="right"] > .n-popover-shared {
+
+ margin-left: var(--n-space);
+
+}
+
+[v-placement="right"] > .n-popover-shared.n-popover-shared--show-arrow {
+
+ margin-left: var(--n-space-arrow);
+
+}
+
+[v-placement="right"] > .n-popover-shared.n-popover-shared--overlap {
+
+ margin: 0;
+
+}
+
+[v-placement="right"] > .n-popover-shared > .n-popover-arrow-wrapper {
+
+ right: 0;
+ left: 0;
+ top: 0;
+ bottom: 0;
+ right: 100%;
+ left: auto;
+ width: var(--n-space-arrow);
+
+}
+
+[v-placement="right"] > .n-popover-shared > .n-popover-arrow-wrapper .n-popover-arrow {
+
+ right: calc(var(--n-arrow-height) * 1.414 / -2);
+ transform: translateY(calc(var(--n-arrow-height) * 1.414 / -2)) rotate(45deg);
+ top: 50%;
+
+}
+
+[v-placement="right-end"] > .n-popover-shared {
+
+ margin-left: var(--n-space);
+
+}
+
+[v-placement="right-end"] > .n-popover-shared.n-popover-shared--show-arrow {
+
+ margin-left: var(--n-space-arrow);
+
+}
+
+[v-placement="right-end"] > .n-popover-shared.n-popover-shared--overlap {
+
+ margin: 0;
+
+}
+
+[v-placement="right-end"] > .n-popover-shared > .n-popover-arrow-wrapper {
+
+ right: 0;
+ left: 0;
+ top: 0;
+ bottom: 0;
+ right: 100%;
+ left: auto;
+ width: var(--n-space-arrow);
+
+}
+
+[v-placement="right-end"] > .n-popover-shared > .n-popover-arrow-wrapper .n-popover-arrow {
+
+ right: calc(var(--n-arrow-height) * 1.414 / -2);
+ bottom: calc(var(--n-arrow-offset-vertical) + var(--v-offset-top));
+
+}
+
+[v-placement="right-start"] > .n-popover-shared.n-popover-shared--center-arrow .n-popover-arrow {
+top: calc(max(calc((var(--v-target-height, 0px) - var(--n-arrow-height) * 1.414) / 2), var(--n-arrow-offset-vertical)) - var(--v-offset-top));
+}
+
+[v-placement="left-start"] > .n-popover-shared.n-popover-shared--center-arrow .n-popover-arrow {
+top: calc(max(calc((var(--v-target-height, 0px) - var(--n-arrow-height) * 1.414) / 2), var(--n-arrow-offset-vertical)) - var(--v-offset-top));
+}
+
+[v-placement="top-end"] > .n-popover-shared.n-popover-shared--center-arrow .n-popover-arrow {
+right: calc(max(calc((var(--v-target-width, 0px) - var(--n-arrow-height) * 1.414) / 2), var(--n-arrow-offset)) + var(--v-offset-left));
+}
+
+[v-placement="bottom-end"] > .n-popover-shared.n-popover-shared--center-arrow .n-popover-arrow {
+right: calc(max(calc((var(--v-target-width, 0px) - var(--n-arrow-height) * 1.414) / 2), var(--n-arrow-offset)) + var(--v-offset-left));
+}
+
+[v-placement="right-end"] > .n-popover-shared.n-popover-shared--center-arrow .n-popover-arrow {
+bottom: calc(max(calc((var(--v-target-height, 0px) - var(--n-arrow-height) * 1.414) / 2), var(--n-arrow-offset-vertical)) + var(--v-offset-top));
+}
+
+[v-placement="left-end"] > .n-popover-shared.n-popover-shared--center-arrow .n-popover-arrow {
+bottom: calc(max(calc((var(--v-target-height, 0px) - var(--n-arrow-height) * 1.414) / 2), var(--n-arrow-offset-vertical)) + var(--v-offset-top));
+}
+
+[v-placement="top-start"] > .n-popover-shared.n-popover-shared--center-arrow .n-popover-arrow {
+left: calc(max(calc((var(--v-target-width, 0px) - var(--n-arrow-height) * 1.414) / 2), var(--n-arrow-offset)) - var(--v-offset-left));
+}
+
+[v-placement="bottom-start"] > .n-popover-shared.n-popover-shared--center-arrow .n-popover-arrow {
+left: calc(max(calc((var(--v-target-width, 0px) - var(--n-arrow-height) * 1.414) / 2), var(--n-arrow-offset)) - var(--v-offset-left));
+}</style><link rel="shortcut icon" href="//statics.moonshot.cn/kimi-chat/favicon.ico">
+    <meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+    <meta name="renderer" content="webkit">
+    <meta name="force-rendering" content="webkit">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="apple-mobile-web-app-title" content="Kimi">
+    <meta name="format-detection" content="telephone=no,email=no">
+    <meta name="msvalidate.01" content="38E0A3C40C0983D8FED5BD0B59E78653">
+    <meta name="baidu-site-verification" content="codeva-w8jRQyIVVM">
+    <meta name="sogou_site_verification" content="ZbupFZEZFQ">
+    <!--preload-links-->
+    <script async="" src="https://www.googletagmanager.com/gtag/js?id=G-YXD8W70SZP"></script>
+    <script>
+      window.dataLayer = window.dataLayer || []
+      function gtag() {
+        dataLayer.push(arguments)
+      }
+      gtag("js", new Date())
+      gtag("config", "G-YXD8W70SZP")
+    </script>
+    <script>
+      ;(function (w, d, s, l, i) {
+        w[l] = w[l] || []
+        w[l].push({ "gtm.start": new Date().getTime(), event: "gtm.js" })
+        var f = d.getElementsByTagName(s)[0],
+          j = d.createElement(s),
+          dl = l != "dataLayer" ? "&l=" + l : ""
+        j.async = true
+        j.src = "https://www.googletagmanager.com/gtm.js?id=" + i + dl
+        f.parentNode.insertBefore(j, f)
+      })(window, document, "script", "dataLayer", "GTM-NT26Q3C9")
+    </script>
+    <script>
+      var _hmt = _hmt || []
+      ;(function () {
+        var hm = document.createElement("script")
+        hm.src = "https://hm.baidu.com/hm.js?358cae4815e85d48f7e8ab7f3680a74b"
+        var s = document.getElementsByTagName("script")[0]
+        s.parentNode.insertBefore(hm, s)
+      })()
+    </script>
+    <script>
+      ;(function (win, export_obj) {
+        win["LogAnalyticsObject"] = export_obj
+        if (!win[export_obj]) {
+          var _collect = function () {
+            _collect.q.push(arguments)
+          }
+          _collect.q = _collect.q || []
+          win[export_obj] = _collect
+        }
+        win[export_obj].l = +new Date()
+      })(window, "collectEvent")
+    </script>
+    <script src="https://lf3-data.volccdn.com/obj/data-static/log-sdk/collect/5.0/collect-rangers-v5.1.12.js" async=""></script>
+    <script>
+      window.collectEvent("init", {
+        app_id: 20001731,
+        channel_domain: "https://gator.volces.com",
+        ab_channel_domain: "https://tab.volces.com",
+        log: true,
+        autotrack: true,
+        enable_ab_test: true,
+        auto_exposure_expriment: true,
+        enable_stay_duration: true,
+      })
+      window.collectEvent("start")
+    </script>
+    <script type="module" crossorigin="" src="//statics.moonshot.cn/kimi-web-seo/assets/index-N1zkml1z.js"></script>
+    <link rel="modulepreload" crossorigin="" href="//statics.moonshot.cn/kimi-web-seo/assets/common-Dp9dLgbX.js">
+    <link rel="stylesheet" crossorigin="" href="//statics.moonshot.cn/kimi-web-seo/assets/common-DgmlGM0O.css">
+    <link rel="stylesheet" crossorigin="" href="//statics.moonshot.cn/kimi-web-seo/assets/index-Do9GO-UU.css">
+  <script type="text/javascript" async="" src="https://googleads.g.doubleclick.net/pagead/viewthroughconversion/16537538002/?random=1743433002292&amp;cv=11&amp;fst=1743433002292&amp;bg=ffffff&amp;guid=ON&amp;async=1&amp;gtm=45je53q1v9166950704z89183970613za200zb9183970613&amp;gcd=13l3l3l3l1l1&amp;dma=0&amp;tag_exp=102015666~102482433~102509683~102788824~102803279~102813109~102887799~102926062~102975949&amp;u_w=2560&amp;u_h=1440&amp;url=https%3A%2F%2Fkimi.moonshot.cn%2F&amp;ref=https%3A%2F%2Fwww.google.com.hk%2F&amp;hn=www.googleadservices.com&amp;frm=0&amp;tiba=Kimi%20-%20%E4%BC%9A%E6%8E%A8%E7%90%86%E8%A7%A3%E6%9E%90%EF%BC%8C%E8%83%BD%E6%B7%B1%E5%BA%A6%E6%80%9D%E8%80%83%E7%9A%84AI%E5%8A%A9%E6%89%8B&amp;npa=0&amp;pscdl=noapi&amp;auid=1002822930.1743433002&amp;uaa=arm&amp;uab=64&amp;uafvl=Not(A%253ABrand%3B99.0.0.0%7CGoogle%2520Chrome%3B133.0.6943.127%7CChromium%3B133.0.6943.127&amp;uamb=0&amp;uam=&amp;uap=macOS&amp;uapv=15.2.0&amp;uaw=0&amp;fledge=1&amp;data=event%3Dgtag.config&amp;rfmt=3&amp;fmt=4"></script><link rel="modulepreload" as="script" crossorigin="" href="//statics.moonshot.cn/kimi-web-seo/assets/Index-BNm15QoI.js"><link rel="stylesheet" href="//statics.moonshot.cn/kimi-web-seo/assets/Index-BnW7iJQS.css"></head>
+  <body>
+    <div id="app" data-v-app=""><div data-v-c7ec3976="" class="n-config-provider"><div data-v-c7ec3976="" class="app has-sidebar"><!----><div data-v-0d48efa3="" class="sidebar-placeholder open"><aside data-v-0d48efa3="" class="sidebar"><h2 data-v-0d48efa3="">Kimi+</h2><ul data-v-0d48efa3=""><li data-v-0d48efa3="" class="sidebar-home-icon"><!----><div data-v-0d48efa3="" class="sidebar-home-icon-wrapper"><!--ClickLog Start--><a data-v-0d48efa3="" aria-current="page" href="/" class="router-link-active router-link-exact-active">主页</a><!--ClickLog End--></div><!----></li><li data-v-0d48efa3="" class="sidebar-action-button new-chat"><!----><div data-v-0d48efa3="" class="sidebar-home-icon-wrapper"><!--ClickLog Start--><button data-v-0d48efa3="">开启新会话</button><!--ClickLog End--></div><!----></li><li data-v-0d48efa3="" class="sidebar-action-button chat-history"><!----><button data-v-0d48efa3="">历史会话</button><!----></li><li data-v-0d48efa3="" class="sidebar-action-button kimi-plus"><!----><a data-v-0d48efa3="" href="/kimiplus-square" class="">Kimi+</a><!----></li></ul><ul data-v-24f5f3db="" data-v-0d48efa3="" class="kimi-plus-history"></ul><div data-v-0d48efa3="" class="sidebar-user-info"><div data-v-2e191c7b="" data-v-0d48efa3="" class="user-info"><div data-v-2e191c7b="" class="user-info-no-login"><span data-v-2e191c7b="">登录</span></div></div><ul data-v-275243e1="" data-v-0d48efa3="" class="user-nav" style="display: none;"><li data-v-275243e1=""><svg data-v-275243e1="" fill="currentColor" viewBox="0 0 1024 1024" class="user-nav-icon"><path d="M512.064 128a213.312 213.312 0 1 0 0 426.688 213.312 213.312 0 0 0 0-426.688m-128 213.312a128 128 0 1 1 256 0 128 128 0 0 1-256 0M512.128 640c-81.92 0-162.432 20.224-229.12 58.56-66.56 38.4-117.312 93.76-140.8 159.488a42.688 42.688 0 0 0 80.384 28.672c15.36-43.136 50.432-83.904 103.04-114.176 52.48-30.208 118.08-47.232 186.496-47.232 68.352 0 133.952 17.024 186.496 47.232 52.608 30.272 87.616 71.04 103.04 114.176a42.688 42.688 0 1 0 80.32-28.672c-23.424-65.728-74.176-121.088-140.8-159.488-66.688-38.336-147.2-58.56-229.12-58.56z"></path></svg><span data-v-275243e1=""></span></li><li data-v-275243e1=""><svg data-v-275243e1="" viewBox="0 0 1024 1024" class="user-nav-icon"><path fill="currentColor" d="M511.936 938.688a426.688 426.688 0 1 0 0-853.312 426.688 426.688 0 0 0 0 853.312m0-85.312V170.688a341.312 341.312 0 0 1 0 682.688"></path></svg><span data-v-275243e1="">界面主题</span><div data-v-53fd64f1="" data-v-275243e1="" class="theme" style="display: none;"><div data-v-53fd64f1="" class="theme-content"><div data-v-53fd64f1="" class="theme-content-item"><img data-v-53fd64f1="" src="//statics.moonshot.cn/kimi-web-seo/assets/system-DP9ieYgc.png"><p data-v-53fd64f1="" class="theme-content-item-system">跟随系统</p><!----></div><div data-v-53fd64f1="" class="theme-content-item"><img data-v-53fd64f1="" src="//statics.moonshot.cn/kimi-web-seo/assets/light-77OjNRmh.png"><p data-v-53fd64f1="" class="theme-content-item-light">月之亮面</p><div data-v-53fd64f1="" class="theme-content-item-checked"></div></div><div data-v-53fd64f1="" class="theme-content-item"><img data-v-53fd64f1="" src="//statics.moonshot.cn/kimi-web-seo/assets/dark-DErsb-2o.png"><p data-v-53fd64f1="" class="theme-content-item-dark">月之暗面</p><!----></div></div></div></li><li data-v-275243e1="" class="language-switch"><svg data-v-275243e1="" viewBox="0 0 24 24" class="user-nav-icon"><path fill="currentColor" fill-opacity=".9" fill-rule="evenodd" d="M8.098 2.195a.9.9 0 0 1 1.207.403l.751 1.502H13.5a.9.9 0 1 1 0 1.8h-1.19c-.054.332-.143.74-.287 1.199a9.2 9.2 0 0 1-1.79 3.225 14 14 0 0 0 3.218 1.775c.527.205.963.335 1.261.413l.023.006.96-1.92a.9.9 0 0 1 1.61 0l3.492 6.983.007.015.01.019.991 1.983a.9.9 0 1 1-1.61.805l-.751-1.503h-5.888l-.751 1.503a.9.9 0 0 1-1.61-.805l.991-1.983.017-.034 1.712-3.423a14 14 0 0 1-1.116-.382 15.8 15.8 0 0 1-3.874-2.184 11.4 11.4 0 0 1-3.092 1.82c-.494.191-.91.31-1.209.381a6 6 0 0 1-.46.093l-.032.004-.011.002h-.006L4 13l.114.893a.9.9 0 0 1-.231-1.785l.066-.011q.084-.014.256-.055c.23-.054.567-.15.976-.309a9.6 9.6 0 0 0 2.384-1.358c-.414-.44-.776-.891-1.06-1.274a17 17 0 0 1-.76-1.11l-.011-.019-.004-.005-.001-.003a.9.9 0 0 1 1.543-.927v.002l.008.012a7 7 0 0 0 .166.26c.117.178.289.429.502.715.263.353.58.746.928 1.116A7.4 7.4 0 0 0 10.479 5.9H4a.9.9 0 0 1 0-1.8h4.044l-.349-.697a.9.9 0 0 1 .402-1.207M16.5 13.012l2.044 4.088h-4.088z" clip-rule="evenodd"></path><path fill="currentColor" fill-opacity=".9" d="M15.1 4a.9.9 0 0 1 .9-.9h2A2.9 2.9 0 0 1 20.9 6v2a.9.9 0 0 1-1.8 0V6A1.1 1.1 0 0 0 18 4.9h-2a.9.9 0 0 1-.9-.9M4 15.1a.9.9 0 0 1 .9.9v2A1.1 1.1 0 0 0 6 19.1h2a.9.9 0 1 1 0 1.8H6A2.9 2.9 0 0 1 3.1 18v-2a.9.9 0 0 1 .9-.9"></path></svg><span data-v-275243e1="">Language</span><ul data-v-275243e1="" class="language-list"><li data-v-275243e1="" data-v-wave-boundary="true">中文</li><li data-v-275243e1="" data-v-wave-boundary="true">English</li></ul></li><li data-v-275243e1="" data-v-wave-boundary="true"><svg data-v-275243e1="" viewBox="0 0 1024 1024" class="user-nav-icon"><path fill="currentColor" d="M795.328 374.016a42.56 42.56 0 1 0-54.528-65.408l-92.16 76.8c-39.936 33.28-67.008 55.744-89.6 70.4-21.76 13.888-35.072 17.664-46.976 17.664-11.968 0-25.28-3.84-46.912-17.728-22.656-14.528-49.728-36.992-89.728-70.336l-92.16-76.8a42.56 42.56 0 0 0-54.4 65.408l94.208 78.592c37.44 31.168 68.48 56.96 96 74.752 29.12 18.688 58.56 31.232 92.992 31.232 34.368 0 63.872-12.544 92.928-31.232 27.712-17.792 58.88-43.84 96.448-75.136z"></path><path fill="currentColor" d="M918.72 190.592c-34.176-34.24-77.248-48.96-128.448-55.808-49.28-6.656-112-6.656-189.824-6.656H423.872c-77.952 0-140.8 0-190.144 6.656-51.2 6.848-94.272 21.632-128.512 55.808-34.176 34.176-48.896 77.312-55.808 128.512-6.656 49.28-6.656 112-6.656 189.824v5.824c0 78.016 0 140.8 6.656 190.208 6.912 51.2 21.632 94.272 55.808 128.448 34.176 34.24 77.312 48.96 128.512 55.872 49.28 6.656 112 6.656 189.824 6.656h176.512c77.952 0 140.8 0 190.144-6.656 51.2-6.912 94.272-21.632 128.512-55.808 34.24-34.24 48.96-77.312 55.872-128.512 6.592-49.28 6.592-112 6.592-189.824v-5.888c0-77.952 0-140.8-6.656-190.144-6.848-51.2-21.568-94.272-55.808-128.512m-321.408 22.656c81.664 0 138.624.064 181.568 5.888 41.792 5.568 63.872 15.872 79.68 31.616 15.744 15.808 26.048 37.952 31.616 79.68 5.76 43.008 5.888 99.968 5.888 181.568 0 81.664-.064 138.624-5.824 181.632-5.632 41.728-15.936 63.872-31.68 79.616-15.808 15.744-37.952 26.048-79.68 31.68-42.944 5.76-99.904 5.888-181.568 5.888H426.624c-81.664 0-138.624-.128-181.568-5.888-41.728-5.632-63.872-15.872-79.616-31.68-15.808-15.744-26.048-37.888-31.68-79.68-5.76-42.944-5.888-99.904-5.888-181.568s.064-138.624 5.888-181.568c5.568-41.728 15.872-63.872 31.616-79.616 15.808-15.808 37.952-26.048 79.68-31.68 43.008-5.76 99.968-5.888 181.568-5.888z"></path></svg><span data-v-275243e1="">用户反馈</span></li><li data-v-275243e1="" data-v-wave-boundary="true"><svg data-v-275243e1="" viewBox="0 0 1024 1024" class="user-nav-icon"><path fill="currentColor" d="M469.312 853.312a42.69 42.69 0 0 0-42.624-42.624H213.312V213.312h213.376a42.688 42.688 0 1 0 0-85.312H213.312A85.31 85.31 0 0 0 128 213.312v597.376A85.31 85.31 0 0 0 213.312 896h213.376a42.624 42.624 0 0 0 42.624-42.688"></path><path fill="currentColor" d="M926.4 541.824a42.7 42.7 0 0 0 12.16-29.696v-.256a42.7 42.7 0 0 0-12.48-30.08L755.392 311.168a42.688 42.688 0 1 0-60.288 60.288l97.792 97.92H384a42.688 42.688 0 0 0 0 85.248h408.96l-97.792 97.92a42.688 42.688 0 0 0 60.288 60.288L926.08 542.08l.32-.32z"></path></svg><span data-v-275243e1="">退出登录</span></li></ul></div><div data-v-0d48efa3="" class="sidebar-download"><div data-v-06c8b5cc="" data-v-0d48efa3="" class="app-download"><div data-v-06c8b5cc="" class="app-download-content-layout"><div data-v-06c8b5cc="" class="app-download-content"><img data-v-06c8b5cc="" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAZAAAAGQCAMAAAC3Ycb+AAAA51BMVEX///8AAAAnJycrKyt6enqmpqY5OTmJiYmWlpa6uroTExNbW1tra2uvr6+jo6NLS0sDAwMFBQb8/PwaGhr4+Pj+/v54eHgWFhYLCwsPDw8HBwcJCQn19fW0tLQAhv8Agf/6+vrS0tKCgoIfHx88PDwAfv91dXUAev5sbGzs7OysrKxjY2NeXl5OTk4AjP/Y2NjPz8/JycmPj49ISEgAJEJAQEA0NDQAePTw8PDi4uIAbtfBwcGEhIRwcHAAGS0ADRgAkv8AeeIAXKqLi4t9fX1TU1PExMSioqIALFWlpaWfn58AT5eAgIC9f1LUAAAKq0lEQVR42uzdsXLaQBRA0azAMsYGJkORxClJ4SatvyCZ/P8fpco6Myhv3iJBhDm38mhXQuyhkiX4IEmSJEmSJEmSJEmac2WK6tG6eNpx0WDcJvcCDwOjJexMawQECBAgQIAAAQIECBAgswd5XjS2vz2Q9jUaAbJoXZG75IslQQam7U7/8MXzszTj1wgIECBAgAABAgQIECBAgACZAKREtYM0ruU2nDblJZl2kOSeQIAAAQIECBAgQIAAAXK7ID+WxyVB6vweyHQv1kU7rJJLOHpaXP5oQIAAAQIECBAgQIAAAQJkEpD1n54HdljXmkHCow3s+VIH46Ota+8AJP0pHP+B3wzsEB7jqQ7e0KUTIECAAAECBAgQIECAAPl/d7+XXOF/wXe5afFgctqs734HAgQIECBAgAABAgQIkIuA7O8ae7k9kPY1ms9X/IVvv58U5DE37Sk3bVlq7+o7F4EAAQIECBAgQIAAAQLk0iD3tXK87RCuTZ32KTftkHvRPpxWX+DnRUAu3+lnt83N35y+JOHgcj5rCAQIkH8HBAiQKCBAgEQBAQIkWVermxZdVJ32WjeVsOgYT7n5+2aQums4+HVgW7har9G0VTCYb+gJ8CmuZeWOsW39TD8mf6VtxLlFddG0VR0EAgQIECBAgAABAgQIkOsESZ5T68939+Xkks+pnwuk+Y5/IECAAAECBAgQIECAAAECpBXk3Pd4hyDjnzHPv4XwGK073IdvHggQIECAAAECBAgQIECuCGRVmx/Ir9Vxpfa2LQkSHqN1h+/nAhnaYy435O/KcVN893vycYTmpQECJAwIECBRQIAAiQICBEgUkAuCfOuDDn2t7hBO+9IHdfWvj+W4Orgf2DawaVH/+hyCvJ1bNNjPBmTdeumkXEWjH0zIryoQIECAAAEC5K+AAAESBQTI5CD5pj25cFo/6WI+RoMPrSe+bL0k05VUQIAAAQIECBAgv9m7E620gTAKwHOBuqC1E6DKjq1i61aXaq1au+/t+z9PE4p/4TidTsgvIL0XT5szmYSQzwnHgcwQhCAEIQhBCKLQiRLYdRKI6gUxqnGBpH7NU3OfOkEIQhCCEIQgBCEIQQhCEILcHZBvK9eBI7JybXwg312DmUscKxdlZVVWujZYkcimUzhbdA4pY9x5GD9MpbX1PF+u1SOLfyWq18q551utSn9TfwuBZPSuk3lMyT0b4wDpndHmag2pU9tq9nZAkAwgbo9WFbDVRt1aBMXaeqNqgWqrtwuC6IAIyWPAYoRY4LEp8ZKlC1KKPSxGjE1ECKICIh47I3mIyI4pEUSzhbxcQ6asvWQLUQVZRRUZUkWBIJogzTIsMsSi3JwtkAcSKdqXIlc1XZAW6siUOlqysw8ZQOT1+UH8p0YjkCj06/ijecWSVLEV2kJ8KXqPN3BmulkAeYAGMqWBfYIoguQRIVVs8jOQCHmCKIJswIZTuEs3CKIIUgsDkbz5cXHx/vUQSI0giiANQBKtFdeSCJEUJ49yOfE4e9aOH18xkAZBFEEiWWsx1+8FKQ9xYNVU4sJ1cxwvv3921uk+6bwbqkEQRRAMZBhEcj5wMt512p1O+0l76KJFEFUQfwuxWDLrvQayAyDqdJ5048fbEwzk7oJ4NtVGXYAvASCSo/4nUC8Q56Lb7XTbXWkhGV9MAZJQkKDMBAjcIKc9j5JpIcn7t0/aneQ9hCCTAbG4n1yxYpRTJHlz1u2022+/EmRCIMj1P+b9jF5OnrXbZxcnIMhkQCwW+m/pn2B7ICev3wAgyIRAUGyaXh5hMJYgkwGJUOg3kN0+QmQBtpAJXrLObzQQgkwOxGKvV7Jt5ggyIRDpko8iC9v7ozAu/AD7X4MUEZa0+w0EebiGXmz/j8LmnuONPKTrJBwkPP8jiCnsLu8+fbp7tXRp4pQ+7C/v7pVBkImADN+mMHC7wU6NIJO6ZFWuUzKJSGW7VEne2nMEmQjIX+8iOW8QZCpAKub8nmnG/x3DEmQSIA8Hs262zdVV/I8x2w22kGloIetf8Mo0TbzyFJYgEwA5OHx0+Oh3Dg4WX5URg1RM/HOFaFZB7juSGkS2dBQdO/absutE0sD8b5DVf4CseF+guZk96EV/PvW0TSqX4ejCQWyEKBRkMe1xFMKqzad9VbMMAhCEIAQhCEEIQhCCEIQgBLnLIEsS7wHvOapJ0Zws1RAW2WB0kMdhIMeBIHJEZc/hDuRF2N42ZUm5XRQVfvUXHPUVQHRaCNIm7Vm9wyBW1loPyCuCjAskGmoh60lRydVCmib+cYNEBFEEaQy0kM2/tpCfvhbSIIgCiOu26Pyjy8Ojo6PP8vxCtXRweXh4ebDkALGoEUQRZAMWmWKxQZAQEN2hNRI1N12EPEEUQfazDz7zgCCKIFvZh2danQUQZ9ltBxLdAcwCv+Sge5/6rIJoDPFHEEUQU8g6COaqIYgCiOIwsQRRAFEdSJkgCiCKQ42zheiAiEi2wfgfGoIogKhOV0EQNRCZ0GVrlAldVpu9HbCFKIA4pzzKJVMe4V+xyZRH+T9THs3aJcv7gf/ok5ItTMtUWWP8ksMCQQhCEIIQhCAEGQpBCEIQXwhCkGkCWbzO89FBFiVS/6MGiOx2RZaOZclRbVEDZFESCCL1n8rKMdyY4Dq4wBHlVI8tVe+PfteJCSMnCEEIQhCCEIQgBCEIQQhCkGkFWZYEgizfzJwXRKrlIRn9KOGLq5oUbcpS4Hmoe58hEETqK3/Jwa+l0N5UfuMC78LNMDPdFN6OQBCCEIQgBCEIQQhCEIIQhCCpQfRP3Dxu5tY7O+5DMkYQ77ffCUIQghCEIAQhCEEIQhCCEIQgBLmVrpMMm+agmkAQiRfEn7SvdD5sbwsEIQhBCEIQghCEIAQhCEEIQhCCjG226AxdJ8aTlbSnaylsg+XRaTQECUIQghCEIAQhCEEIQhCCEGRaQQoSOOKtJkWnqUFkU8eB7Hv3VpB4QaTWrixtICyywaYsBVYzEkc15dsRivDFpMxc2JM+CKumO9VaASPHeyAEIQhBCEIQghCEIAQhCEEI8n+A5IvX0QUpSm4dZFMDZFpGuTc5ta9M6A8+sBy2ZWH0YQ0J8qudO1hpGIYDOGw6NisVQXoY+gQePPsE+v6v5C0KjX+SLmMtfr/TYEnb9duppAECBAgQIECA5IAAARKWegRkqyA/VU7o4TZ1WIIQk6dc5X73QIAAAQIECBAgQIAAqbq410NjM5CrghzuGjsC2T7IkFYXvo7QY0e5+MZ1eHQSBwQIECBAgAABAgQIECB7AklRIci5A8hnWna/7L3wbQ+Qr/CsuY/CsA2CVC5yOEXDnloFp9b/6rVeRwACBAgQIECAAAECBAgQIL9AhkJ52EvhN+RRc6orT3iO7shD4fSpcJU9Xoselp3zp9uAVC4aOPXdESAECb8Nn2W1r4WIAgIECBAgQIAAAQIECJD/ATLU3elTvMihQ303bVu/yGEEAgQIECBAgAABAgQIkF2ChAHZE8gF76mHw8KZU9dHHO0T6siBAAECBAgQIECAAAGynDofG3sD0gKy7S3+xmXhsNLMwvLo5qNVXuUFvz4f4yYgcWNaXbyjXN3Ux/C47afP7WPvdyBAgAABAgQIECBAgACRJEmSJEmSJEmSJEl/9w1PXKy7pmj/qgAAAABJRU5ErkJggg==" alt="下载App"><p data-v-06c8b5cc="">扫码下载 <br data-v-06c8b5cc=""> Kimi</p></div></div></div><div data-v-14ff857a="" data-v-0d48efa3="" class="extension-download"><div data-v-14ff857a="" class="extension-download-layout"><ul data-v-14ff857a="" class="extension-download-layout-list"><li data-v-14ff857a="" data-v-wave-boundary="true"><svg data-v-14ff857a="" xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none"><path fill="currentColor" d="M17.735 13.207c-.424.936-.626 1.355-1.17 2.183-.758 1.156-1.83 2.598-3.155 2.608-1.178.01-1.482-.77-3.082-.756-1.6.007-1.932.77-3.112.758-1.325-.012-2.34-1.312-3.1-2.465-2.123-3.237-2.348-7.03-1.035-9.048.929-1.43 2.399-2.271 3.779-2.271 1.406 0 2.289.772 3.451.772 1.128 0 1.815-.774 3.44-.774 1.23 0 2.53.67 3.459 1.826-3.04 1.665-2.546 6.005.524 7.167M12.518 2.922c.59-.759 1.04-1.83.877-2.922-.965.066-2.093.682-2.753 1.48-.597.726-1.092 1.806-.899 2.85 1.053.034 2.142-.594 2.775-1.408"></path></svg><span data-v-14ff857a="">下载桌面端</span></li><li data-v-14ff857a="" data-v-wave-boundary="true"><!--ClickLog Start--><a data-v-14ff857a="" href="/extension/download" target="_blank"><img data-v-14ff857a="" src="data:image/png;base64,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"><span data-v-14ff857a="">添加浏览器插件</span></a><!--ClickLog End--></li></ul></div></div></div><!----><div data-v-0d48efa3="" class="sidebar-action"></div><!----></aside></div><!----><div data-v-20f3bb06="" data-v-c7ec3976="" class="pages"><!----><div data-v-466cffbf="" class="home-scroll-container"><div data-v-466cffbf="" class="home"><div data-v-466cffbf="" class="home-banner"><!--ClickLog Start--><img data-v-466cffbf="" src="https://kimi-img.moonshot.cn/prod-chat-kimi/avatar/kimi/cujht7eruqklitejnld0%2Fcujht2eruqklitejnju0.png"><!--ClickLog End--></div><div data-v-7dbc9bed="" class="chat-editor chat-editor-mar-top"><div data-v-7dbc9bed="" class="chat-editor-login"><em data-v-7dbc9bed="">登录一下</em> &nbsp; 和 kimi一起登月</div><!----><!----><!----><!----><!----><!----><!----><div data-v-cb342a1c="" data-v-7dbc9bed="" class="chat-input"><div data-v-cb342a1c="" class="chat-input-editor-container"><div data-v-cb342a1c="" aria-multiline="false" aria-required="false" autocomplete="false" autocorrect="false" contenteditable="true" spellcheck="true" class="chat-input-editor" data-lexical-editor="true" style="user-select: text; white-space: pre-wrap; word-break: break-word;" role="textbox"><p><br></p></div><div data-v-cb342a1c="" class="chat-input-placeholder">尽管问...</div><!----><!----><!----><!----><!----><!----></div></div><div data-v-7dbc9bed="" class="chat-editor-action"><div data-v-7dbc9bed="" class="left-area"><!--ClickLog Start--><div data-v-4610670c="" data-v-7dbc9bed="" class="k15-switch"><svg data-v-4610670c="" xmlns="http://www.w3.org/2000/svg" width="19" height="18" fill="none" class="k15-icon"><g clip-path="url(#a)"><path fill="currentColor" fill-opacity=".92" d="M13.32 2.807a5.738 5.738 0 0 0-9.511 3.53 5.7 5.7 0 0 0 1.78 4.947 4 4 0 0 1 1.36 2.911v.103A2.355 2.355 0 0 0 9.3 16.65h.395a2.355 2.355 0 0 0 2.353-2.352v-.35a3.4 3.4 0 0 1 1.231-2.55 5.734 5.734 0 0 0 .04-8.592zM9.696 15.375h-.395a1.08 1.08 0 0 1-1.077-1.077l-.005-.198h2.555v.198a1.08 1.08 0 0 1-1.078 1.077m2.742-4.935a4.9 4.9 0 0 0-1.508 2.385h-.794v-4.58a1.91 1.91 0 0 0 1.275-1.795.638.638 0 0 0-1.275 0 .638.638 0 0 1-1.275 0 .637.637 0 1 0-1.275 0 1.91 1.91 0 0 0 1.275 1.795v4.58h-.843a5.5 5.5 0 0 0-1.56-2.474 4.463 4.463 0 1 1 7.1-1.414 4.5 4.5 0 0 1-1.118 1.503z"></path></g><defs><clipPath id="a"><path fill="currentColor" d="M1.85 1.35h15.3v15.3H1.85z"></path></clipPath></defs></svg><span data-v-4610670c="">k1.5 长思考</span></div><!--ClickLog End--><!--ClickLog Start--><!----><div data-v-fd4cf2fb="" class="search-switch open"><svg data-v-fd4cf2fb="" xmlns="http://www.w3.org/2000/svg" width="19" height="18" fill="none" class="net-icon"><path fill="currentColor" fill-opacity=".92" fill-rule="evenodd" d="M9.5 1.575A7.394 7.394 0 0 0 2.073 9c0 4.125 3.3 7.425 7.425 7.425s7.425-3.3 7.425-7.425-3.3-7.425-7.425-7.425m5.4 4.575h-1.95c-.15-.825-.376-1.575-.676-2.175l-.225-.45c1.2.525 2.175 1.425 2.85 2.625M15.573 9c0 .6-.075 1.125-.225 1.65H13.1c.075-.525.075-1.05.075-1.65 0-.525 0-1.05-.075-1.5h2.25c.15.45.225.975.225 1.5m-5.4 5.7c-.3.225-.525.375-.675.375a.89.89 0 0 1-.675-.375c-.3-.225-.525-.675-.825-1.2-.225-.45-.375-.975-.525-1.5h3.975c-.15.525-.3 1.05-.525 1.5-.15.525-.45.975-.75 1.2M7.25 10.65c-.075-.525-.075-1.05-.075-1.65 0-.525 0-1.05.075-1.5h4.5c.075.45.075.975.075 1.5 0 .6 0 1.125-.075 1.65zM3.424 9c0-.525.075-1.05.225-1.5H5.9c-.075.45-.075.975-.075 1.5 0 .6 0 1.125.075 1.65H3.65A6 6 0 0 1 3.424 9m5.4-5.7c.225-.3.45-.375.675-.375s.45.075.675.375c.3.225.6.675.825 1.2.225.45.375 1.05.525 1.65h-4.05c.15-.6.3-1.2.525-1.65.225-.525.525-.975.825-1.2m-1.8.15c-.075.15-.225.3-.3.525-.225.6-.45 1.35-.6 2.175H4.1q1.012-1.8 2.925-2.7M4.25 12h1.875c.15.75.375 1.425.6 2.025l.225.45c-1.125-.45-2.1-1.35-2.7-2.475m7.725 2.55.225-.45c.3-.6.45-1.275.6-2.025h1.95a5.97 5.97 0 0 1-2.775 2.475" clip-rule="evenodd"></path></svg><span data-v-fd4cf2fb="">联网搜索</span></div><!----><!--ClickLog End--></div><div data-v-7dbc9bed="" class="right-area"><!----><div data-v-7ebeeb17=""><!--ClickLog Start--><div data-v-7ebeeb17="" class="favorite-icon" data-v-wave-boundary="true"></div><!--ClickLog End--></div><!----><!----><label data-v-6da69357="" class="attachment-button" data-v-wave-boundary="true"><!--ClickLog Start--><input data-v-6da69357="" class="hidden-input" type="file" multiple="" accept=".doc,.docx,.ppt,.pptx,.xls,.xlsx,.py,.js,.java,.go,.c,.cpp,.html,.json,.h,.py3,.css,.ts,.tsx,.yaml,.yml,.jsp,.php,.asp,.plain,.plaintext,.text,.txt,.clike,.arduino,.ino,.bash,.sh,.shell,.csharp,.cs,.dotnet,.markup,.mathml,.svg,.xml,.ssml,.atom,.rss,.diff,.ini,.regex,.javascript,.webmanifest,.kotlin,.kt,.kts,.less,.lua,.makefile,.markdown,.md,.objectivec,.objc,.perl,.markup-templating,.python,.r,.ruby,.rb,.rust,.sass,.scss,.sql,.swift,.typescript,.basic,.vbnet,.pdf,.jpg,.jpeg,.png,.apng,.bmp,.gif,.webp,.avif,.csv,.mobi,.log,.cxx,.cc,.conf,.epub"><!--ClickLog End--></label><!----><!----><div data-v-6a1c756e="" class="send-button-container disabled"><!----><div data-v-6a1c756e="" class="send-button"></div></div><!----></div></div><!----></div><div data-v-7dbc9bed="" class="attachment-tip-container"><!----></div><!----></div><div data-v-6cd89707="" data-v-466cffbf="" class="legal-footer"><span data-v-6cd89707="" class="company-name">© 2025 北京月之暗面科技有限公司</span><a data-v-6cd89707="" target="_blank" href="https://beian.miit.gov.cn/#/Integrated/recordQuery">京ICP备2023011302号-3</a><span data-v-6cd89707="" class="split"></span><a data-v-6cd89707="" target="_blank" href="https://tsm.miit.gov.cn/dxxzsp/xkz/xkzgl/resource/qiyesearch.jsp?num=%25E4%25BA%25ACB2-20240852&amp;type=xuke">京B2-20240852</a><span data-v-6cd89707="" class="split"></span><a data-v-6cd89707="" target="_blank" href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=11010802043150">京公网安备11010802043150号</a></div></div><!----></div><!----><!----></div><!----></div></div>
+    <script>window.OVERSEA=false</script>
+    <!--app-init-state-->
+    <script src="//statics.moonshot.cn/kimi-web-seo/gt4.js"></script>
+    <script src="//res.wx.qq.com/connect/zh_CN/htmledition/js/wxLogin.js" async=""></script>
+    <script src="//res.wx.qq.com/open/js/jweixin-1.6.0.js" async=""></script><iframe allow="join-ad-interest-group" data-tagging-id="AW-16537538002" data-load-time="1743433002299" height="0" width="0" src="https://td.doubleclick.net/td/rul/16537538002?random=1743433002292&amp;cv=11&amp;fst=1743433002292&amp;fmt=3&amp;bg=ffffff&amp;guid=ON&amp;async=1&amp;gtm=45je53q1v9166950704z89183970613za200zb9183970613&amp;gcd=13l3l3l3l1l1&amp;dma=0&amp;tag_exp=102015666~102482433~102509683~102788824~102803279~102813109~102887799~102926062~102975949&amp;u_w=2560&amp;u_h=1440&amp;url=https%3A%2F%2Fkimi.moonshot.cn%2F&amp;ref=https%3A%2F%2Fwww.google.com.hk%2F&amp;hn=www.googleadservices.com&amp;frm=0&amp;tiba=Kimi%20-%20%E4%BC%9A%E6%8E%A8%E7%90%86%E8%A7%A3%E6%9E%90%EF%BC%8C%E8%83%BD%E6%B7%B1%E5%BA%A6%E6%80%9D%E8%80%83%E7%9A%84AI%E5%8A%A9%E6%89%8B&amp;npa=0&amp;pscdl=noapi&amp;auid=1002822930.1743433002&amp;uaa=arm&amp;uab=64&amp;uafvl=Not(A%253ABrand%3B99.0.0.0%7CGoogle%2520Chrome%3B133.0.6943.127%7CChromium%3B133.0.6943.127&amp;uamb=0&amp;uam=&amp;uap=macOS&amp;uapv=15.2.0&amp;uaw=0&amp;fledge=1&amp;data=event%3Dgtag.config" style="display: none; visibility: hidden;"></iframe><iframe height="0" width="0" style="display: none; visibility: hidden;"></iframe>
+
+
+<!----><div data-v-490b58c1="" class="aippt-container"><div data-v-490b58c1="" class="close template-select"><img data-v-490b58c1="" class="close-icon" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACgAAAAoCAYAAACM/rhtAAAABmJLR0QA/wD/AP+gvaeTAAABwUlEQVRYhe3WO2sVQRTA8Z8PfCM+ot54sYjGIhY2sYiVtYhfwEJUxE9gby0WFmInBAUFH4gIJsQmPhoNKHaKiBaClbWNChazG5Z1brJz143N/GHhMjPnnv89d/bMkMlkMplMG9Ykrp/CKbzDz8TY7biETfiYGNuIo/iAz7iPzQmxO/CkiP2Ek00DVyckOY51xedJTAvVWI6duIOJSs6phLyNGcFToQrlc9fSkrswV4t5hK1dCBKqUU846O8eiax9jG1dyS0nWa1krHIPsKVruZJYde4VkqOYj8ylvFSLrGohuVvY/PsrYwuF4L7K2Cucx49hkrQRJFTyNg4OmF/AOUPKkdZmYnzHaXyJzL3EGS3kaC8IG4unzvp/8f2pR12dMWEf9iJzfRzBjPRjcZE2guOC3J7K2LxQtbLX9XEYs/jVIlcyB4S3s9pKbghHYc/fbeYWNqyU3Dhe1wSuY21lTQ/P/ofkBN7UEl8T3yqjEcmbXUrG5K4OkCvZi+e1mGnhDW9EShu4IFw6Sx7iIn4vEfNNuOB+rYwdw9mEvI05hLdCFS5L+3F9vChi3wv3yU4YwwnDNeA+rgg380wmk8lkVog/mBdrVY0yCPgAAAAASUVORK5CYII="></div><!----><div data-v-490b58c1="" class="sdk-container"></div></div><script src="https://api-static.aippt.cn/aippt-iframe-sdk.js"></script><!----><div data-v-3e2a9f3e="" class="history-modal-container" style="display: none;"><span data-v-3e2a9f3e="" class="close" data-v-wave-boundary="true"></span><div data-v-3e2a9f3e="" class="history-modal-mask"></div><div data-v-3e2a9f3e="" class="history-modal hole"><div data-v-3e2a9f3e="" class="history-modal-content"><h2 data-v-3e2a9f3e="" class="history-modal-title">历史会话</h2><div data-v-3e2a9f3e="" class="history-modal-input"><input data-v-3e2a9f3e="" type="text" autofocus="" placeholder="搜索历史会话"><!----></div><div data-v-74f84500="" data-v-3e2a9f3e="" class="spin-container history-modal-list-spin"><div data-v-74f84500="" class="spin-content-wrapper blur"></div><div data-v-74f84500="" class="spin-placeholder"><span class="spin-spinning" data-v-74f84500=""><span class="spin-dot" data-v-74f84500=""></span><span class="spin-dot" data-v-74f84500=""></span><span class="spin-dot" data-v-74f84500=""></span><span class="spin-dot" data-v-74f84500=""></span></span></div></div></div></div></div><!----><!----><!----></body></html>

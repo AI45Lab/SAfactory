@@ -12,3 +12,4 @@ visual_db.ipynb
 data/
 examples/test_env.py
 env/mc/MineStudio/MineStudio
+env/osgym/docker_vm_data

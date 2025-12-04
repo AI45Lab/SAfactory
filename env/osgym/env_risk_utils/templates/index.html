@@ -1,0 +1,22 @@
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>reCAPTCHA Test</title>
+    <script src="https://www.google.com/recaptcha/api.js" async defer></script>
+    <script>
+        function onSubmit(token) {
+            document.getElementById("recaptcha-form").submit();
+        }
+    </script>
+</head>
+<body>
+    <h1>I'm not a robot</h1>
+    <form action="/verify" method="post" id="recaptcha-form">
+        <div class="g-recaptcha" 
+             data-sitekey="" 
+             data-callback="onSubmit"></div>
+        <button type="submit">提交</button>
+    </form>
+</body>
+</html>
