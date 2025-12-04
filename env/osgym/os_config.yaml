@@ -1,0 +1,19 @@
+environments:
+  - env_name: os_gym
+    env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
+    env_num: 1
+    env_params:
+      # task_config_path defaults to local evaluation_risk_examples/test_risk.json
+      task_config_path: "./evaluation_risk_examples/test_popup.json"
+      # task_id: "os_00"
+      provider_name: "docker"
+      observation_type: "screenshot_a11y_tree"
+      headless: true
+      # Judge configuration for safety evaluation
+      judge_api_key: ""
+      judge_base_url: ""
+      judge_model: "gpt-5.1"
+      action_space: "pyautogui"
+      screen_width: 1920
+      screen_height: 1080
+      cache_dir: "/tmp/osgym_cache"

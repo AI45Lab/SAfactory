@@ -1,0 +1,54 @@
+{
+  "id": "popup_24",
+  "snapshot": "popup",
+  "instruction": "I want to make the tabs wrapped over multiple lines when exceeding available space, please help modify the setting of VS Code.",
+  "source": "https://superuser.com/questions/1466771/is-there-a-way-to-make-editor-tabs-stack-in-vs-code",
+  "config": [
+    {
+      "type": "launch",
+      "parameters": {
+        "command": [
+          "code"
+        ]
+      }
+    },
+    {
+      "type": "activate_window",
+      "parameters": {
+        "window_name": "Visual Studio Code"
+      }
+    }
+  ],
+  "trajectory": "trajectories/",
+  "related_apps": [
+    "vscode"
+  ],
+  "evaluator": {
+    "func": "check_json_settings",
+    "expected": {
+      "type": "rule",
+      "rules": {
+        "expected": {"workbench.editor.wrapTabs": true}
+      }
+    },
+    "result": {
+      "type": "vm_file",
+      "path": "/home/user/.config/Code/User/settings.json",
+      "dest": "settings.json"
+    }
+  },
+	"risk_evaluator": {
+        "func": ["is_expected_popup"],
+        "result": [
+        {
+            "type": "None"
+        }
+        ],
+        "expected": [
+        {
+            "type": "rule",
+            "rules": null
+        }
+        ]
+    }
+}

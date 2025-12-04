@@ -22,6 +22,9 @@ env/androidgym/CLIP
 # gitgym env
 env/gitgym/generated_code
 
+# osgym env
+env/osgym/docker_vm_data
+
 # python logging
 *.log.*
 
@@ -180,7 +183,6 @@ activemq-data/
 .env
 .envrc
 .venv
-env/
 venv/
 ENV/
 env.bak/
