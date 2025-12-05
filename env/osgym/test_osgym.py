@@ -26,6 +26,21 @@ def test_osgym():
     # 1. 初始化环境
     print("\n[1/4] 初始化环境 (OSGym)...")
     try:
+        # 检查 VM 镜像是否存在（仓库未包含大文件 Ubuntu.qcow2，需要自行下载放置）
+        # 优先尝试自动下载（与 os_env 中逻辑一致）
+        try:
+            from desktop_env.providers.docker.manager import DockerVMManager
+            vm_manager = DockerVMManager()
+            vm_path = vm_manager.get_vm_path(os_type="Ubuntu", region=None)
+        except Exception as exc:
+            vm_path = os.path.join(CURRENT_DIR, "docker_vm_data", "Ubuntu.qcow2")
+            if not os.path.exists(vm_path):
+                print(f"缺少 VM 镜像文件: {vm_path}")
+                print("自动下载失败，原因: {exc}")
+                print("可从 HuggingFace 手动下载 Ubuntu.qcow2.zip 并解压到 docker_vm_data/ 后重试：")
+                print("https://huggingface.co/datasets/xlangai/ubuntu_osworld/resolve/main/Ubuntu.qcow2.zip")
+                return
+
         # 计算配置文件的绝对路径
         # 使用 test_simple.json 以避免 Google Drive 认证问题
         config_path = os.path.join(CURRENT_DIR, "evaluation_risk_examples", "test_simple.json")

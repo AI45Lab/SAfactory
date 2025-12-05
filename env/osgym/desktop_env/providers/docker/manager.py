@@ -1,6 +1,7 @@
 import os
 import platform
 import zipfile
+from pathlib import Path
 
 from time import sleep
 import requests
@@ -18,7 +19,10 @@ RETRY_INTERVAL = 5
 
 UBUNTU_X86_URL = "https://huggingface.co/datasets/xlangai/ubuntu_osworld/resolve/main/Ubuntu.qcow2.zip"
 WINDOWS_X86_URL = "https://huggingface.co/datasets/xlangai/windows_osworld/resolve/main/Windows-10-x64.qcow2.zip"
-VMS_DIR = "./docker_vm_data"
+
+# 将下载目录固定在 AIEvoBox/env/osgym/docker_vm_data
+_ROOT = Path(__file__).resolve().parents[3]  # .../AIEvoBox/env/osgym
+VMS_DIR = str(_ROOT / "docker_vm_data")
 
 URL = UBUNTU_X86_URL
 DOWNLOADED_FILE_NAME = URL.split('/')[-1]
