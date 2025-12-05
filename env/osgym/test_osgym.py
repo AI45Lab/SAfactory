@@ -6,18 +6,16 @@ from pathlib import Path
 
 
 CURRENT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = CURRENT_DIR.parent.parent
+PROJECT_ROOT = CURRENT_DIR.parent.parent  # AIEvoBox 根目录
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-if str(CURRENT_DIR) not in sys.path:
-    sys.path.insert(0, str(CURRENT_DIR))
-
+# 确保包形式导入（env.osgym.os_env 使用了相对导入，需要包上下文）
 try:
-    from os_env import OSGym
+    from env.osgym.os_env import OSGym
 except ImportError as e:
     print(f"ImportError: {e}")
-    print("请确保环境依赖已安装。")
+    print("请在 AIEvoBox 根目录运行：python -m env.osgym.test_osgym")
     sys.exit(1)
 
 def test_osgym():

@@ -4,7 +4,7 @@ environments:
     env_num: 1
     env_params:
       # task_config_path defaults to local evaluation_risk_examples/test_risk.json
-      task_config_path: "./evaluation_risk_examples/test_popup.json"
+      task_config_path: "./evaluation_risk_examples/test_simple.json"
       # task_id: "os_00"
       provider_name: "docker"
       observation_type: "screenshot_a11y_tree"
