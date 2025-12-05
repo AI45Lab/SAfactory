@@ -157,7 +157,18 @@ class OSGym(BaseEnv):
         return tasks
 
     def _create_desktop_env(self):
-        vm_path = os.path.join(CURRENT_DIR, "docker_vm_data", "Ubuntu.qcow2")
+        # 优先用 DockerVMManager 自动拉取/解压 VM 镜像，缺失时可从 HuggingFace 下载
+        try:
+            from desktop_env.providers.docker.manager import DockerVMManager
+
+            vm_manager = DockerVMManager()
+            vm_path = vm_manager.get_vm_path(os_type="Ubuntu", region=None)
+        except Exception as exc:
+            # 回退到固定路径，不阻塞初始化；提示用户手动下载
+            vm_path = os.path.join(CURRENT_DIR, "docker_vm_data", "Ubuntu.qcow2")
+            print(f"自动下载 VM 失败或未启用，回退到默认路径: {vm_path}")
+            print(f"原因: {exc}")
+
         print(f"Using VM path: {vm_path}")
         print(f"Using cache dir: {self.cache_dir}")
 

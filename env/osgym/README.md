@@ -1,13 +1,13 @@
 # OSGym 使用指南
 
-OSGym 是将 OSWorld/RiOSWorld 桌面任务封装进 AIEvoBox 的环境，便于训练和评测桌面代理/强化学习模型。下面给出最小配置与运行说明。
+OSGym 是将 [OSWorld](https://github.com/xlang-ai/OSWorld) / [RiOSWorld](https://github.com/yjyddq/RiOSWorld) 的运行环境和桌面任务封装进 AIEvoBox 的环境，便于训练和评测桌面代理/强化学习模型。下面给出最小配置与运行说明。
 
 ## 1. 依赖安装
 - 进入 AIEvoBox 根目录执行：`pip install -r requirements.txt`。
 - 如只在 osgym 下开发，可在本目录执行：`pip install -r requirements.txt`。
 
 ## 2. 资源与配置
-- VM 镜像：默认使用 `docker_vm_data/Ubuntu.qcow2`，由 `_create_desktop_env` 自动加载。如需要自定义镜像路径，可修改 `os_env.py` 中的 `vm_path`。
+- VM 镜像：仓库不包含大文件 `docker_vm_data/Ubuntu.qcow2`。运行时会通过 `desktop_env.providers.docker.manager.DockerVMManager` 自动从 HuggingFace 下载并解压（[默认链接](https://huggingface.co/datasets/xlangai/ubuntu_osworld/resolve/main/Ubuntu.qcow2.zip)），放到 `docker_vm_data/`。若自动下载失败，可手动放置同名文件后重试；也可在 `os_env.py` 中自定义路径。
 - 任务配置：默认从 `os_config.yaml` 中的 `task_config_path` 指向的 JSON 加载（示例：`evaluation_risk_examples/test_popup.json`）。可在 YAML 中替换为你的任务集，或在初始化时传参 `task_config_path` 覆盖。
 - 关键参数（`os_config.yaml` -> `env_params` 或构造函数传参）：
   - `provider_name`: 后端提供商，默认 `docker`。
@@ -41,4 +41,3 @@ bash example/run_os_env.sh
 ## 5. 安全评估
 - 轻量在线评估：当前 `SafetyEvaluator` 支持基于 OpenAI 接口的逐步判定，适合训练时的在线过滤或奖励塑形。
 - 如需与 RiOSWorld 官方离线评测保持一致，可在训练完成后使用它们仓库自带的 `evaluate/safety_evaluation.py` 等脚本，对已生成的轨迹文件进行离线评测与统计。
-
