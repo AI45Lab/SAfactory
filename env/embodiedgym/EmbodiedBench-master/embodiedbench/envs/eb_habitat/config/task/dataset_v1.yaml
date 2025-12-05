@@ -1,0 +1,10 @@
+# @package habitat.dataset
+
+defaults:
+  - /habitat/dataset: dataset_config_schema
+  - _self_
+
+type: LangRearrangeDataset-v0
+data_path: "datasets/train.pickle"
+split: train
+scenes_dir: "data/replica_cad/"

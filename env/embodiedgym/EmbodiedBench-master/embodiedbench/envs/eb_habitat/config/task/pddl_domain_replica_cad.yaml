@@ -1,0 +1,292 @@
+# Defines the PDDL domain of tasks in ReplicaCAD.
+
+types:
+  static_obj_type:
+    - recep_type
+    - movable_entity_type
+  movable_entity_type:
+    - stackable_entity_type
+  recep_type:
+    - static_receptacle_entity_type
+    - art_receptacle_entity_type
+    - nav_receptacle
+  art_receptacle_entity_type:
+    - cab_type
+    - fridge_type
+  nav_receptacle:
+    - static_receptacle_entity_type
+    - art_receptacle_entity_type
+  static_receptacle_entity_type:
+    - place_receptacle
+
+
+
+constants:
+  - name: cab_push_point_7
+    expr_type: cab_type
+  - name: cab_push_point_6
+    expr_type: cab_type
+  - name: cab_push_point_5
+    expr_type: cab_type
+  - name: cab_push_point_4
+    expr_type: cab_type
+  - name: fridge_push_point
+    expr_type: fridge_type
+  - name: robot_0
+    expr_type: robot_entity_type
+
+predicates:
+  - name: in
+    args:
+      - name: obj
+        expr_type: movable_entity_type
+      - name: receptacle
+        expr_type: art_receptacle_entity_type
+    set_state:
+      obj_states:
+        obj: receptacle
+
+  # - name: stacked_on_top
+  #   args:
+  #     - name: base_obj
+  #       expr_type: stackable_entity_type
+  #     - name: on_top_obj
+  #       expr_type: stackable_entity_type
+  #   set_state:
+  #     obj_states:
+  #       on_top_obj: base_obj
+
+  - name: on_top
+    args:
+      - name: obj
+        expr_type: movable_entity_type
+      - name: receptacle
+        expr_type: static_receptacle_entity_type
+    set_state:
+      obj_states:
+        obj: receptacle
+      recep_scaling: [1.0, 1.25, 1.0]
+
+  - name: holding
+    args:
+      - name: obj
+        expr_type: movable_entity_type
+    set_state:
+      robot_states:
+        robot_0:
+          holding: obj
+
+  - name: not_holding
+    args: []
+    set_state:
+      robot_states:
+        robot_0:
+          should_drop: True
+
+  - name: opened_cab
+    args:
+      - name: cab_id
+        expr_type: cab_type
+    set_state:
+      art_states:
+        cab_id:
+          value: 0.45
+          cmp: 'greater'
+          override_thresh: 0.1
+
+  - name: closed_cab
+    args:
+      - name: cab_id
+        expr_type: cab_type
+    set_state:
+      art_states:
+        cab_id:
+          value: 0.0
+          cmp: 'close'
+
+
+  - name: opened_fridge
+    args:
+      - name: fridge_id
+        expr_type: fridge_type
+    set_state:
+      art_states:
+        fridge_id:
+          value: 1.22
+          cmp: 'greater'
+
+  - name: closed_fridge
+    args:
+      - name: fridge_id
+        expr_type: fridge_type
+    set_state:
+      art_states:
+        fridge_id:
+          value: 0.0
+          cmp: 'close'
+
+  # Place the robot as close as possible. Don't check any collision conditions
+  - name: robot_at_closest
+    args:
+      - name: Y
+        expr_type: static_obj_type
+    set_state:
+      robot_states:
+        robot_0:
+          pos: Y
+          place_at_pos_dist: -1.0
+          base_angle_noise: 0.0
+          place_at_angle_thresh: 1.0
+
+  - name: robot_at_obj
+    args:
+      - name: Y
+        expr_type: movable_entity_type
+    set_state:
+      robot_states:
+        robot_0:
+          pos: Y
+          place_at_pos_dist: 1.5
+          base_angle_noise: 0.0
+          place_at_angle_thresh: 1.0
+
+  - name: robot_at
+    args:
+      - name: Y
+        expr_type: static_obj_type
+    set_state:
+      robot_states:
+        robot_0:
+          pos: Y
+          place_at_pos_dist: 2.0
+          base_angle_noise: 0.0
+          place_at_angle_thresh: 1.57
+
+  - name: at
+    args:
+      - name: obj
+        expr_type: movable_entity_type
+      - name: at_entity
+        expr_type: recep_type
+    set_state:
+        obj_states:
+            obj: at_entity
+
+actions:
+  - name: noop
+    parameters: {}
+    precondition: null
+    postcondition: []
+
+  # Only defined relative to place receptacles.
+  - name: nav
+    parameters:
+      - name: entity
+        expr_type: nav_receptacle
+    precondition: null
+    postcondition:
+      - robot_at_closest(entity)
+
+  - name: pick
+    parameters:
+      - name: obj
+        expr_type: movable_entity_type
+      - name: robot
+        expr_type: robot_entity_type
+    precondition:
+      expr_type: AND
+      sub_exprs:
+        - not_holding()
+        - robot_at_obj(obj)
+        - quantifier: FORALL
+          inputs:
+            - name: recep
+              expr_type: cab_type
+          expr_type: NAND
+          sub_exprs:
+            - in(obj, recep)
+            - closed_cab(recep)
+    postcondition:
+      - holding(obj)
+
+  # - name: place_on_top
+  #   parameters:
+  #     - name: base_obj
+  #       expr_type: stackable_entity_type
+  #   precondition:
+  #     expr_type: AND
+  #     quantifier: EXISTS
+  #     inputs:
+  #       - name: place_obj
+  #         expr_type: stackable_entity_type
+  #     sub_exprs:
+  #       - holding(place_obj)
+  #       - robot_at(base_obj)
+  #   postcondition:
+  #     - not_holding()
+  #     - stacked_on_top(place_obj, base_obj)
+
+  - name: place
+    parameters:
+      - name: recep
+        expr_type: place_receptacle
+    precondition:
+      expr_type: AND
+      quantifier: EXISTS
+      inputs:
+        - name: place_obj
+          expr_type: movable_entity_type
+      sub_exprs:
+        - holding(place_obj)
+        - robot_at(recep)
+    postcondition:
+      - not_holding()
+      - at(place_obj, recep)
+
+  - name: open_fridge
+    parameters:
+      - name: fridge_id
+        expr_type: fridge_type
+    precondition:
+      expr_type: AND
+      sub_exprs:
+        - robot_at(fridge_id)
+        - closed_fridge(fridge_id)
+    postcondition:
+      - opened_fridge(fridge_id)
+
+  - name: close_fridge
+    parameters:
+      - name: fridge_id
+        expr_type: fridge_type
+    precondition:
+      expr_type: AND
+      sub_exprs:
+        - robot_at(fridge_id)
+        - opened_fridge(fridge_id)
+    postcondition:
+      - closed_fridge(fridge_id)
+
+  - name: open_cab
+    parameters:
+      - name: marker
+        expr_type: cab_type
+    precondition:
+      expr_type: AND
+      sub_exprs:
+        - robot_at(marker)
+        - closed_cab(marker)
+    postcondition:
+      - opened_cab(marker)
+
+  - name: close_cab
+    parameters:
+      - name: marker
+        expr_type: cab_type
+    precondition:
+      expr_type: AND
+      sub_exprs:
+        - robot_at(marker)
+        - opened_cab(marker)
+    postcondition:
+      - closed_cab(marker)

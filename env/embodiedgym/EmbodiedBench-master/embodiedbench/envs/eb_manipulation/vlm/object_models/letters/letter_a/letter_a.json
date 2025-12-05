@@ -1,0 +1,24 @@
+{
+ "class": "letters",
+ "name": "letter_a",
+ "articulated": false,
+ "constraints": null,
+ "highest_part": 0,
+ "manipulated_part": [
+  0
+ ],
+ "parts": [
+  {
+   "name": "letter_a",
+   "model_path": "./vlm/object_models/letters/letter_a/letter_a.dae",
+   "graspable": true,
+   "local_grasp_pose_path": "letter_a.pkl",
+   "property": {
+    "shape": "letter of 'a'",
+    "size": "medium",
+    "color": null,
+    "relative_pos": null
+   }
+  }
+ ]
+}

@@ -1,0 +1,24 @@
+{
+ "class": "wiper",
+ "name": "sponge",
+ "articulated": false,
+ "constraints": null,
+ "highest_part": 0,
+ "manipulated_part": [
+  0
+ ],
+ "parts": [
+  {
+   "orginal_name": "sponge",
+   "name": "sponge",
+   "graspable": true,
+   "property": {
+    "shape": "sponge",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   },
+   "local_grasp_pose_path": "sponge.pkl"
+  }
+ ]
+}

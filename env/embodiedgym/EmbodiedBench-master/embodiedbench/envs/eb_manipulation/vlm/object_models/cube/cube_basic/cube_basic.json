@@ -1,0 +1,24 @@
+{
+ "class": "cube",
+ "name": "cube_basic",
+ "articulated": false,
+ "constraints": null,
+ "highest_part": 0,
+ "manipulated_part": [
+  0
+ ],
+ "parts": [
+  {
+   "orginal_name": "cube",
+   "name": "cube_basic",
+   "graspable": true,
+   "property": {
+    "shape": "cube",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   },
+   "local_grasp_pose_path": "cube_basic.pkl"
+  }
+ ]
+}

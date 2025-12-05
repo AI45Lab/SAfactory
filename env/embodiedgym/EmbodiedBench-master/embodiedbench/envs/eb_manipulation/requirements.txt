@@ -1,0 +1,9 @@
+numpy==1.26.4
+Pillow
+pyquaternion
+html-testRunner
+setuptools
+natsort
+scipy
+open3d
+opencv-python-headless 

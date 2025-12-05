@@ -1,0 +1,535 @@
+---
+dataset_path: "data/replica_cad/replicaCAD.scene_dataset_config.json"
+correct_unstable_results: False
+additional_object_paths:
+  - "data/objects/ycb/configs"
+scene_sets:
+  -
+    name: "scene_train_split"
+    included_substrings:
+      - "v3_sc0_staging"
+      - "v3_sc1_staging"
+      - "v3_sc2_staging"
+    excluded_substrings: []
+  -
+    name: "scene_val_split"
+    included_substrings:
+      - "v3_sc3_staging"
+    excluded_substrings: []
+  -
+    name: "scene_test_split"
+    included_substrings:
+      - "v3_sc4_staging"
+    excluded_substrings: []
+
+category_groups:
+  "all_cats":
+    # A list of every object category including both train and evaluation.
+    included:
+      - "ball"
+      - "clamp"
+      - "hammer"
+      - "screwdriver"
+      - "padlock"
+      - "scissors"
+      - "block"
+      - "drill"
+      - "spatula"
+      - "knife"
+      - "spoon"
+      - "plate"
+      - "sponge"
+      - "cleanser"
+      - "plum"
+      - "pear"
+      - "peach"
+      - "apple"
+      - "lemon"
+      - "can"
+      - "box"
+      - "banana"
+      - "strawberry"
+      - "lego"
+      - "rubriks cube"
+      - "book"
+      - "bowl"
+      - "cup"
+      - "mug"
+      - "orange"
+      - "lid"
+      - "toy airplane"
+      - "wrench"
+      # - "fork"
+
+  "all_eval_cats":
+    included:
+      - "mug"
+      - "orange"
+      - "lid"
+      - "toy airplane"
+      - "wrench"
+
+  "all_train_cats":
+    included:
+      - "ball"
+      - "clamp"
+      - "hammer"
+      - "screwdriver"
+      - "padlock"
+      - "scissors"
+      - "block"
+      - "drill"
+      - "spatula"
+      - "knife"
+      - "spoon"
+      # - "fork"
+      - "plate"
+      - "sponge"
+      - "cleanser"
+      - "plum"
+      - "pear"
+      - "peach"
+      - "apple"
+      - "lemon"
+      - "can"
+      - "box"
+      - "banana"
+      - "strawberry"
+      - "lego"
+      - "rubriks cube"
+      - "book"
+      - "bowl"
+      - "cup"
+
+  "all_fruit":
+    included:
+      - "plum"
+      - "pear"
+      - "peach"
+      - "apple"
+      - "lemon"
+
+
+
+object_sets:
+  # Must be a 1-1 mapping.
+  - name: "CLUTTER_OBJECTS"
+    excluded_substrings: []
+    included_substrings:
+      - "053_mini_soccer_ball"
+      - "054_softball"
+      - "055_baseball"
+      - "056_tennis_ball"
+      - "057_racquetball"
+      #- "058_golf_ball"
+      - "050_medium_clamp"
+      - "051_large_clamp"
+      - "052_extra_large_clamp"
+      - "048_hammer"
+      - "043_phillips_screwdriver"
+      - "044_flat_screwdriver"
+      - "042_adjustable_wrench"
+      - "038_padlock"
+      - "037_scissors"
+      - "036_wood_block"
+      - "070-a_colored_wood_blocks"
+      - "070-b_colored_wood_blocks"
+      - "035_power_drill"
+      - "033_spatula"
+      - "032_knife"
+      - "031_spoon"
+      #- "030_fork"
+      - "029_plate"
+      - "028_skillet_lid"
+      - "026_sponge"
+      - "021_bleach_cleanser"
+      - "018_plum"
+      - "017_orange"
+      - "016_pear"
+      - "015_peach"
+      - "013_apple"
+      - "014_lemon"
+      - "002_master_chef_can"
+      - "005_tomato_soup_can"
+      - "007_tuna_fish_can"
+      - "010_potted_meat_can"
+      - "003_cracker_box"
+      - "004_sugar_box"
+      - "008_pudding_box"
+      - "009_gelatin_box"
+      - "011_banana"
+      - "012_strawberry"
+      - "072-a_toy_airplane"
+      - "072-b_toy_airplane"
+      - "072-c_toy_airplane"
+      - "072-d_toy_airplane"
+      - "072-e_toy_airplane"
+      - "073-a_lego_duplo"
+      - "073-b_lego_duplo"
+      - "073-c_lego_duplo"
+      - "073-d_lego_duplo"
+      - "073-e_lego_duplo"
+      - "073-f_lego_duplo"
+      - "073-g_lego_duplo"
+      - "077_rubiks_cube"
+      - "frl_apartment_book_01"
+      - "frl_apartment_book_02"
+      - "frl_apartment_book_03"
+      - "frl_apartment_book_04"
+      - "frl_apartment_book_05"
+      - "frl_apartment_book_06"
+      - "frl_apartment_bowl_01"
+      - "frl_apartment_bowl_02"
+      - "frl_apartment_bowl_03"
+      - "frl_apartment_bowl_06"
+      - "frl_apartment_bowl_07"
+      - "024_bowl"
+      - "025_mug"
+      - "065-a_cups"
+      - "065-b_cups"
+      - "065-c_cups"
+      - "065-d_cups"
+      - "065-e_cups"
+      - "065-f_cups"
+      - "065-g_cups"
+      - "065-h_cups"
+      - "065-i_cups"
+      - "065-j_cups"
+      - "frl_apartment_cup_01"
+      - "frl_apartment_cup_02"
+      - "frl_apartment_cup_03"
+      - "frl_apartment_cup_05"
+
+  - name: "ball"
+    excluded_substrings: []
+    included_substrings:
+      - "053_mini_soccer_ball"
+      - "054_softball"
+      - "055_baseball"
+      - "056_tennis_ball"
+      - "057_racquetball"
+      # This will roll away.
+      #- "058_golf_ball"
+
+  - name: "clamp"
+    excluded_substrings: []
+    included_substrings:
+      - "050_medium_clamp"
+      - "051_large_clamp"
+      - "052_extra_large_clamp"
+
+  - name: "hammer"
+    excluded_substrings: []
+    included_substrings:
+      - "048_hammer"
+
+  - name: "screwdriver"
+    excluded_substrings: []
+    included_substrings:
+      - "043_phillips_screwdriver"
+      - "044_flat_screwdriver"
+
+  - name: "wrench"
+    excluded_substrings: []
+    included_substrings:
+      - "042_adjustable_wrench"
+
+  - name: "padlock"
+    excluded_substrings: []
+    included_substrings:
+      - "038_padlock"
+
+  - name: "scissors"
+    excluded_substrings: []
+    included_substrings:
+      - "037_scissors"
+
+  - name: "block"
+    excluded_substrings: []
+    included_substrings:
+      - "036_wood_block"
+      - "070-a_colored_wood_blocks"
+      - "070-b_colored_wood_blocks"
+
+  - name: "drill"
+    excluded_substrings: []
+    included_substrings:
+      - "035_power_drill"
+
+  - name: "spatula"
+    excluded_substrings: []
+    included_substrings:
+      - "033_spatula"
+
+  - name: "knife"
+    excluded_substrings: []
+    included_substrings:
+      - "032_knife"
+
+  - name: "spoon"
+    excluded_substrings: []
+    included_substrings:
+      - "031_spoon"
+
+  # - name: "fork"
+  #   excluded_substrings: []
+  #   included_substrings:
+  #     - "030_fork"
+
+  - name: "plate"
+    excluded_substrings: []
+    included_substrings:
+      - "029_plate"
+
+  - name: "lid"
+    excluded_substrings: []
+    included_substrings:
+      - "028_skillet_lid"
+
+  - name: "sponge"
+    excluded_substrings: []
+    included_substrings:
+      - "026_sponge"
+
+  - name: "cleanser"
+    excluded_substrings: []
+    included_substrings:
+      - "021_bleach_cleanser"
+
+  - name: "plum"
+    excluded_substrings: []
+    included_substrings:
+      - "018_plum"
+
+  - name: "orange"
+    excluded_substrings: []
+    included_substrings:
+      - "017_orange"
+
+  - name: "pear"
+    excluded_substrings: []
+    included_substrings:
+      - "016_pear"
+
+  - name: "peach"
+    excluded_substrings: []
+    included_substrings:
+      - "015_peach"
+
+  - name: "apple"
+    excluded_substrings: []
+    included_substrings:
+      - "013_apple"
+
+  - name: "lemon"
+    excluded_substrings: []
+    included_substrings:
+      - "014_lemon"
+
+  - name: "can"
+    excluded_substrings: []
+    included_substrings:
+      - "002_master_chef_can"
+      - "005_tomato_soup_can"
+      - "007_tuna_fish_can"
+      - "010_potted_meat_can"
+
+  - name: "box"
+    excluded_substrings: []
+    included_substrings:
+      - "003_cracker_box"
+      - "004_sugar_box"
+      - "008_pudding_box"
+      - "009_gelatin_box"
+
+  - name: "banana"
+    excluded_substrings: []
+    included_substrings:
+      - "011_banana"
+
+  - name: "strawberry"
+    excluded_substrings: []
+    included_substrings:
+      - "012_strawberry"
+
+  - name: "toy airplane"
+    excluded_substrings: []
+    included_substrings:
+      - "072-a_toy_airplane"
+      - "072-b_toy_airplane"
+      - "072-c_toy_airplane"
+      - "072-d_toy_airplane"
+      - "072-e_toy_airplane"
+
+  - name: "lego"
+    excluded_substrings: []
+    included_substrings:
+      - "073-a_lego_duplo"
+      - "073-b_lego_duplo"
+      - "073-c_lego_duplo"
+      - "073-d_lego_duplo"
+      - "073-e_lego_duplo"
+      - "073-f_lego_duplo"
+      - "073-g_lego_duplo"
+
+  - name: "rubriks cube"
+    excluded_substrings: []
+    included_substrings:
+      - "077_rubiks_cube"
+
+  - name: "book"
+    excluded_substrings: []
+    included_substrings:
+      - "frl_apartment_book_01"
+      - "frl_apartment_book_02"
+      - "frl_apartment_book_03"
+      - "frl_apartment_book_04"
+      - "frl_apartment_book_05"
+      - "frl_apartment_book_06"
+
+  - name: "bowl"
+    excluded_substrings: []
+    included_substrings:
+      - "frl_apartment_bowl_01"
+      - "frl_apartment_bowl_02"
+      - "frl_apartment_bowl_03"
+      - "frl_apartment_bowl_06"
+      - "frl_apartment_bowl_07"
+      - "024_bowl"
+
+  - name: "mug"
+    excluded_substrings: []
+    included_substrings:
+      - "025_mug"
+
+  - name: "cup"
+    excluded_substrings: []
+    included_substrings:
+      - "065-a_cups"
+      - "065-b_cups"
+      - "065-c_cups"
+      - "065-d_cups"
+      - "065-e_cups"
+      - "065-f_cups"
+      - "065-g_cups"
+      - "065-h_cups"
+      - "065-i_cups"
+      - "065-j_cups"
+      - "frl_apartment_cup_01"
+      - "frl_apartment_cup_02"
+      - "frl_apartment_cup_03"
+      - "frl_apartment_cup_05"
+
+receptacle_sets:
+  # Keep this as the 0th entry.
+  -
+    name: "all_receps"
+    included_object_substrings: [""]
+    excluded_object_substrings: []
+    excluded_receptacle_substrings: []
+    included_receptacle_substrings:
+      - "receptacle_aabb_Chr1_Top1_frl_apartment_chair_01"
+      - "receptacle_aabb_Tbl1_Top1_frl_apartment_table_01"
+      - "receptacle_aabb_Tbl2_Top1_frl_apartment_table_02"
+      - "receptacle_aabb_TvStnd1_Top1_frl_apartment_tvstand"
+      - "receptacle_aabb_sink_kitchen_counter"
+      - "receptacle_aabb_counter_right_kitchen_counter"
+      - "receptacle_aabb_counter_left_kitchen_counter"
+      - "receptacle_aabb_Sofa_frl_apartment_sofa"
+
+      # Inside of articulated objects. 
+      - "receptacle_aabb_middle_topfrl_apartment_refrigerator"
+      - "receptacle_aabb_drawer_left_top_frl_apartment_kitchen_counter"
+      - "receptacle_aabb_drawer_right_top_frl_apartment_kitchen_counter"
+      # - "receptacle_aabb_drawer_middle_top_frl_apartment_kitchen_counter"
+
+  -
+    name: "open_air_receps"
+    included_object_substrings:
+      - ""
+    excluded_object_substrings: []
+    excluded_receptacle_substrings: []
+    included_receptacle_substrings:
+      # - "receptacle_aabb_Chr1_Top1_frl_apartment_chair_01"
+      - "receptacle_aabb_Tbl1_Top1_frl_apartment_table_01"
+      - "receptacle_aabb_Tbl2_Top1_frl_apartment_table_02"
+      - "receptacle_aabb_TvStnd1_Top1_frl_apartment_tvstand"
+      - "receptacle_aabb_sink_kitchen_counter"
+      - "receptacle_aabb_counter_right_kitchen_counter"
+      - "receptacle_aabb_counter_left_kitchen_counter"
+      - "receptacle_aabb_Sofa_frl_apartment_sofa"
+
+  
+max_objects_per_receptacle:
+  - ["receptacle_aabb_Chr1_Top1_frl_apartment_chair_01", 2]
+  - ["receptacle_aabb_sink_kitchen_counter", 2]
+
+scene_sampler:
+  type: "subset"
+  params:
+    scene_sets: ["scene_train_split", "scene_val_split", "scene_test_split"]
+
+object_samplers:
+  -
+    name: "CLUTTER"
+    type: "uniform"
+    params:
+      object_sets: ["CLUTTER_OBJECTS"]
+      receptacle_sets: ["open_air_receps"]
+      num_samples: [30, 30]
+      orientation_sampling: "up"
+
+object_target_samplers: []
+
+ao_state_samplers:
+  -
+    name: "open_fridge_cab"
+    type: "composite"
+    params:
+      -
+        ao_handle: "fridge"
+        joint_states:
+          - ["top_door", 1.5, 1.5]
+        should_sample_all_joints: True
+      -
+        ao_handle: "counter"
+        joint_states:
+          - ["drawer1_top", 0.5, 0.5]
+          - ["drawer1_bottom", 0.5, 0.5]
+          - ["drawer2_top", 0.5, 0.5]
+          - ["drawer2_middle", 0.5, 0.5]
+          - ["drawer2_bottom", 0.5, 0.5]
+          - ["drawer3", 0.5, 0.5]
+          - ["drawer4", 0.5, 0.5]
+
+markers:
+  - name: "cab_push_point_7"
+    type: "articulated_object"
+    params:
+      offset: [0.3,0.0,0]
+      link: "drawer1_top"
+      object: "kitchen_counter_:0000"
+  - name: "cab_push_point_6"
+    type: "articulated_object"
+    params:
+      offset: [0.3,0.0,0]
+      link: "drawer2_top"
+      object: "kitchen_counter_:0000"
+  - name: "cab_push_point_5"
+    type: "articulated_object"
+    params:
+      offset: [0.3,0.0,0]
+      link: "drawer3"
+      object: "kitchen_counter_:0000"
+  - name: "cab_push_point_4"
+    type: "articulated_object"
+    params:
+      offset: [0.3,0.0,0]
+      link: "drawer4"
+      object: "kitchen_counter_:0000"
+  - name: "fridge_push_point"
+    type: "articulated_object"
+    params:
+      offset: [0.10,-0.62,0.2]
+      link: "top_door"
+      object: "fridge_:0000"

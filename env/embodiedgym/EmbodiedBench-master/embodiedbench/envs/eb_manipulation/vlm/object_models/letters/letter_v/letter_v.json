@@ -1,0 +1,24 @@
+{
+ "class": "letters",
+ "name": "letter_v",
+ "articulated": false,
+ "constraints": null,
+ "highest_part": 0,
+ "manipulated_part": [
+  0
+ ],
+ "parts": [
+  {
+   "name": "letter_v",
+   "model_path": "./vlm/object_models/letters/letter_v/letter_v.dae",
+   "graspable": true,
+   "local_grasp_pose_path": "letter_v.pkl",
+   "property": {
+    "shape": "letter of 'v'",
+    "size": "medium",
+    "color": null,
+    "relative_pos": null
+   }
+  }
+ ]
+}

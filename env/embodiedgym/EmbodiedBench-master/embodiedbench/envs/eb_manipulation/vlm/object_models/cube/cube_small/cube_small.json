@@ -1,0 +1,24 @@
+{
+ "class": "cube",
+ "name": "cube_small",
+ "articulated": false,
+ "constraints": null,
+ "highest_part": 0,
+ "manipulated_part": [
+  0
+ ],
+ "parts": [
+  {
+   "name": "cube_small",
+   "model_path": "./vlm/object_models/cube_small.ply",
+   "graspable": true,
+   "local_grasp_pose_path": "cube_small.pkl",
+   "property": {
+    "shape": "cube",
+    "size": "small",
+    "color": null,
+    "relative_pos": null
+   }
+  }
+ ]
+}

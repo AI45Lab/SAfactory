@@ -1,0 +1,24 @@
+# @package _global_
+defaults:
+  - /habitat/simulator/sensor_setups@habitat.simulator.agents.main_agent: rgb_head_agent
+  - /habitat/task/lab_sensors:
+    - is_holding_sensor
+    - debug_info
+habitat:
+  gym:
+    obs_keys:
+      # Visual sensors
+      - head_rgb
+      # - third_rgb # remove for other tasks
+      - debug_info
+  simulator:
+    agents:
+      main_agent:
+        sim_sensors:
+          head_rgb_sensor:
+            width: 500
+            height: 500
+        radius: 0.3
+        articulated_agent_urdf: ./data/robots/hab_fetch/robots/hab_suction.urdf
+        articulated_agent_type: FetchSuctionRobot
+        joint_start_noise: 0.0

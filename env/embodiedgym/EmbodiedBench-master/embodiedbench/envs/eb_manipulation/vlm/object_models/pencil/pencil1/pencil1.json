@@ -1,0 +1,24 @@
+{
+ "class": "pencil",
+ "name": "pencil1",
+ "articulated": false,
+ "constraints": null,
+ "highest_part": 0,
+ "manipulated_part": [
+  0
+ ],
+ "parts": [
+  {
+   "orginal_name": "pencil1",
+   "name": "pencil1",
+   "graspable": true,
+   "property": {
+    "shape": "pencil",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   },
+   "local_grasp_pose_path": "pencil1.pkl"
+  }
+ ]
+}

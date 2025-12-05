@@ -1,0 +1,24 @@
+{
+ "class": "basic_shapes",
+ "name": "pentagon",
+ "articulated": false,
+ "constraints": null,
+ "highest_part": 0,
+ "manipulated_part": [
+  0
+ ],
+ "parts": [
+  {
+   "name": "pentagon",
+   "model_path": "./vlm/object_models/basic_shapes/pentagon/pentagon.dae",
+   "graspable": true,
+   "local_grasp_pose_path": "pentagon.pkl",
+   "property": {
+    "shape": "pentagon",
+    "size": "medium",
+    "color": null,
+    "relative_pos": null
+   }
+  }
+ ]
+}

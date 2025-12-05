@@ -1,0 +1,24 @@
+{
+ "class": "basic_shapes",
+ "name": "cross",
+ "articulated": false,
+ "constraints": null,
+ "highest_part": 0,
+ "manipulated_part": [
+  0
+ ],
+ "parts": [
+  {
+   "name": "cross",
+   "model_path": "./vlm/object_models/basic_shapes/cross/cross.dae",
+   "graspable": true,
+   "local_grasp_pose_path": "cross.pkl",
+   "property": {
+    "shape": "cross-shaped block",
+    "size": "medium",
+    "color": null,
+    "relative_pos": null
+   }
+  }
+ ]
+}

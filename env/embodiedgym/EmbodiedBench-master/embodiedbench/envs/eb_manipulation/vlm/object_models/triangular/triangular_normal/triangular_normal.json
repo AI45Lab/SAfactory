@@ -1,0 +1,24 @@
+{
+ "class": "triangular",
+ "name": "triangular_normal",
+ "articulated": false,
+ "constraints": null,
+ "highest_part": 0,
+ "manipulated_part": [
+  0
+ ],
+ "parts": [
+  {
+   "orginal_name": "triangular_prism",
+   "name": "triangular_normal",
+   "graspable": true,
+   "property": {
+    "shape": "triangular prism",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   },
+   "local_grasp_pose_path": "triangular_normal.pkl"
+  }
+ ]
+}

@@ -1,0 +1,20 @@
+# config.yaml
+defaults:
+  - _self_
+
+env: null
+model_name: null
+model_type: null
+down_sample_ratio: null
+language_only: null
+eval_sets: null
+chat_history: null
+n_shots: null
+multiview: null
+detection_box: null
+multistep: null
+resolution: null
+exp_name: null
+visual_icl: null
+tp: null
+log_level: null

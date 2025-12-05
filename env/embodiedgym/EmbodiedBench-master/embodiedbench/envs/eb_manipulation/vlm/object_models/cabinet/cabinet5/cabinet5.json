@@ -1,0 +1,40 @@
+{
+ "class": "cabinet",
+ "name": "cabinet5",
+ "articulated": true,
+ "constraints": {
+  "Prismatic_joint": [
+   0,
+   1
+  ]
+ },
+ "highest_part": 0,
+ "manipulated_part": [
+  1
+ ],
+ "parts": [
+  {
+   "orginal_name": "cabinet5_base",
+   "name": "cabinet5_base",
+   "graspable": false,
+   "property": {
+    "shape": "base of cabinet",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "cabinet5_door",
+   "name": "cabinet5_door",
+   "graspable": false,
+   "local_grasp_pose_path": "cabinet5_handle.pkl",
+   "property": {
+    "shape": "door of cabinet",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  }
+ ]
+}

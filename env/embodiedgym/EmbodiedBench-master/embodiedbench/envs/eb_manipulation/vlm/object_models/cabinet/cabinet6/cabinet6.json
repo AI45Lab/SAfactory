@@ -1,0 +1,57 @@
+{
+ "class": "cabinet",
+ "name": "cabinet6",
+ "articulated": true,
+ "constraints": {
+  "left_joint": [
+   0,
+   1
+  ],
+  "right_joint": [
+   0,
+   2
+  ]
+ },
+ "highest_part": 0,
+ "manipulated_part": [
+  1,
+  2
+ ],
+ "parts": [
+  {
+   "orginal_name": "cabinet6_base",
+   "name": "cabinet6_base",
+   "graspable": false,
+   "property": {
+    "shape": "base of cabinet",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "cabinet6_left_door",
+   "name": "cabinet6_left_door",
+   "graspable": false,
+   "local_grasp_pose_path": "cabinet6_handle.pkl",
+   "property": {
+    "shape": "left door of cabinet",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "cabinet6_right_door",
+   "name": "cabinet6_right_door",
+   "graspable": false,
+   "local_grasp_pose_path": "cabinet6_handle.pkl",
+   "property": {
+    "shape": "right door of cabinet",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  }
+ ]
+}

@@ -1,0 +1,55 @@
+{
+ "class": "door",
+ "name": "door2",
+ "articulated": true,
+ "constraints": {
+  "Revolute_left_door_joint": [
+   0,
+   1
+  ],
+  "Revolute_left_handle_joint": [
+   1,
+   2
+  ]
+ },
+ "highest_part": 0,
+ "manipulated_part": [
+  2
+ ],
+ "parts": [
+  {
+   "orginal_name": "door2_left_base",
+   "name": "door2_base",
+   "graspable": false,
+   "property": {
+    "shape": "base of door",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "door2_left_door",
+   "name": "door2_main",
+   "graspable": false,
+   "property": {
+    "shape": "door",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "door2_left_handler",
+   "name": "door2_handle",
+   "graspable": false,
+   "property": {
+    "shape": "handle of door",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   },
+   "local_grasp_pose_path": "door2_handle.pkl"
+  }
+ ]
+}

@@ -1,0 +1,24 @@
+{
+ "class": "basic_shapes",
+ "name": "flower",
+ "articulated": false,
+ "constraints": null,
+ "highest_part": 0,
+ "manipulated_part": [
+  0
+ ],
+ "parts": [
+  {
+   "name": "flower",
+   "model_path": "./vlm/object_models/basic_shapes/flower/flower.dae",
+   "graspable": true,
+   "local_grasp_pose_path": "flower.pkl",
+   "property": {
+    "shape": "flower",
+    "size": "medium",
+    "color": null,
+    "relative_pos": null
+   }
+  }
+ ]
+}

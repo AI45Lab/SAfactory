@@ -1,0 +1,24 @@
+{
+ "class": "cube",
+ "name": "cube_normal",
+ "articulated": false,
+ "constraints": null,
+ "highest_part": 0,
+ "manipulated_part": [
+  0
+ ],
+ "parts": [
+  {
+   "name": "cube_normal",
+   "model_path": "./vlm/object_models/cube.ply",
+   "graspable": true,
+   "local_grasp_pose_path": "cube_normal.pkl",
+   "property": {
+    "shape": "cube",
+    "size": "medium",
+    "color": null,
+    "relative_pos": null
+   }
+  }
+ ]
+}

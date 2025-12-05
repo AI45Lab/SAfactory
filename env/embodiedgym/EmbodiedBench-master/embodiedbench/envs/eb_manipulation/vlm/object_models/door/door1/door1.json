@@ -1,0 +1,55 @@
+{
+ "class": "door",
+ "name": "door1",
+ "articulated": true,
+ "constraints": {
+  "door_frame_joint": [
+   0,
+   1
+  ],
+  "door_handle_joint": [
+   1,
+   2
+  ]
+ },
+ "highest_part": 0,
+ "manipulated_part": [
+  2
+ ],
+ "parts": [
+  {
+   "orginal_name": "door_frame",
+   "name": "door1_base",
+   "graspable": false,
+   "property": {
+    "shape": "base of door",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "door_main",
+   "name": "door1_main",
+   "graspable": false,
+   "property": {
+    "shape": "door",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "open_door_handle",
+   "name": "door1_handle",
+   "graspable": false,
+   "property": {
+    "shape": "handle of door",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   },
+   "local_grasp_pose_path": "door1_handle.pkl"
+  }
+ ]
+}

@@ -1,0 +1,40 @@
+{
+ "class": "grill",
+ "name": "grill1",
+ "articulated": true,
+ "constraints": {
+  "bottom_joint": [
+   0,
+   1
+  ]
+ },
+ "highest_part": 0,
+ "manipulated_part": [
+  1
+ ],
+ "parts": [
+  {
+   "orginal_name": "grill",
+   "name": "grill1_base",
+   "graspable": false,
+   "property": {
+    "shape": "base of grill",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "lid",
+   "name": "grill1_lid",
+   "graspable": false,
+   "property": {
+    "shape": "lid of grill",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   },
+   "local_grasp_pose_path": "grill1_lid.pkl"
+  }
+ ]
+}

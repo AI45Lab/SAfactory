@@ -1,0 +1,24 @@
+{
+ "class": "letters",
+ "name": "letter_t",
+ "articulated": false,
+ "constraints": null,
+ "highest_part": 0,
+ "manipulated_part": [
+  0
+ ],
+ "parts": [
+  {
+   "name": "letter_t",
+   "model_path": "./vlm/object_models/letters/letter_t/letter_t.dae",
+   "graspable": true,
+   "local_grasp_pose_path": "letter_t.pkl",
+   "property": {
+    "shape": "letter of 't'",
+    "size": "medium",
+    "color": null,
+    "relative_pos": null
+   }
+  }
+ ]
+}

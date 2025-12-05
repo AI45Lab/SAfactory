@@ -1,0 +1,15 @@
+outputs/
+*.pyc
+*__pycache__
+.vscode/
+embodiedbench/envs/eb_manipulation/generate_dataset.sh
+embodiedbench/envs/eb_manipulation/tools/__pycache__/grasploc.cpython-39.pyc
+*running
+*.DS_Store
+embodiedbench.egg-info/
+*outdated
+embodiedbench/envs/manipulaThor1
+embodiedbench.egg-info1
+embodiedbench/envs/eb_habitat/data/
+dockers
+data

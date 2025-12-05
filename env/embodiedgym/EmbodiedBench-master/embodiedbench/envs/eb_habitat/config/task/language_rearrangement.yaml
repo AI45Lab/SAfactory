@@ -1,0 +1,99 @@
+# @package _global_
+
+defaults:
+  - /habitat: habitat_config_base
+  - /habitat/task: llarp_task_config_base
+  - dataset_v1
+  - task_obs: visual
+  - /habitat/task/measurements:
+    - num_steps
+    - was_prev_action_invalid
+    - predicate_task_success
+    - lang_goal
+    - task_progress
+    - subgoal_reward
+    - num_invalid_actions
+    - prev_action_name
+  - /habitat/task/actions:
+    - pddl_hl_action
+  - _self_
+
+habitat:
+  environment:
+    max_episode_steps: 30
+
+  simulator:
+    type: RearrangeSim-v0
+    additional_object_paths:
+      - data/objects/ycb/configs/
+      - data/replica_cad/configs/objects/
+    needs_markers: False
+    concur_render: False
+
+    create_renderer: True
+    agents_order: ['main_agent']
+    renderer:
+      enable_batch_renderer: False
+      composite_files:
+        - "data/composite_replica/replica.gltf"
+
+    # The geometric goal position is not used.
+    debug_render_goal: False
+    debug_render: False
+    auto_sleep: True
+    kinematic_mode: True
+    ac_freq_ratio: 1
+    step_physics: False
+    should_setup_semantic_ids: False
+
+    habitat_sim_v0:
+      allow_sliding: False
+      enable_hbao: False
+      enable_physics: True
+      enable_gfx_replay_save: False
+
+  task:
+    type: "RearrangePredicateTask-v0"
+    constraint_violation_ends_episode: False
+    constraint_violation_drops_object: True
+    end_on_success: True
+
+    filter_instructs: null
+    filter_down_num: null
+    force_scene_per_worker: False
+
+    # PDDL task settings.
+    task_spec_base_path: "task/"
+    pddl_domain_def: "pddl_domain_replica_cad"
+    # Robot randomly spawns
+    start_template: null
+    goal_template: null
+    sample_entities: {}
+
+    success_measure: "predicate_task_success"
+
+    # Sparse reward for reaching each subgoal.
+    reward_measure: "subgoal_reward"
+    success_reward: 10.0
+    # Per timestep reward (negative means penalty).
+    slack_reward: 0.0
+    actions:
+      pddl_hl_action:
+        allowed_actions:
+          - nav
+          - pick
+          - place
+          - open_fridge
+          - close_fridge
+          - open_cab
+          - close_cab
+    measurements:
+      was_prev_action_invalid:
+        pddl_action_name: "pddl_hl_action"
+      prev_action_name:
+        pddl_action_name: "pddl_hl_action"
+      predicate_task_success:
+        must_call_stop: False
+      subgoal_reward:
+        invalid_ac_pen: 0.05
+        progress_reward_factor: 5.0

@@ -1,0 +1,24 @@
+{
+ "class": "letters",
+ "name": "letter_r",
+ "articulated": false,
+ "constraints": null,
+ "highest_part": 0,
+ "manipulated_part": [
+  0
+ ],
+ "parts": [
+  {
+   "name": "letter_r",
+   "model_path": "./vlm/object_models/letters/letter_r/letter_r.dae",
+   "graspable": true,
+   "local_grasp_pose_path": "letter_r.pkl",
+   "property": {
+    "shape": "letter of 'r'",
+    "size": "medium",
+    "color": null,
+    "relative_pos": null
+   }
+  }
+ ]
+}

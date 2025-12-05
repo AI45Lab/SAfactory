@@ -1,0 +1,16 @@
+# configs/EB-Navigation.yaml
+model_name: gpt-4o-mini
+down_sample_ratio: 1
+model_type: remote
+language_only: False
+eval_sets: []
+chat_history: False
+n_shots: 3
+multiview: False
+detection_box: False
+multistep: False
+resolution: 500
+exp_name: navigation_baseline
+visual_icl: False
+tp: 1
+truncate: True

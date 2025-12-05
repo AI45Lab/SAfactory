@@ -1,0 +1,24 @@
+{
+ "class": "cube",
+ "name": "cube_large",
+ "articulated": false,
+ "constraints": null,
+ "highest_part": 0,
+ "manipulated_part": [
+  0
+ ],
+ "parts": [
+  {
+   "name": "cube_large",
+   "model_path": "./vlm/object_models/cube_large.ply",
+   "graspable": true,
+   "local_grasp_pose_path": "cube_large.pkl",
+   "property": {
+    "shape": "cube",
+    "size": "large",
+    "color": null,
+    "relative_pos": null
+   }
+  }
+ ]
+}

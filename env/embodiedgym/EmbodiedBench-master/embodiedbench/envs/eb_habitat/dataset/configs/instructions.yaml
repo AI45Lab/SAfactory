@@ -1,0 +1,1031 @@
+max_per_obj_count: 1
+instructions:
+  # See `InstructionInfo` docs about instruction info. 
+  # DONT USE RECEPTACLE AS AN ENTITY NAME
+  
+  42f1b012: 
+    # Single object rearrangement, revealed targ_recep.
+    lang: 
+      train:
+        - "Move a `target_object_name` from the `source_receptacle_name` to the `target_receptacle_name`"
+        - "Pick a `target_object_name` from the `source_receptacle_name` and move it to the `target_receptacle_name`"
+        - "Retrieve an `target_object_name` from the `source_receptacle_name` and transfer it to the `target_receptacle_name`."
+        - "Take a `target_object_name` out of the `source_receptacle_name` and place it into the `target_receptacle_name`."
+        - "Gather an `target_object_name` from the `source_receptacle_name` and relocate it to the `target_receptacle_name`."
+        - "Remove a `target_object_name` from the `source_receptacle_name` and reposition it in the `target_receptacle_name`."
+        - "Acquire an `target_object_name` from the `source_receptacle_name` and shift it to the `target_receptacle_name`."
+        - "Extract a `target_object_name` from the `source_receptacle_name` and move it to the `target_receptacle_name`."
+        - "Secure an `target_object_name` from the `source_receptacle_name` and transport it to the `target_receptacle_name`."
+        - "Pick up an `target_object_name` from the `source_receptacle_name` and deposit it into the `target_receptacle_name`."
+        - "Obtain an `target_object_name` from the `source_receptacle_name` and transfer it to the `target_receptacle_name`."
+        - "Collect a `target_object_name` from the `source_receptacle_name` and place it in the `target_receptacle_name`."
+
+      eval:
+        - "On the `source_receptacle_name` there is a `target_object_name`, move it to the `target_receptacle_name`"
+        - "Hey, on the `source_receptacle_name`, I accidentally left my `target_object_name`, can you bring it to the `target_receptacle_name`?"
+        - "The `target_object_name` is on the `source_receptacle_name` but you should move it to the `target_receptacle_name`."
+    tags: ['v2_train', 'obj_gen', 'v1', 'rearrange', 'simple']
+    overweight_freq: 4
+    solution_template:
+      - "nav(`source_receptacle_name`)"
+      - "pick_`target_object_name`()"
+      - "nav(`target_receptacle_name`)"
+      - "place(`target_receptacle_name`)"
+    goal_expr:
+      expr_type: AND
+      quantifier: EXISTS
+      inputs:
+        - name: X
+          expr_type: "target_object_name"
+      sub_exprs:
+        - "on_top(X, target_receptacle_name)"
+        - "not_holding()"
+    sampled_receps:
+      "source_receptacle_name":
+        type: "open_air_receps"
+      "target_receptacle_name":
+        type: "open_air_receps"
+        not_equal: ["source_receptacle_name"]
+    sampled_objects:
+      "target_object_name":
+        types:
+          train: "all_train_cats"
+          eval: "all_eval_cats"
+        recep: source_receptacle_name
+
+  f0917e29: 
+    # Single object rearrangement non-revealed targ_recep.
+    lang: 
+      train:
+        - "Move a `target_object_name` to the `target_receptacle_name`"
+
+        - "Transfer an `target_object_name` to the designated `target_receptacle_name`."
+        - "Relocate a `target_object_name` to its assigned `target_receptacle_name`."
+        - "Shift a `target_object_name` and place it into the specified `target_receptacle_name`."
+        - "Move one of the `target_object_name` items to the indicated `target_receptacle_name`."
+        - "Take an `target_object_name` and transfer it to the allocated `target_receptacle_name`."
+        - "Transport a `target_object_name` and carefully position it in the designated `target_receptacle_name`."
+        - "Pick up a `target_object_name` and move it to the preassigned `target_receptacle_name`."
+        - "Remove an `target_object_name` from its current location and relocate it to the specified `target_receptacle_name`."
+        - "Retrieve a `target_object_name` and place it into the predetermined `target_receptacle_name`."
+        - "Deliver the `target_object_name` to the intended `target_receptacle_name` by physically moving it there."
+      eval:
+        - "On the `target_receptacle_name` I need you to put a `target_object_name`"
+        - "Find a `target_object_name` and move it to the `target_receptacle_name`"
+        - "I need a `target_object_name` on the `target_receptacle_name`. Can you help?"
+      distraction:
+        - "There's an apple on the sofa, but on the `target_receptacle_name` I need you to put a `target_object_name`"
+        - "On the sofa there's an apple, but instead find a `target_object_name` and move it to the `target_receptacle_name`"
+        - "Instead of finding an apple, I need a `target_object_name` on the `target_receptacle_name`. Can you help?"
+    tags: ['v2_train', 'obj_gen', 'rearrange', 'simple']
+    overweight_freq: 4
+    solution_template:
+      - "nav(`source_receptacle_name`)"
+      - "pick_`target_object_name`()"
+      - "nav(`target_receptacle_name`)"
+      - "place(`target_receptacle_name`)"
+    goal_expr:
+      expr_type: AND
+      quantifier: EXISTS
+      inputs:
+        - name: X
+          expr_type: "target_object_name"
+      sub_exprs:
+        - "on_top(X, target_receptacle_name)"
+        - "not_holding()"
+    sampled_receps:
+      "source_receptacle_name":
+        type: "open_air_receps"
+      "target_receptacle_name":
+        type: "open_air_receps"
+        not_equal: ["source_receptacle_name"]
+    sampled_objects:
+      "target_object_name":
+        types: 
+          train: "all_train_cats"
+          eval: "all_eval_cats"
+        not_recep: target_receptacle_name
+        recep: source_receptacle_name
+    semantics:
+      688ee521:
+        match_objs:
+          target_object_name: 
+            - "plate"
+        lang:
+          train:
+            - "Set out a `target_object_name` for one person on the `target_receptacle_name`."
+
+  
+  9a1dd6ee: 
+    lang: 
+      train:
+        - "Move the `target_object_name` off the `target_receptacle_name`."
+
+        - "Remove the `target_object_name` from the `target_receptacle_name`."
+        - "Take the `target_object_name` away from the `target_receptacle_name`."
+        - "Lift the `target_object_name` off the `target_receptacle_name`."
+        - "Extract the `target_object_name` from the `target_receptacle_name`."
+        - "Retrieve the `target_object_name` that is on the `target_receptacle_name`."
+        - "Displace the `target_object_name` from the `target_receptacle_name`."
+        - "Detach the `target_object_name` from the `target_receptacle_name`."
+        - "Free the `target_object_name` from the `target_receptacle_name`."
+        - "Separate the `target_object_name` from the `target_receptacle_name`."
+        - "Unseat the `target_object_name` from the `target_receptacle_name`."
+      eval:
+        - "The `target_receptacle_name` should be devoid of any `target_object_name`."
+        - "On the `target_receptacle_name`, remove the `target_object_name`."
+        - "Clear all the `target_object_name` from the `target_receptacle_name`."
+    tags: ['v2_train', 'obj_gen', 'rearrange', 'simple']
+    overweight_freq: 4
+    goal_expr:
+      expr_type: AND
+      sub_exprs:
+        - "not_holding()"
+        - expr_type: NAND
+          inputs:
+            - name: X
+              expr_type: "target_object_name"
+          quantifier: EXISTS
+          sub_exprs:
+            - "on_top(X, target_receptacle_name)"
+    sampled_receps:
+      "target_receptacle_name":
+        "type": "open_air_receps"
+    sampled_objects:
+      "target_object_name":
+        types: 
+          train: "all_cats"
+          eval: "all_eval_cats"
+        recep: target_receptacle_name
+    sampler_info:
+      place_search_all_receps: True
+
+  8a66dec9: 
+    # Single object rearrangement non-revealed targ_recep, visual semantics only.
+    lang: 
+      train: []
+      eval: []
+    tags: ['v2_eval_semantic_visual']
+    overweight_freq: 1
+    solution_template:
+      - "nav(`source_receptacle_name`)"
+      - "pick_`target_object_name`()"
+      - "nav(`target_receptacle_name`)"
+      - "place(`target_receptacle_name`)"
+    goal_expr:
+      expr_type: AND
+      quantifier: EXISTS
+      inputs:
+        - name: X
+          expr_type: "target_object_name"
+      sub_exprs:
+        - "on_top(X, target_receptacle_name)"
+        - "not_holding()"
+    sampled_receps:
+      "source_receptacle_name":
+        type: "open_air_receps"
+      "target_receptacle_name":
+        type: "open_air_receps"
+        not_equal: ["source_receptacle_name"]
+    sampled_objects:
+      "target_object_name":
+        types: 
+          train: "all_cats"
+          eval: "all_eval_cats"
+        not_recep: target_receptacle_name
+        recep: source_receptacle_name
+    semantics:
+      688ee521:
+        match_objs:
+          target_object_name: 
+            - "plum"
+        lang:
+          train:
+            - "Bring a purple fruit to the `target_receptacle_name`"
+            - "Fetch a purple fruit and transport it to the `target_receptacle_name`."
+            - "Locate a purple fruit and convey it to the `target_receptacle_name`."
+            - "Please, carry a purple fruit to the `target_receptacle_name`."
+            - "Procure a purple fruit and deliver it to the `target_receptacle_name`."
+            - "Retrieve a purple fruit and place it in the `target_receptacle_name`."
+            - "Get a purple fruit and transfer it to the `target_receptacle_name`."
+            - "Acquire a purple fruit and deposit it in the `target_receptacle_name`."
+            - "Secure a purple fruit and bring it to the `target_receptacle_name`."
+            - "Find a purple fruit and move it to the `target_receptacle_name`."
+            - "Can you pick up a purple fruit and place it in the `target_receptacle_name`?"
+      eb3cd1c5:
+        match_objs:
+          target_object_name: 
+            - "lemon"
+        lang:
+          train:
+            - "Bring a yellow round fruit to the `target_receptacle_name`."
+            - "Retrieve a yellow round fruit and transport it to the `target_receptacle_name`."
+            - "Procure a yellow round fruit and convey it to the `target_receptacle_name`."
+            - "Locate a yellow round fruit and deliver it to the `target_receptacle_name`."
+            - "Fetch a yellow round fruit and transfer it to the `target_receptacle_name`."
+            - "Secure a yellow round fruit and bring it to the `target_receptacle_name`."
+            - "Find a yellow round fruit and place it in the `target_receptacle_name`."
+            - "Pick up a yellow round fruit and deposit it into the `target_receptacle_name`."
+            - "Obtain a yellow round fruit and put it in the `target_receptacle_name`."
+            - "Take a yellow round fruit and position it within the `target_receptacle_name`."
+            - "Acquire a yellow round fruit and leave it in the `target_receptacle_name`."
+
+      199c7b7f:
+        match_objs:
+          target_object_name: 
+            - "banana"
+        lang:
+          train:
+            - "Bring a yellow curved fruit to the `target_receptacle_name`"
+            - "Fetch a yellow curved fruit and take it to the `target_receptacle_name`."
+            - "Retrieve a yellow curved fruit and transport it to the `target_receptacle_name`."
+            - "Carry a yellow curved fruit over to the `target_receptacle_name`."
+            - "Get ahold of a yellow curved fruit and deliver it to the `target_receptacle_name`."
+            - "Take a yellow curved fruit and place it in the `target_receptacle_name`."
+            - "Find a yellow curved fruit and bring it to the `target_receptacle_name`."
+            - "Procure a yellow curved fruit and transfer it to the `target_receptacle_name`."
+            - "Secure a yellow curved fruit and deposit it into the `target_receptacle_name`."
+            - "Acquire a yellow curved fruit and put it in the `target_receptacle_name`."
+            - "Retrieve a yellow curved fruit and ensure it's in the `target_receptacle_name`."
+      d9cac0e2:
+        match_objs:
+          target_object_name: 
+            - "apple"
+        lang:
+          train:
+            - "Bring a round red fruit to the `target_receptacle_name`"
+            - "Fetch a round red fruit and take it to the `target_receptacle_name`."
+            - "Get a round red fruit and deliver it to the `target_receptacle_name`."
+            - "Acquire a round red fruit and transport it to the `target_receptacle_name`."
+            - "Secure a round red fruit and place it in the `target_receptacle_name`."
+            - "Find a round red fruit and bring it to the `target_receptacle_name`."
+            - "Locate a round red fruit and deposit it in the `target_receptacle_name`."
+            - "Obtain a round red fruit and put it in the `target_receptacle_name`."
+            - "Grab a round red fruit and transfer it to the `target_receptacle_name`."
+            - "Snatch a round red fruit and drop it into the `target_receptacle_name`."
+            - "Collect a round red fruit and position it in the `target_receptacle_name`."
+
+  21e2ce5f: 
+    # Single object rearrangement non-revealed targ_recep, purpose semantics only.
+    lang: 
+      train: []
+      eval: []
+    tags: ['v2_eval_semantic_activity']
+    overweight_freq: 1
+    solution_template:
+      - "nav(`source_receptacle_name`)"
+      - "pick_`target_object_name`()"
+      - "nav(`target_receptacle_name`)"
+      - "place(`target_receptacle_name`)"
+    goal_expr:
+      expr_type: AND
+      quantifier: EXISTS
+      inputs:
+        - name: X
+          expr_type: "target_object_name"
+      sub_exprs:
+        - "on_top(X, target_receptacle_name)"
+        - "not_holding()"
+    sampled_receps:
+      "source_receptacle_name":
+        type: "open_air_receps"
+      "target_receptacle_name":
+        type: "open_air_receps"
+        not_equal: ["source_receptacle_name"]
+    sampled_objects:
+      "target_object_name":
+        types: 
+          train: "all_cats"
+          eval: "all_eval_cats"
+        not_recep: target_receptacle_name
+        recep: source_receptacle_name
+    semantics:
+      688ee521:
+        match_objs:
+          target_object_name: 
+            - "ball"
+        lang:
+          train:
+            - "I want to play a sport, bring something to play with to the `target_receptacle_name`."
+            - "Fetch a sports equipment and place it in the `target_receptacle_name`."
+            - "Please provide a sports item for me to play with in the `target_receptacle_name`."
+            - "Procure a plaything for sports and deposit it in the `target_receptacle_name`."
+            - "I'd like to engage in a sport, so kindly transport an item for play to the `target_receptacle_name`."
+            - "Prepare for a game by delivering something to play with to the `target_receptacle_name`."
+            - "Acquire a sports object and position it in the `target_receptacle_name`."
+            - "Bring an item suitable for playing a sport and put it in the `target_receptacle_name`."
+            - "I'm in the mood for a sport; could you move a plaything to the `target_receptacle_name`?"
+            - "Please arrange for a sports object to be placed in the `target_receptacle_name` for my amusement."
+            - "Facilitate a sports activity by transferring an appropriate item to the `target_receptacle_name`."
+      e767a83f:
+        match_objs:
+          target_object_name: 
+            - "screwdriver"
+        lang:
+          train:
+            - "A screw is loose in the `target_receptacle_name`, bring something to fix it."
+            - "Retrieve a tool to tighten the loose screw in the `target_receptacle_name`."
+            - "Grab an item for securing the loose screw within the `target_receptacle_name`."
+            - "Please, get something to fasten the loose screw in the `target_receptacle_name`."
+            - "Find an object suitable for tightening the loose screw in the `target_receptacle_name`."
+            - "There's a loose screw in the `target_receptacle_name`; fetch a fixer."
+            - "Secure the loose screw in the `target_receptacle_name` with an appropriate object."
+            - "Locate an instrument to remedy the loose screw in the `target_receptacle_name`."
+            - "Go and fetch a tool for tightening the loose screw in the `target_receptacle_name`."
+            - "Procure an item to rectify the loose screw issue in the `target_receptacle_name`."
+            - "Retrieve a suitable implement to address the loose screw problem in the `target_receptacle_name`."
+
+      eba65683:
+        match_objs:
+          target_object_name: 
+            - "scissors"
+        lang:
+          train:
+            - "I need to cut a piece of paper at the `target_receptacle_name`, can you bring something to help?"
+            - "Fetch an item to assist with cutting a piece of paper at the `target_receptacle_name`."
+            - "Could you please bring a tool for cutting the paper at the `target_receptacle_name`?"
+            - "I require something to aid me in cutting a piece of paper at the `target_receptacle_name`."
+            - "Please procure an object to facilitate cutting paper at the `target_receptacle_name`."
+            - "Bring a cutting tool to the `target_receptacle_name` to help with the paper."
+            - "Find an item that can be used for cutting at the `target_receptacle_name`."
+            - "Could you fetch a suitable object to aid in paper cutting at the `target_receptacle_name`?"
+            - "I'm in need of an implement for cutting paper at the `target_receptacle_name`. Please get it for me."
+            - "To cut a piece of paper at the `target_receptacle_name`, kindly provide me with a tool."
+            - "Can you bring something to assist in cutting paper at the `target_receptacle_name`?"
+
+      9996fbd6:
+        match_objs:
+          target_object_name: 
+            - "cleanser"
+        lang:
+          train:
+            - "I spilt something and need to clean it. Can you bring something to the `target_receptacle_name` to help?"
+            - "I accidentally spilled a liquid, could you please fetch an object to help with cleaning it up in the `target_receptacle_name`?"
+            - "There's been a spill, and I require an object to assist with cleaning it. Can you bring it to the `target_receptacle_name`?"
+            - "Oops, I've made a mess. Can you grab an object for me to use in cleaning up the spill in the `target_receptacle_name`?"
+            - "It looks like I've spilled something. Would you mind getting the object I need to clean it up in the `target_receptacle_name`?"
+            - "There's a spill, and I need an object to clean it up. Could you bring it to the `target_receptacle_name`?"
+            - "I made a mess, and I'm in need of an object to help with cleaning it up. Can you fetch it for me in the `target_receptacle_name`?"
+            - "Uh-oh, I spilled something. Can you find an object to assist with cleaning it? Bring it to the `target_receptacle_name`, please."
+            - "I've had a spill, and I'm seeking an object to aid in cleaning it up. Can you deliver it to the `target_receptacle_name`?"
+            - "Regrettably, there's been a spill. Can you locate an object for me to use in cleaning it up in the `target_receptacle_name`?"
+            - "I've managed to spill something, and I need an object to help with cleaning it up. Would you kindly bring it to the `target_receptacle_name`?"
+
+      b7da80f7:
+        match_objs:
+          target_object_name: 
+            - "mug"
+        lang:
+          train:
+            - "Bring me something to pour hot coffee into at the `target_receptacle_name`"
+            - "Fetch a container for pouring hot coffee into at the `target_receptacle_name`."
+            - "Could you please procure a receptacle for pouring hot coffee into at the `target_receptacle_name`?"
+            - "I need a vessel to pour hot coffee into at the `target_receptacle_name`."
+            - "Find something to serve hot coffee in at the `target_receptacle_name`."
+            - "Bring me a suitable object to pour hot coffee into at the `target_receptacle_name`."
+            - "Retrieve an appropriate receptacle for hot coffee at the `target_receptacle_name`."
+            - "Locate an item for pouring hot coffee into at the `target_receptacle_name`."
+            - "Please obtain an object for me to pour hot coffee into at the `target_receptacle_name`."
+            - "I'd like a container for my hot coffee at the `target_receptacle_name`, please."
+            - "Procure an item for hot coffee pouring at the `target_receptacle_name`."
+
+  fd8dd56c:
+    # 2 object rearrangement hidden start
+    lang: 
+      train:
+        - "Place a `object1` and a `object2` on the `targ_recep`."
+        - "Put an `object1` and a `object2` onto the `targ_recep`."
+        - "Position an `object1` and a `object2` on the `targ_recep`."
+        - "Set down an `object1` and a `object2` on the `targ_recep`."
+        - "Arrange an `object1` and a `object2` on the `targ_recep`."
+        - "Deposit an `object1` and a `object2` onto the `targ_recep`."
+        - "Lay an `object1` and a `object2` on the `targ_recep`."
+        - "Place both an `object1` and a `object2` onto the `targ_recep`."
+        - "Place an `object1` and an `object2` on the `targ_recep` surface."
+        - "Position both an `object1` and a `object2` on the `targ_recep`."
+        - "Put both an `object1` and a `object2` onto the `targ_recep`."
+      eval:
+        - "On the `targ_recep`, I need a `object1` and a `object2`."
+        - "The `targ_recep` needs an `object1` and a `object2` on it."
+        - "Bring a `object1` and a `object2` to the `targ_recep`."
+    tags: ['v2_train', 'obj_gen', 'rearrange']
+    overweight_freq: 4
+    subsample_entity_ratio: 0.75
+    solution_template:
+      - "nav(`source_recep_1`)"
+      - "pick_`object1`()"
+      - "nav(`targ_recep`)"
+      - "place(`targ_recep`)"
+      - "nav(`source_recep_2`)"
+      - "pick_`object2`()"
+      - "nav(`targ_recep`)"
+      - "place(`targ_recep`)"
+    goal_expr:
+      expr_type: AND
+      quantifier: EXISTS
+      inputs:
+        - name: X
+          expr_type: "object1"
+        - name: Y
+          expr_type: "object2"
+      sub_exprs:
+        - "on_top(X, targ_recep)"
+        - "on_top(Y, targ_recep)"
+        - "not_holding()"
+    sampled_receps:
+      "targ_recep":
+        type: "open_air_receps"
+      "source_recep_1":
+        type: "open_air_receps"
+        not_equal: ["targ_recep"]
+      "source_recep_2":
+        type: "open_air_receps"
+        not_equal: ["targ_recep"]
+    sampled_objects:
+      "object1":
+        types: 
+          train: "all_cats"
+          eval: "all_eval_cats"
+        recep: "source_recep_1"
+      "object2":
+        types: 
+          train: "all_cats"
+          eval: "all_eval_cats"
+        not_equal: ['object1']
+        recep: "source_recep_2"
+    semantics:
+      b369767a:
+        match_objs:
+          object1: ['knife']
+          object2: ['spoon']
+          targ_recep: ['receptacle_aabb_Tbl1_Top1_frl_apartment_table_01']
+        lang:
+          train:
+            - "Set the table with the knife and spoon utensils."
+            - "Arrange the table with a knife and spoon."
+            - "Prepare the table, placing a knife and spoon."
+            - "Place a knife and spoon on the table for setting."
+            - "Position the table with a knife and spoon."
+            - "Organize the table, ensuring a knife and spoon are set."
+            - "Lay out the table, including a knife and spoon."
+            - "Put a knife and spoon on the table for setting."
+            - "Arrange the table setting, incorporating a knife and spoon."
+            - "Position a knife and spoon on the table for proper setting."
+            - "Set up the table, making sure a knife and spoon are included."
+          eval:
+            - "Set the table for one with a knife and spoon"
+
+      
+  #############################################
+
+
+  #############################################
+  # Object rearrangement (custom)
+
+  6e7f4383:
+    # 2 object rearrangement. Revealed start and goals.
+    lang: 
+      train:
+        - "Can you swap the `object1` and the `object2` in the `receptacle1` and `receptacle2`?"
+
+        - "Could you exchange `object1` and `object2` between `receptacle1` and `receptacle2`?"
+        - "Is it possible to swap the positions of `object1` and `object2` in `receptacle1` and `receptacle2`?"
+        - "Please perform a swap of `object1` and `object2` between the `receptacle1` and `receptacle2`."
+        - "I need you to switch the places of `object1` and `object2` in `receptacle1` and `receptacle2`."
+        - "Can you rearrange `object1` and `object2` by interchanging them in `receptacle1` and `receptacle2`?"
+        - "In `receptacle1` and `receptacle2`, could you swap the locations of `object1` and `object2`?"
+        - "Kindly perform a switch between `object1` and `object2` in `receptacle1` and `receptacle2`."
+        - "Would you be able to trade the positions of `object1` and `object2` in `receptacle1` and `receptacle2`?"
+        - "I would appreciate it if you could perform a swap between `object1` and `object2` in `receptacle1` and `receptacle2`."
+        - "Please switch the places of `object1` and `object2` in `receptacle1` and `receptacle2` for me."
+      eval:
+        - "I misplaced the `object1` on the `receptacle1` and the `object2` on the `receptacle2`. Can you swap their positions?"
+        - "Swap the positions of the `object1` on the `receptacle1` and the `object2` on the `receptacle2`?"
+        - "Swap the `object1` and `object2` between the `receptacle1` and `receptacle2`."
+    tags: ['v2_train', 'obj_gen', 'rearrange']
+    overweight_freq: 4
+    solution_template:
+      - "nav(`receptacle1`)"
+      - "pick_`object1`()"
+      - "nav(`receptacle2`)"
+      - "place(`receptacle2`)"
+      - "nav(`receptacle2`)"
+      - "pick_`object2`()"
+      - "nav(`receptacle1`)"
+      - "place(`receptacle1`)"
+    goal_expr:
+      expr_type: AND
+      quantifier: EXISTS
+      inputs:
+        - name: X
+          expr_type: "object1"
+        - name: Y
+          expr_type: "object2"
+      sub_exprs:
+        - "on_top(X, receptacle2)"
+        - "on_top(Y, receptacle1)"
+        - "not_holding()"
+    sampled_receps:
+      "receptacle1":
+        type: "open_air_receps"
+      "receptacle2":
+        type: "open_air_receps"
+        not_equal: ['receptacle1']
+    sampled_objects:
+      "object1":
+        types: 
+          train: "all_cats"
+          eval: "all_eval_cats"
+        recep: "receptacle1"
+      "object2":
+        types: 
+          train: "all_cats"
+          eval: "all_eval_cats"
+        not_equal: ["object1"]
+        recep: "receptacle2"
+
+  db3119cd:
+    # 3 object rearrangement.
+    lang: 
+      train:
+        # No revealed
+        - "Move the `obj1` to the `targ_recep1`, the `obj2` to the `targ_recep2`, and the `obj3` to the `targ_recep3`."
+        # 1 revealed
+        - "Move the `obj1` from the `source_recep1` to the `targ_recep1`, the `obj2` to the `targ_recep2`, and the `obj3` to the `targ_recep3`."
+        # 2 revealed
+        - "Move the `obj1` from the `source_recep1` to the `targ_recep1`, the `obj2` to the `targ_recep2`, and the `obj3` to the `targ_recep3`."
+        # 3 revealed
+        - "Move the `obj1` from the `source_recep1` to the `targ_recep1`, the `obj2` from the `source_recep2` to the `targ_recep2`, and the `obj3` from the `source_recep3` to the `targ_recep3`."
+    tags: ['v2_eval_longer']
+    overweight_freq: 1
+    subsample_entity_ratio: 0.5
+    solution_template:
+      - "nav(`source_recep1`)"
+      - "pick_`obj1`()"
+      - "nav(`targ_recep1`)"
+      - "place(`targ_recep1`)"
+      - "nav(`source_recep2`)"
+      - "pick_`obj2`()"
+      - "nav(`targ_recep2`)"
+      - "place(`targ_recep2`)"
+      - "nav(`source_recep3`)"
+      - "pick_`obj3`()"
+      - "nav(`targ_recep3`)"
+      - "place(`targ_recep3`)"
+    goal_expr:
+      expr_type: AND
+      quantifier: EXISTS
+      inputs:
+        - name: X
+          expr_type: "obj1"
+        - name: Y
+          expr_type: "obj2"
+        - name: Z
+          expr_type: "obj3"
+      sub_exprs:
+        - "on_top(X, targ_recep1)"
+        - "on_top(Y, targ_recep2)"
+        - "on_top(Z, targ_recep3)"
+        - "not_holding()"
+    sampled_receps:
+      "source_recep1":
+        type: "open_air_receps"
+      "targ_recep1":
+        type: "open_air_receps"
+        not_equal: ['source_recep1']
+      "source_recep2":
+        type: "open_air_receps"
+      "targ_recep2":
+        type: "open_air_receps"
+        not_equal: ['source_recep2']
+      "source_recep3":
+        type: "open_air_receps"
+      "targ_recep3":
+        type: "open_air_receps"
+        not_equal: ['source_recep3']
+    sampled_objects:
+      "obj1":
+        types: 
+          train: "all_cats"
+          eval: "all_eval_cats"
+        recep: "source_recep1"
+      "obj2":
+        types: 
+          train: "all_cats"
+          eval: "all_eval_cats"
+        not_equal: ["obj1"]
+        recep: "source_recep2"
+      "obj3":
+        types: 
+          train: "all_cats"
+          eval: "all_eval_cats"
+        not_equal: ["obj1", "obj2"]
+        recep: "source_recep3"
+
+
+  #############################################
+
+
+  #############################################
+  # Quantifier rearrangement
+  3ef02c70:
+    lang: 
+      train:
+        - "Put all the `object_name` on the `targ_recep`."
+        - "Place all the `object_name` onto the `targ_recep`."
+        - "Transfer all `object_name` to the `targ_recep`."
+        - "Arrange all `object_name` on the `targ_recep`."
+        - "Stack up all the `object_name` onto the `targ_recep`."
+        - "Deposit all `object_name` onto the `targ_recep`."
+        - "Position all `object_name` on the `targ_recep`."
+        - "Set down all the `object_name` onto the `targ_recep`."
+        - "Place every `object_name` onto the `targ_recep`."
+        - "Carefully load all `object_name` onto the `targ_recep`."
+        - "Securely position all `object_name` on the `targ_recep`."
+    tags: ['v2_eval', 'rearrange']
+    goal_expr:
+      expr_type: AND
+      quantifier: FORALL
+      inputs:
+        - name: X
+          expr_type: object_name
+      sub_exprs:
+        - "on_top(X, targ_recep)"
+        - "not_holding()"
+    sampled_receps:
+      "targ_recep":
+        "type": "open_air_receps"
+    sampled_objects:
+      "object_name":
+        types: 
+          train: "all_cats"
+        not_recep: 'receptacle1'
+
+  92bcf9b3:
+    lang: 
+      train:
+        - "Put all the `object_name` from the `receptacle1` on the `receptacle2`."
+        - "Place all the `object_name` from the `receptacle1` onto the `receptacle2`."
+        - "Transfer all `object_name` on the `receptacle1` to the `receptacle2`."
+        - "Gather up all `object_name` from the `receptacle1` and set them on the `receptacle2`."
+        - "Relocate every `object_name` from `receptacle1` onto the `receptacle2`."
+        - "Move all the `object_name` from the `receptacle1` to the `receptacle2`."
+        - "Place all the `object_name` found on the `receptacle1` onto the `receptacle2`."
+        - "Transport all `object_name` on the `receptacle1` and put them on the `receptacle2`."
+        - "Shift all the `object_name` on the `receptacle1` over to `receptacle2`."
+        - "Deposit all the `object_name` from the `receptacle1` onto `receptacle2`."
+    tags: ['v2_eval', 'rearrange']
+    goal_expr:
+      expr_type: AND
+      quantifier: FORALL
+      inputs:
+        - name: X
+          expr_type: object_name
+      sub_exprs:
+        - "on_top(X, receptacle2)"
+        - "not_holding()"
+    sampled_receps:
+      "receptacle1":
+        type: "open_air_receps"
+      "receptacle2":
+        type: "open_air_receps"
+        not_equal: ["receptacle1"]
+    sampled_objects:
+      "object_name":
+        types: 
+          train: "all_cats"
+        not_recep: 'receptacle2'
+
+
+  6e3da8a1:
+    lang: 
+      train:
+        - "I accidently left the fridge open, can you close it?"
+        - "Shut the fridge."
+        - "Could you please shut the fridge? I accidentally left it open."
+        - "The refrigerator was left open by mistake. Would you mind closing it for me?"
+        - "I unintentionally left the fridge door open. Can you close it, please?"
+        - "I forgot to close the fridge properly. Could you kindly close it for me?"
+        - "The fridge door is open because of my mistake. Can you close it, please?"
+        - "Apologies, but I left the refrigerator open. Could you do me a favor and close it?"
+        - "I didn't realize I left the fridge open. Can you please close it for me?"
+        - "Regrettably, I forgot to close the fridge. Would you be able to close it, please?"
+        - "I made a mistake and left the fridge open. Can you assist me by closing it?"
+      eval: 
+        - "When putting away groceries, I forgot to shut the fridge. Can you help?"
+        - "I left the fridge open. Can you help?"
+        - "The fridge needs to be shut."
+
+    tags: ['v2_train', 'rearrange']
+    solution_template:
+      - "nav(fridge_push_point)"
+      - "close_fridge(fridge_push_point)"
+    goal_expr:
+      expr_type: AND
+      sub_exprs:
+        - "closed_fridge(fridge_push_point)"
+    sampled_receps: {}
+    sampled_objects: {}
+    start_preds:
+      - "opened_fridge(fridge_push_point)"
+
+  5d5460d6:
+    # Variant where the fridge is open.
+    lang: 
+      train:
+        - "If the fridge is open move a `target_object_name1` to the `target_receptacle_name`, otherwise move a `target_object_name2` to the `target_receptacle_name`."
+        - "If the fridge door is ajar, transfer an `target_object_name1` to the `target_receptacle_name`; otherwise, place an `target_object_name2` into the `target_receptacle_name`."
+        - "When the fridge is open, relocate an `target_object_name1` to the `target_receptacle_name`; if it's closed, shift an `target_object_name2` to the `target_receptacle_name`."
+        - "In case the fridge remains open, perform a transfer of an `target_object_name1` to the `target_receptacle_name`; when closed, execute a transfer of the `target_object_name2` to the `target_receptacle_name`."
+        - "Should the fridge door be open, move an `target_object_name1` to the `target_receptacle_name`; otherwise, transport an `target_object_name2` to the `target_receptacle_name`."
+        - "If the refrigerator door is not closed, then proceed to move an `target_object_name1` to the `target_receptacle_name`; otherwise, place an `target_object_name2` into the `target_receptacle_name`."
+        - "In the event that the fridge is open, conduct the relocation of an `target_object_name1` to the `target_receptacle_name`; if it's closed, undertake the transfer of an `target_object_name2` to the `target_receptacle_name`."
+        - "Assuming the fridge remains open, please relocate an `target_object_name1` to the `target_receptacle_name`; if it is closed, make sure to transfer an `target_object_name2` to the `target_receptacle_name`."
+        - "When you find the fridge door open, go ahead and move an `target_object_name1` to the `target_receptacle_name`; otherwise, transport an `target_object_name2` to the `target_receptacle_name`."
+        - "Provided that the fridge door is open, effectuate the transfer of an `target_object_name1` to the `target_receptacle_name`; if the fridge door is closed, perform the same action with an `target_object_name2` into the `target_receptacle_name`."
+        - "In the case that the fridge door is open, kindly proceed to move an `target_object_name1` to the `target_receptacle_name`; if the fridge door is closed, perform the transfer of an `target_object_name2` to the `target_receptacle_name`."
+    tags: ['v2_eval_cond']
+    solution_template:
+      - "nav(`source_receptacle_name1`)"
+      - "pick_`target_object_name1`()"
+      - "nav(`target_receptacle_name`)"
+      - "place(`target_receptacle_name`)"
+    goal_expr:
+      expr_type: AND
+      quantifier: EXISTS
+      inputs:
+        - name: X
+          expr_type: "target_object_name1"
+        - name: Y
+          expr_type: "target_object_name2"
+      sub_exprs:
+        - "opened_fridge(fridge_push_point)"
+        - "on_top(X, target_receptacle_name)"
+        - "on_top(Y, source_receptacle_name2)"
+        - "not_holding()"
+    sampled_receps:
+      "source_receptacle_name1":
+        type: "open_air_receps"
+      "source_receptacle_name2":
+        type: "open_air_receps"
+      "target_receptacle_name":
+        type: "open_air_receps"
+        not_equal: ["source_receptacle_name1", "source_receptacle_name2"]
+    sampled_objects:
+      "target_object_name1":
+        types:
+          train: "all_train_cats"
+          eval: "all_eval_cats"
+        recep: source_receptacle_name1
+      "target_object_name2":
+        types:
+          train: "all_train_cats"
+          eval: "all_eval_cats"
+        not_equal: ["target_object_name1"]
+        recep: source_receptacle_name2
+    start_preds:
+      - "opened_fridge(fridge_push_point)"
+
+  e75d9d69:
+    # Variant where the fridge is closed.
+    lang: 
+      train:
+        - "If the fridge is open move a `target_object_name1` to the `target_receptacle_name`, otherwise move a `target_object_name2` to the `target_receptacle_name`."
+        - "If the fridge door is ajar, transfer an `target_object_name1` to the `target_receptacle_name`; otherwise, place an `target_object_name2` into the `target_receptacle_name`."
+        - "When the fridge is open, relocate an `target_object_name1` to the `target_receptacle_name`; if it's closed, shift an `target_object_name2` to the `target_receptacle_name`."
+        - "In case the fridge remains open, perform a transfer of an `target_object_name1` to the `target_receptacle_name`; when closed, execute a transfer of the `target_object_name2` to the `target_receptacle_name`."
+        - "Should the fridge door be open, move an `target_object_name1` to the `target_receptacle_name`; otherwise, transport an `target_object_name2` to the `target_receptacle_name`."
+        - "If the refrigerator door is not closed, then proceed to move an `target_object_name1` to the `target_receptacle_name`; otherwise, place an `target_object_name2` into the `target_receptacle_name`."
+        - "In the event that the fridge is open, conduct the relocation of an `target_object_name1` to the `target_receptacle_name`; if it's closed, undertake the transfer of an `target_object_name2` to the `target_receptacle_name`."
+        - "Assuming the fridge remains open, please relocate an `target_object_name1` to the `target_receptacle_name`; if it is closed, make sure to transfer an `target_object_name2` to the `target_receptacle_name`."
+        - "When you find the fridge door open, go ahead and move an `target_object_name1` to the `target_receptacle_name`; otherwise, transport an `target_object_name2` to the `target_receptacle_name`."
+        - "Provided that the fridge door is open, effectuate the transfer of an `target_object_name1` to the `target_receptacle_name`; if the fridge door is closed, perform the same action with an `target_object_name2` into the `target_receptacle_name`."
+        - "In the case that the fridge door is open, kindly proceed to move an `target_object_name1` to the `target_receptacle_name`; if the fridge door is closed, perform the transfer of an `target_object_name2` to the `target_receptacle_name`."
+    tags: ['v2_eval_cond']
+    solution_template:
+      - "nav(`source_receptacle_name2`)"
+      - "pick_`target_object_name2`()"
+      - "nav(`target_receptacle_name`)"
+      - "place(`target_receptacle_name`)"
+    goal_expr:
+      expr_type: AND
+      quantifier: EXISTS
+      inputs:
+        - name: X
+          expr_type: "target_object_name1"
+        - name: Y
+          expr_type: "target_object_name2"
+      sub_exprs:
+        - "closed_fridge(fridge_push_point)"
+        - "on_top(X, source_receptacle_name1)"
+        - "on_top(Y, target_receptacle_name)"
+        - "not_holding()"
+    sampled_receps:
+      "source_receptacle_name1":
+        type: "open_air_receps"
+      "source_receptacle_name2":
+        type: "open_air_receps"
+      "target_receptacle_name":
+        type: "open_air_receps"
+        not_equal: ["source_receptacle_name1", "source_receptacle_name2"]
+    sampled_objects:
+      "target_object_name1":
+        types:
+          train: "all_train_cats"
+          eval: "all_eval_cats"
+        recep: source_receptacle_name1
+      "target_object_name2":
+        types:
+          train: "all_train_cats"
+          eval: "all_eval_cats"
+        not_equal: ["target_object_name1"]
+        recep: source_receptacle_name2
+    start_preds:
+      - "closed_fridge(fridge_push_point)"
+
+  
+  68216d8c:
+    lang: 
+      train:
+        - "Can you open the fridge for me?"
+        - "Could you kindly open the fridge on my behalf?"
+        - "Would you mind opening the refrigerator for me?"
+        - "I would appreciate it if you could open the fridge."
+        - "Can you do me a favor and open the refrigerator, please?"
+        - "It would be great if you could open the fridge."
+        - "I need you to open the refrigerator, if you don't mind."
+        - "Please assist me by opening the fridge."
+        - "I'm requesting your help in opening the refrigerator."
+        - "Could you extend your assistance by opening the fridge?"
+        - "I kindly ask you to open the refrigerator."
+      eval:
+        - "I need to put away some cold groceries, can you help?"
+        - "I accidently shut the fridge, but I still need to put something away, help me."
+        - "I need to grab a cold drink but my hands are full, can you help?"
+    tags: ['v2_train', 'rearrange']
+    solution_template:
+      - "nav(fridge_push_point)"
+      - "open_fridge(fridge_push_point)"
+    goal_expr:
+      expr_type: AND
+      sub_exprs:
+      - "opened_fridge(fridge_push_point)"
+    sampled_receps: {}
+    sampled_objects: {}
+    start_preds:
+      - "closed_fridge(fridge_push_point)"
+
+  93b2ef41: 
+    # Spatial receptacle rearrangement
+    lang: 
+      train: []
+      eval: []
+    tags: ['v2_eval_spatial']
+    overweight_freq: 4
+    solution_template:
+      - "nav(`source_receptacle_name`)"
+      - "pick_`target_object_name`()"
+      - "nav(`target_receptacle_name`)"
+      - "place(`target_receptacle_name`)"
+    goal_expr:
+      expr_type: AND
+      quantifier: EXISTS
+      inputs:
+        - name: X
+          expr_type: "target_object_name"
+      sub_exprs:
+        - "on_top(X, target_receptacle_name)"
+        - "not_holding()"
+    semantics:
+      b8173aa5:
+        match_objs:
+          target_receptacle_name:
+            - "receptacle_aabb_sink_kitchen_counter"
+        lang:
+          train:
+            - "Move a `target_object_name` from the `source_receptacle_name` to the left of the right counter."
+            - "Move a `target_object_name` from the `source_receptacle_name` to the right of the left counter."
+      595eb7da:
+        match_objs:
+          target_receptacle_name:
+            - "receptacle_aabb_sink_kitchen_counter"
+        lang:
+          train:
+            - "Move a `target_object_name` from the `source_receptacle_name` to the right of the left counter."
+      ce10cc16:
+        match_objs:
+          target_receptacle_name:
+            - "receptacle_aabb_Sofa_frl_apartment_sofa"
+        lang:
+          train:
+            - "Move a `target_object_name` from the `source_receptacle_name` to the right of the TV stand."
+    sampled_receps:
+      "source_receptacle_name":
+        type: "open_air_receps"
+      "target_receptacle_name":
+        type: "open_air_receps"
+        not_equal: ["source_receptacle_name"]
+    sampled_objects:
+      "target_object_name":
+        types:
+          train: "all_train_cats"
+          eval: "all_eval_cats"
+        recep: source_receptacle_name
+  #############################################
+
+
+  #############################################
+  # Robot
+  311525c5:
+    lang: 
+      train:
+        - "Go to `target_receptacle_name`."
+        - "Head to the `target_receptacle_name`."
+        - "Make your way to the `target_receptacle_name`."
+        - "Proceed to the `target_receptacle_name` location."
+        - "Go over to the `target_receptacle_name`."
+        - "Walk to the `target_receptacle_name` area."
+        - "Move towards the `target_receptacle_name`."
+        - "Get to the `target_receptacle_name` destination."
+        - "Reach the `target_receptacle_name`."
+        - "Find your way to the `target_receptacle_name` spot."
+        - "Journey to the `target_receptacle_name`."
+    tags: ['v2_train']
+    solution_template:
+      - "nav(`target_receptacle_name`)"
+    goal_expr:
+      expr_type: AND
+      sub_exprs:
+        - "robot_at(target_receptacle_name)"
+    sampled_receps:
+      "target_receptacle_name":
+        "type": "open_air_receps"
+    sampled_objects: {}
+
+  2f2d797d:
+    lang: 
+      train:
+        - "Find a `target_object_name`."
+        - "Locate a `target_object_name`"
+        - "Discover a `target_object_name`"
+        - "Uncover a `target_object_name`"
+        - "Search for a `target_object_name`"
+        - "Identify a `target_object_name`"
+        - "Seek out a `target_object_name`"
+        - "Scour for a `target_object_name`"
+        - "Hunt down a `target_object_name`"
+        - "Pinpoint a `target_object_name`"
+        - "Spot a `target_object_name`"
+    tags: ['v2_train']
+    solution_template:
+      - "nav(`source_receptacle_name`)"
+    goal_expr:
+      expr_type: AND
+      quantifier: EXISTS
+      inputs:
+        - name: X
+          expr_type: "target_object_name"
+      sub_exprs:
+        - "robot_at(X)"
+    sampled_receps:
+      "source_receptacle_name":
+        type: "open_air_receps"
+    sampled_objects:
+      "target_object_name":
+        types:
+          train: "all_train_cats"
+          eval: "all_eval_cats"
+        recep: source_receptacle_name
+  #############################################
+  
+
+# Map the asset IDs into a readable string.
+name_mappings:
+  # Receptacles
+  "receptacle_aabb_Chr1_Top1_frl_apartment_chair_01": "chair"
+  "receptacle_aabb_Tbl1_Top1_frl_apartment_table_01": "black table"
+  "receptacle_aabb_Tbl2_Top1_frl_apartment_table_02": "brown table"
+  "receptacle_aabb_TvStnd1_Top1_frl_apartment_tvstand": "TV stand"
+  "receptacle_aabb_sink_kitchen_counter": "sink"
+  "receptacle_aabb_counter_right_kitchen_counter": "right counter"
+  "receptacle_aabb_counter_left_kitchen_counter": "left counter"
+  "receptacle_aabb_Sofa_frl_apartment_sofa": "sofa"
+  "receptacle_aabb_middle_topfrl_apartment_refrigerator": "fridge"
+  "receptacle_aabb_drawer_left_top_frl_apartment_kitchen_counter": "left drawer"
+  "receptacle_aabb_drawer_middle_top_frl_apartment_kitchen_counter": "middle drawer"
+  "receptacle_aabb_drawer_right_top_frl_apartment_kitchen_counter": "right drawer"
+  "fridge_push_point": "fridge"
+
+  "noop": "nothing"
+  "toy airplane": "toy"
+  "close_cab": "close"
+  "close_fridge": "close"
+  "open_cab": "open"
+  "open_fridge": "open"
+  'rubriks cube': 'cube'
+
+  "cab_push_point_7": "left drawer"
+  "cab_push_point_6": "middle drawer"
+  "cab_push_point_5": "right drawer"
+  "cab_push_point_4": "bottom drawer"
+

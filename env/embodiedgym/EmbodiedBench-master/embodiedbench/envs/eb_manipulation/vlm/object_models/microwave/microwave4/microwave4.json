@@ -1,0 +1,40 @@
+{
+ "class": "microwave",
+ "name": "microwave4",
+ "articulated": true,
+ "constraints": {
+  "Revolute_joint": [
+   0,
+   1
+  ]
+ },
+ "highest_part": 0,
+ "manipulated_part": [
+  1
+ ],
+ "parts": [
+  {
+   "orginal_name": "microwave4_base",
+   "name": "microwave4_base",
+   "graspable": false,
+   "property": {
+    "shape": "base of microwave",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "microwave4_door",
+   "name": "microwave4_door",
+   "graspable": false,
+   "property": {
+    "shape": "door of microwave",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   },
+   "local_grasp_pose_path": "microwave4_door.pkl"
+  }
+ ]
+}

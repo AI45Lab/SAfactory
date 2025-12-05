@@ -1,0 +1,40 @@
+{
+ "class": "fridge",
+ "name": "fridge2",
+ "articulated": true,
+ "constraints": {
+  "Revolute_joint": [
+   0,
+   1
+  ]
+ },
+ "highest_part": 0,
+ "manipulated_part": [
+  1
+ ],
+ "parts": [
+  {
+   "orginal_name": "fridge2_base",
+   "name": "fridge2_base",
+   "graspable": false,
+   "property": {
+    "shape": "base of fridge",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "fridge2_door",
+   "name": "fridge2_door",
+   "graspable": false,
+   "property": {
+    "shape": "door of fridge",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   },
+   "local_grasp_pose_path": "fridge2_door.pkl"
+  }
+ ]
+}

@@ -1,0 +1,74 @@
+{
+ "class": "drawer",
+ "name": "drawer1",
+ "articulated": true,
+ "constraints": {
+  "drawer_joint_top": [
+   0,
+   1
+  ],
+  "drawer_joint_middle": [
+   0,
+   2
+  ],
+  "drawer_joint_bottom": [
+   0,
+   3
+  ]
+ },
+ "highest_part": 0,
+ "manipulated_part": [
+  1,
+  2,
+  3
+ ],
+ "parts": [
+  {
+   "orginal_name": "drawer_frame",
+   "name": "drawer1_frame",
+   "graspable": false,
+   "property": {
+    "shape": "the frame of drawer",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "drawer_top",
+   "name": "drawer1_top",
+   "graspable": false,
+   "local_grasp_pose_path": "drawer1_top.pkl",
+   "property": {
+    "shape": "top drawer",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "drawer_middle",
+   "name": "drawer1_middle",
+   "graspable": false,
+   "local_grasp_pose_path": "drawer1_top.pkl",
+   "property": {
+    "shape": "middle drawer",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "drawer_bottom",
+   "name": "drawer1_bottom",
+   "graspable": false,
+   "local_grasp_pose_path": "drawer1_top.pkl",
+   "property": {
+    "shape": "bottom drawer",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  }
+ ]
+}

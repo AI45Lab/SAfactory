@@ -1,0 +1,74 @@
+{
+ "class": "drawer",
+ "name": "drawer3",
+ "articulated": true,
+ "constraints": {
+  "top_joint": [
+   0,
+   1
+  ],
+  "middle_joint": [
+   0,
+   2
+  ],
+  "bottom_joint": [
+   0,
+   3
+  ]
+ },
+ "highest_part": 0,
+ "manipulated_part": [
+  1,
+  2,
+  3
+ ],
+ "parts": [
+  {
+   "orginal_name": "drawer_base",
+   "name": "drawer3_base",
+   "graspable": false,
+   "property": {
+    "shape": "base of cabinet",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "top_drawer",
+   "name": "drawer3_top",
+   "graspable": false,
+   "local_grasp_pose_path": "handle.pkl",
+   "property": {
+    "shape": "top drawer",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "middle_drawer",
+   "name": "drawer3_middle",
+   "graspable": false,
+   "local_grasp_pose_path": "handle.pkl",
+   "property": {
+    "shape": "middle drawer",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "bottom_drawer",
+   "name": "drawer3_bottom",
+   "graspable": false,
+   "local_grasp_pose_path": "handle.pkl",
+   "property": {
+    "shape": "bottom drawer",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  }
+ ]
+}

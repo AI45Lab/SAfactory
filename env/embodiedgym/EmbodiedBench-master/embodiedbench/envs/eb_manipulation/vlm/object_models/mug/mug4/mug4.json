@@ -1,0 +1,24 @@
+{
+ "class": "mug",
+ "name": "mug4",
+ "articulated": false,
+ "constraints": null,
+ "highest_part": 0,
+ "manipulated_part": [
+  0
+ ],
+ "parts": [
+  {
+   "orginal_name": "mug4",
+   "name": "mug4",
+   "graspable": true,
+   "property": {
+    "shape": "mug",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   },
+   "local_grasp_pose_path": "mug4.pkl"
+  }
+ ]
+}

@@ -1,0 +1,74 @@
+{
+ "class": "drawer",
+ "name": "drawer2",
+ "articulated": true,
+ "constraints": {
+  "Prismatic_upper_joint": [
+   0,
+   1
+  ],
+  "Prismatic_middle_joint": [
+   0,
+   2
+  ],
+  "Prismatic_bottom_joint": [
+   0,
+   3
+  ]
+ },
+ "highest_part": 0,
+ "manipulated_part": [
+  1,
+  2,
+  3
+ ],
+ "parts": [
+  {
+   "orginal_name": "cabinet8_base",
+   "name": "drawer2_base",
+   "graspable": false,
+   "property": {
+    "shape": "base of cabinet",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "cabinet8_upper_drawer",
+   "name": "drawer2_top",
+   "graspable": false,
+   "local_grasp_pose_path": "small_drawer.pkl",
+   "property": {
+    "shape": "top drawer",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "cabinet8_middle_drawer",
+   "name": "drawer2_middle",
+   "graspable": false,
+   "local_grasp_pose_path": "large_drawer.pkl",
+   "property": {
+    "shape": "middle drawer",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  },
+  {
+   "orginal_name": "cabinet8_bottom_drawer",
+   "name": "drawer2_bottom",
+   "graspable": false,
+   "local_grasp_pose_path": "large_drawer.pkl",
+   "property": {
+    "shape": "bottom drawer",
+    "color": null,
+    "size": null,
+    "relative_pos": null
+   }
+  }
+ ]
+}
