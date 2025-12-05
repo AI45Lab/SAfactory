@@ -266,7 +266,7 @@ class OSGym(BaseEnv):
             return {}, False
 
     def step(self, action: str) -> StepOutput:
-        print(f"[DEBUG] Raw Agent Action: {repr(action)}")
+        # print(f"[DEBUG] Raw Agent Action: {repr(action)}")
 
         parsed_actions = self._parse_actions(action)
         print(f"[DEBUG] Parsed Actions: {parsed_actions}")
