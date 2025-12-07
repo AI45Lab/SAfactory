@@ -1,678 +1,505 @@
 import io
-import os
-import re
 import json
-import logging
-import textwrap
+import re
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
-
+import logging
 import gymnasium as gym
+import matplotlib.pyplot as plt
 import requests
-from PIL import Image, ImageDraw
+import yaml
+from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageParam
 
-from core.types.base import (
-    ResetOutput,
-    StepOutput,
-    RenderOutput,
-    PromptOutput,
-    TextContent,
-    OpenAIMessage,
-    MessageContent,
-)
 from core.env.base_env import BaseEnv
 from core.env.env_register import register_env
+from core.types.base import RenderOutput, ResetOutput, StepOutput
 
-# 设置日志记录
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# ANSI 颜色码
-class Colors:
-    """ANSI color codes for terminal output"""
-    RESET = '\033[0m'
-    BOLD = '\033[1m'
-    # 前景色
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    BLUE = '\033[94m'
-    MAGENTA = '\033[95m'
-    CYAN = '\033[96m'
-    WHITE = '\033[97m'
-    # 背景色
-    BG_BLUE = '\033[44m'
-    BG_GREEN = '\033[42m'
-    BG_YELLOW = '\033[43m'
-    BG_RED = '\033[41m'
-
-
-def _normalize_answer(s: str) -> str:
-    s = s.lower()
-    # Remove punctuation and extra spaces, basic normalization
-    s = re.sub(r"\b(a|an|the)\b", " ", s)
-    s = re.sub(r"[^\w\s]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
-def _em_check(prediction: str, gold: List[str]) -> bool:
-    p = _normalize_answer(prediction)
-    logger.debug(f"Checking answer: normalized prediction='{p}'")
-    for g in gold:
-        normalized_gold = _normalize_answer(g)
-        if normalized_gold == p:
-            logger.debug(f"Match found with ground truth: '{g}'")
-            return True
-    logger.debug(f"No match found among {len(gold)} ground truth answers")
-    return False
-
-
-def _serper_search(
-    api_key: str,
-    query: str,
-    topk: int = 3,
-    timeout: int = 30,
-    gl: str = "us",
-    hl: str = "en",
-    proxy: Optional[str] = None,
-) -> List[Dict[str, str]]:
-    """Query Google Serper API and return a list of {title, snippet, link}.
-    Keeps behavior simple and uses only snippet (no page fetching).
-    """
-    if not api_key:
-        logger.warning("Serper API key not provided, returning empty results")
-        return []
-
-    logger.info(f"Initiating Serper search - Query: '{query}', TopK: {topk}, GL: {gl}, HL: {hl}")
-
-    url = "https://google.serper.dev/search"
-    payload = {
-        "q": query,
-        "num": max(1, min(topk, 10)),
-        "gl": gl,
-        "hl": hl,
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "X-API-KEY": api_key,
-    }
-
-    logger.debug(f"Search payload: {payload}")
-
-    try:
-        proxies = None
-
-        if proxy:
-            # 优先使用显式传入的proxy参数
-            proxies = {"http": proxy, "https": proxy}
-            logger.info(f"Using explicit proxy: {proxy}")
-        else:
-            # 检查环境变量中的代理设置
-            http_proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
-            https_proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy')
-
-            if http_proxy or https_proxy:
-                proxies = {}
-                if http_proxy:
-                    proxies['http'] = http_proxy
-                    logger.info(f"Using HTTP_PROXY from environment: {http_proxy}")
-                if https_proxy:
-                    proxies['https'] = https_proxy
-                    logger.info(f"Using HTTPS_PROXY from environment: {https_proxy}")
-            else:
-                logger.debug("No proxy configured (neither explicit nor from environment)")
-
-        logger.info(f"Sending request to Serper API...")
-        r = requests.post(url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
-        r.raise_for_status()
-
-        data = r.json()
-        items = data.get("organic", [])
-        logger.info(f"Received {len(items)} search results from Serper API")
-
-        out = []
-        for idx, it in enumerate(items):
-            result_item = {
-                "title": it.get("title", "No title."),
-                "snippet": it.get("snippet", "No snippet available."),
-                "link": it.get("link", ""),
-            }
-            out.append(result_item)
-            logger.debug(f"Result {idx + 1}: {result_item['title'][:50]}...")
-
-        logger.info(f"Successfully processed {len(out)} search results")
-        return out
-
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Request error during Serper search: {e}")
-        return []
-    except Exception as e:
-        logger.error(f"Unexpected error during Serper search: {e}")
-        return []
-
-
-def _resolve_dataset_path(path: str) -> Path:
-    """Resolve dataset path, supporting relative paths."""
-    logger.debug(f"Resolving dataset path: {path}")
-    candidate = Path(path)
-    if candidate.exists():
-        logger.debug(f"Found dataset at direct path: {candidate}")
-        return candidate
-
-    # Try relative to project root and current working directory
-    fallback_roots = [
-        Path.cwd(),
-        Path(__file__).resolve().parents[2],
-    ]
-    logger.debug(f"Trying fallback roots: {[str(r) for r in fallback_roots]}")
-
-    for root in fallback_roots:
-        resolved = (root / path).resolve()
-        logger.debug(f"Checking: {resolved}")
-        if resolved.exists():
-            logger.info(f"Found dataset at resolved path: {resolved}")
-            return resolved
-
-    logger.error(f"Dataset not found at any of the tried paths for: {path}")
-    raise FileNotFoundError(f"Search dataset not found at '{path}'")
-
-
-def _load_search_dataset(path: str) -> List[Dict[str, Any]]:
-    """Load dataset entries with question and ground truth answers."""
-    logger.info(f"Loading search dataset from: {path}")
-    dataset_path = _resolve_dataset_path(path)
-    suffix = dataset_path.suffix.lower()
-    entries: List[Dict[str, Any]] = []
-
-    logger.debug(f"Dataset format: {suffix}")
-
-    if suffix == ".jsonl":
-        logger.info(f"Reading JSONL file: {dataset_path}")
-        with dataset_path.open("r", encoding="utf-8") as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                entries.append(json.loads(line))
-                logger.debug(f"Loaded entry {line_num} from JSONL")
-    elif suffix == ".json":
-        logger.info(f"Reading JSON file: {dataset_path}")
-        with dataset_path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            entries = data
-            logger.debug(f"JSON contains list with {len(entries)} entries")
-        elif isinstance(data, dict):
-            # Prefer common keys, default to values list
-            for key in ("data", "examples", "items"):
-                if key in data and isinstance(data[key], list):
-                    entries = data[key]
-                    logger.debug(f"Using key '{key}' from JSON dict, found {len(entries)} entries")
-                    break
-            else:
-                # Treat dict values as entries if iterable
-                entries = list(data.values())
-                logger.debug(f"Using dict values as entries, found {len(entries)} entries")
-        else:
-            raise ValueError(f"Unsupported JSON structure in dataset '{dataset_path}'")
-    else:
-        raise ValueError(f"Unsupported dataset format '{dataset_path.suffix}'. Use .json or .jsonl.")
-
-    logger.info(f"Loaded {len(entries)} raw entries, normalizing...")
-
-    normalized: List[Dict[str, Any]] = []
-    for idx, raw in enumerate(entries):
-        if not isinstance(raw, dict):
-            raise ValueError(f"Dataset entry #{idx} is not an object: {repr(raw)}")
-        question = raw.get("question") or raw.get("query")
-        if not question or not isinstance(question, str):
-            raise ValueError(f"Dataset entry #{idx} missing 'question' text")
-
-        answers = raw.get("ground_truth") or raw.get("answers") or raw.get("answer")
-        if answers is None:
-            raise ValueError(f"Dataset entry #{idx} missing ground truth answers")
-        if isinstance(answers, str):
-            answers_list = [answers]
-        elif isinstance(answers, list):
-            answers_list = [str(a) for a in answers if a is not None]
-        else:
-            raise ValueError(f"Dataset entry #{idx} has unsupported answers type: {type(answers)}")
-
-        answers_list = [ans.strip() for ans in answers_list if ans.strip()]
-        if not answers_list:
-            raise ValueError(f"Dataset entry #{idx} has empty answers list")
-
-        normalized.append({
-            "question": question.strip(),
-            "ground_truth": answers_list,
-            "metadata": {k: v for k, v in raw.items() if k not in {"question", "query", "ground_truth", "answers", "answer"}},
-        })
-
-        logger.debug(f"Normalized entry {idx}: Question length={len(question)}, Answers count={len(answers_list)}")
-
-    if not normalized:
-        raise ValueError(f"No valid entries found in dataset '{dataset_path}'")
-
-    logger.info(f"Successfully loaded and normalized {len(normalized)} dataset entries")
-    return normalized
-
-
-def _format_results_as_docs(results: List[Dict[str, str]]) -> str:
-    logger.debug(f"Formatting {len(results)} search results as documents")
-    out = []
-    for i, it in enumerate(results, 1):
-        title = it.get("title", "No title.")
-        desc = it.get("snippet", it.get("description", "No snippet available."))
-        url = it.get("link", it.get("url", ""))
-        block = f'Doc {i}(Title: {title}) {desc}\n{url}'.strip()
-        out.append(block)
-        logger.debug(f"Formatted Doc {i}: {title[:50]}...")
-    formatted_text = "\n".join(out)
-    logger.debug(f"Total formatted text length: {len(formatted_text)} characters")
-    return formatted_text
-
-
-def _extract_tag(text: str, tag: str) -> Optional[str]:
-    pattern = rf"<{tag}>(.*?)</{tag}>"
-    m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-    return m.group(1).strip() if m else None
-
-
-ACTION_RE = re.compile(r"<(search|answer)>(.*?)</\1>", re.DOTALL | re.IGNORECASE)
-
 
 @register_env("search")
 class SearchEnv(BaseEnv):
     """
-    A minimal search environment inspired by Search-R1:
-    - The agent should iterate with <think>...</think> and <search>...</search>.
-    - The env returns <information>...</information> after a search.
-    - The episode ends when the agent outputs <answer>...</answer> or max_turns is reached.
-    - Reward: 1.0 for exact-match (EM) with any ground truth answer, else 0.0.
+    一个基于 Web 搜索的问答环境。
+
+    - observation_space: 当前问题 + 多轮对话历史（压缩为文本）
+    - action_space: LLM 的完整回复字符串（包含 <think>、<tool_use> 等）
+    - get_task_prompt(): 返回 system + user，两者共同编码当前对话历史
+    - step(action): 解析 LLM 回复中的 <tool_use name="search"> 调用，执行搜索，
+      并将 <tool_result> 形式的结果追加到对话历史（作为 user 消息）
+    - render(): 将最近几轮对话绘制成简单图片，方便可视化
     """
 
     def __init__(
         self,
-        dataset_path: str,
-        question_index: Optional[int] = None,
-        max_turns: int = 3,
-        topk: int = 3,
-        google_api_key: Optional[str] = None,
-        gl: str = "us",
-        hl: str = "en",
-        proxy: Optional[str] = None,
-        ** kwargs
+        dataset_path: Optional[str] = None,
+        dataset_index: Optional[int] = None,
+        config_path: Optional[str] = None,
+        env_id: str = "",
+        env_name: str = "",
     ) -> None:
-        super().__init__(**kwargs)
-        logger.info("Initializing SearchEnv environment")
-        logger.info(f"Parameters: dataset_path={dataset_path}, question_index={question_index}, "
-                    f"max_turns={max_turns}, topk={topk}, gl={gl}, hl={hl}")
+        """
+        Args:
+            dataset_path: parquet 数据集路径，必须提供，用于从数据集中读取 question / ground_truth
+            dataset_index: 使用数据集中的哪一行（问题索引）
+        其他环境参数（top_k、search_api_url、judger 配置等）统一从配置文件中加载，
+        不再通过构造函数显式传入。
+        """
+        super().__init__(env_id=env_id, env_name=env_name)
 
-        self.dataset_path = dataset_path
-        self.dataset = _load_search_dataset(dataset_path)
-        self.dataset_resolved_path = str(_resolve_dataset_path(dataset_path))
-        self.dataset_size = len(self.dataset)
-        logger.info(f"Dataset loaded successfully with {self.dataset_size} entries")
+        # ---- 从配置文件加载通用参数 ----
+        if config_path is None:
+            # 默认使用与本文件同目录下的 search_env_runtime.yaml
+            default_path = Path(__file__).with_name("search_env_runtime.yaml")
+            config_path = str(default_path)
 
-        if question_index is None:
-            question_index = 0
-            logger.debug("question_index not provided, defaulting to 0")
-        if not (0 <= question_index < self.dataset_size):
-            raise ValueError(
-                f"question_index {question_index} out of range for dataset "
-                f"with {self.dataset_size} entries"
-            )
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            cfg = {}
 
-        self.default_question_index = question_index
-        self.active_question_index = question_index
-        self.max_turns = max(1, max_turns)
-        self.topk = max(1, topk)
-        self.google_api_key = google_api_key
-        self.gl = gl
-        self.hl = hl
-        self.proxy = proxy
+        # ---- 解析数据集路径 ----
+        if dataset_path is None:
+            # 优先读取顶层 dataset_path，兼容旧版 dataset.path
+            dataset_path = cfg.get("dataset_path")
+            if dataset_path is None:
+                ds_cfg = cfg.get("dataset", {}) or {}
+                dataset_path = ds_cfg.get("path")
+        if dataset_path is None:
+            raise ValueError("SearchEnv requires dataset_path (either argument or config.dataset_path), but none was provided.")
 
-        # Log API key status
-        if self.google_api_key:
-            logger.info("Google Serper API key provided")
+        # ---- 从数据集获取 question / ground_truth ----
+        # 延迟导入，避免无 parquet 依赖时影响其他环境
+        import pandas as pd
+
+        df = pd.read_parquet(str(dataset_path))
+        idx = int(dataset_index) if dataset_index is not None else 0
+        if idx < 0 or idx >= len(df):
+            raise IndexError(f"dataset_index {idx} out of range for dataset of size {len(df)}")
+        row = df.iloc[idx]
+
+        question = row.get("question")
+        answers = row.get("golden_answers")
+        if question is None:
+            raise ValueError("SearchEnv requires a question column in dataset, but got None.")
+
+        ground_truth: List[str]
+        if answers is None:
+            ground_truth = []
         else:
-            logger.warning("No Google Serper API key provided - search functionality will be limited")
-
-        # Log proxy configuration
-        if self.proxy:
-            logger.info(f"Explicit proxy configured: {self.proxy}")
-        else:
-            # Check for environment proxy settings
-            http_proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
-            https_proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy')
-            if http_proxy or https_proxy:
-                logger.info("Environment proxy detected:")
-                if http_proxy:
-                    logger.info(f"  HTTP_PROXY: {http_proxy}")
-                if https_proxy:
-                    logger.info(f"  HTTPS_PROXY: {https_proxy}")
+            if isinstance(answers, (list, tuple)):
+                seq = answers
+            elif hasattr(answers, "tolist"):
+                seq = answers.tolist()
             else:
-                logger.debug("No proxy configuration detected")
+                seq = [answers]
+            ground_truth = [str(a) for a in seq]
 
-        # Spaces kept simple
-        self.action_space = gym.spaces.Text(max_length=20000)
-        self.observation_space = gym.spaces.Dict({
-            "question": gym.spaces.Text(max_length=10000),
-            "history": gym.spaces.Text(max_length=200000),
-        })
+        self.question: str = str(question)
+        # 归一化 ground truth，统一为字符串列表
+        self.ground_truth: List[str] = [str(x) for x in ground_truth]
 
-        # runtime state
-        self.turn = 0
-        self.history_blocks: List[str] = []  # store <information>...</information> blocks
-        self.last_action: str = ""
-        self.last_reward: float = 0.0
-        self.current_question: str = ""
-        self.current_ground_truth: List[str] = []
-        self.current_metadata: Dict[str, Any] = {}
-        self.reset_count = 0
+        self.top_k: int = int(cfg.get("top_k", 5))
 
-        logger.info("SearchEnv environment initialized successfully")
+        # 检索服务配置
+        self.search_api_url: str = str(cfg.get("search_api_url", "http://100.99.186.41:8000/retrieve"))
+        self.search_timeout: float = float(cfg.get("search_timeout", 10.0))
 
-    def _select_question(self, options: Optional[Dict[str, Any]] = None) -> None:
-        idx = self.default_question_index
-        if options:
-            candidate = options.get("question_index", options.get("question_id"))
-            if candidate is not None:
-                logger.debug(f"Question index override from options: {candidate}")
-                if not isinstance(candidate, int):
-                    raise ValueError("question_index in reset options must be an integer")
-                if not (0 <= candidate < self.dataset_size):
-                    raise ValueError(
-                        f"question_index {candidate} out of range for dataset "
-                        f"with {self.dataset_size} entries"
-                    )
-                idx = candidate
-        else:
-            logger.debug(f"Using default question index: {idx}")
+        # LLM 判别器配置（可选），统一从配置中读取
+        judge_cfg = cfg.get("judge", {}) or {}
+        judge_api_key = judge_cfg.get("api_key") or ""
+        judge_base_url = judge_cfg.get("base_url") or ""
+        judge_model = judge_cfg.get("model") or ""
+        judge_temperature = float(judge_cfg.get("temperature", 0.0))
 
-        self.active_question_index = idx
-        entry = self.dataset[idx]
-        self.current_question = entry["question"]
-        self.current_ground_truth = entry["ground_truth"]
-        self.current_metadata = entry.get("metadata", {})
+        self._judge_client: Optional[OpenAI] = None
+        self._judge_model: Optional[str] = None
+        self._judge_temperature: float = float(judge_temperature)
+        if judge_base_url:
+            self._judge_client = OpenAI(
+                api_key=str(judge_api_key),
+                base_url=str(judge_base_url),
+            )
+            self._judge_model = str(judge_model)
 
-        logger.info(f"Question #{idx} selected: {len(self.current_question)} chars, "
-                    f"{len(self.current_ground_truth)} ground truth answers")
+        # 环境状态
+        self.step_count: int = 0
+        self.total_search_calls: int = 0
+        self.final_answer: Optional[str] = None
 
-    def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> ResetOutput:
-        logger.info(f"Resetting environment (reset #{self.reset_count + 1})")
+        # 对话历史：直接维护为 OpenAI messages 格式
+        # List[ChatCompletionMessageParam]，元素形如 {"role": "...", "content": "..."}
+        self.messages: List[ChatCompletionMessageParam] = []
+
+        # 定义 action/observation space（仅用于规范）
+        self.action_space = gym.spaces.Text(max_length=8000)
+        # 当前环境不依赖 observation 内容，这里给一个空的 Dict 空间
+        self.observation_space = gym.spaces.Dict({})
+
+    # ------------------------------------------------------------------
+    # 环境核心接口
+    # ------------------------------------------------------------------
+    def reset(self, seed: Optional[int] = None) -> ResetOutput:
+        """重置环境：清空对话历史，只保留 system + 首条 user 问题"""
+        self.step_count = 0
         self.done = False
-        self.turn = 0
-        self.history_blocks = []
-        self.last_action = ""
-        self.last_reward = 0.0
-        self.reset_count += 1
-        self._select_question(options)
+        self.total_search_calls = 0
+        self.final_answer = None
 
-        logger.info(f"Selected question #{self.active_question_index}: '{self.current_question[:100]}...'")
-        logger.debug(f"Ground truth answers: {self.current_ground_truth}")
+        system_text = """You are an intelligent assistant.
+Your goal is to answer the user's question as accurately and concisely as possible.
+You MUST first think in <think>...</think> whenever you receive new information.
+If, after thinking, you find that you need external knowledge, you may call the search tool exactly as:
+  <tool_use name="search">{"query": "real_query"}</tool_use>
+The environment will then send you another user message containing the search results, formatted as:
+  <tool_result>{"result": [{"title": "title text", "content": "short summary"}, ...]}</tool_result>
+You may use the search tool multiple times across the conversation, but at most once per message.
+When you have enough information, stop calling tools and reply with the final answer in natural language, without any special tags.
+"""
+        # 初始化完整 messages：system + 首条 user（问题）
+        self.messages = [
+            {"role": "system", "content": system_text},  # type: ignore[typeddict-item]
+            {
+                "role": "user",
+                "content": f"Question: {self.question}",
+            },  # type: ignore[typeddict-item]
+        ]
 
-        # 彩色日志：显示新问题
-        print(f"\n{Colors.YELLOW}{Colors.BOLD}{'='*80}{Colors.RESET}")
-        print(f"{Colors.YELLOW}{Colors.BOLD}🎯 NEW SEARCH TASK (Reset #{self.reset_count}):{Colors.RESET}")
-        print(f"{Colors.YELLOW}Question #{self.active_question_index + 1}: {self.current_question}{Colors.RESET}")
-        print(f"{Colors.YELLOW}Max turns: {self.max_turns}{Colors.RESET}")
-        print(f"{Colors.YELLOW}{Colors.BOLD}{'='*80}{Colors.RESET}\n")
-
-        obs = {
-            "question": self.current_question,
-            "history": ""  # empty initially
-        }
+        # 当前环境不依赖 observation，返回空 dict
+        observation: Dict[str, Any] = {}
         info: Dict[str, Any] = {
-            "question_index": self.active_question_index,
-            "dataset_path": self.dataset_resolved_path,
+            "question": self.question,
+            "ground_truth": list(self.ground_truth),
+            "step": self.step_count,
+            "total_search_calls": self.total_search_calls,
+            "conversation": list(self.messages),
         }
-        if self.current_metadata:
-            info["metadata"] = self.current_metadata
-            logger.debug(f"Metadata included: {list(self.current_metadata.keys())}")
 
-        logger.info(f"Environment reset complete - Ready for turn 1/{self.max_turns}")
-        return ResetOutput(observation=obs, info=info)
+        return ResetOutput(observation=observation, info=info)
 
     def step(self, action: str) -> StepOutput:
-        if self.done:
-            logger.warning("Step called on already completed episode, returning done state")
-            return StepOutput(
-                observation=self._make_observation(),
-                reward=0.0,
-                terminated=True,
-                truncated=False,
-                info={}
-            )
+        """
+        接收 LLM 的回复：
+        - 追加到对话历史（assistant）
+        - 若包含 <tool_use name="search"> 调用，则执行一次搜索并追加 <tool_result> 消息
+        - 若不包含工具调用，则视为已经给出最终答案，直接终止 episode
+        - 奖励：query 步（成功解析工具调用）给 1；answer 步若配置了 LLM 判别器则根据正确性给 0/1
+        """
+        self.step_count += 1
 
-        self.last_action = str(action or "").strip()
-        logger.info(f"Turn {self.turn + 1}/{self.max_turns}: Processing action")
-        logger.debug(f"Raw action (first 500 chars): {self.last_action[:500]}...")
-
-        reward = 0.0
-        terminated = False
-        truncated = False
-
-        m = ACTION_RE.search(self.last_action)
-        if m:
-            action_tag = m.group(1).lower()
-            content = m.group(2).strip()
-            logger.info(f"Detected action tag: <{action_tag}> with content length: {len(content)}")
-        else:
-            action_tag = None
-            content = None
-            logger.warning("No valid action tag detected in the action")
-
-        if action_tag == "search" and content:
-            logger.info(f"Processing SEARCH action with query: '{content[:100]}...'")
-
-            # 彩色日志：显示搜索查询
-            print(f"\n{Colors.CYAN}{Colors.BOLD}🔍 SEARCH QUERY (Turn {self.turn + 1}/{self.max_turns}):{Colors.RESET}")
-            print(f"{Colors.CYAN}Query: {content}{Colors.RESET}")
-            print(f"{Colors.CYAN}{'='*80}{Colors.RESET}")
-
-            if not self.google_api_key:
-                docs = (
-                    "Serper API key not provided. Please provide 'google_api_key' "
-                    "when creating the environment."
-                )
-                results = []
-                logger.warning("Search attempted without API key")
-
-                # 彩色日志：显示API密钥缺失警告
-                print(f"\n{Colors.YELLOW}{Colors.BOLD}⚠️ SEARCH FAILED - No API Key{Colors.RESET}")
-                print(f"{Colors.YELLOW}Serper API key not provided. Search functionality is disabled.{Colors.RESET}")
-                print(f"{Colors.YELLOW}{'='*80}{Colors.RESET}")
-            else:
-                logger.info("Calling Serper API for search...")
-                results = _serper_search(
-                    api_key=self.google_api_key,
-                    query=content,
-                    topk=self.topk,
-                    gl=self.gl,
-                    hl=self.hl,
-                    proxy=self.proxy,
-                )
-                docs = _format_results_as_docs(results) if results else "No result."
-                logger.info(f"Search completed, {len(results)} results returned")
-
-                # 彩色日志：显示完整搜索结果
-                print(f"\n{Colors.BLUE}{Colors.BOLD}📄 SEARCH RESULTS:{Colors.RESET}")
-                if results:
-                    for idx, result in enumerate(results, 1):
-                        print(f"{Colors.BLUE}[Result {idx}]{Colors.RESET}")
-                        print(f"  {Colors.BOLD}Title:{Colors.RESET} {result.get('title', 'N/A')}")
-                        print(f"  {Colors.BOLD}Snippet:{Colors.RESET} {result.get('snippet', 'N/A')}")
-                        print(f"  {Colors.BOLD}Link:{Colors.RESET} {result.get('link', 'N/A')}")
-                        if idx < len(results):
-                            print(f"{Colors.BLUE}  {'-'*40}{Colors.RESET}")
-                else:
-                    print(f"{Colors.YELLOW}No results found.{Colors.RESET}")
-                print(f"{Colors.BLUE}{'='*80}{Colors.RESET}")
-
-            info_block = f"<information>\n{docs}\n</information>"
-            self.history_blocks.append(info_block)
-            logger.debug(f"Added information block #{len(self.history_blocks)} to history")
-
-            reward = 0.0
-            self.turn += 1
-            if self.turn >= self.max_turns:
-                truncated = True
-                self.done = True
-                logger.info(f"Max turns ({self.max_turns}) reached - episode truncated")
-
-                # 彩色日志：显示达到最大回合数
-                print(f"\n{Colors.RED}{Colors.BOLD}🛑 MAX TURNS REACHED - Episode Truncated (after search){Colors.RESET}\n")
-
-        elif action_tag == "answer" and content is not None:
-            logger.info(f"Processing ANSWER action: '{content[:100]}...'")
-
-            # 彩色日志：显示最终答案
-            print(f"\n{Colors.MAGENTA}{Colors.BOLD}✅ FINAL ANSWER (Turn {self.turn + 1}/{self.max_turns}):{Colors.RESET}")
-            print(f"{Colors.MAGENTA}Answer: {content}{Colors.RESET}")
-            print(f"{Colors.MAGENTA}{'='*80}{Colors.RESET}")
-
-            is_correct = _em_check(content, self.current_ground_truth)
-            reward = 1.0 if is_correct else 0.0
-            terminated = True
-            self.done = True
-
-            # 彩色日志：显示评估结果
-            print(f"\n{Colors.BOLD}📊 ANSWER EVALUATION:{Colors.RESET}")
-            if is_correct:
-                print(f"{Colors.GREEN}{Colors.BOLD}✓ CORRECT ANSWER! (Reward: 1.0){Colors.RESET}")
-                print(f"{Colors.GREEN}Your answer '{content}' matches the expected answer(s).{Colors.RESET}")
-            else:
-                print(f"{Colors.RED}{Colors.BOLD}✗ INCORRECT ANSWER (Reward: 0.0){Colors.RESET}")
-                print(f"{Colors.RED}Your answer: {content}{Colors.RESET}")
-                print(f"{Colors.YELLOW}Expected answers: {', '.join(self.current_ground_truth)}{Colors.RESET}")
-            print(f"{Colors.MAGENTA}{'='*80}{Colors.RESET}\n")
-
-            logger.info(f"Answer evaluation: {'CORRECT' if is_correct else 'INCORRECT'} (reward={reward})")
-            logger.debug(f"Given answer: '{content}', Expected: {self.current_ground_truth}")
-
-        else:
-            logger.warning("Invalid action format received")
-
-            # 彩色日志：显示无效动作警告
-            print(f"\n{Colors.RED}{Colors.BOLD}⚠️ INVALID ACTION (Turn {self.turn + 1}/{self.max_turns}):{Colors.RESET}")
-            print(f"{Colors.RED}Your action: {self.last_action[:100]}{'...' if len(self.last_action) > 100 else ''}{Colors.RESET}")
-            print(f"{Colors.YELLOW}Hint: Use <search>query</search> to search, or <answer>your answer</answer> to answer.{Colors.RESET}")
-            print(f"{Colors.RED}{'='*80}{Colors.RESET}\n")
-
-            # Invalid action format: provide gentle hint via history
-            hint = (
-                "<information>\n"
-                "Invalid action. Use <search>query</search> to retrieve, "
-                "or finish with <answer>final</answer>.\n"
-                "</information>"
-            )
-            self.history_blocks.append(hint)
-            logger.debug("Added invalid action hint to history")
-
-            reward = 0.0
-            self.turn += 1
-            if self.turn >= self.max_turns:
-                truncated = True
-                self.done = True
-                logger.info(f"Max turns ({self.max_turns}) reached after invalid action - episode truncated")
-
-                # 彩色日志：显示达到最大回合数
-                print(f"{Colors.RED}{Colors.BOLD}🛑 MAX TURNS REACHED - Episode Truncated{Colors.RESET}\n")
-
-        logger.info(f"Step complete - Reward: {reward}, Terminated: {terminated}, Truncated: {truncated}, Done: {self.done}")
+        reward, terminated, truncated, extra_info = self._process_action(action or "")
+        # 当前环境不需要向 Agent 返回新的 observation 内容，这里统一为空 dict
+        observation: Dict[str, Any] = {}
+        info: Dict[str, Any] = {
+            "question": self.question,
+            "step": self.step_count,
+            "total_search_calls": self.total_search_calls,
+            "num_messages": len(self.messages),
+            "final_answer": self.final_answer,
+            "judger": extra_info.get("judger"),
+            "conversation": list(self.messages),
+        }
 
         return StepOutput(
-            observation=self._make_observation(),
+            observation=observation,
             reward=reward,
             terminated=terminated,
             truncated=truncated,
-            info={}
+            info=info,
         )
 
-    def _make_observation(self) -> Dict[str, Any]:
-        return {
-            "question": self.current_question,
-            "history": "\n\n".join(self.history_blocks)
-        }
-
-    def get_task_prompt(self) -> PromptOutput:
-        system_text = (
-            "You are a helpful search assistant. Always think step by step inside "
-            "<think>...</think>. Use <search>...</search> to query the web. "
-            "I will return retrieved text inside <information>...</information>. "
-            "When you have enough information, finalize with <answer>...</answer>. "
-            "Only use these tags: think, search, information, answer."
-        )
-        system_message = OpenAIMessage(
-            role="system",
-            content=[MessageContent(root=TextContent(text=system_text))],
-        )
-
-        history_text = self._make_observation()["history"]
-        user_parts = [
-            f"Question: {self.current_question}",
-        ]
-        if history_text:
-            user_parts.append("Context so far:")
-            user_parts.append(history_text)
-
-        user_parts.append(
-            "Respond using exactly one of the following actions: "
-            "<search>your query</search> OR <answer>your final answer</answer>."
-        )
-        user_message = OpenAIMessage(
-            role="user",
-            content=[MessageContent(root=TextContent(text="\n\n".join(user_parts)))],
-        )
-
-        return PromptOutput(system_message=system_message, user_message=user_message)
+    def get_task_prompt(self) -> List[ChatCompletionMessageParam]:
+        """
+        返回当前任务提示的 messages 列表（直接返回内部维护的 self.messages）。
+        """
+        return list(self.messages)
 
     def render(self) -> RenderOutput:
-        # Render a very simple log image with the last action and progress
-        width, height = 900, 500
-        img = Image.new("RGB", (width, height), color=(255, 255, 255))
-        draw = ImageDraw.Draw(img)
+        """
+        将最近几轮对话渲染成简单图片，满足可视化接口需求。
+        """
+        # 仅取最近若干条消息，避免图片过长
+        tail_k = 8
+        recent = self.messages[-tail_k:] if self.messages else []
 
-        header = (
-            f"SearchEnv | Turn {self.turn}/{self.max_turns} "
-            f"| Q#{self.active_question_index + 1}/{self.dataset_size}"
+        lines: List[str] = []
+        for i, msg in enumerate(recent, 1):
+            role = msg.get("role", "?")
+            content = msg.get("content", "")
+            # 截断长内容
+            snippet = content[:180] + ("..." if len(content) > 180 else "")
+            lines.append(f"[{i}] {role}: {snippet}")
+
+        if not lines:
+            lines = ["(no messages yet)"]
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.axis("off")
+        ax.text(
+            0.01,
+            0.99,
+            "\n\n".join(lines),
+            va="top",
+            ha="left",
+            wrap=True,
+            fontsize=10,
         )
-        draw.text((20, 20), header, fill=(0, 0, 0))
+        ax.set_title(f"SearchEnv Conversation | step={self.step_count}", fontsize=12)
 
-        last_action = (self.last_action[:800] + "...") if len(self.last_action) > 800 else self.last_action
-        wrapped = textwrap.fill(last_action, width=100)
-        y = 60
-        draw.text((20, y), "Question:", fill=(0, 0, 0))
-        y += 24
-        question_wrapped = textwrap.fill(self.current_question, width=100)
-        draw.text((20, y), question_wrapped, fill=(0, 0, 0))
-        y += 24 * (1 + question_wrapped.count("\n")) + 10
-
-        draw.text((20, y), "Last Action:", fill=(0, 0, 0))
-        y += 24
-        draw.text((20, y), wrapped, fill=(0, 0, 0))
-
-        # Draw the last information block if any
-        if self.history_blocks:
-            latest_info = self.history_blocks[-1]
-            latest_info_text = (latest_info[:800] + "...") if len(latest_info) > 800 else latest_info
-            wrapped_info = textwrap.fill(latest_info_text, width=100)
-            y += 24 * (1 + wrapped.count("\n")) + 10
-            draw.text((20, y), "Latest Info:", fill=(0, 0, 0))
-            y += 24
-            draw.text((20, y), wrapped_info, fill=(0, 0, 0))
-
-        # Convert to bytes
         buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        data = buf.getvalue()
+        fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+        buf.seek(0)
+        image_data = buf.read()
         buf.close()
-        return RenderOutput(image_data=data, step=self.turn)
+        plt.close(fig)
+
+        return RenderOutput(step=self.step_count, image_data=image_data)
 
     def close(self) -> None:
-        logger.info("Closing SearchEnv environment")
-        logger.debug(f"Final stats - Total resets: {self.reset_count}, Last turn: {self.turn}")
-        super().close()
-        logger.info("SearchEnv environment closed successfully")
+        """当前环境无额外资源需要清理，占位实现。"""
+        pass
+
+    # ------------------------------------------------------------------
+    # 内部工具方法
+    # ------------------------------------------------------------------
+    def _process_action(self, assistant_msg: str) -> Tuple[float, bool, bool, Dict[str, Any]]:
+        """
+        处理当前 assistant 的消息（query 或 answer），并返回：
+        - reward: query 步为 1；answer 步为 0/1
+        - terminated / truncated: episode 是否结束
+        - extra_info: 额外信息（例如 judger 结果）
+        """
+        msg = (assistant_msg or "").strip()
+        # 记录 assistant 消息到对话历史
+        self.messages.append(
+            {"role": "assistant", "content": msg}  # type: ignore[typeddict-item]
+        )
+
+        reward: float = 0.0
+        judge_result: Optional[Dict[str, Any]] = None
+
+        # 尝试解析单个 search 工具调用
+        query = self._extract_search_query(msg)
+
+        # case 1: 存在工具调用 -> 执行一次搜索，并继续对话（不终止）
+        if query:
+            results = self._run_web_search(query)
+            logger.info(
+                "[SearchEnv] search query: %s",
+                query
+            )
+            self.total_search_calls += 1
+            payload = {"result": results}
+            self.messages.append(
+                {"role": "user", "content": f"<tool_result>{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}</tool_result>"}  # type: ignore[typeddict-item]
+            )
+
+            terminated = False
+            truncated = False
+            # 成功解析并调用工具，给予奖励 1
+            reward = 1.0
+
+        # case 2: 无工具调用 -> 视为已经给出最终答案，调用 LLM 判别器打分
+        else:
+            self.final_answer = re.sub(r"<think>.*?</think>", "", msg, flags=re.DOTALL).strip()
+            logger.info(
+                "[SearchEnv] final answer: %s",
+                self.final_answer
+            )
+            terminated = True
+            truncated = False
+            self.done = True
+
+            # 若配置了判别器则用 LLM 打 0/1 分
+            try:
+                judge_result = self._llm_judge(
+                    question=self.question, answer=self.final_answer
+                )
+                logger.debug(
+                    "[SearchEnv] llm judge ground truth: %s",
+                    " or ".join(self.ground_truth)
+                )
+                logger.debug(
+                    "[SearchEnv] llm judge score=%f", 
+                    float(judge_result.get("score", 0.0) or 0.0)
+                )
+                reward = float(judge_result.get("score", 0.0) or 0.0)
+            except Exception as e:
+                logger.error(
+                    "[SearchEnv] llm judge error: %s", 
+                    e
+                )
+                judge_result = {"error": f"{type(e).__name__}: {e}"}
+                reward = 0.0
+
+        extra_info: Dict[str, Any] = {"judger": judge_result}
+        return reward, terminated, truncated, extra_info
+
+    def _llm_judge(self, question: str, answer: str) -> Dict[str, Any]:
+        """
+        使用配置好的 LLM 对 (question, answer) 进行打分。
+
+        返回：
+        {
+          "score": 0 或 1,
+          "explanation": str,
+          "raw_response": str
+        }
+        """
+        if self._judge_client is None or self._judge_model is None:
+            raise RuntimeError("LLM judger is not configured for this SearchEnv.")
+
+        prompt_system = """You are a strict evaluator for question-answer pairs.
+Given a user question, a list of ground-truth answers, and a candidate answer, you must decide whether the candidate answer is essentially correct and sufficient (1) with respect to at least one ground-truth answer, or incorrect/insufficient (0).
+Respond ONLY with a JSON object of the form:
+{"score": 0 or 1, "explanation": "<short explanation>"}"""
+
+        # 将 ground truth 列表格式化到 prompt 中
+        gt_lines = [f"- {gt}" for gt in (self.ground_truth or [])]
+        gt_block = "\n".join(gt_lines) if gt_lines else "(none provided)"
+
+        prompt_user = (
+            "Question:\n"
+            f"{question}\n\n"
+            "Ground-truth answers (list):\n"
+            f"{gt_block}\n\n"
+            "Candidate Answer:\n"
+            f"{answer}\n\n"
+            "Now produce the JSON object."
+        )
+        response = self._judge_client.chat.completions.create(
+            model=self._judge_model,
+            messages=[
+                {"role": "system", "content": prompt_system},
+                {"role": "user", "content": prompt_user},
+            ],
+            temperature=self._judge_temperature,
+            max_tokens=1024
+        )
+
+        raw = (response.choices[0].message.content or "").strip()
+        score = 0.0
+        explanation = ""
+
+        try:
+            text = raw
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                json_str = text[start : end + 1]
+            else:
+                json_str = text
+
+            data = json.loads(json_str)
+            score_int = int(data.get("score", 0) or 0)
+            score = 1.0 if score_int == 1 else 0.0
+            explanation = str(data.get("explanation", "") or "").strip()
+        except Exception:
+            explanation = raw
+            score = 0.0
+
+        return {
+            "score": float(score),
+            "explanation": explanation,
+            "raw_response": raw,
+        }
+
+    @staticmethod
+    def _extract_search_query(text: str) -> Optional[str]:
+        """
+        从 LLM 回复中提取 <tool_use name="search"> 的 query 字符串。
+
+        期望格式：
+        <tool_use name="search">{"query": "real_query"}</tool_use>
+        """
+        if not text:
+            return None
+
+        pattern = re.compile(
+            r'<tool_use\s+name\s*=\s*["\']search["\']\s*>(.*?)</tool_use>',
+            re.IGNORECASE | re.DOTALL,
+        )
+        m_block = pattern.search(text)
+        if not m_block:
+            return None
+
+        try:
+            data = json.loads(m_block.group(1).strip())
+            q = data.get("query", "")
+            return q.strip() or None if isinstance(q, str) else None
+        except (json.JSONDecodeError, AttributeError):
+            return None
+
+
+    def _run_web_search(self, query: str) -> List[Dict[str, str]]:
+        """
+        调用外部检索服务执行搜索。
+
+        接口格式（POST JSON）：
+          url: self.search_api_url
+          body: {
+            "queries": [query],
+            "topk": self.top_k,
+            "return_scores": false
+          }
+
+        预期返回示例：
+        {
+          "result": [[{"id": "...", "contents": "...."}, ...]]
+        }
+
+        我们将每个条目转换为：
+          {"title": <从 contents 或 id 提取>, "content": <主体内容>}
+
+        若 HTTP/网络错误发生，直接抛出异常（let it crash）。
+        """
+        query = query.strip()
+        if not query:
+            return []
+
+        payload = {
+            "queries": [query],
+            "topk": int(self.top_k),
+            "return_scores": False,
+        }
+        resp = requests.post(
+            self.search_api_url,
+            json=payload,
+            timeout=self.search_timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        results: List[Dict[str, str]] = []
+
+        # data["result"] 预期为二维列表：[[{id, contents}, ...]]
+        raw_lists = data.get("result") or []
+        first_list = raw_lists[0] if raw_lists else []
+
+        for item in first_list:
+            if not isinstance(item, dict):
+                continue
+            contents = str(item.get("contents") or "").strip()
+            if not contents:
+                continue
+
+            lines = contents.splitlines()
+            first_line = lines[0].strip() if lines else ""
+
+            # 尝试从第一行中提取引号内标题，例如 `"Machine learning"`
+            m = re.search(r'"([^"]+)"', first_line)
+            if m:
+                title = m.group(1).strip()
+            else:
+                title = first_line or str(item.get("id") or "result")
+
+            # 内容主体：去掉首行，保留剩余文本；若没有剩余，则用原 contents
+            body = "\n".join(lines[1:]).strip() if len(lines) > 1 else contents
+            results.append({"title": title, "content": body})
+
+            if len(results) >= self.top_k:
+                break
+
+        # 截断到 top_k（可能为 0，表示未检索到结果）
+        return results[: self.top_k]
