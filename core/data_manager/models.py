@@ -35,7 +35,7 @@ class InteractionSession(Model):
         on_delete=fields.CASCADE,
         to_field="env_id"  # 明确关联EnvironmentConfig的env_id字段（UUID）
     )
-    agent_model = fields.CharField(max_length=150)
+    llm_model = fields.CharField(max_length=150)
     start_time = fields.DatetimeField(auto_now_add=True)
     end_time = fields.DatetimeField(null=True)
     total_reward = fields.FloatField(default=0.0)

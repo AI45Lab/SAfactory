@@ -4,7 +4,7 @@ import os
 import time
 from datetime import datetime
 from typing import List, Dict, Tuple, Type
-from .agent.base_agent import APIAgent
+from .llm import LLM, BaseURLProvider
 from .data_manager.manager import DataManager
 from .data_manager.models import EnvironmentConfig, InteractionSession
 from .env.env_register import get_env_class
@@ -12,13 +12,19 @@ from .env.env_register import get_env_class
 class Interactor:
     def __init__(
         self,
-        agent: APIAgent,
+        base_url_provider: BaseURLProvider,
+        api_key: str,
+        model: str,
         data_manager: DataManager,
+        temperature: float = 1.0,
         max_workers: int = 5,
         max_steps: int = 1000,
         visual_save_path: str = None
     ):
-        self.agent = agent
+        self.base_url_provider = base_url_provider
+        self.api_key = api_key
+        self.model = model
+        self.temperature = temperature
         self.data_manager = data_manager
         self.max_workers = max_workers  # 最大并行环境数
         self.max_steps = max_steps      # 每个环境最大交互步数
@@ -64,57 +70,29 @@ class Interactor:
         env = await self._init_environment(env_config)
         session = await self.data_manager.create_session(
             env_config=env_config,
-            agent_model=self.agent.model
+            llm_model=self.model
+        )
+
+        # 根据 session 获取 base_url 并创建 LLM
+        base_url = self.base_url_provider.get_base_url(session)
+        llm = LLM(
+            api_key=self.api_key,
+            base_url=base_url,
+            model=self.model,
+            temperature=self.temperature,
         )
 
         total_reward = 0.0
         step_id = 1
-        
+        trajectory = ""  # 内存维护 trajectory，避免 update_session 时查询数据库
+
         try:
-            # 2. 健康检查（异步，指数退避；默认最多等待5分钟）
-            max_wait = int(os.environ.get("AIEVOBOX_HEALTH_MAX_WAIT", "300"))
-            async def _wait_agent_healthy_async() -> bool:
-                if hasattr(self.agent, "is_healthy_async"):
-                    check = self.agent.is_healthy_async  # type: ignore
-                    sync_check = None
-                elif hasattr(self.agent, "is_healthy"):
-                    check = None
-                    sync_check = self.agent.is_healthy  # type: ignore
-                else:
-                    return True
 
-                elapsed = 0
-                # backoff seconds sequence up to 60s
-                intervals = [2, 5, 10, 20, 40, 60]
-                i = 0
-                while elapsed < max_wait:
-                    ok = False
-                    try:
-                        if check is not None:
-                            ok = await check()
-                        else:
-                            ok = await asyncio.to_thread(sync_check)
-                    except Exception:
-                        ok = False
-                    if ok:
-                        return True
-                    interval = intervals[min(i, len(intervals)-1)]
-                    i += 1
-                    try:
-                        print(f"[Interactor] waiting agent healthy... backoff={interval}s elapsed={elapsed}s", flush=True)
-                    except Exception:
-                        pass
-                    await asyncio.sleep(interval)
-                    elapsed += interval
-                return False
-
-            await _wait_agent_healthy_async()
-
-            # 3. 重置环境获取初始状态（假设所有环境都实现了reset方法）
+            # 2. 重置环境获取初始状态
             obs, info = env.reset()
             done = False
 
-            # 4. 交互循环（假设所有环境都实现了step方法）
+            # 3. 交互循环
             while not done and step_id <= self.max_steps:
                 # Step start log
                 try:
@@ -124,15 +102,10 @@ class Interactor:
                     )
                 except Exception:
                     pass
-                # per-step 健康检查（异步指数退避）
-                await _wait_agent_healthy_async()
                 prompt = env.get_task_prompt()
-                
-                # Agent生成响应
-                response = await asyncio.to_thread(
-                    self.agent.generate, 
-                    prompt_output=prompt
-                )
+
+                # LLM 生成响应
+                response = await llm.generate(prompt)
 
                 # 环境执行动作（统一接口假设：step返回(state, reward, done, info)）
                 step_output = env.step(response)
@@ -175,13 +148,17 @@ class Interactor:
                     done=done
                 )
 
+                # 累积 trajectory（简化格式：只记录 step 和 response）
+                trajectory += f"Step {step_id}:\nResponse: {response}\n\n"
+
                 # 更新状态
                 total_reward += reward
                 step_id += 1
 
-            # 5. 完成会话记录
+            # 4. 完成会话记录
             await self.data_manager.update_session(
                 session=session,
+                trajectory=trajectory,
                 total_reward=total_reward,
                 is_completed=True
             )
@@ -198,6 +175,7 @@ class Interactor:
             print(f"环境 {env_config.env_name}_{env_config.env_id} 出错: {str(e)}")
             await self.data_manager.update_session(
                 session=session,
+                trajectory=trajectory,
                 total_reward=total_reward,
                 is_completed=False
             )

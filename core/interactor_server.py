@@ -4,18 +4,23 @@ import os
 import requests
 import aiohttp
 from typing import List, Dict, Tuple, Type
-from .agent.base_agent import APIAgent
-from core.types.base import PromptOutput, TextContent, OpenAIMessage, MessageContent
+from .llm import LLM, BaseURLProvider
 
 class InteractorServer:
     def __init__(
             self,
-            agent: APIAgent,
+            base_url_provider: BaseURLProvider,
+            api_key: str,
+            model: str,
             env_service_url: str,
+            temperature: float = 1.0,
             max_workers: int = 5,
             max_steps: int = 1000,
     ):
-        self.agent = agent
+        self.base_url_provider = base_url_provider
+        self.api_key = api_key
+        self.model = model
+        self.temperature = temperature
         self.env_service_url = env_service_url
         self.max_workers = max_workers
         self.max_steps = max_steps
@@ -41,60 +46,44 @@ class InteractorServer:
             except aiohttp.ClientError as e:
                 raise ConnectionError(f"环境{env_id}步骤执行失败: {str(e)}") from e
         
-    async def _get_task_prompt(self, env_name: str, env_id: str) -> PromptOutput:
-        """获取环境任务提示（适配实际get_task_prompt接口）"""
-        prompt_url = f"{self.env_service_url}/{env_name}/{env_id}/get_task_prompt"  # 修正接口路径
+    async def _get_task_prompt(self, env_name: str, env_id: str) -> List[Dict]:
+        """获取环境任务提示，返回 OpenAI messages 格式"""
+        prompt_url = f"{self.env_service_url}/{env_name}/{env_id}/get_task_prompt"
 
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.get(prompt_url) as response:
-                    response.raise_for_status()  # 检查是否有异常的HTTP状态码
-                    result = await response.json()  # 解析JSON响应
-                    
-                    # 提取system_message和user_message的文本内容
-                    system_content = result.get("system_message", {}).get("content", [{}])[0].get("text", "")
-                    user_content = result.get("user_message", {}).get("content", [{}])[0].get("text", "")
-                    
-                    sc = TextContent(text=system_content)
-                    sm = OpenAIMessage(role="system", content=[MessageContent(root=sc)])
-
-                    uc = [MessageContent(root=TextContent(text=user_content))]
-                    um = OpenAIMessage(role="user", content=uc)
-
-                    # 返回合并后的提示
-                    return PromptOutput(
-                        system_message=sm,
-                        user_message=um
-                    )
-            
-            except Exception as e:
-                print(f"Error occurred: {e}")
-                raise
+        async with aiohttp.ClientSession() as http_session:
+            async with http_session.get(prompt_url) as response:
+                response.raise_for_status()
+                return await response.json()
         
     async def _run_single_environment(
-        self, 
+        self,
         env_name,
         env_id
     ):
-        """在单个远程环境中运行Agent交互循环"""
+        """在单个远程环境中运行 LLM 交互循环"""
+        # 创建 LLM 实例
+        base_url = self.base_url_provider.get_base_url()
+        llm = LLM(
+            api_key=self.api_key,
+            base_url=base_url,
+            model=self.model,
+            temperature=self.temperature,
+        )
 
         total_reward = 0.0
         step_id = 1
-        
+
         try:
-            # 1. 环境默认已经reset过
+            # 1. 环境默认已经 reset 过
             done = False
 
             # 2. 交互循环
             while not done and step_id <= self.max_steps:
-                # 获取任务提示（使用修改后的接口逻辑）
+                # 获取任务提示
                 prompt = await self._get_task_prompt(env_name, env_id)
-                
-                # Agent生成响应
-                response = await asyncio.to_thread(
-                    self.agent.generate, 
-                    prompt_output=prompt
-                )
+
+                # LLM 生成响应
+                response = await llm.generate(prompt)
 
                 # 调用远程环境执行动作
                 step_result = await self._post_step(env_name, env_id, response)

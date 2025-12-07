@@ -14,7 +14,7 @@ from env.gitgym.git_env import GitGym
 from env.embodiedgym.embodied_env import EmbodiedAlfredGym  # 导入 Alfred 环境来注册
 from env.dabstep.dabstep_env import DABStepEnv
 from env.dwgym.dw_env import DiscoveryWorldEnv
-from core.agent.base_agent import APIAgent
+from core.llm import StaticBaseURLProvider
 from core.interactor import Interactor
 from core.data_manager.manager import DataManager
 from core.data_manager.models import EnvironmentConfig  # 导入模型类
@@ -43,15 +43,15 @@ def parse_args():
     parser.add_argument("--visual-save-path", type=str, default="/mnt/shared-storage-user/chenxinquan/ai_sandbox/visualize/test1021",
                       help="步进可视化保存文件夹")
     
-    # Agent配置
-    parser.add_argument("--agent-api-key", type=str, default="EMPTY",
-                      help="Agent的API密钥")
-    parser.add_argument("--agent-base-url", type=str, default="http://localhost:8001/v1",
-                      help="Agent的API基础地址")
-    parser.add_argument("--agent-model", type=str, default="Qwen3-30B-Instruct",
-                      help="Agent使用的模型名称")
-    parser.add_argument("--agent-temperature", type=float, default=0.3,
-                      help="Agent生成响应的温度参数（0-1）")
+    # LLM 配置
+    parser.add_argument("--llm-api-key", type=str, default="EMPTY",
+                      help="LLM API 密钥")
+    parser.add_argument("--llm-base-url", type=str, default="http://localhost:8001/v1",
+                      help="LLM API 基础地址")
+    parser.add_argument("--llm-model", type=str, default="Qwen3-30B-Instruct",
+                      help="LLM 模型名称")
+    parser.add_argument("--llm-temperature", type=float, default=0.3,
+                      help="LLM 生成响应的温度参数（0-1）")
     
     return parser.parse_args()
 
@@ -189,19 +189,17 @@ async def run_interaction(args):
             info = f"参数：{list(env.env_params.keys())}"
         print(f"  - {env.env_name}_{env.env_id}（{info}）")
 
-    # 初始化Agent
-    agent = APIAgent(
-        api_key=args.agent_api_key,
-        base_url=args.agent_base_url,
-        model=args.agent_model,
-        temperature=args.agent_temperature
-    )
-    print(f"\n智能体初始化完成：模型：{args.agent_model}")
+    # 初始化 base_url_provider
+    base_url_provider = StaticBaseURLProvider(base_url=args.llm_base_url)
+    print(f"\nLLM 配置：模型={args.llm_model}, base_url={args.llm_base_url}")
 
     # 运行交互器
     interactor = Interactor(
-        agent=agent,
+        base_url_provider=base_url_provider,
+        api_key=args.llm_api_key,
+        model=args.llm_model,
         data_manager=data_manager,
+        temperature=args.llm_temperature,
         max_workers=args.max_workers,
         max_steps=args.max_steps,
         visual_save_path=args.visual_save_path
