@@ -6,6 +6,7 @@ import aiohttp
 from typing import List, Dict, Tuple, Type
 from .llm import LLM, BaseURLProvider
 
+
 class InteractorServer:
     def __init__(
             self,
@@ -16,6 +17,8 @@ class InteractorServer:
             temperature: float = 1.0,
             max_workers: int = 5,
             max_steps: int = 1000,
+            enable_render: bool = True,
+            n_episodes: int = 1,
     ):
         self.base_url_provider = base_url_provider
         self.api_key = api_key
@@ -24,6 +27,8 @@ class InteractorServer:
         self.env_service_url = env_service_url
         self.max_workers = max_workers
         self.max_steps = max_steps
+        self.enable_render = enable_render
+        self.n_episodes = n_episodes
 
     async def _post_step(self, env_name: str, env_id: str, action: str) -> Dict:
         """调用环境服务的step接口"""
@@ -106,23 +111,66 @@ class InteractorServer:
             print(f"环境 {env_name}-{env_id} 出错: {str(e)}")
 
         return env_name, env_id, total_reward
-    
-    async def run_all_environments(self) -> Dict[str, float]:
-        """并行运行所有配置的远程环境"""
-        env_name_list = ["trading_gym"] * 7 + ["git_gym"] * 6
-        env_id_list = [i for i in range(1, 14)]
-        semaphore = asyncio.Semaphore(self.max_workers)
-        
-        async def bounded_task(env_name, env_id):
-            async with semaphore:
-                return await self._run_single_environment(env_name, env_id)
 
-        tasks = [bounded_task(env_name, env_id) for env_name, env_id in zip(env_name_list, env_id_list)]
-        results = {}
-        
+    async def _run_env_episodes(self, env_name: str, env_id: str) -> Tuple[str, List[float]]:
+        """
+        运行一个环境的所有 episodes（并发）
+
+        同一环境的 n_episodes 同时启动
+        """
+        env_key = f"{env_name}_{env_id}"
+
+        # 同时启动该环境的所有 episodes
+        episode_tasks = [
+            self._run_single_environment(env_name, env_id)
+            for _ in range(self.n_episodes)
+        ]
+        results = await asyncio.gather(*episode_tasks, return_exceptions=True)
+
+        # 收集奖励
+        rewards = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"环境 {env_key} episode {i} 失败: {result}")
+                rewards.append(0.0)
+            else:
+                _, _, reward = result
+                rewards.append(reward)
+                print(f"环境 {env_key} episode {i} 完成，奖励: {reward:.4f}")
+
+        return env_key, rewards
+
+    async def run_all_environments(self, env_configs: List[Tuple[str, str]]) -> Dict[str, List[float]]:
+        """
+        并行运行所有配置的远程环境
+
+        Args:
+            env_configs: 环境配置列表，每项为 (env_name, env_id)
+
+        - 同一环境的 n_episodes 必须同时启动
+        - 环境并发数 = max(max_workers // n_episodes, 1)
+        - 总并发数 ≈ max_workers
+        """
+        if not env_configs:
+            print("没有找到环境配置")
+            return {}
+
+        # 计算环境并发数
+        env_concurrent = max(self.max_workers // self.n_episodes, 1)
+        semaphore = asyncio.Semaphore(env_concurrent)
+        print(f"并发配置: max_workers={self.max_workers}, n_episodes={self.n_episodes}, 环境并发数={env_concurrent}")
+
+        async def bounded_env_group(env_name, env_id):
+            async with semaphore:
+                return await self._run_env_episodes(env_name, env_id)
+
+        tasks = [bounded_env_group(env_name, env_id) for env_name, env_id in env_configs]
+        results: Dict[str, List[float]] = {}
+
         for task in asyncio.as_completed(tasks):
-            env_name, env_id, total_reward = await task
-            results[env_id] = total_reward
-            print(f"环境 {env_name}-{env_id} 完成，总奖励: {total_reward}")
+            env_key, rewards = await task
+            results[env_key] = rewards
+            avg = sum(rewards) / len(rewards) if rewards else 0.0
+            print(f"环境 {env_key} 全部完成: {len(rewards)} episodes, 平均奖励: {avg:.4f}")
 
         return results
