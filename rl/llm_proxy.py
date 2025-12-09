@@ -249,7 +249,6 @@ def main():
         app,
         host=host,
         port=port,
-        limit_concurrency=1000,
         timeout_keep_alive=5,
     )
 
