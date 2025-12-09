@@ -9,6 +9,7 @@ Buffer Server queries the database via /get_rollout_data.
 """
 
 import asyncio
+import importlib
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ from logging.handlers import RotatingFileHandler
 from typing import Any, Dict
 
 import yaml
+from tqdm import tqdm
 
 # Add AIEvoBox to path
 AIEVOBOX_ROOT = os.environ.get("AIEVOBOX_ROOT", "/root/AIEvoBox")
@@ -57,6 +59,9 @@ from core.interactor import Interactor
 
 async def run_rollout(config: Dict[str, Any]):
     """Main rollout execution logic."""
+    # 确保所有环境完成注册
+    importlib.import_module("env")
+
     # Use LLM Proxy URL instead of remote engine URL directly
     llm_proxy_url = os.environ.get("LLM_PROXY_URL", "http://127.0.0.1:8890")
     num_repeat_per_sample = int(config.get("num_repeat_per_sample", os.environ.get("NUM_REPEAT_PER_SAMPLE", 1)))
@@ -67,26 +72,27 @@ async def run_rollout(config: Dict[str, Any]):
     logger.info(f"Num repeat per sample: {num_repeat_per_sample}")
     logger.info(f"Max steps: {max_steps}")
 
-    # Initialize DataManager with shared database
-    db_url = os.environ.get("AIEVOBOX_DB_URL", "sqlite:////root/AIEvoBox/rollout.db")
+    # Initialize DataManager
+    db_url = os.environ.get("AIEVOBOX_DB_URL", f"sqlite:///{AIEVOBOX_ROOT}/rl/rl.db")
     dm = DataManager(db_url=db_url)
     await dm.init()
     logger.info(f"DataManager initialized with DB: {db_url}")
 
-    # Load environment configs
-    env_config_path = os.path.join(AIEVOBOX_ROOT, "env/search/search_env_configs.yaml")
-    if os.path.exists(env_config_path):
-        with open(env_config_path, "r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f)
+    # # Load environment configs
+    # env_config_path = os.path.join(AIEVOBOX_ROOT, "env/search/search_env_configs.yaml")
+    # if os.path.exists(env_config_path):
+    #     with open(env_config_path, "r", encoding="utf-8") as f:
+    #         cfg = yaml.safe_load(f)
 
-        for env in cfg.get("environments", []):
-            try:
-                await dm.add_environment_config(
-                    env_name=env["env_name"],
-                    **env.get("env_params", {})
-                )
-            except Exception as e:
-                logger.error(f"Error adding environment config: {e}")
+    #     envs_to_add = cfg.get("environments", [])
+    #     for env in tqdm(envs_to_add, desc="Adding environment configs"):
+    #         try:
+    #             await dm.add_environment_config(
+    #                 env_name=env["env_name"],
+    #                 **env.get("env_params", {})
+    #             )
+    #         except Exception as e:
+    #             logger.error(f"Error adding environment config: {e}")
 
     envs = await dm.get_all_environments()
     logger.info(f"Loaded {len(envs)} environments")
@@ -94,7 +100,7 @@ async def run_rollout(config: Dict[str, Any]):
     # Setup Interactor with LLM Proxy
     # The LLM Proxy expects URLs like: /v1/{session_id}/chat/completions
     # So we use SessionSuffixBaseURLProvider to append session_id to the URL
-    from core.interactor import SessionSuffixBaseURLProvider
+    from core.llm import SessionSuffixBaseURLProvider
 
     api_key = os.environ.get("OPENAI_API_KEY", "openai_api_key")
     model = os.environ.get("AIEVOBOX_MODEL", "model")
@@ -113,6 +119,7 @@ async def run_rollout(config: Dict[str, Any]):
         data_manager=dm,
         max_workers=max_workers,
         max_steps=max_steps,
+        n_episodes=num_repeat_per_sample,
         api_key=api_key,
         model=model,
         temperature=temperature,
@@ -120,7 +127,7 @@ async def run_rollout(config: Dict[str, Any]):
     )
 
     try:
-        await interactor.run_all_environments(episodes_per_env=num_repeat_per_sample)
+        await interactor.run_all_environments()
         logger.info("Rollout completed successfully")
     except Exception as e:
         logger.error(f"Rollout error: {e}")

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+# Increase file descriptor limit for high concurrency
+ulimit -n 65536 2>/dev/null || echo "Warning: Could not set ulimit -n 65536 (current: $(ulimit -n))"
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
@@ -23,7 +27,7 @@ fi
 
 export PYTHONPATH="${PYTHONPATH:-}:/root/AIEvoBox"
 export AIEVOBOX_ROOT="${AIEVOBOX_ROOT:-/root/AIEvoBox}"
-export AIEVOBOX_DB_URL="${AIEVOBOX_DB_URL:-sqlite:////root/AIEvoBox/rollout.db}"
+export AIEVOBOX_DB_URL="${AIEVOBOX_DB_URL:-sqlite://${SCRIPT_DIR}/rl.db}"
 export ROLLOUT_BUFFER_URL="${ROLLOUT_BUFFER_URL:-http://127.0.0.1:8889}"
 export LLM_PROXY_URL="${LLM_PROXY_URL:-http://127.0.0.1:8890}"
 

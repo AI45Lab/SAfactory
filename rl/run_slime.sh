@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# Increase file descriptor limit for high concurrency
+ulimit -n 65536 2>/dev/null || echo "Warning: Could not set ulimit -n 65536 (current: $(ulimit -n))"
+
 # Kill existing processes
 pkill -9 sglang || true
 sleep 2
@@ -17,12 +20,6 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 if [ -f "${SCRIPT_DIR}/.env" ]; then
     source "${SCRIPT_DIR}/.env"
 fi
-
-# Rollout buffer configuration
-export AIEVOBOX_ROOT="${AIEVOBOX_ROOT:-/root/AIEvoBox}"
-export AIEVOBOX_DB_URL="${AIEVOBOX_DB_URL:-sqlite:////root/AIEvoBox/rollout.db}"
-export ROLLOUT_BUFFER_URL="${ROLLOUT_BUFFER_URL:-http://127.0.0.1:8889}"
-export LLM_PROXY_URL="${LLM_PROXY_URL:-http://127.0.0.1:8890}"
 
 export PYTHONBUFFERED=16
 
@@ -44,11 +41,11 @@ ROLLOUT_ARGS=(
    --input-key prompt
    --rollout-shuffle
    --num-rollout 300
-   --rollout-batch-size 256
-   --n-samples-per-prompt ${N_SAMPLES_PER_PROMPT:-5}
+   --rollout-batch-size ${SLIME_ROLLOUT_BATCH_SIZE}
+   --n-samples-per-prompt ${SLIME_N_SAMPLES_PER_PROMPT}
    --rollout-max-response-len 64
    --rollout-temperature 0.7
-   --global-batch-size 256
+   --global-batch-size ${SLIME_GLOBAL_BATCH_SIZE}
    --loss-mask-type qwen
 )
 
@@ -69,7 +66,7 @@ PERF_ARGS=(
 GRPO_ARGS=(
    --advantage-estimator grpo
    --use-kl-loss
-   --kl-loss-coef 0.00
+   --kl-loss-coef 0.001
    --kl-loss-type low_var_kl
    --entropy-coef 0.00
    --eps-clip 0.2
@@ -111,7 +108,7 @@ MISC_ARGS=(
 
 # Start Ray
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 4 --disable-usage-stats
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 6 --disable-usage-stats
 
 export SGLANG_LOGGING_CONFIG_PATH=${SGLANG_LOGGING_CONFIG_PATH:-"/root/AIEvoBox/rl/sglang_logging.json"}
 
@@ -129,7 +126,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    -- python3 /root/slime/train_async.py \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node 2 \
-   --rollout-num-gpus 2 \
+   --rollout-num-gpus 4 \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
@@ -138,4 +135,5 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
-   ${MISC_ARGS[@]}
+   ${MISC_ARGS[@]} \
+   --disable-rewards-normalization

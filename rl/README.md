@@ -27,8 +27,9 @@
        │
        │         ┌───────────────┐
        └─────────│   Database    │◀──── AIEvoBox Runner
-      查询 DB    │  (SQLite)     │     (Interactor 写入)
-                 └───────────────┘
+      查询 DB     │  (SQLite)     │     (Interactor 写入)
+  (Buffer Server  └───────────────┘
+    http接口)
 ```
 
 ## 文件说明

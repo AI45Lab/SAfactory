@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+# Increase file descriptor limit for high concurrency
+ulimit -n 65536 2>/dev/null || echo "Warning: Could not set ulimit -n 65536 (current: $(ulimit -n))"
+
 set -euo pipefail
 
 # Load environment variables
@@ -9,7 +13,7 @@ fi
 
 export PYTHONPATH="${PYTHONPATH:-}:/root/AIEvoBox"
 export AIEVOBOX_ROOT="${AIEVOBOX_ROOT:-/root/AIEvoBox}"
-export AIEVOBOX_DB_URL="${AIEVOBOX_DB_URL:-sqlite:////root/AIEvoBox/rollout.db}"
+export AIEVOBOX_DB_URL="${AIEVOBOX_DB_URL:-sqlite://${SCRIPT_DIR}/rl.db}"
 export ROLLBUF_HOST="${ROLLBUF_HOST:-0.0.0.0}"
 export ROLLBUF_PORT="${ROLLBUF_PORT:-8889}"
 
