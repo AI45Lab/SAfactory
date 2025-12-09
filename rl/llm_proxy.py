@@ -84,8 +84,16 @@ class ProxyState:
         """Get or create HTTP client with connection pooling."""
         if self._http_client is None:
             self._http_client = httpx.AsyncClient(
-                limits=httpx.Limits(max_connections=500, max_keepalive_connections=100),
-                timeout=httpx.Timeout(timeout=300.0),
+                limits=httpx.Limits(
+                    max_connections=2048,
+                    max_keepalive_connections=512
+                ),
+                timeout=httpx.Timeout(
+                    connect=300.0,
+                    read=None,
+                    write=None,
+                    pool=None,
+                ),
             )
         return self._http_client
 
@@ -166,8 +174,9 @@ async def proxy_chat_completions(session_id: str, request: Request):
         resp.raise_for_status()
         resp_json = resp.json()
     except Exception as e:
-        logger.error(f"Forward failed: {e}")
-        raise HTTPException(status_code=502, detail=f"Failed to call remote engine: {e}")
+        import traceback
+        logger.error(f"Forward failed: {traceback.format_exc()}")
+        raise HTTPException(status_code=502, detail=f"Failed to call remote engine: {traceback.format_exc()}")
 
     # Extract assistant response
     try:
