@@ -23,10 +23,10 @@ fi
 
 export PYTHONBUFFERED=16
 
-# Load model configuration
-source "/root/slime/scripts/models/qwen3-4B.sh"
-# for Qwen3-4B-Instruct-2507
+# for Qwen3-4B-Instruct-2507: ensure rotary_base matches HF rope_theta
 export MODEL_ARGS_ROTARY_BASE=5000000
+# Load model configuration (uses MODEL_ARGS_ROTARY_BASE)
+source "/root/slime/scripts/models/qwen3-4B.sh"
 
 CKPT_ARGS=(
    --hf-checkpoint Qwen/Qwen3-4B-Instruct-2507

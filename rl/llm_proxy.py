@@ -165,7 +165,7 @@ async def proxy_chat_completions(session_id: str, request: Request):
     url = f"{STATE.remote_engine_url}/chat/completions"
 
     try:
-        logger.debug(f"Forwarding to {url}")
+        logger.debug(f"Forwarding to {url}, payload: {payload}")
         resp = await http_client.post(
             url,
             json=payload,
@@ -173,6 +173,7 @@ async def proxy_chat_completions(session_id: str, request: Request):
         )
         resp.raise_for_status()
         resp_json = resp.json()
+        logger.debug(f"Response: {resp_json}")
     except Exception as e:
         import traceback
         logger.error(f"Forward failed: {traceback.format_exc()}")
