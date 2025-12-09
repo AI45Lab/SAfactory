@@ -61,10 +61,10 @@ llm_proxy_process: Optional[subprocess.Popen] = None
 data_manager: Optional[DataManager] = None
 
 # LLM Proxy URL
-llm_proxy_url: str = "http://127.0.0.1:8890"
+llm_proxy_url: str = os.environ.get("LLM_PROXY_URL", "http://127.0.0.1:8890")
 
-# Track served step IDs to avoid duplicates
-served_step_ids: set = set()
+# Track last served step ID for cursor-based pagination
+last_served_id: int = 0
 
 # Pending items by instance_id (for grouping)
 pending_items_by_instance: Dict[str, List[Dict[str, Any]]] = {}
@@ -327,27 +327,30 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def fetch_new_items_from_db(limit: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Fetch new completed steps from the database."""
-    global data_manager, served_step_ids
+    """Fetch new completed steps from the database using cursor-based pagination."""
+    global data_manager, last_served_id
 
     if data_manager is None:
         return []
 
     items = []
     try:
-        rows = await data_manager.fetch_done_steps_with_context(limit=limit)
+        rows = await data_manager.fetch_done_steps_with_context(
+            after_id=last_served_id,
+            limit=limit or 100
+        )
     except Exception as e:
         logger.error(f"fetch_done_steps_with_context error: {e}")
         return []
 
     for row in rows:
         step_pk = row.get("step_pk")
-        if step_pk in served_step_ids:
-            continue
         try:
             item = _build_item_from_row(row)
             items.append(item)
-            served_step_ids.add(step_pk)
+            # Update cursor to the latest processed id
+            if step_pk > last_served_id:
+                last_served_id = step_pk
         except Exception as e:
             logger.error(f"Error building item from row: {e}")
             continue
@@ -462,12 +465,17 @@ async def get_rollout_data(request: Request):
     )
 
 
-async def init_data_manager(db_url: str):
+async def init_data_manager(db_url: str, restart_training: bool = False):
     """Initialize the DataManager for querying the database."""
-    global data_manager
+    global data_manager, last_served_id
     data_manager = DataManager(db_url=db_url)
     await data_manager.init()
     logger.info(f"DataManager initialized with DB: {db_url}")
+
+    # Initialize cursor based on restart_training flag
+    if restart_training:
+        last_served_id = await data_manager.get_max_step_id()
+        logger.info(f"restart_training=True, initialized last_served_id={last_served_id}")
 
 
 def start_llm_proxy() -> subprocess.Popen:
@@ -519,7 +527,7 @@ def init_llm_proxy(tokenizer_path: str, remote_engine_url: str, max_retries: int
 
 def start_aievobox_process(data: dict):
     """Start AIEvoBox as a subprocess."""
-    global aievobox_process, llm_proxy_process, group_size, served_step_ids, pending_items_by_instance, data_manager
+    global aievobox_process, llm_proxy_process, group_size, last_served_id, pending_items_by_instance, data_manager
 
     # Set group size
     group_size = int(data.get("num_repeat_per_sample", 16))
@@ -527,18 +535,17 @@ def start_aievobox_process(data: dict):
     # Clear state for new rollout
     restart_training = data.get("restart_training", False)
     if restart_training:
-        served_step_ids.clear()
         pending_items_by_instance.clear()
-        logger.info("restart_training=True, cleared state")
+        logger.info("restart_training=True, cleared pending items")
 
     # Initialize DataManager
-    db_url = os.environ.get("AIEVOBOX_DB_URL", "sqlite:////root/AIEvoBox/rollout.db")
+    db_url = os.environ.get("AIEVOBOX_DB_URL", f"sqlite:///{AIEVOBOX_ROOT}/rl/rl.db")
 
     # Run async init in a new event loop (since we're in a thread)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(init_data_manager(db_url))
+        loop.run_until_complete(init_data_manager(db_url, restart_training=restart_training))
     finally:
         loop.close()
 
@@ -558,7 +565,7 @@ def start_aievobox_process(data: dict):
     env = os.environ.copy()
     env["AIEVOBOX_ROLLOUT_CONFIG"] = json.dumps(data)
     env["AIEVOBOX_DB_URL"] = db_url
-    env["ROLLOUT_BUFFER_URL"] = data.get("remote_buffer_url", "http://127.0.0.1:8889")
+    env["ROLLOUT_BUFFER_URL"] = data.get("remote_buffer_url", os.environ.get("ROLLOUT_BUFFER_URL", "http://127.0.0.1:8889"))
     env["LLM_PROXY_URL"] = llm_proxy_url  # AIEvoBox uses LLM Proxy
     env["REMOTE_ENGINE_URL"] = remote_engine_url  # Keep original for reference
     env["NUM_REPEAT_PER_SAMPLE"] = str(group_size)

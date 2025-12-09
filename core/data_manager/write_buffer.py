@@ -43,7 +43,8 @@ class WriteBuffer:
         self,
         buffer_size: int = 100,
         flush_interval: float = 5.0,
-        auto_start: bool = True
+        auto_start: bool = True,
+        flush_order: Optional[List[Type[Model]]] = None
     ):
         """
         初始化写入缓冲器
@@ -52,6 +53,7 @@ class WriteBuffer:
             buffer_size: 每个模型的缓冲区大小阈值，达到后触发写入
             flush_interval: 定时刷新间隔（秒）
             auto_start: 是否在首次操作时自动启动后台刷新任务
+            flush_order: 模型 flush 顺序（用于处理外键依赖），未指定的模型按插入顺序处理
         """
         # 按模型类型分组的创建缓冲区
         self._create_buffers: Dict[Type[Model], List[Model]] = {}
@@ -64,6 +66,7 @@ class WriteBuffer:
         self._flush_task: Optional[asyncio.Task] = None
         self._running = False
         self._auto_start = auto_start
+        self._flush_order = flush_order or []
 
         # 统计信息
         self._stats = {
@@ -140,6 +143,10 @@ class WriteBuffer:
         Args:
             instance: 待更新的模型实例（已修改但尚未保存）
             update_fields: 需要更新的字段集合，为 None 时更新所有字段
+
+        Note:
+            如果对象还在 create buffer 中（未 flush），则直接修改该对象，
+            不创建单独的 update 条目。这样可以支持先 buffer_create 再 buffer_update 的场景。
         """
         if self._auto_start and not self._running:
             await self.start()
@@ -148,6 +155,14 @@ class WriteBuffer:
         should_flush = False
 
         async with self._lock:
+            # 检查对象是否还在 create buffer 中（未 flush）
+            create_buffer = self._create_buffers.get(model_class, [])
+            if instance in create_buffer:
+                # 对象还在 create buffer，字段已经在 instance 上修改过了
+                # 无需额外操作，flush create 时会写入最新值
+                logger.debug(f"Instance {model_class.__name__} found in create buffer, skip update buffer")
+                return
+
             if model_class not in self._update_buffers:
                 self._update_buffers[model_class] = []
 
@@ -164,6 +179,16 @@ class WriteBuffer:
         if should_flush:
             asyncio.create_task(self.flush_model(model_class, operation="update"))
 
+    def _sort_models_by_priority(self, models: List[Type[Model]]) -> List[Type[Model]]:
+        """按 flush_order 排序模型，确保外键依赖顺序正确"""
+        if not self._flush_order:
+            return models
+
+        # 按 flush_order 中的顺序排序，未在 flush_order 中的模型放在最后
+        order_map = {cls: i for i, cls in enumerate(self._flush_order)}
+        max_order = len(self._flush_order)
+        return sorted(models, key=lambda m: order_map.get(m, max_order))
+
     async def flush(self) -> Dict[str, int]:
         """
         批量写入所有缓冲区数据
@@ -177,6 +202,10 @@ class WriteBuffer:
         async with self._lock:
             create_models = list(self._create_buffers.keys())
             update_models = list(self._update_buffers.keys())
+
+        # 按依赖顺序排序，确保父表先于子表 flush
+        create_models = self._sort_models_by_priority(create_models)
+        update_models = self._sort_models_by_priority(update_models)
 
         # 刷新所有创建缓冲
         for model_class in create_models:
@@ -234,11 +263,56 @@ class WriteBuffer:
             count = len(to_create)
             self._stats["total_create_flushed"] += count
             logger.debug(f"Bulk created {count} {model_class.__name__} records")
+
+            # bulk_create 不会在原对象上设置 pk（SQLite 限制）
+            # 需要通过唯一字段查询并更新 pk，以便后续 update 能正常工作
+            await self._update_pks_after_bulk_create(model_class, to_create)
+
             return count
         except Exception as e:
             logger.error(f"Bulk create failed for {model_class.__name__}: {e}")
-            # 降级逐条插入
+            # 降级逐条插入（save() 会设置 pk）
             return await self._fallback_create(to_create)
+
+    async def _update_pks_after_bulk_create(
+        self,
+        model_class: Type[Model],
+        instances: List[Model]
+    ) -> None:
+        """bulk_create 后通过唯一字段查询并更新原对象的 pk"""
+        # 找出没有 pk 的对象
+        no_pk_instances = [inst for inst in instances if inst.pk is None]
+        if not no_pk_instances:
+            return
+
+        # 尝试通过常见的唯一字段查询
+        # 使用 Tortoise ORM 的 _meta.fields_map 来检查字段是否存在
+        unique_field = None
+        fields_map = getattr(model_class._meta, 'fields_map', {})
+        for field_name in ("session_id", "env_id", "uuid", "uid"):
+            if field_name in fields_map:
+                unique_field = field_name
+                break
+
+        if not unique_field:
+            logger.warning(f"Cannot update pk for {model_class.__name__}: no known unique field")
+            return
+
+        # 批量查询
+        unique_values = [getattr(inst, unique_field) for inst in no_pk_instances]
+        db_records = await model_class.filter(**{f"{unique_field}__in": unique_values})
+
+        # 建立映射并更新 pk
+        value_to_pk = {getattr(r, unique_field): r.pk for r in db_records}
+        updated = 0
+        for inst in no_pk_instances:
+            unique_val = getattr(inst, unique_field)
+            if unique_val in value_to_pk:
+                inst.pk = value_to_pk[unique_val]
+                updated += 1
+
+        if updated > 0:
+            logger.debug(f"Updated pk for {updated} {model_class.__name__} instances")
 
     async def _fallback_create(self, instances: List[Model]) -> int:
         """降级逐条创建"""
