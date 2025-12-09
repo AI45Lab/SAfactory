@@ -24,13 +24,14 @@ fi
 export PYTHONBUFFERED=16
 
 # Load model configuration
-source "/root/slime/scripts/models/qwen3-8B.sh"
+export MODEL_ARGS_ROTARY_BASE=5000000
+source "/root/slime/scripts/models/qwen3-4B.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint Qwen/Qwen3-8B
-   --ref-load /root/steai-yinzhenyun/Qwen3-8B_torch_dist
-   --load /root/steai-yinzhenyun/Qwen3-8B_slime
-   --save /root/steai-yinzhenyun/Qwen3-8B_slime
+   --hf-checkpoint Qwen/Qwen3-4B-Instruct-2507
+   --ref-load /root/steai-yinzhenyun/Qwen3-4B-Instruct-2507_torch_dist
+   --load /root/steai-yinzhenyun/Qwen3-4B-Instruct-2507_slime
+   --save /root/steai-yinzhenyun/Qwen3-4B-Instruct-2507_slime
    --save-interval 20
 )
 
@@ -44,7 +45,7 @@ ROLLOUT_ARGS=(
    --rollout-batch-size ${SLIME_ROLLOUT_BATCH_SIZE}
    --n-samples-per-prompt ${SLIME_N_SAMPLES_PER_PROMPT}
    --rollout-max-response-len 64
-   --rollout-temperature 0.7
+   --rollout-temperature 1.0
    --global-batch-size ${SLIME_GLOBAL_BATCH_SIZE}
    --loss-mask-type qwen
 )
