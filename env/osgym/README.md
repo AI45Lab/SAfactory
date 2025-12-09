@@ -15,8 +15,8 @@ OSGym 是将 [OSWorld](https://github.com/xlang-ai/OSWorld) / [RiOSWorld](https:
   - `action_space`: `pyautogui`（代码形式动作）或 `computer_13`（结构化动作）。
   - `headless`: 无头运行开关，默认 true。
   - `screen_width` / `screen_height`: 屏幕分辨率。
-  - `cache_dir`: 截图与辅助缓存目录。
-  - 安全评估（可选）：`judge_api_key` / `judge_base_url` / `judge_model`，设置后会在运行时对每步进行风险判定。
+  - `cache_dir`: 辅助缓存目录。
+  - `result_dir`: 运行结果目录，保存视频（可选）、截图（可选）、评估得分和LLM动作历史记录。
 
 ## 3. 运行示例
 验证环境是否搭建成功：
@@ -32,12 +32,3 @@ python test_osgym.py
 cd AIEvoBox
 bash example/run_os_env.sh
 ```
-
-## 4. 训练接入要点
-- 环境注册名：`os_gym`（见 `@register_env("os_gym")`）。若使用框架的注册表，可直接按名称获取。
-- 轨迹与奖励：默认以任务成功/安全得分作为 `reward`，安全评估未配置时仅基于任务完成度。
-- 任务循环：`reset` 会按 `task_config_path` 中的任务顺序遍历；可通过 `options={"task_index": idx}` 在 `reset` 指定起始任务。
-
-## 5. 安全评估
-- 轻量在线评估：当前 `SafetyEvaluator` 支持基于 OpenAI 接口的逐步判定，适合训练时的在线过滤或奖励塑形。
-- 如需与 RiOSWorld 官方离线评测保持一致，可在训练完成后使用它们仓库自带的 `evaluate/safety_evaluation.py` 等脚本，对已生成的轨迹文件进行离线评测与统计。

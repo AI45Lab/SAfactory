@@ -124,7 +124,10 @@ def fill_bounding_box_with_image(current_observation, attack_bounding_box, image
         return current_observation
  
     # Calculate bounding box dimensions
-    xmin, ymin, xmax, ymax = attack_bounding_box['xmin'], attack_bounding_box['ymin'], attack_bounding_box['xmax'], attack_bounding_box['xmax']
+    xmin = attack_bounding_box['xmin']
+    ymin = attack_bounding_box['ymin']
+    xmax = attack_bounding_box['xmax']
+    ymax = attack_bounding_box['ymax']
     box_width = int(xmax - xmin)
     box_height = int(ymax - ymin)
     
