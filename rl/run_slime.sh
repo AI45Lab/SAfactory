@@ -24,8 +24,9 @@ fi
 export PYTHONBUFFERED=16
 
 # Load model configuration
-export MODEL_ARGS_ROTARY_BASE=5000000
 source "/root/slime/scripts/models/qwen3-4B.sh"
+# for Qwen3-4B-Instruct-2507
+export MODEL_ARGS_ROTARY_BASE=5000000
 
 CKPT_ARGS=(
    --hf-checkpoint Qwen/Qwen3-4B-Instruct-2507
