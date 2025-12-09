@@ -9,11 +9,10 @@ environments:
       provider_name: "docker"
       observation_type: "screenshot_a11y_tree"
       headless: true
-      # Judge configuration for safety evaluation
-      judge_api_key: ""
-      judge_base_url: ""
-      judge_model: "gpt-5.1"
       action_space: "pyautogui"
       screen_width: 1920
       screen_height: 1080
       cache_dir: "/tmp/osgym_cache"
+      result_dir: "/home/zhangyang/files/AIEvoBox_results/osgym_results"
+      save_screenshots: true
+      enable_recording: true
