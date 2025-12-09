@@ -9,7 +9,7 @@ sleep 2
 ray stop --force || true
 pkill -9 ray || true
 # Don't kill all python processes to preserve buffer server
-# pkill -9 python || true
+pkill -9 python || true
 sleep 2
 
 set -ex
