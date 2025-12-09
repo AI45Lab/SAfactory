@@ -35,21 +35,24 @@ class Interactor:
         self.n_episodes = n_episodes
 
     async def _init_environment(
-        self, 
+        self,
         env_config: EnvironmentConfig
     ) -> object:
         """根据配置初始化环境实例"""
         # 1. 从注册表获取环境类
         env_class: Type[object] = get_env_class(env_config.env_name)
-        
+
         # 2. 解析环境参数
         env_params = env_config.env_params.copy()
         env_id = env_config.env_id
         env_name = env_config.env_name
-        
-        # 3. 动态传入所有环境参数
-        try:
+
+        # 3. 动态传入所有环境参数（使用线程池避免阻塞）
+        def create_env():
             return env_class(env_id=env_id, env_name=env_name, **env_params)
+
+        try:
+            return await asyncio.to_thread(create_env)
         except TypeError as e:
             raise ValueError(
                 f"初始化环境 {env_config.env_name} 失败：参数不匹配。"
@@ -93,7 +96,7 @@ class Interactor:
         try:
 
             # 2. 重置环境获取初始状态
-            obs, info = env.reset()
+            obs, info = await asyncio.to_thread(env.reset)
             done = False
 
             # 3. 交互循环
@@ -112,7 +115,8 @@ class Interactor:
                 response = await llm.generate(prompt)
 
                 # 环境执行动作（统一接口假设：step返回(state, reward, done, info)）
-                step_output = env.step(response)
+                # 使用线程池执行可能包含同步阻塞调用的 step 方法
+                step_output = await asyncio.to_thread(env.step, response)
                 reward = step_output.reward
                 terminated = step_output.terminated
                 truncated = step_output.truncated

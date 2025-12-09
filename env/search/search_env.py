@@ -17,6 +17,21 @@ from core.types.base import RenderOutput, ResetOutput, StepOutput
 
 logger = logging.getLogger(__name__)
 
+# 全局数据集缓存，避免重复加载
+_dataset_cache: Dict[str, "pd.DataFrame"] = {}
+
+
+def _get_cached_dataset(dataset_path: str) -> "pd.DataFrame":
+    """获取缓存的数据集，避免重复加载 parquet 文件"""
+    import pandas as pd
+
+    if dataset_path not in _dataset_cache:
+        logger.info(f"Loading dataset from {dataset_path}")
+        _dataset_cache[dataset_path] = pd.read_parquet(dataset_path)
+        logger.info(f"Dataset loaded: {len(_dataset_cache[dataset_path])} rows")
+    return _dataset_cache[dataset_path]
+
+
 @register_env("search")
 class SearchEnv(BaseEnv):
     """
@@ -70,10 +85,8 @@ class SearchEnv(BaseEnv):
             raise ValueError("SearchEnv requires dataset_path (either argument or config.dataset_path), but none was provided.")
 
         # ---- 从数据集获取 question / ground_truth ----
-        # 延迟导入，避免无 parquet 依赖时影响其他环境
-        import pandas as pd
-
-        df = pd.read_parquet(str(dataset_path))
+        # 使用缓存，避免重复加载 parquet 文件
+        df = _get_cached_dataset(str(dataset_path))
         idx = int(dataset_index) if dataset_index is not None else 0
         if idx < 0 or idx >= len(df):
             raise IndexError(f"dataset_index {idx} out of range for dataset of size {len(df)}")
