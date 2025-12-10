@@ -175,7 +175,7 @@ class BufferQueue:
             for instance_id in finished_groups:
                 self.data.pop(instance_id, None)
                 self.group_timestamps.pop(instance_id, None)
-                logger.debug(f"Removed finished group {instance_id}")
+                # logger.debug(f"Removed finished group {instance_id}")
 
         # Combine normal valid groups and timeout groups
         all_valid_groups = {**valid_groups, **timed_out_groups}
@@ -192,7 +192,7 @@ class BufferQueue:
         valid_groups, finished_groups = self._get_valid_groups_with_timeout(del_data=True)
         output["meta_info"]["finished_groups"] = finished_groups
 
-        logger.debug(f"meta info: {json.dumps(meta_info, indent=2)}")
+        # logger.debug(f"meta info: {json.dumps(meta_info, indent=2)}")
 
         valid_groups = list(valid_groups.items())
 
@@ -210,7 +210,7 @@ class BufferQueue:
         valid_groups, _ = self._get_valid_groups_with_timeout()
         num = sum([len(v) for v in valid_groups.values()])
         num_of_all_groups = sum([len(v) for v in self.data.values()])
-        logger.debug(f"valid_groups: {len(valid_groups)}, num: {num}, num_of_all_groups: {num_of_all_groups}")
+        # logger.debug(f"valid_groups: {len(valid_groups)}, num: {num}, num_of_all_groups: {num_of_all_groups}")
         return num
 
 

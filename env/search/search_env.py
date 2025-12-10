@@ -150,6 +150,19 @@ class SearchEnv(BaseEnv):
         # 当前环境不依赖 observation 内容，这里给一个空的 Dict 空间
         self.observation_space = gym.spaces.Dict({})
 
+    def format_validate(self, action: str, is_final_action: bool = False) -> bool:
+        """
+        验证 action 格式是否符合预期。
+        """
+        if is_final_action:
+            # 对于最终答案，不能包含工具调用
+            if "<tool_use>" in action:
+                return False
+        # 任何情况下都不能包含工具结果
+        if "<tool_result>" in action:
+            return False
+        return True
+
     # ------------------------------------------------------------------
     # 环境核心接口
     # ------------------------------------------------------------------
@@ -294,7 +307,8 @@ When you have enough information, stop calling tools and reply with the final an
 
         # 尝试解析单个 search 工具调用
         query = self._extract_search_query(msg)
-
+        is_final_action = False
+        llm_as_a_judge_score: float = 0.0
         # case 1: 存在工具调用 -> 执行一次搜索，并继续对话（不终止）
         if query:
             results = self._run_web_search(query)
@@ -310,11 +324,10 @@ When you have enough information, stop calling tools and reply with the final an
 
             terminated = False
             truncated = False
-            # 成功解析并调用工具，给予奖励 1
-            reward = 1.0
 
         # case 2: 无工具调用 -> 视为已经给出最终答案，调用 LLM 判别器打分
         else:
+            is_final_action = True
             self.final_answer = re.sub(r"<think>.*?</think>", "", msg, flags=re.DOTALL).strip()
             logger.info(
                 "[SearchEnv] final answer: %s",
@@ -335,17 +348,21 @@ When you have enough information, stop calling tools and reply with the final an
                 )
                 logger.debug(
                     "[SearchEnv] llm judge score=%f", 
-                    float(judge_result.get("score", 0.0) or 0.0)
+                    judge_result.get("score", 0.0) or 0.0
                 )
-                reward = float(judge_result.get("score", 0.0) or 0.0)
+                llm_as_a_judge_score = judge_result.get("score", 0.0) or 0.0
             except Exception as e:
                 logger.error(
                     "[SearchEnv] llm judge error: %s", 
                     e
                 )
                 judge_result = {"error": f"{type(e).__name__}: {e}"}
-                reward = 0.0
-
+                
+        # apply format validate
+        if not self.format_validate(msg, is_final_action):
+            reward = 0.0
+        else:
+            reward = max(0.1, llm_as_a_judge_score)
         extra_info: Dict[str, Any] = {"judger": judge_result}
         return reward, terminated, truncated, extra_info
 

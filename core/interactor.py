@@ -4,6 +4,11 @@ import os
 import time
 from datetime import datetime
 from typing import List, Dict, Tuple, Type
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+
 from .llm import LLM, BaseURLProvider
 from .data_manager.manager import DataManager
 from .data_manager.models import EnvironmentConfig, InteractionSession
@@ -122,12 +127,9 @@ class Interactor:
                 truncated = step_output.truncated
                 # 基于环境信号 + 最大步数限制综合判断 done
                 done = terminated or truncated
-                try:
-                    # 若达到或超过最大步数，也视为 episode 结束（在 Interactor 层生效）
-                    if self.max_steps is not None and step_id >= int(self.max_steps):
-                        done = True
-                except Exception:
-                    pass
+                # 若达到或超过最大步数，也视为 episode 结束（在 Interactor 层生效）
+                if self.max_steps is not None and step_id >= int(self.max_steps):
+                    done = True
 
                 # 可选渲染
                 if self.enable_render:
@@ -145,6 +147,12 @@ class Interactor:
                     os.makedirs(save_dir, exist_ok=True)
                     with open(save_path, 'wb') as f:
                         f.write(image_bytes)
+
+                if done:
+                    logger.debug(
+                        "[Interactor] step info: %s",
+                        json.dumps(step_output.info, ensure_ascii=False, separators=(',', ':'))
+                    )
 
                 # 记录交互步骤
                 await self.data_manager.record_step(

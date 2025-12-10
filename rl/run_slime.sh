@@ -31,8 +31,8 @@ source "/root/slime/scripts/models/qwen2.5-7B.sh"
 CKPT_ARGS=(
    --hf-checkpoint Qwen/Qwen2.5-7B-Instruct
    --ref-load /root/steai-yinzhenyun/Qwen2.5-7B-Instruct_torch_dist
-   --load /root/steai-yinzhenyun/Qwen2.5-7B-Instruct-2507_slime
-   --save /root/steai-yinzhenyun/Qwen2.5-7B-Instruct-2507_slime
+   --load /root/steai-yinzhenyun/Qwen2.5-7B-Instruct_slime
+   --save /root/steai-yinzhenyun/Qwen2.5-7B-Instruct_slime
    --save-interval 20
 )
 
