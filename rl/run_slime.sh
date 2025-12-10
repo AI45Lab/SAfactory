@@ -23,16 +23,16 @@ fi
 
 export PYTHONBUFFERED=16
 
-# for Qwen3-4B-Instruct-2507: ensure rotary_base matches HF rope_theta
-export MODEL_ARGS_ROTARY_BASE=5000000
+# # for Qwen3-4B-Instruct-2507: ensure rotary_base matches HF rope_theta
+# export MODEL_ARGS_ROTARY_BASE=5000000
 # Load model configuration (uses MODEL_ARGS_ROTARY_BASE)
-source "/root/slime/scripts/models/qwen3-4B.sh"
+source "/root/slime/scripts/models/qwen2.5-7B.sh"
 
 CKPT_ARGS=(
-   --hf-checkpoint Qwen/Qwen3-4B-Instruct-2507
-   --ref-load /root/steai-yinzhenyun/Qwen3-4B-Instruct-2507_torch_dist
-   --load /root/steai-yinzhenyun/Qwen3-4B-Instruct-2507_slime
-   --save /root/steai-yinzhenyun/Qwen3-4B-Instruct-2507_slime
+   --hf-checkpoint Qwen/Qwen2.5-7B-Instruct
+   --ref-load /root/steai-yinzhenyun/Qwen2.5-7B-Instruct_torch_dist
+   --load /root/steai-yinzhenyun/Qwen2.5-7B-Instruct-2507_slime
+   --save /root/steai-yinzhenyun/Qwen2.5-7B-Instruct-2507_slime
    --save-interval 20
 )
 
@@ -90,6 +90,7 @@ WANDB_ARGS=(
     --wandb-team aievobox
     --wandb-group slime
     --wandb-dir /root/wandb_logs
+    --wandb-always-use-train-step
 )
 
 SGLANG_ARGS=(
@@ -110,7 +111,7 @@ MISC_ARGS=(
 
 # Start Ray
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 6 --disable-usage-stats
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats
 
 export SGLANG_LOGGING_CONFIG_PATH=${SGLANG_LOGGING_CONFIG_PATH:-"/root/AIEvoBox/rl/sglang_logging.json"}
 
@@ -127,7 +128,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 /root/slime/train_async.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 2 \
+   --actor-num-gpus-per-node 4 \
    --rollout-num-gpus 4 \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \

@@ -13,6 +13,8 @@ data/
 examples/test_env.py
 env/mc/MineStudio/MineStudio
 
+# python logging
+*.log.*
 
 # ========== python .gitignore ==========
 # Source: https://github.com/github/gitignore/blob/main/Python.gitignore
