@@ -3,7 +3,7 @@ python examples/base_eval.py \
   --max-workers 64 \
   --max-steps 1000 \
   --visual-save-path "visualize/dabstep" \
-  --agent-api-key "EMPTY" \
-  --agent-base-url "http://localhost:8001/v1" \
-  --agent-model "Qwen3-30B-Instruct" \
-  --agent-temperature 0.3
+  --llm-api-key "EMPTY" \
+  --llm-base-url "http://localhost:8001/v1" \
+  --llm-model "Qwen3-30B-Instruct" \
+  --llm-temperature 0.3

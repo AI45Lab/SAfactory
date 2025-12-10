@@ -7,7 +7,7 @@ sys.path.append(project_root)
 import argparse
 import asyncio
 import pandas as pd
-from core.agent.base_agent import APIAgent
+from core.llm import StaticBaseURLProvider
 from core.interactor_server import InteractorServer
 
 def parse_args():
@@ -26,34 +26,32 @@ def parse_args():
     parser.add_argument("--max-steps", type=int, default=1000,
                       help="每个环境的最大交互步数")
     
-    # Agent配置
-    parser.add_argument("--agent-api-key", type=str, default="EMPTY",
-                      help="Agent的API密钥")
-    parser.add_argument("--agent-base-url", type=str, default="http://localhost:8001/v1",
-                      help="Agent的API基础地址")
-    parser.add_argument("--agent-model", type=str, default="Qwen3-30B-Instruct",
-                      help="Agent使用的模型名称")
-    parser.add_argument("--agent-temperature", type=float, default=0.3,
-                      help="Agent生成响应的温度参数（0-1）")
+    # LLM 配置
+    parser.add_argument("--llm-api-key", type=str, default="EMPTY",
+                      help="LLM API 密钥")
+    parser.add_argument("--llm-base-url", type=str, default="http://localhost:8001/v1",
+                      help="LLM API 基础地址")
+    parser.add_argument("--llm-model", type=str, default="Qwen3-30B-Instruct",
+                      help="LLM 模型名称")
+    parser.add_argument("--llm-temperature", type=float, default=0.3,
+                      help="LLM 生成响应的温度参数（0-1）")
     
     return parser.parse_args()
 
 async def run_interaction(args):
     """运行多环境交互逻辑"""
 
-    # 初始化Agent
-    agent = APIAgent(
-        api_key=args.agent_api_key,
-        base_url=args.agent_base_url,
-        model=args.agent_model,
-        temperature=args.agent_temperature
-    )
-    print(f"\n智能体初始化完成：模型：{args.agent_model}")
+    # 初始化 base_url_provider
+    base_url_provider = StaticBaseURLProvider(base_url=args.llm_base_url)
+    print(f"\nLLM 配置：模型={args.llm_model}, base_url={args.llm_base_url}")
 
     # 运行交互器
     interactor = InteractorServer(
-        agent=agent,
+        base_url_provider=base_url_provider,
+        api_key=args.llm_api_key,
+        model=args.llm_model,
         env_service_url=args.env_service_url,
+        temperature=args.llm_temperature,
         max_workers=args.max_workers,
         max_steps=args.max_steps,
     )
