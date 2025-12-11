@@ -105,6 +105,3 @@ def populate_env_table(db_path: str | Path, env_root: str | Path = "env") -> Non
             _insert_from_yaml(conn, yaml_path)
     finally:
         conn.close()
-
-if __name__ == "__main__":
-    populate_env_table("/Users/bin-mac/Gitlab/AIEvoBox/examples/data/test.db","/Users/bin-mac/Gitlab/AIEvoBox/env")
