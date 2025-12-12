@@ -1,0 +1,10 @@
+FROM registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:emb007
+
+COPY ./run.sh run.sh
+
+RUN chmod +X run.sh
+
+ENV http_proxy=""
+ENV https_proxy=""
+
+   

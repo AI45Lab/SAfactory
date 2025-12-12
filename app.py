@@ -17,7 +17,7 @@ import ray
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
-from embodied_env import EmbodiedAlfredGym
+from env.embodiedgym.embodied_env import EmbodiedAlfredGym
 
 from core.types.base import ResetOutput, RenderOutput, StepOutput,PromptOutput, dumps_json_bytes
 

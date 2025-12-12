@@ -1,45 +1,36 @@
 # 1. 指定基础镜像
-FROM registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:base
+FROM registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:emb005
 
-# ENV PIP_INDEX_URL="http://mirrors.i.h.pjlab.org.cn/pypi/simple/" \
-#     PIP_EXTRA_INDEX_URL="http://pypi.i.h.pjlab.org.cn/brain/dev/+simple" \
-#     PIP_TRUSTED_HOST="mirrors.i.h.pjlab.org.cn pypi.i.h.pjlab.org.cn"
-
-# ----------------- 网络代理设置 -----------------
-# 确保你的代理信息是正确的
 ENV http_proxy=http://leishanzhe:wSl49KRSqn71Jkqikb8tfZ8Lqxx5uGCgIEmiBGuDzH5r6uSpEN3nGLmsO7UE@proxy.h.pjlab.org.cn:23128
 ENV https_proxy=http://leishanzhe:wSl49KRSqn71Jkqikb8tfZ8Lqxx5uGCgIEmiBGuDzH5r6uSpEN3nGLmsO7UE@proxy.h.pjlab.org.cn:23128
 
-# 设置工作目录
-WORKDIR /workspace
 
-# 切换到 root 用户以进行安装
 USER root
 
-# 2. 安装系统级依赖
-RUN apt-get update && apt-get install -y \
-    xvfb \
-    fonts-ubuntu \
+RUN apt update && apt install -y \
+    --no-install-recommends \
+    vim \
+    curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# 3. 复制项目文件
-COPY ./ai2thor/.ai2thor /root/.ai2thor
-COPY ./AIEvoBox ./AIEvoBox
 
-RUN cp -r /root/.ai2thor /home/ray/
+RUN if [ -d "/root/envs/embench1" ]; then \
+    echo "Conda environment found at /root/envs/embench1"; \
+    /root/envs/embench1/bin/pip install matplotlib ray==2.49.2 pillow; \
+    else \
+    echo "Warning: /root/envs/embench1 not found, using system pip"; \
+    pip install matplotlib ray==2.49.2 pillow; \
+    fi   
 
-# RUN chown -R ray:ray /home/ray/.ai2thor
 
-# 4. 使用 Conda 创建环境
-# --- 修改点 1：修正 EmbodiedBench-master 的路径 ---
-RUN cd AIEvoBox/env/embodiedgym/EmbodiedBench-master && \
-    conda env create -f conda_envs/envir.yaml --prefix /root/envs/embench1
+COPY env.yaml env.yaml
 
-# --- 修改点 1：修正 EmbodiedBench-master 的路径 ---
-RUN /bin/bash -c "source activate /root/envs/embench1 && \
-    cd AIEvoBox/env/embodiedgym/EmbodiedBench-master && \
-    pip install -e ."
+RUN conda env update -n base -f env.yaml && \
+    conda clean -afy
 
-WORKDIR /workspace/AIEvoBox
 
 EXPOSE 36663
+
+
+

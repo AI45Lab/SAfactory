@@ -1,5 +1,5 @@
 # 1. 指定基础镜像
-FROM registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:base
+FROM registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:base31016
 
 # ENV PIP_INDEX_URL="http://mirrors.i.h.pjlab.org.cn/pypi/simple/" \
 #     PIP_EXTRA_INDEX_URL="http://pypi.i.h.pjlab.org.cn/brain/dev/+simple" \
@@ -33,19 +33,21 @@ RUN cp -r /root/.ai2thor /home/ray/
 # 4. 使用 Conda 创建环境
 # --- 修改点 1：修正 EmbodiedBench-master 的路径 ---
 RUN cd AIEvoBox/env/embodiedgym/EmbodiedBench-master && \
-    conda env create -f conda_envs/envir.yaml --prefix /root/envs/embench1
+    conda env update -n base -f conda_envs/envir.yaml && \
+    conda clean -afy
+    # conda env create -f conda_envs/envir.yaml --prefix /root/envs/embench1
 
 # --- 修改点 1：修正 EmbodiedBench-master 的路径 ---
-RUN /bin/bash -c "source activate /root/envs/embench1 && \
-    cd AIEvoBox/env/embodiedgym/EmbodiedBench-master && \
+    #"source activate /root/envs/embench1 && \
+RUN /bin/bash -c "cd AIEvoBox/env/embodiedgym/EmbodiedBench-master && \
     pip install -e ."
 
 WORKDIR /workspace/AIEvoBox
 
-expose 36663
+EXPOSE 36663
 
-ENTRYPOINT ["/bin/bash", "-c", "Xvfb :1 -screen 0 1024x768x24 & exec \"$@\"", "_"]
+# ENTRYPOINT ["/bin/bash", "-c", "Xvfb :1 -screen 0 1024x768x24 & exec \"$@\"", "_"]
 
 
-# 5. 设置默认的启动命令
-CMD ["/bin/bash", "-c", "source activate /root/envs/embench1 && bash /workspace/AIEvoBox/examples/run_8_embodied_envs.sh"]
+# # 5. 设置默认的启动命令
+# CMD ["/bin/bash", "-c", "source activate /root/envs/embench1 && bash /workspace/AIEvoBox/examples/run_8_embodied_envs.sh"]
