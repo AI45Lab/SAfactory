@@ -1,10 +1,6 @@
 # 1. 指定基础镜像
 FROM registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:base31016
 
-# ENV PIP_INDEX_URL="http://mirrors.i.h.pjlab.org.cn/pypi/simple/" \
-#     PIP_EXTRA_INDEX_URL="http://pypi.i.h.pjlab.org.cn/brain/dev/+simple" \
-#     PIP_TRUSTED_HOST="mirrors.i.h.pjlab.org.cn pypi.i.h.pjlab.org.cn"
-
 # ----------------- 网络代理设置 -----------------
 # 确保你的代理信息是正确的
 ENV http_proxy=http://leishanzhe:wSl49KRSqn71Jkqikb8tfZ8Lqxx5uGCgIEmiBGuDzH5r6uSpEN3nGLmsO7UE@proxy.h.pjlab.org.cn:23128
@@ -35,7 +31,7 @@ RUN cp -r /root/.ai2thor /home/ray/
 RUN cd AIEvoBox/env/embodiedgym/EmbodiedBench-master && \
     conda env update -n base -f conda_envs/envir.yaml && \
     conda clean -afy
-    # conda env create -f conda_envs/envir.yaml --prefix /root/envs/embench1
+    conda env create -f conda_envs/envir.yaml --prefix /root/envs/embench1
 
 # --- 修改点 1：修正 EmbodiedBench-master 的路径 ---
     #"source activate /root/envs/embench1 && \
@@ -44,10 +40,8 @@ RUN /bin/bash -c "cd AIEvoBox/env/embodiedgym/EmbodiedBench-master && \
 
 WORKDIR /workspace/AIEvoBox
 
+ENV http_proxy=
+ENV https_proxy=
+
 EXPOSE 36663
 
-# ENTRYPOINT ["/bin/bash", "-c", "Xvfb :1 -screen 0 1024x768x24 & exec \"$@\"", "_"]
-
-
-# # 5. 设置默认的启动命令
-# CMD ["/bin/bash", "-c", "source activate /root/envs/embench1 && bash /workspace/AIEvoBox/examples/run_8_embodied_envs.sh"]
