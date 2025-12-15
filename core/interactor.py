@@ -27,6 +27,7 @@ class Interactor:
         visual_save_path: str = None,
         enable_render: bool = True,
         n_episodes: int = 1,
+        message_cut: int = 3,
     ):
         self.base_url_provider = base_url_provider
         self.api_key = api_key
@@ -38,6 +39,7 @@ class Interactor:
         self.visual_save_path = visual_save_path
         self.enable_render = enable_render
         self.n_episodes = n_episodes
+        self.message_cut = message_cut
 
     async def _init_environment(
         self,
@@ -115,9 +117,25 @@ class Interactor:
                 except Exception:
                     pass
                 prompt = env.get_task_prompt()
-
-                # LLM 生成响应
-                response = await llm.generate(prompt)
+                
+                # 加入message截断逻辑   -> 后续这里可以做智能体的记忆
+                if not prompt:
+                    raise ValueError("get_task_prompt中未输出有效messages")
+                
+                messages_cut = []
+                start_index = 0
+                if prompt[0].get("role") == "system":
+                    messages_cut.append(prompt[0])
+                    start_index = 1
+                    
+                remaining_messages = prompt[start_index:]
+                keep_count = self.message_cut * 2
+                
+                if keep_count <= 0:
+                    response = await llm.generate(messages=messages_cut)
+                else:
+                    messages_cut += remaining_messages[-keep_count:]
+                    response = await llm.generate(messages=messages_cut)
 
                 # 环境执行动作（统一接口假设：step返回(state, reward, done, info)）
                 # 使用线程池执行可能包含同步阻塞调用的 step 方法
