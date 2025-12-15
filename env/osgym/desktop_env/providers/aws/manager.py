@@ -1,262 +1,235 @@
 import os
-from filelock import FileLock
 import boto3
-import psutil
 import logging
+import dotenv
+import signal
+from datetime import datetime, timedelta, timezone
+
+# TTL configuration
+from desktop_env.providers.aws.config import ENABLE_TTL, DEFAULT_TTL_MINUTES, AWS_SCHEDULER_ROLE_ARN
+from desktop_env.providers.aws.scheduler_utils import schedule_instance_termination
+
+
+INSTANCE_TYPE = "t3.xlarge" 
+
+# Load environment variables from .env file
+dotenv.load_dotenv()
+
+# Ensure the AWS region is set in the environment
+if not os.getenv('AWS_REGION'):
+    raise EnvironmentError("AWS_REGION must be set in the environment variables.")
+
+# Ensure the AWS subnet and security group IDs are set in the environment
+if not os.getenv('AWS_SUBNET_ID') or not os.getenv('AWS_SECURITY_GROUP_ID'):
+    raise EnvironmentError("AWS_SUBNET_ID and AWS_SECURITY_GROUP_ID must be set in the environment variables.")
 
 from desktop_env.providers.base import VMManager
 
+# Import proxy-related modules only when needed
+try:
+    from desktop_env.providers.aws.proxy_pool import get_global_proxy_pool, init_proxy_pool
+    PROXY_SUPPORT_AVAILABLE = True
+except ImportError:
+    PROXY_SUPPORT_AVAILABLE = False
+
 logger = logging.getLogger("desktopenv.providers.aws.AWSVMManager")
 logger.setLevel(logging.INFO)
-
-REGISTRY_PATH = '.aws_vms'
 
 DEFAULT_REGION = "us-east-1"
 # todo: Add doc for the configuration of image, security group and network interface
 # todo: public the AMI images
 IMAGE_ID_MAP = {
-    "us-east-1": "ami-05e7d7bd279ea4f14",
-    "ap-east-1": "ami-0c092a5b8be4116f5"
-}
-
-INSTANCE_TYPE = "t3.medium"
-
-NETWORK_INTERFACE_MAP = {
-    "us-east-1": [
-        {
-            "SubnetId": "subnet-037edfff66c2eb894",
-            "AssociatePublicIpAddress": True,
-            "DeviceIndex": 0,
-            "Groups": [
-                "sg-0342574803206ee9c"
-            ]
-        }
-    ],
-    "ap-east-1": [
-        {
-            "SubnetId": "subnet-011060501be0b589c",
-            "AssociatePublicIpAddress": True,
-            "DeviceIndex": 0,
-            "Groups": [
-                "sg-090470e64df78f6eb"
-            ]
-        }
-    ]
-}
-
-
-def _allocate_vm(region=DEFAULT_REGION):
-    run_instances_params = {
-        "MaxCount": 1,
-        "MinCount": 1,
-        "ImageId": IMAGE_ID_MAP[region],
-        "InstanceType": INSTANCE_TYPE,
-        "EbsOptimized": True,
-        "NetworkInterfaces": NETWORK_INTERFACE_MAP[region]
+    "us-east-1": {
+        (1920, 1080): "ami-0d23263edb96951d8",
+        # For CoACT-1, uncomment to use the following AMI
+        # (1920, 1080): "ami-0b505e9d0d99ba88c"
+    },
+    "ap-east-1": {
+        (1920, 1080): "ami-06850864d18fad836"
+        # Please transfer AMI by yourself from AWS us-east-1 for CoACT-1
     }
+}
+
+
+def _allocate_vm(region=DEFAULT_REGION, screen_size=(1920, 1080)):
+    
+    if region not in IMAGE_ID_MAP:
+        raise ValueError(f"Region {region} is not supported. Supported regions are: {list(IMAGE_ID_MAP.keys())}")
+    if screen_size not in IMAGE_ID_MAP[region]:
+        raise ValueError(f"Screen size {screen_size} not supported for region {region}. Supported: {list(IMAGE_ID_MAP[region].keys())}")
+    ami_id = IMAGE_ID_MAP[region][screen_size]
 
     ec2_client = boto3.client('ec2', region_name=region)
-    response = ec2_client.run_instances(**run_instances_params)
-    instance_id = response['Instances'][0]['InstanceId']
-    logger.info(f"Waiting for instance {instance_id} to be running...")
-    ec2_client.get_waiter('instance_running').wait(InstanceIds=[instance_id])
-    logger.info(f"Instance {instance_id} is ready.")
+    instance_id = None
+    original_sigint_handler = signal.getsignal(signal.SIGINT)
+    original_sigterm_handler = signal.getsignal(signal.SIGTERM)
+    
+    def signal_handler(sig, frame):
+        if instance_id:
+            signal_name = "SIGINT" if sig == signal.SIGINT else "SIGTERM"
+            logger.warning(f"Received {signal_name} signal, terminating instance {instance_id}...")
+            try:
+                ec2_client.terminate_instances(InstanceIds=[instance_id])
+                logger.info(f"Successfully terminated instance {instance_id} after {signal_name}.")
+            except Exception as cleanup_error:
+                logger.error(f"Failed to terminate instance {instance_id} after {signal_name}: {str(cleanup_error)}")
+        
+        # Restore original signal handlers
+        signal.signal(signal.SIGINT, original_sigint_handler)
+        signal.signal(signal.SIGTERM, original_sigterm_handler)
+        
+        # Raise appropriate exception based on signal type
+        if sig == signal.SIGINT:
+            raise KeyboardInterrupt
+        else:
+            # For SIGTERM, exit gracefully
+            import sys
+            sys.exit(0)
+    
+    try:
+        # Set up signal handlers for both SIGINT and SIGTERM
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        if not os.getenv('AWS_SECURITY_GROUP_ID'):
+            raise ValueError("AWS_SECURITY_GROUP_ID is not set in the environment variables.")
+        if not os.getenv('AWS_SUBNET_ID'):
+            raise ValueError("AWS_SUBNET_ID is not set in the environment variables.")
+
+        # TTL configuration (cloud-init removed; use cloud-side scheduler only)
+        ttl_enabled = ENABLE_TTL
+        ttl_minutes = DEFAULT_TTL_MINUTES
+        ttl_seconds = max(0, int(ttl_minutes) * 60)
+        eta_utc = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+        logger.info(f"TTL config: minutes={ttl_minutes}, seconds={ttl_seconds}, ETA(UTC)={eta_utc.isoformat()}")
+
+        run_instances_params = {
+            "MaxCount": 1,
+            "MinCount": 1,
+            "ImageId": ami_id,
+            "InstanceType": INSTANCE_TYPE,
+            "EbsOptimized": True,
+            "InstanceInitiatedShutdownBehavior": "terminate",
+            "NetworkInterfaces": [
+                {
+                    "SubnetId": os.getenv('AWS_SUBNET_ID'),
+                    "AssociatePublicIpAddress": True,
+                    "DeviceIndex": 0,
+                    "Groups": [
+                        os.getenv('AWS_SECURITY_GROUP_ID')
+                    ]
+                }
+            ],
+            "BlockDeviceMappings": [
+                {
+                    "DeviceName": "/dev/sda1", 
+                    "Ebs": {
+                        # "VolumeInitializationRate": 300
+                        "VolumeSize": 30,  # Size in GB
+                        "VolumeType": "gp3",  # General Purpose SSD
+                        "Throughput": 1000,
+                        "Iops": 4000  # Adjust IOPS as needed
+                    }
+                }
+            ]
+        }
+        
+        response = ec2_client.run_instances(**run_instances_params)
+        instance_id = response['Instances'][0]['InstanceId']
+
+        # Create TTL schedule immediately after instance is created, to survive early interruptions
+        try:
+            # Always attempt; helper resolves ARN via env or role name
+            if ttl_enabled:
+                schedule_instance_termination(region, instance_id, ttl_seconds, AWS_SCHEDULER_ROLE_ARN, logger)
+        except Exception as e:
+            logger.warning(f"Failed to create EventBridge Scheduler for {instance_id}: {e}")
+
+        waiter = ec2_client.get_waiter('instance_running')
+        logger.info(f"Waiting for instance {instance_id} to be running...")
+        waiter.wait(InstanceIds=[instance_id])
+        logger.info(f"Instance {instance_id} is ready.")
+
+        try:
+            instance_details = ec2_client.describe_instances(InstanceIds=[instance_id])
+            instance = instance_details['Reservations'][0]['Instances'][0]
+            public_ip = instance.get('PublicIpAddress', '')
+            if public_ip:
+                vnc_url = f"http://{public_ip}:5910/vnc.html"
+                logger.info("="*80)
+                logger.info(f"🖥️  VNC Web Access URL: {vnc_url}")
+                logger.info(f"📡 Public IP: {public_ip}")
+                logger.info(f"🆔 Instance ID: {instance_id}")
+                logger.info("="*80)
+                print(f"\n🌐 VNC Web Access URL: {vnc_url}")
+                print(f"📍 Please open the above address in the browser for remote desktop access\n")
+        except Exception as e:
+            logger.warning(f"Failed to get VNC address for instance {instance_id}: {e}")
+    except KeyboardInterrupt:
+        logger.warning("VM allocation interrupted by user (SIGINT).")
+        if instance_id:
+            logger.info(f"Terminating instance {instance_id} due to interruption.")
+            ec2_client.terminate_instances(InstanceIds=[instance_id])
+        raise
+    except Exception as e:
+        logger.error(f"Failed to allocate VM: {e}", exc_info=True)
+        if instance_id:
+            logger.info(f"Terminating instance {instance_id} due to an error.")
+            ec2_client.terminate_instances(InstanceIds=[instance_id])
+        raise
+    finally:
+        # Restore original signal handlers
+        signal.signal(signal.SIGINT, original_sigint_handler)
+        signal.signal(signal.SIGTERM, original_sigterm_handler)
 
     return instance_id
 
 
 class AWSVMManager(VMManager):
-    def __init__(self, registry_path=REGISTRY_PATH):
-        self.registry_path = registry_path
-        self.lock = FileLock(".aws_lck", timeout=60)
+    """
+    AWS VM Manager for managing virtual machines on AWS.
+    
+    AWS does not need to maintain a registry of VMs, as it can dynamically allocate and deallocate VMs.
+    This class supports both regular VM allocation and proxy-enabled VM allocation.
+    """
+    def __init__(self, **kwargs):
+        # self.lock = FileLock(".aws_lck", timeout=60)
         self.initialize_registry()
 
-    def initialize_registry(self):
-        with self.lock:  # Locking during initialization
-            if not os.path.exists(self.registry_path):
-                with open(self.registry_path, 'w') as file:
-                    file.write('')
+    def initialize_registry(self, **kwargs):
+        pass
 
-    def add_vm(self, vm_path, region=DEFAULT_REGION, lock_needed=True):
-        if lock_needed:
-            with self.lock:
-                self._add_vm(vm_path, region)
-        else:
-            self._add_vm(vm_path, region)
+    def add_vm(self, vm_path, region=DEFAULT_REGION, lock_needed=True, **kwargs):
+        pass
 
     def _add_vm(self, vm_path, region=DEFAULT_REGION):
-        with open(self.registry_path, 'r') as file:
-            lines = file.readlines()
-            vm_path_at_vm_region = "{}@{}".format(vm_path, region)
-            new_lines = lines + [f'{vm_path_at_vm_region}|free\n']
-        with open(self.registry_path, 'w') as file:
-            file.writelines(new_lines)
+        pass
 
-    def delete_vm(self, vm_path, region=DEFAULT_REGION, lock_needed=True):
-        if lock_needed:
-            with self.lock:
-                self._delete_vm(vm_path, region)
-        else:
-            self._delete_vm(vm_path, region)
+    def delete_vm(self, vm_path, region=DEFAULT_REGION, lock_needed=True, **kwargs):
+        pass
 
     def _delete_vm(self, vm_path, region=DEFAULT_REGION):
-        new_lines = []
-        with open(self.registry_path, 'r') as file:
-            lines = file.readlines()
-            for line in lines:
-                vm_path_at_vm_region, pid_str = line.strip().split('|')
-                if vm_path_at_vm_region == "{}@{}".format(vm_path, region):
-                    continue
-                else:
-                    new_lines.append(line)
-        with open(self.registry_path, 'w') as file:
-            file.writelines(new_lines)
+        pass
 
-    def occupy_vm(self, vm_path, pid, region=DEFAULT_REGION, lock_needed=True):
-        if lock_needed:
-            with self.lock:
-                self._occupy_vm(vm_path, pid, region)
-        else:
-            self._occupy_vm(vm_path, pid, region)
+    def occupy_vm(self, vm_path, pid, region=DEFAULT_REGION, lock_needed=True, **kwargs):
+        pass
 
     def _occupy_vm(self, vm_path, pid, region=DEFAULT_REGION):
-        new_lines = []
-        with open(self.registry_path, 'r') as file:
-            lines = file.readlines()
-            for line in lines:
-                registered_vm_path, _ = line.strip().split('|')
-                if registered_vm_path == "{}@{}".format(vm_path, region):
-                    new_lines.append(f'{registered_vm_path}|{pid}\n')
-                else:
-                    new_lines.append(line)
-        with open(self.registry_path, 'w') as file:
-            file.writelines(new_lines)
+        pass
 
-    def check_and_clean(self, lock_needed=True):
-        if lock_needed:
-            with self.lock:
-                self._check_and_clean()
-        else:
-            self._check_and_clean()
+    def check_and_clean(self, lock_needed=True, **kwargs):
+        pass
 
     def _check_and_clean(self):
-        # Get active PIDs
-        active_pids = {p.pid for p in psutil.process_iter()}
+        pass
 
-        new_lines = []
-        vm_path_at_vm_regions = {}
-
-        with open(self.registry_path, 'r') as file:
-            lines = file.readlines()
-
-        # Collect all VM paths and their regions
-        for line in lines:
-            vm_path_at_vm_region, pid_str = line.strip().split('|')
-            vm_path, vm_region = vm_path_at_vm_region.split("@")
-            if vm_region not in vm_path_at_vm_regions:
-                vm_path_at_vm_regions[vm_region] = []
-            vm_path_at_vm_regions[vm_region].append((vm_path_at_vm_region, pid_str))
-
-        # Process each region
-        for region, vm_info_list in vm_path_at_vm_regions.items():
-            ec2_client = boto3.client('ec2', region_name=region)
-            instance_ids = [vm_info[0].split('@')[0] for vm_info in vm_info_list]
-
-            # Batch describe instances
-            try:
-                response = ec2_client.describe_instances(InstanceIds=instance_ids)
-                reservations = response.get('Reservations', [])
-
-                terminated_ids = set()
-                stopped_ids = set()
-                active_ids = set()
-
-                # Collect states of all instances
-                for reservation in reservations:
-                    for instance in reservation.get('Instances', []):
-                        instance_id = instance.get('InstanceId')
-                        instance_state = instance['State']['Name']
-                        if instance_state in ['terminated', 'shutting-down']:
-                            terminated_ids.add(instance_id)
-                        elif instance_state == 'stopped':
-                            stopped_ids.add(instance_id)
-                        else:
-                            active_ids.add(instance_id)
-
-                # Write results back to file
-                for vm_path_at_vm_region, pid_str in vm_info_list:
-                    vm_path = vm_path_at_vm_region.split('@')[0]
-
-                    if vm_path in terminated_ids:
-                        logger.info(f"VM {vm_path} not found or terminated, releasing it.")
-                        continue
-                    elif vm_path in stopped_ids:
-                        logger.info(f"VM {vm_path} stopped, mark it as free")
-                        new_lines.append(f'{vm_path}@{region}|free\n')
-                        continue
-
-                    if pid_str == "free":
-                        new_lines.append(f'{vm_path}@{region}|{pid_str}\n')
-                    elif int(pid_str) in active_pids:
-                        new_lines.append(f'{vm_path}@{region}|{pid_str}\n')
-                    else:
-                        new_lines.append(f'{vm_path}@{region}|free\n')
-
-            except ec2_client.exceptions.ClientError as e:
-                if 'InvalidInstanceID.NotFound' in str(e):
-                    logger.info(f"VM not found, releasing instances in region {region}.")
-                    continue
-
-        # Writing updated lines back to the registry file
-        with open(self.registry_path, 'w') as file:
-            file.writelines(new_lines)
-
-        # We won't check and clean on the files on aws and delete the unregistered ones
-        # Since this can lead to unexpected delete on other server
-        # PLease do monitor the instances to avoid additional cost
-
-    def list_free_vms(self, region=DEFAULT_REGION, lock_needed=True):
-        if lock_needed:
-            with self.lock:
-                return self._list_free_vms(region)
-        else:
-            return self._list_free_vms(region)
+    def list_free_vms(self, region=DEFAULT_REGION, lock_needed=True, **kwargs):
+        pass
 
     def _list_free_vms(self, region=DEFAULT_REGION):
-        free_vms = []
-        with open(self.registry_path, 'r') as file:
-            lines = file.readlines()
-            for line in lines:
-                vm_path_at_vm_region, pid_str = line.strip().split('|')
-                vm_path, vm_region = vm_path_at_vm_region.split("@")
-                if pid_str == "free" and vm_region == region:
-                    free_vms.append((vm_path, pid_str))
+        pass
 
-        return free_vms
-
-    def get_vm_path(self, region=DEFAULT_REGION):
-        with self.lock:
-            if not AWSVMManager.checked_and_cleaned:
-                AWSVMManager.checked_and_cleaned = True
-                self._check_and_clean()
-
-        allocation_needed = False
-        with self.lock:
-            free_vms_paths = self._list_free_vms(region)
-
-            if len(free_vms_paths) == 0:
-                # No free virtual machine available, generate a new one
-                allocation_needed = True
-            else:
-                # Choose the first free virtual machine
-                chosen_vm_path = free_vms_paths[0][0]
-                self._occupy_vm(chosen_vm_path, os.getpid(), region)
-                return chosen_vm_path
-        
-        if allocation_needed:
-            logger.info("No free virtual machine available. Generating a new one, which would take a while...☕")
-            new_vm_path = _allocate_vm(region)
-            with self.lock:
-                self._add_vm(new_vm_path, region)
-                self._occupy_vm(new_vm_path, os.getpid(), region)
-            return new_vm_path
+    def get_vm_path(self, region=DEFAULT_REGION, screen_size=(1920, 1080), **kwargs):
+        logger.info("Allocating a new VM in region: {}".format(region))
+        new_vm_path = _allocate_vm(region, screen_size=screen_size)
+        return new_vm_path

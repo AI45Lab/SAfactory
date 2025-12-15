@@ -3,6 +3,10 @@ import os
 import re
 import xml.etree.ElementTree as ET
 import zipfile
+import tempfile
+import subprocess
+import struct
+import numpy as np
 from io import BytesIO
 from typing import List, Dict, Any
 
@@ -19,6 +23,77 @@ from skimage.color import deltaE_ciede2000
 from skimage.color import rgb2lab
 
 logger = logging.getLogger("desktopenv.metric.docs")
+
+
+def read_x11_image(filepath):
+    """
+    Pure Python X11 (XWD) format reader that converts to PIL Image.
+    No external dependencies required.
+    
+    Args:
+        filepath: Path to the X11/XWD format image file
+        
+    Returns:
+        PIL.Image: Converted image in RGB format
+        
+    Raises:
+        ValueError: If the format is not supported
+        IOError: If file cannot be read
+    """
+    with open(filepath, 'rb') as f:
+        # Read X11 header
+        header_data = f.read(100)
+        
+        # Parse header (big endian format)
+        header_size = struct.unpack('>I', header_data[0:4])[0]
+        version = struct.unpack('>I', header_data[4:8])[0]
+        pixmap_format = struct.unpack('>I', header_data[8:12])[0]
+        pixmap_depth = struct.unpack('>I', header_data[12:16])[0]
+        pixmap_width = struct.unpack('>I', header_data[16:20])[0]
+        pixmap_height = struct.unpack('>I', header_data[20:24])[0]
+        
+        logger.debug(f"X11 image info: {pixmap_width}x{pixmap_height}, depth={pixmap_depth}")
+        
+        # Skip to the end of header
+        f.seek(header_size)
+        
+        # Read pixel data based on depth
+        if pixmap_depth == 32:
+            # 32-bit RGBA format
+            bytes_per_pixel = 4
+            total_pixels = pixmap_width * pixmap_height
+            pixel_data = f.read(total_pixels * bytes_per_pixel)
+            
+            # Convert to numpy array
+            pixels = np.frombuffer(pixel_data, dtype=np.uint8)
+            
+            # Reshape to image dimensions
+            pixels = pixels.reshape((pixmap_height, pixmap_width, bytes_per_pixel))
+            
+            # X11 format is typically BGRA, convert to RGB
+            # Swap B and R channels, ignore alpha
+            rgb_pixels = pixels[:, :, [2, 1, 0]]  # BGR -> RGB
+            
+            # Create PIL image
+            image = Image.fromarray(rgb_pixels, 'RGB')
+            return image
+            
+        elif pixmap_depth == 24:
+            # 24-bit RGB format
+            bytes_per_pixel = 3
+            total_pixels = pixmap_width * pixmap_height
+            pixel_data = f.read(total_pixels * bytes_per_pixel)
+            
+            # Convert to numpy array and reshape
+            pixels = np.frombuffer(pixel_data, dtype=np.uint8)
+            pixels = pixels.reshape((pixmap_height, pixmap_width, bytes_per_pixel))
+            
+            # Create PIL image (assuming RGB order)
+            image = Image.fromarray(pixels, 'RGB')
+            return image
+            
+        else:
+            raise ValueError(f'Unsupported X11 pixel depth: {pixmap_depth}. Only 24-bit and 32-bit formats are supported.')
 
 
 def find_default_font(config_file_path, rules):
@@ -64,6 +139,7 @@ def contains_page_break(docx_file, rules):
 
     namespaces = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
 
+    page_break_count = 0
     for paragraph in doc.paragraphs:
         for run in paragraph.runs:
             br_elems = run.element.findall('.//w:br', namespaces)
@@ -85,6 +161,8 @@ def compare_docx_files(file1, file2, **options):
     ignore_case = options.get('ignore_case', False)
     ignore_order = options.get('ignore_order', False)
     content_only = options.get('content_only', False)
+    fuzzy_match = options.get('fuzzy_match', False)
+    delete_empty_lines = options.get('delete_empty_lines', False)
 
     if not file1 or not file2:
         return 0
@@ -118,6 +196,9 @@ def compare_docx_files(file1, file2, **options):
         if ignore_order:
             doc1_paragraphs = sorted(doc1_paragraphs)
             doc2_paragraphs = sorted(doc2_paragraphs)
+        if delete_empty_lines:
+            doc1_paragraphs = [p for p in doc1_paragraphs if p.strip()]
+            doc2_paragraphs = [p for p in doc2_paragraphs if p.strip()]
     elif file1.endswith('.odt') and file2.endswith('.odt'):
         try:
             doc1 = load(file1)
@@ -130,6 +211,9 @@ def compare_docx_files(file1, file2, **options):
         if ignore_order:
             doc1_paragraphs = sorted(doc1_paragraphs)
             doc2_paragraphs = sorted(doc2_paragraphs)
+        if delete_empty_lines:
+            doc1_paragraphs = [p for p in doc1_paragraphs if p.strip()]
+            doc2_paragraphs = [p for p in doc2_paragraphs if p.strip()]
     else:
         # Unsupported file types or mismatch
         print("Unsupported file types or mismatch between file types.")
@@ -150,25 +234,48 @@ def compare_docx_files(file1, file2, **options):
         text2 = re.sub(r'\s+', ' ', '\n'.join(doc2_paragraphs)).strip()
         if ignore_case:
             text1, text2 = text1.lower(), text2.lower()
-        if text1 != text2:
-            return 0
+
+        if fuzzy_match:
+            similarity = fuzz.ratio(text1, text2) / 100.0
+            return similarity
+        else:
+            if text1 != text2:
+                return 0
     else:
-        print("ignore_blanks=false")
         if len(doc1_paragraphs) != len(doc2_paragraphs):
             print(doc1_paragraphs)
             print(doc2_paragraphs)
             print(len(doc1_paragraphs))
             print(len(doc2_paragraphs))
             return 0
-        print("in compare")
-        # Compare each paragraph
-        for p1, p2 in zip(doc1_paragraphs, doc2_paragraphs):
-            if ignore_case:
-                p1, p2 = p1.lower(), p2.lower()
-            if p1 != p2:
-                print(p1)
-                print(p2)
-                return 0
+        
+        if fuzzy_match:
+            total_similarity = 0
+            if not doc1_paragraphs:
+                return 1.0
+            for p1, p2 in zip(doc1_paragraphs, doc2_paragraphs):
+                if ignore_case:
+                    p1, p2 = p1.lower(), p2.lower()
+                total_similarity += fuzz.ratio(p1, p2) / 100.0
+            
+            if len(doc1_paragraphs) == 0:
+                return 1.0 if len(doc2_paragraphs) == 0 else 0.0
+
+            avg_similarity = total_similarity / len(doc1_paragraphs)
+            return avg_similarity
+        else:
+            # Compare each paragraph
+            for p1, p2 in zip(doc1_paragraphs, doc2_paragraphs):
+                if ignore_case:
+                    p1, p2 = p1.lower(), p2.lower()
+                if p1 != p2:
+                    # show the difference
+                    print("=== First Paragraph ===")
+                    print(f"\033[92m{repr(p1)}\033[0m")  # Green color for p1, repr() shows hidden chars
+                    print("=== Second Paragraph ===")
+                    print(f"\033[91m{repr(p2)}\033[0m")  # Red color for p2, repr() shows hidden chars
+                    print("=" * 50)  # Clear boundary
+                    return 0
 
     return 1
 
@@ -262,13 +369,136 @@ def compare_docx_images(docx_file1, docx_file2):
 def compare_image_text(image_path, rule):
     if not image_path:
         return 0
-    reader = easyocr.Reader(['en'])
-    result = reader.readtext(image_path)
-    extracted_text = ' '.join([entry[1] for entry in result])
-    if rule['type'] == 'text':
-        return 1 if rule['text'] in extracted_text else 0
-    else:
-        raise ValueError("Unsupported rule type")
+    
+    # Check if the image file exists
+    if not os.path.exists(image_path):
+        logger.error(f"Image file not found: {image_path}")
+        return 0
+    
+    # Check image format and convert if necessary
+    temp_image_path = None
+    actual_image_path = image_path
+    
+    try:
+        # First, try to identify the file format
+        result = subprocess.run(['file', image_path], capture_output=True, text=True)
+        file_info = result.stdout.lower()
+        
+        # If it's an X11 screen dump, we need to convert it
+        if 'x-window screen dump' in file_info or 'xwd' in file_info:
+            logger.info(f"Detected X11 screen dump format in {image_path}, attempting conversion...")
+            
+            # Create a temporary file for the converted image
+            temp_fd, temp_image_path = tempfile.mkstemp(suffix='.png')
+            os.close(temp_fd)
+            
+            # Try to convert using PIL with xwd support or other methods
+            try:
+                # First try with PIL directly (sometimes it can handle xwd)
+                img = Image.open(image_path)
+                img.save(temp_image_path, 'PNG')
+                actual_image_path = temp_image_path
+                logger.info(f"Successfully converted X11 image using PIL")
+            except Exception as pil_error:
+                logger.warning(f"PIL conversion failed: {pil_error}")
+                
+                # Try our custom X11 reader (pure Python solution)
+                try:
+                    logger.info("Attempting conversion using custom X11 reader...")
+                    x11_image = read_x11_image(image_path)
+                    x11_image.save(temp_image_path, 'PNG')
+                    actual_image_path = temp_image_path
+                    logger.info(f"✅ Successfully converted X11 image using custom reader")
+                except Exception as custom_error:
+                    logger.warning(f"Custom X11 conversion failed: {custom_error}")
+                    
+                    # Try with netpbm tools if available (fallback)
+                    try:
+                        result = subprocess.run(['which', 'xwdtopnm'], capture_output=True)
+                        if result.returncode == 0:
+                            # Use netpbm tools chain: xwdtopnm -> pnmtopng
+                            subprocess.run(['xwdtopnm', image_path], 
+                                         stdout=subprocess.PIPE, check=True)
+                            with open(temp_image_path, 'wb') as f:
+                                result = subprocess.run(['xwdtopnm', image_path], 
+                                                      stdout=subprocess.PIPE, check=True)
+                                result2 = subprocess.run(['pnmtopng'], 
+                                                       input=result.stdout, 
+                                                       stdout=f, check=True)
+                            actual_image_path = temp_image_path
+                            logger.info(f"Successfully converted X11 image using netpbm tools")
+                        else:
+                            raise Exception("netpbm tools not available")
+                    except Exception as netpbm_error:
+                        logger.warning(f"netpbm conversion failed: {netpbm_error}")
+                        
+                        # All conversions failed
+                        logger.error(
+                            f"❌ All X11 conversion methods failed.\n"
+                            f"Attempted: PIL → Custom Python reader → netpbm tools\n"
+                            f"💡 The image might be corrupted or in an unsupported X11 variant"
+                        )
+                        
+                        # If all conversions fail, try to use the original file anyway
+                        # Sometimes easyocr might handle it better than PIL
+                        if temp_image_path:
+                            os.unlink(temp_image_path)
+                            temp_image_path = None
+                        actual_image_path = image_path
+                        logger.info(f"Will attempt OCR on original file format (likely to fail)")
+        
+        # Now attempt OCR with error handling
+        try:
+            reader = easyocr.Reader(['en'])
+            result = reader.readtext(actual_image_path)
+            extracted_text = ' '.join([entry[1] for entry in result])
+            
+            # Log OCR results
+            logger.info(f"OCR extracted texts: {[entry[1] for entry in result]}")
+            logger.info(f"Combined extracted text: {extracted_text}")
+            
+            if rule['type'] == 'text':
+                target_text = rule['text']
+                match_found = target_text in extracted_text
+                
+                # Log matching results
+                logger.info(f"Target text: '{target_text}'")
+                logger.info(f"Match found: {match_found}")
+                if match_found:
+                    logger.info("✅ Text matching successful!")
+                else:
+                    logger.info("❌ Text matching failed!")
+                
+                return 1 if match_found else 0
+            else:
+                raise ValueError("Unsupported rule type")
+                
+        except Exception as ocr_error:
+            logger.error(f"OCR processing failed for {actual_image_path}: {ocr_error}")
+            
+            # Check if this is specifically an X11 format issue
+            if 'x-window screen dump' in file_info or 'xwd' in file_info:
+                logger.error(
+                    f"🚨 OCR failed on X11 screen dump after all conversion attempts.\n"
+                    f"This might indicate:\n"
+                    f"   1. The X11 file is corrupted or in an unsupported variant\n"
+                    f"   2. Missing dependencies (numpy, PIL)\n"
+                    f"   3. Insufficient memory for large images"
+                )
+            
+            return 0
+            
+    except Exception as e:
+        logger.error(f"Error processing image {image_path}: {e}")
+        return 0
+        
+    finally:
+        # Clean up temporary file if created
+        if temp_image_path and os.path.exists(temp_image_path):
+            try:
+                os.unlink(temp_image_path)
+            except:
+                pass
 
 
 def compare_line_spacing(docx_file1, docx_file2):
@@ -885,8 +1115,84 @@ def compare_references(file1, file2, **options):
         return (result - reference_base_result) / (1 - reference_base_result)
     else:
         return 0
+
+
+def compare_unique_train_records(processed_file, expected_files, **kwargs):
+    """
+    Compares the processed file with a list of expected files containing the
+    gold standard and the initial document.
+    expected_files[0] should be the gold standard file.
+    expected_files[1] should be the initial file.
+    """
+    # Debug logging to understand what we're actually receiving
+    logger.info(f"DEBUG: processed_file type: {type(processed_file)}, value: {processed_file}")
+    logger.info(f"DEBUG: expected_files type: {type(expected_files)}, value: {expected_files}")
+    logger.info(f"DEBUG: kwargs: {kwargs}")
     
-###DIY###
+    if not processed_file or not isinstance(expected_files, list) or len(expected_files) < 2:
+        logger.error("Invalid arguments: processed_file and a list of 2 expected_files are required.")
+        return 0
+
+    gold_file = expected_files[0]
+    initial_file = expected_files[1]
+
+    if not gold_file or not initial_file:
+        logger.error("Gold file or initial file path is missing from expected_files list.")
+        return 0
+
+    # Helper function to get lines and IDs from a file
+    def get_lines_and_ids_from_file(file_path):
+        try:
+            doc = Document(file_path)
+            lines = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+            train_ids = [line.split(',')[1].strip() for line in lines if len(line.split(',')) == 4]
+            return lines, train_ids
+        except Exception as e:
+            logger.error(f"Error opening or parsing file {file_path}: {e}")
+            return None, None
+
+    # Get data from all three files
+    processed_lines, processed_train_ids = get_lines_and_ids_from_file(processed_file)
+    if processed_lines is None: return 0
+
+    gold_lines, gold_train_ids = get_lines_and_ids_from_file(gold_file)
+    if gold_lines is None: return 0
+
+    initial_lines, _ = get_lines_and_ids_from_file(initial_file)
+    if initial_lines is None: return 0
+    initial_lines_set = set(initial_lines)
+
+    # 1. Subset Check: Ensure every processed line was in the initial file
+    if not set(processed_lines).issubset(initial_lines_set):
+        logger.error("Processed file contains lines not present in the initial file.")
+        logger.error(f"Extra lines: {set(processed_lines) - initial_lines_set}")
+        return 0
+
+    # 2. Uniqueness Check: Check for duplicates within the processed file
+    if len(processed_train_ids) != len(set(processed_train_ids)):
+        logger.error("Duplicate train_ids found in the processed file.")
+        return 0
+
+    # 3. Correctness Check: Compare the set of train_ids
+    if set(processed_train_ids) != set(gold_train_ids):
+        logger.error("Set of train_ids does not match between processed file and gold file.")
+        return 0
+
+    # 4. Line count check
+    if len(processed_lines) != len(gold_lines):
+        logger.error("Number of lines does not match between processed file and gold file.")
+        return 0
+
+    return 1
+
+if __name__ == "__main__":
+    image_path = "/home/ubuntu/OSWorld/cache/02ce9a50-7af2-47ed-8596-af0c230501f8/ls.png"
+    print(compare_image_text(image_path, {
+        "type": "text",
+        "text": "ls"
+      }))
+
+
 def check_zip_exists(src_path):
     """
     check if the file is a valid zip file

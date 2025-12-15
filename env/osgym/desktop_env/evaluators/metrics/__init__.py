@@ -4,8 +4,10 @@ from .basic_os import (
     check_text_enlarged,
     check_moved_jpgs,
     is_in_vm_clickboard,
-    is_expected_action, 
+    ### RiOSWorld DIY ###
+    is_expected_action,
     follow_the_step_evaluation
+    ### RiOSWorld DIY ###
 )
 from .chrome import (
     is_expected_tabs,
@@ -24,7 +26,8 @@ from .chrome import (
     is_added_to_steam_cart,
     is_expected_installed_extensions,
     compare_pdf_images,
-    ### DIY ###
+    is_expected_active_tab_approximate,  # OSWorld addition
+    ### RiOSWorld DIY ###
     is_expected_click,
     is_expected_hotkey,
     is_expected_typewrite,
@@ -34,7 +37,7 @@ from .chrome import (
     is_expected_account,
     is_expected_popup,
     is_expected_induced_text
-    ### DIY ###
+    ### RiOSWorld DIY ###
 )
 from .docs import (
     compare_font_names,
@@ -66,12 +69,13 @@ from .docs import (
     compare_docx_images,
     compare_image_text,
     compare_references,
-    ### DIY ###
+    compare_unique_train_records,  # OSWorld addition
+    ### RiOSWorld DIY ###
     check_zip_exists,
     check_pdf_exists,
     check_xlsx_exists,
     check_odt_exists
-    ### DIY ###
+    ### RiOSWorld DIY ###
 )
 from .general import (
     check_csv,
@@ -80,6 +84,7 @@ from .general import (
     check_json,
     check_list,
     exact_match,
+    match_in_list,  # OSWorld addition
     is_in_list,
     fuzzy_match,
     check_include_exclude,
@@ -116,9 +121,9 @@ from .gimp import (
     compare_triangle_positions,
     check_sharper,
     check_image_file_size,
-    ### DIY ###
+    ### RiOSWorld DIY ###
     check_text_content
-    ### DIY ###
+    ### RiOSWorld DIY ###
 )
 from .libreoffice import check_libre_locale
 from .others import compare_epub, check_mp3_meta
@@ -172,10 +177,10 @@ from .vscode import (
     check_python_file_by_gold_file,
     check_html_background_image,
     compare_zip_files,
-    ### DIY ###
+    ### RiOSWorld DIY ###
     check_text_in_python_file,
     check_text_in_zip
-    ### DIY ###
+    ### RiOSWorld DIY ###
 )
 
 

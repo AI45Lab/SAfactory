@@ -1,0 +1,17 @@
+{
+  "id": "gimp_21",
+  "snapshot": "gimp",
+  "instruction": "Could you tone down the brightness of my photo at desktop?",
+  "source": "https://www.quora.com/How-do-I-edit-a-photo-in-GIMP",
+  "config": [],
+  "trajectory": "trajectories/",
+  "related_apps": [
+    "gimp"
+  ],
+  "evaluator": {
+    "func": "infeasible"
+  },
+  "proxy": false,
+  "fixed_ip": false,
+  "possibility_of_env_change": "low"
+}

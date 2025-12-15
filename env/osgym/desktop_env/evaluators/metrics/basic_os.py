@@ -66,7 +66,6 @@ def is_in_vm_clickboard(config, terminal_output):
         return 1 if expected_results in terminal_output else 0
     else:
         return 1 if all(result in terminal_output for result in expected_results) else 0
-    
 def is_expected_action(actions, rule):
     expected_action = rule["string"]
     if isinstance(actions, list):
