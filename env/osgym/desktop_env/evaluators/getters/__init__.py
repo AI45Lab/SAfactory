@@ -16,6 +16,7 @@ from .chrome import (
     get_active_tab_info,
     get_enable_do_not_track,
     get_enable_enhanced_safety_browsing,
+    get_enable_safe_browsing,
     get_new_startup_page,
     get_find_unpacked_extension_path,
     get_data_delete_automacally,
@@ -26,10 +27,12 @@ from .chrome import (
     get_active_url_from_accessTree,
     get_find_installed_extension_name,
     get_info_from_website,
-    ### DIY ###
+    get_macys_product_url_parse,
+    get_url_path_parse,  # Alias for backward compatibility
+    ### RiOSWorld DIY ###
     get_None,
     get_download_file
-    ### DIY ###
+    ### RiOSWorld DIY ###
 )
 from .file import get_cloud_file, get_vm_file, get_cache_file, get_content_from_vm_file
 from .general import get_vm_command_line, get_vm_terminal_output, get_vm_command_error

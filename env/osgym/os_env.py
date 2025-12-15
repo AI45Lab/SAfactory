@@ -42,10 +42,14 @@ INTENT_CLICK_TGT_PATH = CURRENT_DIR / "env_risk_utils" / "intent_click_tgt_OK.js
 class OSGym(BaseEnv):
     """
     集成 RiOSWorld/OSWorld 基准测试的 OSGym 环境。
+    支持两种benchmark类型：
+    - "riosworld": RiOSWorld风险评估benchmark (默认)
+    - "osworld": OSWorld通用桌面任务benchmark
     """
     def __init__(self,
                  task_config_path: str = None,
                  task_id: str = None,
+                 benchmark_type: str = "osworld",  # "riosworld" or "osworld"
                  provider_name: str = "docker",
                  headless: bool = True,
                  action_space: str = "pyautogui",
@@ -61,6 +65,8 @@ class OSGym(BaseEnv):
                  enable_recording: bool = False,
                  **kwargs):
         super().__init__(**kwargs)
+
+        self.benchmark_type = benchmark_type.lower()
 
         if DesktopEnv is None:
             raise ImportError("DesktopEnv could not be imported. Check dependencies.")
@@ -123,8 +129,17 @@ class OSGym(BaseEnv):
         atexit.register(self.close)
 
     def _resolve_task_config_path(self, task_config_path: Optional[str]) -> str:
+        """
+        解析任务配置文件路径，支持RiOSWorld和OSWorld两种benchmark。
+
+        RiOSWorld默认路径: evaluation_risk_examples/test_risk.json
+        OSWorld默认路径: evaluation_osworld_examples/test_all.json
+        """
         if task_config_path is None:
-            task_config_path = os.path.join(CURRENT_DIR, "evaluation_risk_examples", "test_risk.json")
+            if self.benchmark_type == "osworld":
+                task_config_path = os.path.join(CURRENT_DIR, "evaluation_osworld_examples", "test_all.json")
+            else:  # riosworld (default)
+                task_config_path = os.path.join(CURRENT_DIR, "evaluation_risk_examples", "test_risk.json")
 
         if task_config_path and not os.path.isabs(task_config_path):
             rel_path = os.path.join(CURRENT_DIR, task_config_path)
@@ -133,8 +148,14 @@ class OSGym(BaseEnv):
         return task_config_path
 
     def _load_tasks(self) -> List[Dict[str, str]]:
+        """
+        加载任务列表，支持RiOSWorld和OSWorld两种benchmark格式。
+
+        RiOSWorld格式: 任务配置文件直接在domain目录下
+        OSWorld格式: 任务配置文件在examples/domain目录下
+        """
         tasks: List[Dict[str, str]] = []
-        logger.info(f"Loading tasks from: {self.task_config_path}")
+        logger.info(f"Loading tasks from: {self.task_config_path} (benchmark_type={self.benchmark_type})")
         if not self.task_config_path or not os.path.exists(self.task_config_path):
             logger.error(f"Task config path does not exist: {self.task_config_path}")
             if self.target_task_id:
@@ -150,7 +171,13 @@ class OSGym(BaseEnv):
                     if self.target_task_id and task_id_iter != self.target_task_id:
                         continue
 
-                    config_path = os.path.join(self.base_config_dir, domain, f"{task_id_iter}.json")
+                    # OSWorld任务配置在examples/domain目录下
+                    # RiOSWorld任务配置直接在domain目录下
+                    if self.benchmark_type == "osworld":
+                        config_path = os.path.join(self.base_config_dir, "examples", domain, f"{task_id_iter}.json")
+                    else:  # riosworld
+                        config_path = os.path.join(self.base_config_dir, domain, f"{task_id_iter}.json")
+
                     if os.path.exists(config_path):
                         tasks.append({
                             "domain": domain,
@@ -165,6 +192,7 @@ class OSGym(BaseEnv):
                 raise ValueError(f"Task {self.target_task_id} not found in {self.task_config_path}")
             logger.warning("No tasks loaded. Please check task_config_path.")
 
+        logger.info(f"Loaded {len(tasks)} tasks for benchmark_type={self.benchmark_type}")
         return tasks
 
     def _create_desktop_env(self):

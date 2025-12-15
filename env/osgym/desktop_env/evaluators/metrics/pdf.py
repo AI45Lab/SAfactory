@@ -4,7 +4,6 @@ from typing import Dict
 
 import fitz  # PyMuPDF
 from pypdf import PdfReader
-import PyPDF2
 
 
 def check_pdf_pages(pdf_file: str, rules: Dict[str, Any]) -> float:
@@ -30,8 +29,6 @@ def extract_answers_from_pdf(pdf_file):
                     answers.append(answer)
 
     return answers
-
-### DIY
 def check_text_in_pdf(pdf_path, rule):
     """
     Examine if the target text exists in the PDF file.
