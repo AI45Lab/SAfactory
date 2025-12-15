@@ -526,6 +526,10 @@ class DesktopEnv(gym.Env):
                 else:
                     metric: int = metric(result_state, **self.metric_options[idx])
 
+                # 如果 metric 返回 None，直接返回 None 让上层处理 (RiOSWorld 回退逻辑)
+                if metric is None:
+                    return None
+
                 if self.metric_conj == 'and' and float(metric) == 0.0:
                     return 0
                 elif self.metric_conj == 'or' and float(metric) == 1.0:

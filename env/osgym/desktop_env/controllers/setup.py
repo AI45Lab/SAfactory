@@ -26,7 +26,7 @@ from desktop_env.evaluators.metrics.utils import compare_urls
 
 # Proxy pool support (optional, only if aws provider is available)
 try:
-    from desktop_env.providers.aws.proxy_pool import get_global_proxy_pool, init_proxy_pool, ProxyInfo
+    from desktop_env.providers.aws.proxy_pool import get_global_proxy_pool, init_proxy_pool, ProxyInfo # type: ignore
     HAS_PROXY_POOL = True
 except ImportError:
     HAS_PROXY_POOL = False
