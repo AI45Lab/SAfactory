@@ -1,19 +1,52 @@
 server:
-  host: "127.0.0.1"
-  port: 8083
+  host: "0.0.0.0"
+  port: 36008
+
+  max_inflight_requests: 512
+  list_status_parallelism: 128
+  ray_call_timeout_s: 10.0
 
 ray:
+  # Used by the per-cluster GenericEnvActor in ray_env_server.py
   actor_num_cpus: 0.03
   max_concurrency: 1
 
-
 database:
   driver: "sqlite"
-  sqlite_path: "/Users/bin-mac/Gitlab/AIEvoBox/db/test.db"
+  # Change this to your actual DB path
+  sqlite_path: "AIEvoBox/examples/testdata/env.db"
 
-pool_size: 2
+pool_size: 200
 
+cluster:
+  base_image: "registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:base"
 
-environments:
-  trading_gym:
-    entrypoint: "env.tradinggym.trading_env:TradingGym"
+  entrypoint:
+    trading_gym: "python /app/app.py"
+    git_gym: "python /app/app.py"
+    mc: "python /mnt/shared-storage-user/leishanzhe/repo/AIEvoBox/env/mc/service/app_comm.py"
+    emb: "bash run.sh"
+
+  quotagroup: "evobox_gpu"
+  description: "RL env Ray cluster"
+
+  http:
+    port: 36663
+    # HTTP timeout from global manager -> cluster
+    timeout_s: 100
+    # Max concurrent HTTP calls from manager when prewarming actors
+    concurrency: 200
+
+rayjob:
+  domain: "https://h.pjlab.org.cn"
+  tenant: "ailab"
+  access_key: "0190c46827d4f2cd6632607bc1c2a0ca"
+  secret_key: "8cf77e57dd77c977f4a59d43a507ebd1"
+
+  token: ""
+  # Whether to verify TLS certificates (set true in production)
+  verify: false
+
+  # Logical project name used on the RayJob platform
+  project: "ailab-evobox"
+
