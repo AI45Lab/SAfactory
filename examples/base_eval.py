@@ -7,6 +7,8 @@ sys.path.append(project_root)
 import argparse
 import csv
 import asyncio
+import json
+import yaml
 import pandas as pd
 from env.tradinggym.trading_env import TradingGym  # 导入环境来注册
 from env.androidgym.android_env import AndroidGym
@@ -17,6 +19,7 @@ from env.dabstep.dabstep_env import DABStepEnv
 from env.dwgym.dw_env import DiscoveryWorldEnv
 from core.llm import StaticBaseURLProvider
 from core.interactor import Interactor
+from core.data_manager.load_yaml import load_yaml_configs
 from core.data_manager.manager import DataManager
 from core.data_manager.models import EnvironmentConfig  # 导入模型类
 from core.env.env_register import list_registered_envs
@@ -55,39 +58,6 @@ def parse_args():
                       help="LLM 生成响应的温度参数（0-1）")
     
     return parser.parse_args()
-
-def load_yaml_configs(yaml_path):
-    """加载YAML配置并验证格式"""
-    if not os.path.exists(yaml_path):
-        raise FileNotFoundError(f"环境配置YAML不存在：{yaml_path}")
-
-    import yaml
-    with open(yaml_path, "r", encoding="utf-8") as f:
-        config_data = yaml.safe_load(f)
-    
-    if "environments" not in config_data:
-        raise ValueError("YAML配置缺少'environments'根节点")
-
-    configs = []
-    for idx, env in enumerate(config_data["environments"], 1):
-        # 验证系统参数
-        required_system_fields = ["env_name"]
-        missing_fields = [f for f in required_system_fields if f not in env]
-        if missing_fields:
-            raise ValueError(f"环境配置 #{idx} 缺少系统参数：{missing_fields}")
-
-        # 生成完整配置
-        try:
-            config = {
-                "env_name": env["env_name"].strip(),
-                "env_num": env["env_num"],
-                "env_params": env.get("env_params", {})
-            }
-            configs.append(config)
-        except Exception as e:
-            print(f"环境配置 #{idx} 解析失败：{str(e)}（已跳过）")
-
-    return configs
 
 async def sync_configs_to_db(yaml_configs, dry_run):
     """同步YAML配置到数据库，自动生成env_id"""

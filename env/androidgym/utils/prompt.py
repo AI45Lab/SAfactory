@@ -1,3 +1,5 @@
+SYSTEM_PROMPT = "You are a helpful AI mobile phone operating assistant. You need to help me operate the phone to complete the user\'s instruction."
+
 def get_action_prompt(instruction, clickable_infos, width, height, keyboard, summary_history, action_history, last_summary, last_action, add_info, error_flag, completed_content, memory):
     prompt = "### Background ###\n"
     prompt += f"This image is a phone screenshot. Its width is {width} pixels and its height is {height} pixels. The user\'s instruction is: {instruction}.\n\n"
