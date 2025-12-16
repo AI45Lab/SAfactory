@@ -7,7 +7,7 @@ sys.path.append(project_root)
 import asyncio
 from env.tradinggym.trading_env import TradingGym # 导入环境来注册
 from env.embodiedgym.embodied_env import EmbodiedAlfredGym # 导入 Alfred 环境来注册
-from core.agent.base_agent import APIAgent
+from core.llm import StaticBaseURLProvider
 from core.interactor import Interactor
 from core.data_manager.manager import DataManager
 from core.env.env_register import list_registered_envs  # 查看已注册环境
@@ -53,18 +53,16 @@ async def main():
         exp_name="aievobox_alfred_spatial_test"
     )
 
-    # 3. 初始化Agent（使用视觉语言模型）
-    agent = APIAgent(
-        api_key="EMPTY",
-        base_url="http://100.99.102.69:8001/v1",
-        model="/mnt/shared-storage-user/steai-share/hf-hub/Qwen2.5-VL-7B-Instruct",  # 使用完整路径
-        temperature=0.3
-    )
+    # 3. 初始化 LLM 配置
+    base_url_provider = StaticBaseURLProvider(base_url="http://100.99.102.69:8001/v1")
 
     # 4. 运行交互器
     interactor = Interactor(
-        agent=agent,
+        base_url_provider=base_url_provider,
+        api_key="EMPTY",
+        model="/mnt/shared-storage-user/steai-share/hf-hub/Qwen2.5-VL-7B-Instruct",
         data_manager=data_manager,
+        temperature=0.3,
         max_workers=2,  # 并行运行 2 个环境
         max_steps=30,  # Alfred 环境通常 30 步内完成
         visual_save_path="/mnt/shared-storage-user/evobox-share/gaozhenkun/gzk/eval/visualize/test1105"  # 保存可视化结果

@@ -123,6 +123,43 @@ python examples/base_eval.py \
   --agent-temperature 0.3
 ```
 
+### task_list：用列表列出环境任务，减少重复配置
+
+为避免在 `env_params` 中重复写相似的 prompt/指令，现在支持在 YAML 里使用 `task_list`：
+
+```yaml
+environments:
+  - env_name: android_gym
+    env_num: 1
+    # task_param 可选，标量任务会写入 env_params[task_param]；不写则写入通用键 task
+    task_param: instruction
+    env_params:
+      adb_path: "/opt/android/platform-tools/adb"
+      API_url: "http://host:port/v1/responses"
+      token: "sk-..."
+      # 这里放通用环境配置，不放指令
+    task_list:
+      - "Join my 3 PM meeting in Calendar..."
+      - "Check my hotel reservation in Booking app..."
+
+  - env_name: search
+    env_num: 1
+    # 数据集路径等基础参数放在 env_params
+    env_params: {}
+    task_param: dataset_index
+    # 方式1：内联列表
+    task_list: [0, 1, 2, 3, 4, 5]
+    # 方式2：从文件导入（json/yaml列表，或按行一个任务）
+    # task_list_file: "env/search/dataset_indices.txt"
+```
+
+规则：
+- `task_list` 可为字符串/数字/对象列表。
+  - 若元素是对象，直接与 `env_params` merge（可在对象里写任意参数）。
+  - 若是标量，优先写入 `task_param` 指定的键；若未指定，落在通用键 `task`（环境端可以按约定读取）。
+- 未提供 `task_list` 时保持旧格式兼容，直接使用 `env_params`。
+- `task_list_file` 支持外部列表文件，格式：json/yaml 列表；或纯文本按行一个任务（支持注释行 `#`，数字会自动转 int，行内容可为 JSON 片段）。
+
 ## 📺 交互与指标可视化
 
 项目提供多维度可视化能力，直观展示交互过程：
