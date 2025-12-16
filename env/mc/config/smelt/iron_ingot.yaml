@@ -1,0 +1,33 @@
+defaults:
+  - base
+  - _self_
+
+
+task_conf:
+  - name: "iron_ingot"
+    text: "craft_item:iron_ingot" 
+
+reward_conf:
+  - event: "craft_item"
+    max_reward_times: 1
+    reward: 1.0
+    objects: 
+      - "iron_ingot"
+    identity: "iron_ingot"
+  
+init_inventory: 
+  - slot: 0
+    type: furnace
+    quantity: 1
+  - slot: 20
+    type: coal
+    quantity: 10
+  - slot: 14
+    type: iron_ore
+    quantity: 10
+
+need_furnace: True
+need_gui: True
+
+worker:
+  "smelt"

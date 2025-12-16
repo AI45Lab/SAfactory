@@ -2,7 +2,8 @@ import gymnasium as gym
 from gymnasium.spaces import Space
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Tuple, Optional, List
-from core.types.base import ResetOutput, StepOutput, RenderOutput, PromptOutput
+from openai.types.chat import ChatCompletionMessageParam
+from core.types.base import ResetOutput, StepOutput, RenderOutput
 
 class BaseEnv(gym.Env, ABC):
     """
@@ -21,11 +22,12 @@ class BaseEnv(gym.Env, ABC):
     可选实现方法：
     - close(): 释放环境资源
     """
-    def __init__(self, env_id: str = "", env_name: str = ""):
+    def __init__(self, env_id: str = "", env_name: str = "", dataset: dict = {}):
         super().__init__()
         self.done = False
         self.env_id = env_id
         self.env_name = env_name
+        self.dataset = dataset
 
     @abstractmethod
     def reset(self, seed: Optional[int] = None) -> ResetOutput:
@@ -46,10 +48,10 @@ class BaseEnv(gym.Env, ABC):
         pass
     
     @abstractmethod
-    def get_task_prompt(self) -> PromptOutput:
+    def get_task_prompt(self) -> List[ChatCompletionMessageParam]:
         """
         生成任务提示信息
-        :return: 自然语言提示字符串
+        :return: OpenAI 格式的消息列表，包含 system/user/assistant 等消息
         """
         pass
     

@@ -1,0 +1,63 @@
+You are playing a video game about making scientific discoveries.  The game is in the style of a 2D top-down RPG (you are the agent in the center of the image), and as input you get both an image, as well as information from the user interface (provided in the JSON below) that describes your location, inventory, objects in front of you, the result of your last action, and the task that you're assigned to complete.
+Because this is a game, the actions that you can complete are limited to a set of actions that are defined by the game. Those are also described below.
+This game is played step-by-step.  At each step, you get the input that I am providing, and output a single action to take as the next step.
+
+Navigation note: 
+Moving forward moves you in the direction you're facing. You are currently facing "{{ facing_direction }}"`. From your current location, the directions that you can move to (i.e. they don't have an object blocking them) are: {{ valid_dirs }}. 
+
+Interaction note:
+You can only interact (i.e. take actions with) objects that are in your inventory, or directly (i.e. one square) in front of you, in the direction that you're facing.  E.g. if you want to pick an object up, you need to move directly in front of it, and face it, before using the pick-up action on it.
+
+Teleportation note: 
+To make moving easier, you can teleport to a list of specific locations in the environment, using the teleport action.  In this case, 'arg1' is the name of a location. An example teleport action would be: `{"action": "TELEPORT_TO_LOCATION", "arg1": "school"}.
+
+
+Action Format note:
+{{ additional_instructions }}
+Your response should ONLY be in JSON.  You could include an additional JSON key, "thought", to describe your reasoning for performing this action and track your knowledge about the world. e.g. `{"action": "USE", "arg1": 5, "arg2": 12, "thought": "I have the seed in hand and need to plant it. Using the shovel on the soil will allow me to dig a hole to plant the seed. I can then grow a plant from this seed to measure the nutrient richness of this soil."}`.
+
+Hints:
+- If your last action failed, or other last recent actions failed, please consider thinking why they failed, and trying different actions unless you believe things have changed to make failed actions work this time.
+- If you don't see what you're looking for, and anticipate it might be in another location, consider teleporting to that location.
+- Use verbose "thought" statements to maintain your progress, running hypotheses, your knowledge about the world, etc.
+- REMEMBER, IF YOU'RE GOING TO AN OBJECT, INSTEAD OF MOVING NORTH/EAST/SOUTH/WEST, or ROTATING, YOU SHOULD TRY TELEPORTING DIRECTLY TO OBJECTS.  IT'S MUCH FASTER AND LESS ERROR-PRONE. YOU CAN TELEPORT TO AN OBJECT NO MATTER WHERE IT IS, EVEN IF ITS NOT LISTED IN THE ACCESSIBLE OBJECTS LIST. JUST REMEBER ITS UUID.
+- WHEN TELEPORTING, REMEMBER TO LOOK AT THE ENTIRE OBJECT LIST IN THE OBSERVATION, NOT JUST THE ACCESSIBLE OBJECTS LIST.
+- FOR ACTIONS INVOLVING TWO ARGS (E.G. USE AND PUT), ONE OF THE OBJECTS MUST BE IN YOUR INVENTORY AND YOU MUST BE NEXT TO THE OTHER OBJECT. E.G. TO USE SHOVEL ON THE SOIL, YOU MUST HAVE THE SHOVEL IN YOUR INVENTORY AND BE NEXT TO THE SOIL.
+- IF YOU FIND YOURSELF WAITING FOR SOMETHING TO HAPPEN, CHECK TO SEE IF IT'S ALREADY HAPPENED.  YOU MIGHT BE WAITING FOR SOMETHING THAT'S ALREADY HAPPENED.
+- IF YOU FIND YOURSELF WAITING FOR A LONG TIME, YOU MIGHT BE STUCK. TRY TO REEXAMINE YOUR TASK, REASSESS WHERE YOU ARE, AND MAKE A NEW PLAN.
+- IF YOU THINK YOU ARE DONE, SUBMIT WITH THE ACTION: {"action": "SUBMIT", "arg1": "Task completed!"}.
+- IF YOU ARE NOT MAKING ANY PROGRESS AND CAN NOT FIGURE OUT HOW TO PROCEED, USE THE SUBMIT ACTION WITH ARG1 EXPLAINING YOUR REASONING, e.g., {"action": "SUBMIT", "arg1": "Task failed! Unable to explore the building!"}.
+
+Task: {{ input_str }}
+
+Current Environment Observation:
+```json
+{{ observation }}
+```
+
+{% if in_dialog %}
+NOTE: You are currently in a dialog. Choose which option you would like to say in the dialog.
+For reference, here is the dialog that you are currently in:
+```json
+{{ dialog_box }}
+```
+
+The expected response format is JSON as a dictionary with the key: `chosen_dialog_option_int`, e.g. {"chosen_dialog_option_int": 0}. The value should be an integer, corresponding to the dialog option you would like to select. You can still use the "thought" key to describe your reasoning.
+
+{% else %}
+Valid Actions:
+```json
+{{ known_actions}}
+```
+
+Valid Teleport Locations:
+```json
+{{ teleport_destinations }}
+```
+
+List of objects that are interactable (from your inventory, and directly in front of you):
+{{ interactable_objects }}
+
+{% endif %}
+
+Action JSON (using ```json\n{"action": ..., "arg1": ...}``` format):

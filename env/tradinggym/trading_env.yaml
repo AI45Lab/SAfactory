@@ -2,6 +2,7 @@ environments:
   - env_name: trading_gym
     env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
     env_num: 2
+    dataset: ""
     env_params:
       data_dir: "/mnt/shared-storage-user/evobox-share/chenxinquan/data/trading/trading"
       price_filename: "AMZN.csv"
@@ -11,6 +12,7 @@ environments:
   - env_name: trading_gym
     env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
     env_num: 1
+    dataset: ""
     env_params:
       data_dir: "/mnt/shared-storage-user/evobox-share/chenxinquan/data/trading/trading"
       price_filename: "AAPL.csv"
@@ -20,6 +22,7 @@ environments:
   - env_name: trading_gym
     env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
     env_num: 2
+    dataset: ""
     env_params:
       data_dir: "/mnt/shared-storage-user/evobox-share/chenxinquan/data/trading/trading"
       price_filename: "GOOG.csv"
@@ -29,6 +32,7 @@ environments:
   - env_name: trading_gym
     env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
     env_num: 4
+    dataset: ""
     env_params:
       data_dir: "/mnt/shared-storage-user/evobox-share/chenxinquan/data/trading/trading"
       price_filename: "ABNB.csv"
@@ -38,6 +42,7 @@ environments:
   - env_name: trading_gym
     env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
     env_num: 1
+    dataset: ""
     env_params:
       data_dir: "/mnt/shared-storage-user/evobox-share/chenxinquan/data/trading/trading"
       price_filename: "TSM.csv"
@@ -47,6 +52,7 @@ environments:
   - env_name: trading_gym
     env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
     env_num: 1
+    dataset: ""
     env_params:
       data_dir: "/mnt/shared-storage-user/evobox-share/chenxinquan/data/trading/trading"
       price_filename: "NFLX.csv"
@@ -56,6 +62,7 @@ environments:
   - env_name: trading_gym
     env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
     env_num: 1
+    dataset: ""
     env_params:
       data_dir: "/mnt/shared-storage-user/evobox-share/chenxinquan/data/trading/trading"
       price_filename: "NVDA.csv"
@@ -65,6 +72,7 @@ environments:
   - env_name: trading_gym
     env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
     env_num: 2
+    dataset: ""
     env_params:
       data_dir: "/mnt/shared-storage-user/evobox-share/chenxinquan/data/trading/trading"
       price_filename: "TSLA.csv"

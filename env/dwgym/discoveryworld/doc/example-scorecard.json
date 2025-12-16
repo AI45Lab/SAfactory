@@ -1,0 +1,56 @@
+{
+        "oracle_scorecard": [
+            {
+                "completed": false,
+                "completedSuccessfully": false,
+                "criticalHypotheses": [],
+                "maxScore": 4,
+                "score": 2,
+                "scoreCard": [
+                    {
+                        "associatedNotes": "Agent has talked to the other person (UUID: 4766).",
+                        "associatedUUIDs": [
+                            4766
+                        ],
+                        "completed": true,
+                        "description": "The agent has talked to the other person.",
+                        "maxScore": 1,
+                        "name": "Talk to other person",
+                        "score": 1
+                    },
+                    {
+                        "associatedNotes": "Agent has reached stage 2 of the dialog tree (UUID: 4766).",
+                        "associatedUUIDs": [
+                            4766
+                        ],
+                        "completed": true,
+                        "description": "The agent has reached the second stage of the dialog tree.",
+                        "maxScore": 1,
+                        "name": "Reach Stage 2",
+                        "score": 1
+                    },
+                    {
+                        "associatedNotes": "",
+                        "associatedUUIDs": [],
+                        "completed": false,
+                        "description": "The agent has reached the third stage of the dialog tree.",
+                        "maxScore": 1,
+                        "name": "Reach Stage 3",
+                        "score": 0
+                    },
+                    {
+                        "associatedNotes": "",
+                        "associatedUUIDs": [],
+                        "completed": false,
+                        "description": "The agent has completed going through the dialog tree successfully.",
+                        "maxScore": 1,
+                        "name": "Complete Task",
+                        "score": 0
+                    }
+                ],
+                "scoreNormalized": 0.5,
+                "taskDescription": "Your task is to follow the instructions of the other person in the room.\n",
+                "taskName": "SmallSkillsDialogTask"
+            }
+        ]
+ }

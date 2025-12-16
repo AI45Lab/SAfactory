@@ -1,0 +1,69 @@
+# MCGym (Minecraft Environment) Requirements
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+minecraft-data>=0.7.0  # Minecraft data access library
+
+# MineStudio dependencies (from MineStudio/pyproject.toml)
+av
+opencv-python  # Note: Use opencv-python, NOT opencv-python-headless
+setuptools
+tqdm
+numpy
+requests
+psutil  # Process monitoring utilities
+ipython
+typing
+gymnasium>=0.26.0  # Maintained replacement for gym
+gym3
+# Note: MineStudio code still uses 'import gym', so we need gymnasium compatibility
+# Install shimmy to make gymnasium work as gym
+shimmy[gym-v21]>=0.2.1  # Provides backward compatibility layer
+hydra_colorlog
+hydra-core>=1.3.2
+lmdb
+wandb
+torch>=2.3.1
+lightning
+scipy
+rich
+coloredlogs
+daemoniker
+lxml
+cuda-python
+diskcache
+albumentations
+einops
+timm
+transformers
+Pyro4
+xmltodict
+pyrender==0.1.25
+pyglet
+imgui
+pyopengl
+ray
+absl-py
+dm-tree
+x_transformers==0.27.1
+
+# AIEvoBox core dependencies (if not already installed)
+pydantic>=2.0.0
+tortoise-orm
+aiosqlite
+pillow
+pyyaml
+pandas
+matplotlib
+openai
+fastapi
+uvicorn[standard]
+
+# Additional dependencies (to resolve conflicts)
+python-dotenv  # Required by environs
+boto3  # Required by petrel-oss-sdk
+
+# Required: Install MineStudio in development mode
+# After installing the above dependencies, run:
+# cd /mnt/shared-storage-user/leishanzhe/repo/AIEvoBox/env/mc/MineStudio && pip install -e .
+

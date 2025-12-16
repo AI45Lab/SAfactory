@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from time import time
 from matplotlib.font_manager import FontProperties
 
+from openai.types.chat import ChatCompletionMessageParam
 from core.types.base import ResetOutput, StepOutput, RenderOutput, PromptOutput, TextContent, ImageContent, OpenAIMessage, MessageContent
 from core.env.base_env import BaseEnv
 from core.env.env_register import register_env
@@ -38,11 +39,21 @@ class TradingGym(BaseEnv):
         price_filename: str,
         tweet_filename: Optional[str] = None,
         window_size: int = 7, # 智能体能看到过去window_size天的历史数据
+        max_steps: Optional[int] = None,  # 可选：达到最大步数时提前结束
         ** kwargs
     ):
         super().__init__(**kwargs)
         self.price_df = self._read_csv(os.path.join(data_dir, price_filename))
         self.window_size = window_size
+        # 允许通过参数或环境变量控制本 episode 最大步数（None 表示不限制）
+        if max_steps is None:
+            try:
+                env_max = os.environ.get("TRADING_MAX_STEPS")
+                self._max_steps: Optional[int] = int(env_max) if env_max else None
+            except Exception:
+                self._max_steps = None
+        else:
+            self._max_steps = int(max_steps)
 
         # 初始化价格，文本内容
         self.price_merge, self.price_date = self._process_data(data_dir=data_dir, tweet_filename=tweet_filename)
@@ -74,16 +85,23 @@ class TradingGym(BaseEnv):
         
         observation = self._get_observation()
         info = self._get_info()
+        system_prompt = "You are a financial analysis assistant. Analyze stock trends based on provided data and predict if the price will rise (1) or fall (0) tomorrow. Output must follow the specified format."
+        self.messages = [
+            {"role": "system", "content": system_prompt}
+        ]
 
         return ResetOutput(observation=observation, info=info)
     
     def step(self, action: str) -> StepOutput:
         """执行一步环境交互"""
         super().step(action=action)
+        self.messages.append(
+            {"role": "assistant", "content": action}
+        )
         self.current_action, self.current_explanation = self.parse_llm_response(action)
         self._print_step_info(self.current_action)
         
-        # 检查终止条件
+        # 检查终止条件（到达数据集末尾）
         self._truncated = self._current_date == self._end_date
         self.done = self._truncated
         
@@ -99,6 +117,11 @@ class TradingGym(BaseEnv):
         self._current_index += 1
         self._current_date = self.price_date[self._current_index]
         self.current_step += 1
+
+        # 若配置了最大步数：达到或超过时也视为 episode 结束
+        if self._max_steps is not None and self.current_step >= self._max_steps:
+            self._truncated = True
+            self.done = True
         
         # 更新历史记录
         self._update_history(step_reward)
@@ -112,8 +135,30 @@ class TradingGym(BaseEnv):
             info=self._get_info()
         )
     
-    def get_task_prompt(self) -> PromptOutput:
-        return self._build_stock_sentiment_prompt()
+    def get_task_prompt(self) -> List[ChatCompletionMessageParam]:
+        # 构建user消息
+        user_texts = [
+            f"Today is {self._current_date}. Analyze stock {self.ticker_name} using the past {self.window_size} days of prices and tweets. "
+            "Predict if the price will rise (1) or fall (0) tomorrow.",
+            "Historical data:"
+        ]
+        user_texts.extend(self._get_tweet_texts())
+        user_texts.extend([
+            "\nPredict the next day's trend (up=1, down=0) with reasoning.",
+            "IMPORTANT: Output MUST be in this format:",
+            "LINE1: TRENDS: <0 or 1>",
+            "LINE2: EXPLANATION: <concise reason>",
+            "Only output these 2 lines."
+        ])
+        
+        self.messages.append(
+            {
+                "role": "user",
+                "content": "\n".join(user_texts)
+            }
+        )
+        
+        return self.messages
     
     def render(self) -> RenderOutput:
         """渲染环境状态，返回base64格式图片输出"""
@@ -234,54 +279,6 @@ class TradingGym(BaseEnv):
             "history_prices": self._get_history_price(),
             "tweet_texts": self._get_tweet_texts()
         }
-
-    def _build_stock_sentiment_prompt(self) -> PromptOutput:
-        """构建符合OpenAI消息格式的股票情绪分析提示"""
-        # 构建system消息
-        system_content = TextContent(
-            text="You are a financial analysis assistant. Analyze stock trends based on provided data "
-                 "and predict if the price will rise (1) or fall (0) tomorrow. Output must follow the specified format."
-        )
-        system_message = OpenAIMessage(
-            role="system",
-            content=[MessageContent(root=system_content)]
-        )
-
-        # 构建user消息
-        user_texts = [
-            f"Today is {self._current_date}. Analyze stock {self.ticker_name} using the past {self.window_size} days of prices and tweets. "
-            "Predict if the price will rise (1) or fall (0) tomorrow.",
-            "Historical data:"
-        ]
-        user_texts.extend(self._get_tweet_texts())
-        user_texts.extend([
-            "\nPredict the next day's trend (up=1, down=0) with reasoning.",
-            "IMPORTANT: Output MUST be in this format:",
-            "LINE1: TRENDS: <0 or 1>",
-            "LINE2: EXPLANATION: <concise reason>",
-            "Only output these 2 lines."
-        ])
-
-        # 组装user消息
-        user_content: List[MessageContent] = [
-            MessageContent(root=TextContent(text="\n".join(user_texts)))
-        ]
-
-        # 图片模态示例
-        # image_content = ImageContent(
-        #     image_url={"url": f"data:image/png;base64,{self.render().image_data}"}
-        # )
-        # user_content.append(MessageContent(root=image_content))
-
-        user_message = OpenAIMessage(
-            role="user",
-            content=user_content
-        )
-
-        return PromptOutput(
-            system_message=system_message,
-            user_message=user_message
-        )
     
     def _get_history_price(self) -> pd.DataFrame:
         """获取价格观测"""

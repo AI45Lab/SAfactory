@@ -1,0 +1,55 @@
+# Minecraft Environment Configuration
+# This file defines multiple Minecraft task configurations
+# Each configuration points to a specific task YAML in the config/ directory
+
+environments:
+  # Kill tasks
+  - env_name: mc_gym
+    env_num: 1
+    env_params:
+      env_config: "env/mc/config/kill/kill_zombie.yaml"
+
+  # - env_name: mc_gym
+  #   env_num: 1
+  #   env_params:
+  #     env_config: "env/mc/config/kill/kill_skeleton.yaml"
+
+  # # Collect tasks
+  # - env_name: mc_gym
+  #   env_num: 2
+  #   env_params:
+  #     env_config: "env/mc/config/collect/collect_wood.yaml"
+
+  # # Craft tasks
+  # - env_name: mc_gym
+  #   env_num: 1
+  #   env_params:
+  #     env_config: "env/mc/config/craft/craft_crafting_table.yaml"
+
+  # # Mine tasks
+  # - env_name: mc_gym
+  #   env_num: 1
+  #   env_params:
+  #     env_config: "env/mc/config/mine/mine_stone.yaml"
+
+  # # Smelt tasks
+  # - env_name: mc_gym
+  #   env_num: 1
+  #   env_params:
+  #     env_config: "env/mc/config/smelt/iron_ingot.yaml"
+
+# Notes:
+# - env_name: Must match the registered environment name "mc_gym"
+# - env_num: Number of parallel environment instances to create
+# - env_config: Path to the specific task configuration YAML file
+#   (relative to the AIEvoBox root directory)
+#
+# Task configurations support:
+# - task_conf: Task instructions and objectives
+# - reward_conf: Reward shaping for specific events
+# - init_inventory: Starting items and equipment
+# - command: Minecraft commands to run on reset
+# - teleport: Initial spawn coordinates
+# - mobs: Mobs to spawn
+# - need_gui: Whether to open GUI (crafting/furnace)
+

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from typing import List, Dict, Any
 
@@ -20,11 +21,8 @@ def get_connection(cfg: dict) -> sqlite3.Connection:
 def get_active_data(conn: sqlite3.Connection, limit: int, offset: int) -> List[Dict[str, Any]]:
     query = """
     SELECT
-        id, env_name, env_id, data_dir,
-        price_filename, tweet_filename,
-        visual_save_path, window_size, is_active
-    FROM configs
-    WHERE is_active = 1
+        id, env_name, env_id, env_param, image
+    FROM trad
     ORDER BY id ASC
     LIMIT ? OFFSET ?;
     """
@@ -32,13 +30,39 @@ def get_active_data(conn: sqlite3.Connection, limit: int, offset: int) -> List[D
     cols = [d[0] for d in cursor.description]
     return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
+def get_env_image_map(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """
+    scan the db to load all the envs required image.
+    """
+    query = """
+    SELECT env_name, image
+    FROM trad
+    ORDER BY id ASC;
+    """
+    cursor = conn.execute(query)
+    result: Dict[str, Any] = {}
+    for env_name, image in cursor.fetchall():
+        if env_name is None:
+            continue
+        if image:
+            result[env_name] = image
+        elif env_name not in result:
+            result[env_name] = None
+    return result
 
-def compose_create_kwargs(row: Dict[str, Any]) -> Dict[str, Any]:
-    return {
-        "data_dir": row["data_dir"],
-        "price_filename": row["price_filename"],
-        "tweet_filename": row["tweet_filename"],
-        # "visual_save_path": row["visual_save_path"],
-        "window_size": int(row["window_size"]),
-        "env_id": row["env_id"],
-    }
+def get_all_image(conn: sqlite3.Connection) -> Dict[str,str]:
+    image_to_env : Dict[str, str]={}
+    query="""
+    SELECT image, env_name 
+    FROM trad
+    WHERE image IS NOT NULL AND TRIM(image) !='' AND env_name IS NOT NULL
+    """
+    cursor = conn.execute(query)
+    for image, env_name in cursor.fetchall():
+        img =(image or "").strip()
+        env= (env_name or "").strip()
+        if not img or not env:
+            continue
+        if img not in image_to_env:
+            image_to_env[img]=env
+    return image_to_env
