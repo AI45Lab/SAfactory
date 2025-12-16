@@ -15,5 +15,5 @@ python "$SCRIPT_DIR/base_eval.py" \
   --visual-save-path "$PROJECT_ROOT/visualize/os_env_test" \
   --agent-api-key "" \
   --agent-base-url "" \
-  --agent-model "gpt-5.1" \
-  --agent-temperature 0.0
+  --agent-model "gpt-5.2" \
+  --agent-temperature 0.3
