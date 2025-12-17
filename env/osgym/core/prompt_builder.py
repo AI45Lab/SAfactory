@@ -6,7 +6,7 @@ Supports both RiOSWorld legacy prompts and new observation-based prompts.
 """
 
 import logging
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Union
 
 logger = logging.getLogger("osgym.prompt_builder")
 
@@ -24,8 +24,7 @@ class PromptBuilder:
     def __init__(
         self,
         observation_type: str,
-        action_space_type: str,
-        max_history_len: int = 3
+        action_space_type: str
     ):
         """
         Initialize PromptBuilder.
@@ -33,60 +32,50 @@ class PromptBuilder:
         Args:
             observation_type: Type of observation (screenshot, a11y_tree, etc.)
             action_space_type: Action space type (pyautogui, computer_13, etc.)
-            max_history_len: Maximum number of history steps to include in prompt
         """
         self.observation_type = observation_type
         self.action_space_type = action_space_type
-        self.max_history_len = max_history_len
 
-    def build_task_prompt(
-        self,
-        instruction: str,
-        current_obs: Dict[str, Any],
-        history: List[str],
-        task_id: str = "",
-        screenshot_to_bytes_func=None,
-        encode_image_func=None
-    ):
+    def build_system_prompt(self, instruction: str) -> str:
         """
-        Build complete prompt for task.
+        Build system prompt for the task.
 
         Args:
             instruction: Task instruction
-            current_obs: Current observation dict
-            history: List of previous actions
-            task_id: Task identifier (for logging)
-            screenshot_to_bytes_func: Function to convert screenshot to bytes
-            encode_image_func: Function to encode bytes to base64 URL
 
         Returns:
-            PromptOutput with system_message and user_message
+            str: System prompt string
         """
-        # Import types here to avoid circular imports
-        from core.types.base import (
-            PromptOutput, OpenAIMessage, MessageContent,
-            TextContent, ImageContent
-        )
-
-        # Build system prompt
         try:
-            from ..mm_agents.prompt_helper import get_system_prompt, build_observation_prompt
+            from ..mm_agents.prompt_helper import get_system_prompt
             system_text = get_system_prompt(self.observation_type, self.action_space_type)
             system_text = f"{system_text}\nYou are asked to complete the following task: {instruction}"
         except (ImportError, ValueError) as exc:
             logger.warning(f"Falling back to legacy system prompt: {exc}")
             system_text = self._get_legacy_system_prompt(instruction)
+        return system_text
 
+    def build_user_content(
+        self,
+        current_obs: Dict[str, Any],
+        task_id: str = "",
+        screenshot_to_bytes_func=None,
+        encode_image_func=None
+    ) -> Union[str, List[Dict[str, Any]]]:
+        """
+        Build user message content (text or multimodal).
+
+        Args:
+            current_obs: Current observation dict
+            task_id: Task identifier (for logging)
+            screenshot_to_bytes_func: Function to convert screenshot to bytes
+            encode_image_func: Function to encode bytes to base64 URL
+
+        Returns:
+            Union[str, List[Dict]]: User message content (string or list for multimodal)
+        """
         # Build user sections
         user_sections: List[str] = []
-
-        # Add history section if enabled
-        if self.max_history_len > 0 and history:
-            history_lines = ["History of recent steps:"]
-            for i, act in enumerate(history):
-                act_str = act[:500] + "..." if len(act) > 500 else act
-                history_lines.append(f"Step {i + 1}: {act_str}")
-            user_sections.append("\n".join(history_lines))
 
         # Build observation prompt
         screenshot_bytes = None
@@ -123,25 +112,20 @@ class PromptBuilder:
 
         # Build final user text
         user_text = "\n\n".join(section.strip() for section in user_sections if section).strip()
-        content_list = [MessageContent(root=TextContent(text=user_text))]
 
-        # Add image if available
+        # Build user content with possible image
         image_bytes = prompt_image_bytes or screenshot_bytes
         if image_bytes and encode_image_func:
             screenshot_url = encode_image_func(image_bytes)
             if screenshot_url:
-                content_list.append(
-                    MessageContent(root=ImageContent(image_url={"url": screenshot_url}))
-                )
+                # Multimodal message format
+                user_content = [
+                    {"type": "text", "text": user_text},
+                    {"type": "image_url", "image_url": {"url": screenshot_url}}
+                ]
+                return user_content
 
-        # Create messages
-        system_message = OpenAIMessage(
-            role="system",
-            content=[MessageContent(root=TextContent(text=system_text))]
-        )
-        user_message = OpenAIMessage(role="user", content=content_list)
-
-        return PromptOutput(system_message=system_message, user_message=user_message)
+        return user_text
 
     def _get_legacy_system_prompt(self, instruction: str) -> str:
         """

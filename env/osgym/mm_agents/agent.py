@@ -3,10 +3,8 @@ import json
 import logging
 import os
 import re
-import tempfile
 import time
 import xml.etree.ElementTree as ET
-from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
 from typing import Dict, List
@@ -19,7 +17,6 @@ import requests
 import tiktoken
 from PIL import Image
 from google.api_core.exceptions import InvalidArgument, ResourceExhausted, InternalServerError, BadRequest
-from groq import Groq
 from requests.exceptions import SSLError
 
 from .accessibility_tree_wrap.heuristic_retrieve import filter_nodes, draw_bounding_boxes
@@ -29,7 +26,7 @@ from .prompts import SYS_PROMPT_IN_SCREENSHOT_OUT_CODE, SYS_PROMPT_IN_SCREENSHOT
     SYS_PROMPT_IN_SOM_OUT_TAG
 
 from ..env_risk_utils.attack import agent_attack, is_single_color_image, adversarial_text_agent_attack
-from ..env_risk_utils.general_attack_utils import extract_coordinate_list, find_largest_non_overlapping_box, extract_bounding_boxes_from_image, draw_som_for_attack_osworld
+from ..env_risk_utils.general_attack_utils import find_largest_non_overlapping_box, extract_bounding_boxes_from_image, draw_som_for_attack_osworld
 
 logger = logging.getLogger("desktopenv.agent")
 
@@ -39,7 +36,7 @@ INTENT_CLICK_TGT_PATH = OSGYM_ROOT / "env_risk_utils" / "intent_click_tgt_OK.jso
 
 pure_text_settings = ['a11y_tree']
 
-attributes_ns_ubuntu = "https://accessibility.windows.example.org/ns/attributes"
+attributes_ns_ubuntu = "https://accessibility.ubuntu.example.org/ns/attributes"
 attributes_ns_windows = "https://accessibility.windows.example.org/ns/attributes"
 state_ns_ubuntu = "https://accessibility.ubuntu.example.org/ns/state"
 state_ns_windows = "https://accessibility.windows.example.org/ns/state"
@@ -67,17 +64,6 @@ def encoded_img_to_pil_img(data_str):
     image = Image.open(BytesIO(image_data))
 
     return image
-
-
-def save_to_tmp_img_file(data_str):
-    base64_str = data_str.replace("data:image/png;base64,", "")
-    image_data = base64.b64decode(base64_str)
-    image = Image.open(BytesIO(image_data))
-
-    tmp_img_path = os.path.join(tempfile.mkdtemp(), "tmp_img.png")
-    image.save(tmp_img_path)
-
-    return tmp_img_path
 
 
 def linearize_accessibility_tree(accessibility_tree, platform="ubuntu"):
@@ -620,15 +606,14 @@ class PromptAgent:
         except Exception as e:
             logger.error("Failed to call " + self.model + ", Error: " + str(e))
             response = ""
-        
+
         logger.info("RESPONSE: %s", response)
-        # print(response)
 
         try:
             actions = self.parse_actions(response, masks)
             self.thoughts.append(response)
         except ValueError as e:
-            print("Failed to parse action from response", e)
+            logger.error(f"Failed to parse action from response: {e}")
             actions = None
             self.thoughts.append("")
 
@@ -709,7 +694,7 @@ class PromptAgent:
                 # The implementation based on OpenAI
                 return response.choices[0].message.content
             except Exception as e:
-                print("Failed to call LLM: " + str(e))
+                logger.error(f"Failed to call LLM: {e}")
                 return ""
 
         elif self.model.startswith("gpt"):
@@ -746,18 +731,11 @@ class PromptAgent:
             else:
                 logger.info(f"response:{response}")
                 try:
-                    import inspect
-                    logger.info(f"type(response): {type(response)}, dir(response): {dir(response)}")
-                    logger.info(f"inspect.ismethod(getattr(response, 'json')): {inspect.ismethod(getattr(response, 'json'))}")
-                    logger.info(f"inspect.isfunction(getattr(response, 'json')): {inspect.isfunction(getattr(response, 'json'))}")
-                    logger.info(f"response.raw: {response.raw}")
-                    logger.info(f"response.text: {response.text}")
                     return response.json()['choices'][0]['message']['content']
                 except Exception as e:
-                    logger.info(f"error: {e}")
-                    logger.info(f"response: {response}")
+                    logger.error(f"Failed to parse response: {e}")
                     return response['choices'][0]['message']['content']
-        
+
         elif self.model.startswith("claude"):
             headers = {
                 "Content-Type": "application/json",
@@ -889,7 +867,7 @@ class PromptAgent:
             try:
                 return response.choices[0].message.content
             except Exception as e:
-                print("Failed to call LLM: " + str(e))
+                logger.error(f"Failed to call LLM: {e}")
                 return ""
 
         elif self.model.startswith("THUDM"):
@@ -939,7 +917,7 @@ class PromptAgent:
                 content = decoded_line.get("choices", [{}])[0].get("message", "").get("content", "")
                 return content
             else:
-                print("Failed to call LLM: ", response.status_code)
+                logger.error(f"Failed to call LLM: {response.status_code}")
                 return ""
 
         elif self.model in ["gemini-pro", "gemini-pro-vision"]:
@@ -947,9 +925,6 @@ class PromptAgent:
             max_tokens = payload["max_tokens"]
             top_p = payload["top_p"]
             temperature = payload["temperature"]
-
-            content = payload['messages'][0]['content']
-            print(content)
 
             if self.model == "gemini-pro":
                 assert self.observation_type in pure_text_settings, f"The model {self.model} can only support text-based input, please consider change based model or settings"
@@ -989,9 +964,7 @@ class PromptAgent:
                 for message in gemini_messages:
                     message_history_str += "<|" + message['role'] + "|>\n" + message['parts'][0] + "\n"
                 gemini_messages = [{"role": "user", "parts": [message_history_str, gemini_messages[-1]['parts'][1]]}]
-                # gemini_messages[-1]['parts'][1].save("output.png", "PNG")
 
-            # print(gemini_messages)
             api_key = os.environ.get("GENAI_API_KEY")
             assert api_key is not None, "Please set the GENAI_API_KEY environment variable"
             genai.configure(api_key=api_key)
