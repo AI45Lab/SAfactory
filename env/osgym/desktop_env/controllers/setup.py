@@ -368,10 +368,6 @@ class SetupController:
         if command[0] == "google-chrome" and self.use_proxy:
             command.append("--proxy-server=http://127.0.0.1:18888")  # Use the proxy server set up by _proxy_setup
 
-        # For Chrome browser, add proxy bypass list to ensure direct access to Docker bridge addresses
-        if command[0] == "google-chrome":
-            command.append("--proxy-bypass-list=172.17.0.1;172.17.0.*;10.0.2.2;localhost;127.0.0.1")
-
         payload = json.dumps({"command": command, "shell": shell})
         headers = {"Content-Type": "application/json"}
 
