@@ -499,7 +499,7 @@ def start_llm_proxy() -> subprocess.Popen:
     return process
 
 
-def init_llm_proxy(tokenizer_path: str, remote_engine_url: str, max_retries: int = 10):
+def init_llm_proxy(tokenizer_path: str, remote_engine_url: str, max_length: int = None, max_retries: int = 10):
     """Initialize the LLM Proxy with tokenizer and remote engine URL."""
     import requests
 
@@ -507,6 +507,7 @@ def init_llm_proxy(tokenizer_path: str, remote_engine_url: str, max_retries: int
     payload = {
         "tokenizer_path": tokenizer_path,
         "remote_engine_url": remote_engine_url,
+        "max_length": max_length,
     }
 
     for attempt in range(max_retries):
@@ -557,8 +558,11 @@ def start_aievobox_process(data: dict):
     # Initialize LLM Proxy with tokenizer and remote engine URL
     tokenizer_path = data.get("tokenizer_path", "")
     remote_engine_url = data.get("remote_engine_url", "")
+    # 从环境变量读取 LLM_MAX_LENGTH
+    max_length_str = os.environ.get("LLM_MAX_LENGTH")
+    max_length = int(max_length_str) if max_length_str else None
     if tokenizer_path and remote_engine_url:
-        init_llm_proxy(tokenizer_path, remote_engine_url)
+        init_llm_proxy(tokenizer_path, remote_engine_url, max_length=max_length)
 
     # Prepare environment variables for AIEvoBox
     # AIEvoBox should call LLM Proxy instead of remote engine directly
