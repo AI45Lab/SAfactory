@@ -37,8 +37,9 @@ env/osgym/
 │   ├── attack.py                    # 攻击场景生成
 │   └── ...                          # 钓鱼/弹窗相关
 │
-├── evaluation_osworld_examples/     # OSWorld 任务配置
-└── evaluation_risk_examples/        # RiOSWorld 任务配置
+├── datasets/                       # JSONL 数据集
+│   ├── osworld_cases.jsonl         # OSWorld 任务配置
+│   └── riosworld_cases.jsonl       # RiOSWorld 任务配置
 ```
 
 ## 2. 依赖安装
@@ -64,6 +65,7 @@ cd env/osgym && pip install -r requirements.txt
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
+| `dataset` | 任务数据集路径 | `datasets/osworld_cases.jsonl` |
 | `benchmark_type` | 基准类型 | `osworld` / `riosworld` |
 | `provider_name` | 后端提供商 | `docker` |
 | `observation_type` | 观察类型 | `screenshot_a11y_tree` |

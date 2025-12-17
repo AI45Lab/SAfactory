@@ -2,11 +2,9 @@ environments:
   - env_name: os_gym
     env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
     env_num: 1
+    dataset: datasets/osworld_cases.jsonl  # JSONL dataset file with task configurations
     env_params:
       benchmark_type: "osworld"  # "riosworld" or "osworld"
-      # task_config_path defaults to local evaluation_risk_examples/test_risk.json
-      task_config_path: "./evaluation_osworld_examples/test_simple.json"
-      # task_id: "os_00"
       provider_name: "docker"
       observation_type: "screenshot_a11y_tree"
       headless: true

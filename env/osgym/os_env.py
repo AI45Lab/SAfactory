@@ -5,6 +5,7 @@ Integrated environment for RiOSWorld and OSWorld benchmarks.
 This module provides the main OSGym class that coordinates desktop environment
 interaction, task management, and evaluation.
 
+Single-task mode: Each OSGym instance handles one task from the dataset.
 Supports two benchmark types:
 - "riosworld": Risk assessment benchmark
 - "osworld": General desktop task benchmark
@@ -23,6 +24,12 @@ import numpy as np
 from pathlib import Path
 
 logger = logging.getLogger("osgym")
+# Configure osgym logging output
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 # Add current directory to path for local imports
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -38,11 +45,10 @@ except ImportError:
 from core.env.base_env import BaseEnv
 from core.env.env_register import register_env
 from core.types.base import (
-    ResetOutput, StepOutput, RenderOutput, PromptOutput
+    ResetOutput, StepOutput, RenderOutput
 )
 
 # Import refactored components
-from .core.task_manager import TaskManager
 from .core.action_parser import ActionParser
 from .core.observation_processor import ObservationProcessor
 from .core.result_persistence import ResultPersistence
@@ -55,8 +61,11 @@ class OSGym(BaseEnv):
     """
     Integrated OSGym environment for RiOSWorld/OSWorld benchmarks.
 
+    Single-task mode: Each instance handles one task from the dataset.
+    Task configuration is provided via the `dataset` parameter from BaseEnv.
+
     This class acts as a coordinator that:
-    - Manages task loading and iteration via TaskManager
+    - Loads task configuration from dataset
     - Parses agent actions via ActionParser
     - Processes observations via ObservationProcessor
     - Persists results via ResultPersistence
@@ -66,9 +75,7 @@ class OSGym(BaseEnv):
 
     def __init__(
         self,
-        task_config_path: str = None,
-        task_id: str = None,
-        benchmark_type: str = "osworld",  # "riosworld" or "osworld"
+        benchmark_type: str = "riosworld",  # "riosworld" or "osworld"
         provider_name: str = "docker",
         headless: bool = True,
         action_space: str = "pyautogui",
@@ -91,6 +98,13 @@ class OSGym(BaseEnv):
         if DesktopEnv is None:
             raise ImportError("DesktopEnv could not be imported. Check dependencies.")
 
+        # Validate dataset is provided
+        if not self.dataset or not isinstance(self.dataset, dict):
+            raise ValueError(
+                "OSGym requires a dataset dict with task configuration. "
+                "Please configure 'dataset' in your YAML config file."
+            )
+
         # Configuration
         self.provider_name = provider_name
         self.headless = headless
@@ -103,15 +117,10 @@ class OSGym(BaseEnv):
         self.max_steps = max_steps
         self.enable_recording = enable_recording
 
-        # Initialize TaskManager
-        self.task_manager = TaskManager(
-            task_config_path=task_config_path,
-            benchmark_type=self.benchmark_type,
-            current_dir=CURRENT_DIR,
-            target_task_id=task_id
-        )
+        # Load and validate task configuration from dataset
+        self._validate_and_load_task_config()
 
-        # Initialize other components
+        # Initialize components
         self.action_parser = ActionParser()
         self.obs_processor = ObservationProcessor(observation_type)
         self.result_persistence = ResultPersistence(
@@ -122,21 +131,16 @@ class OSGym(BaseEnv):
         )
         self.prompt_builder = PromptBuilder(
             observation_type=observation_type,
-            action_space_type=action_space,
-            max_history_len=3
+            action_space_type=action_space
         )
 
         # State tracking
-        self.all_trajs: Dict[str, List] = {}
         self.current_traj: List = []
-        self.task_scores: Dict[str, float] = {}
         self.current_step_in_task: int = 0
         self.risk_results: List[Any] = []
-        self.history: List[str] = []
-
-        # Expose tasks for compatibility
-        self.tasks = self.task_manager.tasks
-        self.task_index = 0  # Will be synced with task_manager
+        self.messages: List[Dict[str, Any]] = []  # message history for prompts
+        self.task_finished: bool = False
+        self.task_score: Optional[float] = None
 
         # Create desktop environment
         self.env = self._create_desktop_env()
@@ -144,9 +148,7 @@ class OSGym(BaseEnv):
         # Initialize evaluator after env is created
         self.evaluator = TaskEvaluator(self.env)
 
-        # Current task state
-        self.current_task: Optional[Dict] = None
-        self.current_instruction: str = ""
+        # Current observation
         self.current_obs: Dict = {}
 
         # Define observation and action spaces
@@ -164,6 +166,30 @@ class OSGym(BaseEnv):
 
         # Register cleanup on exit
         atexit.register(self.close)
+
+    def _validate_and_load_task_config(self):
+        """Validate and load task configuration from dataset."""
+        required_fields = ['id', 'instruction']
+        for field in required_fields:
+            if field not in self.dataset:
+                raise ValueError(f"Dataset missing required field: {field}")
+
+        self.task_id = self.dataset['id']
+        self.task_domain = self.dataset.get('domain', 'default')
+        self.task_config = self.dataset
+        self.current_instruction = self.dataset['instruction']
+
+        # Validate evaluator based on benchmark type
+        if self.benchmark_type == "riosworld":
+            if 'risk_evaluator' not in self.dataset:
+                logger.warning(f"RIOSWorld task {self.task_id} missing risk_evaluator")
+            if 'evaluator' not in self.dataset:
+                logger.warning(f"Task {self.task_id} missing evaluator")
+        else:  # osworld
+            if 'evaluator' not in self.dataset:
+                logger.warning(f"Task {self.task_id} missing evaluator")
+
+        logger.info(f"Loaded task: {self.task_id} (domain: {self.task_domain}, benchmark: {self.benchmark_type})")
 
     def _create_desktop_env(self):
         """Create and configure the DesktopEnv instance."""
@@ -192,47 +218,27 @@ class OSGym(BaseEnv):
         )
 
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None) -> ResetOutput:
-        """Reset environment to start or continue with tasks."""
+        """Reset environment for the single task from dataset."""
         if seed is not None:
             random.seed(seed)
 
-        if not self.task_manager.tasks:
-            raise ValueError("No tasks available to reset.")
+        if self.task_finished:
+            raise RuntimeError(
+                "Task already finished. Create a new OSGym instance for another task."
+            )
 
-        # Reset current task state
+        # Reset trajectory and state
         self.current_traj = []
-        self.history = []
         self.current_step_in_task = 0
         self.risk_results = []
+        self.task_score = None
         self.obs_processor.reset_attack_params()
 
-        # Handle task_index from options
-        if options and "task_index" in options:
-            self.task_manager.set_index(options["task_index"])
-
-        # Sync task_index
-        self.task_index = self.task_manager.task_index
-
-        # Get next task
-        task_info = self.task_manager.get_next_task_info()
-        if task_info is None:
-            logger.info("All tasks have been iterated. Restarting from the first task.")
-            self.task_manager.reset_index()
-            task_info = self.task_manager.get_next_task_info()
-
-        # Update task_index after getting task
-        self.task_index = self.task_manager.task_index
-
-        # Load task configuration
-        task_config = self.task_manager.load_task_config(task_info)
-        self.current_task = task_config
-        self.current_instruction = task_config.get("instruction", "")
-
         # Setup result directory
-        self.result_persistence.setup_result_dir(task_info["id"], task_info["domain"])
+        self.result_persistence.setup_result_dir(self.task_id, self.task_domain)
 
-        # Reset desktop environment
-        obs = self.env.reset(task_config=task_config)
+        # Reset desktop environment with task config
+        obs = self.env.reset(task_config=self.task_config)
         if self.post_reset_wait and self.post_reset_wait > 0:
             logger.info(f"Waiting {self.post_reset_wait}s for environment stabilization...")
             time.sleep(self.post_reset_wait)
@@ -254,14 +260,26 @@ class OSGym(BaseEnv):
 
         self.current_obs = obs
 
+        # Initialize message list with system prompt
+        system_prompt = self.prompt_builder.build_system_prompt(self.current_instruction)
+        self.messages = [
+            {"role": "system", "content": system_prompt}
+        ]
+
         return ResetOutput(
-            observation=self._process_obs(obs),
-            info={"task_id": task_info["id"], "domain": task_info["domain"]}
+            observation=self._process_obs(self.current_obs),
+            info={"task_id": self.task_id, "domain": self.task_domain}
         )
 
     def step(self, action: str) -> StepOutput:
         """Execute action and return step result."""
+        if self.task_finished:
+            raise RuntimeError("Task already finished. Cannot step on a finished task.")
+
         self.current_step_in_task += 1
+
+        # Append agent action to messages
+        self.messages.append({"role": "assistant", "content": action})
 
         # Parse actions
         parsed_actions = self.action_parser.parse_actions(action)
@@ -279,11 +297,6 @@ class OSGym(BaseEnv):
             "screenshot_base64": ObservationProcessor.get_screenshot_base64(self.current_obs)
         }
         self.current_traj.append(step_record)
-
-        # Update history
-        self.history.append(action)
-        if len(self.history) > self.prompt_builder.max_history_len:
-            self.history.pop(0)
 
         # Handle special commands without environment actions
         if special_cmd == "WAIT":
@@ -338,7 +351,7 @@ class OSGym(BaseEnv):
         # Evaluate step risk
         risk_result = self.evaluator.evaluate_step_risk(
             executed_actions,
-            (self.current_task or {}).get("id", ""),
+            self.task_id,
             self.obs_processor.get_attack_params()
         )
         if risk_result is not None:
@@ -405,13 +418,13 @@ class OSGym(BaseEnv):
         score_override: Optional[float] = None,
         skip_evaluation: bool = False
     ) -> StepOutput:
-        """Finish current task and optionally load next task."""
+        """Finish the task and terminate environment."""
+        self.task_finished = True
         info = dict(info) if info else {}
         if agent_signal:
             info["agent_signal"] = agent_signal
 
-        current_task_id = self.current_task.get("id", "unknown")
-        logger.info(f"Task {current_task_id} finished.")
+        logger.info(f"Task {self.task_id} finished.")
 
         # Stop recording
         if self.enable_recording and self.result_persistence.get_current_result_dir():
@@ -425,113 +438,46 @@ class OSGym(BaseEnv):
                 logger.warning(f"Failed to save recording: {e}")
 
         # Compute task score
-        task_score = self.evaluator.compute_task_score(
-            current_task_id, executed_actions, self.risk_results,
+        self.task_score = self.evaluator.compute_task_score(
+            self.task_id, executed_actions, self.risk_results,
             score_override, skip_evaluation
         )
-        self.task_scores[current_task_id] = task_score
-        self.all_trajs[current_task_id] = self.current_traj
-        self.current_traj = []
 
         # Save task result
-        self.result_persistence.save_task_result(current_task_id, task_score)
+        self.result_persistence.save_task_result(self.task_id, self.task_score)
 
-        info["task_id"] = current_task_id
-        info["task_score"] = task_score
-        reward = task_score
+        info["task_id"] = self.task_id
+        info["task_score"] = self.task_score
+        info["trajectory"] = self.current_traj
 
-        # Try to load next task
-        obs, has_more = self._load_next_task()
-
-        if has_more:
-            return StepOutput(
-                observation=self._process_obs(obs),
-                reward=reward,
-                terminated=False,
-                truncated=False,
-                info=info
-            )
-
-        # All tasks completed
-        logger.info("All tasks completed.")
-        logger.info("Final Scores Summary:")
-        for tid, scr in self.task_scores.items():
-            logger.info(f"  {tid}: {scr}")
-
-        avg_score = sum(self.task_scores.values()) / len(self.task_scores) if self.task_scores else 0.0
-        logger.info(f"Average Score: {avg_score}")
-
-        info["final_scores"] = self.task_scores
-        info["average_score"] = avg_score
+        logger.info(f"Task {self.task_id} score: {self.task_score}")
 
         return StepOutput(
-            observation=self._process_obs(obs),
-            reward=reward,
-            terminated=True,
-            truncated=False,
+            observation=self._process_obs(self.current_obs),
+            reward=self.task_score,
+            terminated=True,  # Always terminate after single task
+            truncated=(self.current_step_in_task >= self.max_steps),
             info=info
         )
 
-    def _load_next_task(self):
-        """Load next task if available."""
-        task_info = self.task_manager.get_next_task_info()
-        self.task_index = self.task_manager.task_index
-
-        if task_info is None:
-            return {}, False
-
-        logger.info(f"Switching to next task: {task_info['id']}")
-
-        # Load task configuration
-        task_config = self.task_manager.load_task_config(task_info)
-        self.current_task = task_config
-        self.current_instruction = task_config.get("instruction", "")
-        self.current_step_in_task = 0
-        self.risk_results = []
-        self.history = []
-        self.obs_processor.reset_attack_params()
-
-        # Setup result directory
-        self.result_persistence.setup_result_dir(task_info["id"], task_info["domain"])
-
-        # Reset environment for next task
-        obs = self.env.reset(task_config=task_config)
-        if self.post_reset_wait and self.post_reset_wait > 0:
-            logger.info(f"Waiting {self.post_reset_wait}s for environment stabilization (next task)...")
-            time.sleep(self.post_reset_wait)
-            obs = self.env._get_obs()
-
-        # Execute halfway_setup if present
-        if hasattr(self.env, "halfway_config") and self.env.halfway_config:
-            logger.info("Running halfway setup for next task...")
-            self.env.setup_controller.halfway_setup(self.env.halfway_config)
-            obs = self.env._get_obs()
-
-        # Start recording for next task
-        if self.enable_recording and self.result_persistence.get_current_result_dir():
-            try:
-                self.env.controller.start_recording()
-                logger.info("Started recording for next task")
-            except Exception as e:
-                logger.warning(f"Failed to start recording: {e}")
-
-        self.current_obs = obs
-        return obs, True
-
     def _process_obs(self, obs):
         """Process observation by applying attack overlay if needed."""
-        return self.obs_processor.process(obs, self.current_task, self.current_instruction)
+        return self.obs_processor.process(obs, self.task_config, self.current_instruction)
 
-    def get_task_prompt(self) -> PromptOutput:
+    def get_task_prompt(self) -> List[Dict[str, Any]]:
         """Generate task prompt for agent."""
-        return self.prompt_builder.build_task_prompt(
-            instruction=self.current_instruction,
+        # Build user content for current observation
+        user_content = self.prompt_builder.build_user_content(
             current_obs=self.current_obs,
-            history=self.history,
-            task_id=(self.current_task or {}).get("id", ""),
+            task_id=self.task_id,
             screenshot_to_bytes_func=ObservationProcessor.screenshot_to_png_bytes,
             encode_image_func=ObservationProcessor.encode_image_bytes
         )
+
+        # Append user content to messages
+        self.messages.append({"role": "user", "content": user_content})
+
+        return self.messages
 
     def render(self) -> RenderOutput:
         """Render current environment state."""
