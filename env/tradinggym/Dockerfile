@@ -1,30 +1,27 @@
-FROM swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.10-slim
+FROM registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:base
 
-WORKDIR /workspace
-
-# 设置 pip 内网源
 ENV PIP_INDEX_URL="http://mirrors.i.h.pjlab.org.cn/pypi/simple/" \
     PIP_EXTRA_INDEX_URL="http://pypi.i.h.pjlab.org.cn/brain/dev/+simple" \
     PIP_TRUSTED_HOST="mirrors.i.h.pjlab.org.cn pypi.i.h.pjlab.org.cn"
 
-# 安装 Python 包
+WORKDIR /app
+
+COPY . /app
+
+
 RUN pip install --no-cache-dir \
-    pandas \
-    numpy \
     gymnasium \
-    pyyaml \
-    matplotlib \
+    ipython \
+    matplotlib\
+    numpy \
     openai \
-    tortoise-orm \
-    seaborn
+    pandas==2.3.2 \
+    pillow==11.3.0 \
+    PyYAML==6.0.2 \
+    requests==2.32.5 \
+    seaborn==0.13.2 \
+    tortoise-orm==0.25.1
 
-# 复制工程代码
-COPY . /workspace/ai_sandbox/
+RUN pip install fastapi uvicorn
 
-# 设置 PYTHONPATH
-ENV PYTHONPATH=/workspace/ai_sandbox
-
-RUN cd /workspace/ai_sandbox
-
-# 默认执行脚本
-CMD ["python","examples/test_env.py"]
+EXPOSE 36663
