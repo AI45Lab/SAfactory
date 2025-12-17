@@ -13,7 +13,7 @@ python "$SCRIPT_DIR/base_eval.py" \
   --max-workers 1 \
   --max-steps 10000 \
   --visual-save-path "$PROJECT_ROOT/visualize/os_env_test" \
-  --agent-api-key "" \
-  --agent-base-url "" \
-  --agent-model "gpt-5.2" \
-  --agent-temperature 0.3
+  --llm-api-key "" \
+  --llm-base-url "" \
+  --llm-model "gpt-5.2" \
+  --llm-temperature 0.3
