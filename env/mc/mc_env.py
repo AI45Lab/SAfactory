@@ -19,6 +19,8 @@ try:
 except ImportError:
     pass  # If gymnasium not available, try with gym
 
+from typing import List
+from openai.types.chat import ChatCompletionMessageParam
 from core.types.base import ResetOutput, StepOutput, RenderOutput, PromptOutput, TextContent, ImageContent, OpenAIMessage, MessageContent
 from core.env.base_env import BaseEnv
 from core.env.env_register import register_env
@@ -63,6 +65,9 @@ class MCGym(BaseEnv):
         )
     
     def step(self, action: str) -> StepOutput:
+        self.messages.append(
+            {"role": "assistant", "content": action}
+        )
         # 转换字符串 action 为字典
         if isinstance(action, str):
             # 优先从 last_obs 获取实际图像形状，否则使用配置的 obs_size
@@ -97,7 +102,7 @@ class MCGym(BaseEnv):
     def close(self) -> None:
         self.simulator.close()
     
-    def get_task_prompt(self) -> PromptOutput:
+    def get_task_prompt(self) -> List[ChatCompletionMessageParam]:
         return self.build_prompt()
     
     def render(self) -> RenderOutput:
@@ -314,7 +319,7 @@ class MCGym(BaseEnv):
             self.vfov_half = 0.0
         
     
-    def build_prompt(self) -> PromptOutput:
+    def build_prompt(self) -> List[ChatCompletionMessageParam]:
         # 使用 gen_sys_prompt 生成 system prompt
         instructions = self.instructions if self.instructions else "Complete the Minecraft task."
         sys_prompt_text = gen_sys_prompt(
@@ -326,14 +331,11 @@ class MCGym(BaseEnv):
         )
         
         # 构建 system_message
-        system_message = OpenAIMessage(
-            role="system",
-            content=[TextContent(type="text", text=sys_prompt_text)]
-        )
+        self.messages = [
+            {"role": "system", "content": sys_prompt_text}
+        ]
         
         # 构建 user_message，包含当前 POV 图像
-        user_content = []
-        
         # 添加当前 POV 图像（如果有观察）
         if self.last_obs is not None:
             render_output = self.render()
@@ -341,24 +343,26 @@ class MCGym(BaseEnv):
             base64_str = render_output.image_base64
             if not base64_str.startswith('data:'):
                 base64_str = f"data:image/png;base64,{base64_str}"
-            user_content.append(
-                ImageContent(
-                    type="image_url",
-                    image_url={"url": base64_str}
-                )
+            self.messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Based on the current view, what action should I take?"
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{base64_str}"
+                            }
+                        }
+                    ]
+                }
+            )
+        else:
+            self.messages.append(
+                {"role": "user", "content":"Based on the current view, what action should I take?"}
             )
         
-        # 添加提示文本
-        user_content.append(
-            TextContent(type="text", text="Based on the current view, what action should I take?")
-        )
-        
-        user_message = OpenAIMessage(
-            role="user",
-            content=user_content
-        )
-        
-        return PromptOutput(
-            system_message=system_message,
-            user_message=user_message
-        )
+        return self.messages
