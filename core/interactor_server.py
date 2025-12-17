@@ -4,8 +4,9 @@ import os
 import requests
 import aiohttp
 from typing import List, Dict, Tuple, Type
+from openai.types.chat import ChatCompletionMessageParam
+from core.types.base import PromptOutput, TextContent, OpenAIMessage, MessageContent
 from .llm import LLM, BaseURLProvider
-
 
 class InteractorServer:
     def __init__(
@@ -24,6 +25,13 @@ class InteractorServer:
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
+        base_url = self.base_url_provider.get_base_url()
+        self.llm = LLM(
+            api_key=self.api_key,
+            base_url=base_url,
+            model=self.model,
+            temperature=self.temperature,
+        )
         self.env_service_url = env_service_url
         self.max_workers = max_workers
         self.max_steps = max_steps
@@ -51,44 +59,43 @@ class InteractorServer:
             except aiohttp.ClientError as e:
                 raise ConnectionError(f"环境{env_id}步骤执行失败: {str(e)}") from e
         
-    async def _get_task_prompt(self, env_name: str, env_id: str) -> List[Dict]:
-        """获取环境任务提示，返回 OpenAI messages 格式"""
-        prompt_url = f"{self.env_service_url}/{env_name}/{env_id}/get_task_prompt"
+    async def _get_task_prompt(self, env_name: str, env_id: str) -> List[ChatCompletionMessageParam]:
+        """获取环境任务提示（适配实际get_task_prompt接口）"""
+        prompt_url = f"{self.env_service_url}/{env_name}/{env_id}/get_task_prompt"  # 修正接口路径
 
-        async with aiohttp.ClientSession() as http_session:
-            async with http_session.get(prompt_url) as response:
-                response.raise_for_status()
-                return await response.json()
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(prompt_url) as response:
+                    response.raise_for_status()  # 检查是否有异常的HTTP状态码
+                    result = await response.json()  # 解析JSON响应
+                    
+                    return result
+            
+            except Exception as e:
+                print(f"Error occurred: {e}")
+                raise
         
     async def _run_single_environment(
-        self,
+        self, 
         env_name,
         env_id
     ):
-        """在单个远程环境中运行 LLM 交互循环"""
-        # 创建 LLM 实例
-        base_url = self.base_url_provider.get_base_url()
-        llm = LLM(
-            api_key=self.api_key,
-            base_url=base_url,
-            model=self.model,
-            temperature=self.temperature,
-        )
+        """在单个远程环境中运行Agent交互循环"""
 
         total_reward = 0.0
         step_id = 1
-
+        
         try:
-            # 1. 环境默认已经 reset 过
+            # 1. 环境默认已经reset过
             done = False
 
             # 2. 交互循环
             while not done and step_id <= self.max_steps:
-                # 获取任务提示
+                # 获取任务提示（使用修改后的接口逻辑）
                 prompt = await self._get_task_prompt(env_name, env_id)
-
-                # LLM 生成响应
-                response = await llm.generate(prompt)
+                
+                # Agent生成响应
+                response = await self.llm.generate(prompt)
 
                 # 调用远程环境执行动作
                 step_result = await self._post_step(env_name, env_id, response)
@@ -111,7 +118,7 @@ class InteractorServer:
             print(f"环境 {env_name}-{env_id} 出错: {str(e)}")
 
         return env_name, env_id, total_reward
-
+    
     async def _run_env_episodes(self, env_name: str, env_id: str) -> Tuple[str, List[float]]:
         """
         运行一个环境的所有 episodes（并发）
@@ -139,38 +146,23 @@ class InteractorServer:
                 print(f"环境 {env_key} episode {i} 完成，奖励: {reward:.4f}")
 
         return env_key, rewards
-
-    async def run_all_environments(self, env_configs: List[Tuple[str, str]]) -> Dict[str, List[float]]:
-        """
-        并行运行所有配置的远程环境
-
-        Args:
-            env_configs: 环境配置列表，每项为 (env_name, env_id)
-
-        - 同一环境的 n_episodes 必须同时启动
-        - 环境并发数 = max(max_workers // n_episodes, 1)
-        - 总并发数 ≈ max_workers
-        """
-        if not env_configs:
-            print("没有找到环境配置")
-            return {}
-
-        # 计算环境并发数
-        env_concurrent = max(self.max_workers // self.n_episodes, 1)
-        semaphore = asyncio.Semaphore(env_concurrent)
-        print(f"并发配置: max_workers={self.max_workers}, n_episodes={self.n_episodes}, 环境并发数={env_concurrent}")
-
-        async def bounded_env_group(env_name, env_id):
+    
+    async def run_all_environments(self) -> Dict[str, float]:
+        """并行运行所有配置的远程环境"""
+        env_name_list = ["trading_gym"] * 20
+        env_id_list = [i for i in range(1, 21)]
+        semaphore = asyncio.Semaphore(self.max_workers)
+        
+        async def bounded_task(env_name, env_id):
             async with semaphore:
-                return await self._run_env_episodes(env_name, env_id)
+                return await self._run_single_environment(env_name, env_id)
 
-        tasks = [bounded_env_group(env_name, env_id) for env_name, env_id in env_configs]
-        results: Dict[str, List[float]] = {}
-
+        tasks = [bounded_task(env_name, env_id) for env_name, env_id in zip(env_name_list, env_id_list)]
+        results = {}
+        
         for task in asyncio.as_completed(tasks):
-            env_key, rewards = await task
-            results[env_key] = rewards
-            avg = sum(rewards) / len(rewards) if rewards else 0.0
-            print(f"环境 {env_key} 全部完成: {len(rewards)} episodes, 平均奖励: {avg:.4f}")
+            env_name, env_id, total_reward = await task
+            results[env_id] = total_reward
+            print(f"环境 {env_name}-{env_id} 完成，总奖励: {total_reward}")
 
         return results
