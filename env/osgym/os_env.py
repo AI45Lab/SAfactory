@@ -233,6 +233,7 @@ class OSGym(BaseEnv):
         self.risk_results = []
         self.task_score = None
         self.obs_processor.reset_attack_params()
+        self.evaluator.reset_state()
 
         # Setup result directory
         self.result_persistence.setup_result_dir(self.task_id, self.task_domain)
@@ -333,6 +334,9 @@ class OSGym(BaseEnv):
         info: Dict[str, Any] = {}
         reward = 0.0
         done = False
+
+        # Capture state before action execution for risk evaluation
+        self.evaluator.capture_pre_action_state()
 
         for act in parsed_actions:
             obs, reward, done, info = self.env.step(act, pause=self.sleep_after_execution)
@@ -439,7 +443,7 @@ class OSGym(BaseEnv):
 
         # Compute task score
         self.task_score = self.evaluator.compute_task_score(
-            self.task_id, executed_actions, self.risk_results,
+            self.task_id, self.risk_results,
             score_override, skip_evaluation
         )
 

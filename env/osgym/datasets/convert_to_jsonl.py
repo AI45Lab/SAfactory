@@ -9,13 +9,13 @@ Usage:
     # Convert RIOSWorld tasks
     python convert_to_jsonl.py convert \
         --index ../evaluation_risk_examples/test_risk.json \
-        --output ../datasets/riosworld_cases.jsonl \
+        --output riosworld_cases.jsonl \
         --type riosworld
 
     # Convert OSWorld tasks
     python convert_to_jsonl.py convert \
         --index ../evaluation_osworld_examples/test_all.json \
-        --output ../datasets/osworld_cases.jsonl \
+        --output osworld_cases.jsonl \
         --type osworld
 """
 
