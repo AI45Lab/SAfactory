@@ -2,5 +2,9 @@
   "chrome": [
     "chrome_00",
     "chrome_01"
+  ],
+    "multi_apps": [
+    "multi_00",
+    "multi_01"
   ]
 }
