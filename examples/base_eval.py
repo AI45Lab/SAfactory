@@ -180,7 +180,7 @@ async def run_interaction(args):
     print("\n" + "="*50)
     print("所有环境运行结果：")
     for env_key, total_reward in results.items():
-        print(f"  {env_key}：总奖励 = {total_reward:.2f}")
+        print(f"  {env_key}：总奖励 = {total_reward}")
     print("="*50)
 
     # 关闭数据库
