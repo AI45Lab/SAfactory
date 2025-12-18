@@ -35,11 +35,16 @@ class ResultPersistence:
         Initialize ResultPersistence.
 
         Args:
-            result_dir: Base directory for saving results (None to disable)
+            result_dir: Base directory for saving results (None to disable).
+                        Supports relative paths (resolved relative to env/osgym directory).
             action_space_type: Action space type (for directory structure)
             observation_type: Observation type (for directory structure)
             save_screenshots: Whether to save step screenshots
         """
+        # Convert relative paths to absolute paths based on osgym directory
+        if result_dir and not os.path.isabs(result_dir):
+            osgym_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            result_dir = os.path.join(osgym_dir, result_dir)
         self.result_dir = result_dir
         self.action_space_type = action_space_type
         self.observation_type = observation_type

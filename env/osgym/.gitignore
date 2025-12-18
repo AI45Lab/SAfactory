@@ -1,3 +1,4 @@
 evaluation_osworld_examples/settings/google/settings.json
 evaluation_osworld_examples/settings/googledrive/client_secrets.json
 docker_vm_data/
+results/

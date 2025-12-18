@@ -12,7 +12,6 @@ env/osgym/
 ├── test_osgym.py                    # 测试脚本
 │
 ├── core/                            # 核心功能模块
-│   ├── task_manager.py              # 任务加载和管理
 │   ├── action_parser.py             # 动作解析 (WAIT/DONE/FAIL/代码块)
 │   ├── observation_processor.py     # 观察处理和攻击覆盖
 │   ├── result_persistence.py        # 截图/轨迹/结果保存
@@ -72,7 +71,7 @@ cd env/osgym && pip install -r requirements.txt
 | `action_space` | 动作空间 | `pyautogui` |
 | `screen_width/height` | 屏幕分辨率 | `1920x1080` |
 | `max_steps` | 最大步数 | `15` |
-| `result_dir` | 结果目录 | `null` |
+| `result_dir` | 结果目录（支持相对路径，相对于 `env/osgym` 目录） | `results` |
 
 ## 5. 运行示例
 
