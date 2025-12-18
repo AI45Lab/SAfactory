@@ -106,7 +106,7 @@ class DockerProvider(Provider):
                     logger.warning("KVM device not found, running without hardware acceleration (will be slower)")
 
                 self.container = self.client.containers.run(
-                    "happysixd/osworld-docker",
+                    "registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/osworld:v1.0",
                     environment=self.environment,
                     cap_add=["NET_ADMIN"],
                     devices=devices,

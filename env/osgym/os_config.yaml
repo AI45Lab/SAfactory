@@ -12,6 +12,6 @@ environments:
       screen_width: 1920
       screen_height: 1080
       cache_dir: "/tmp/osgym_cache"
-      result_dir: "/home/zhangyang/files/AIEvoBox_results/osgym_results"
+      result_dir: "results"  # Relative to env/osgym directory
       save_screenshots: true
       enable_recording: true
