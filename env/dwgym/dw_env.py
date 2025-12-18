@@ -20,6 +20,7 @@ if _dw_outer not in sys.path:
 
 import gymnasium as gym
 
+from openai.types.chat import ChatCompletionMessageParam
 from core.types.base import (
     ResetOutput, StepOutput, RenderOutput,
     PromptOutput, OpenAIMessage, MessageContent, TextContent, ImageContent
@@ -110,7 +111,7 @@ class DiscoveryWorldEnv(BaseEnv):
         self._last_normalized_score = 0.0
         
         # 对话历史
-        self.conversation_history: List[OpenAIMessage] = []
+        self.conversation_history: List[ChatCompletionMessageParam] = []
         self.recent_actions: List[Dict[str, Any]] = []
     
         # 视频帧历史
@@ -165,13 +166,8 @@ class DiscoveryWorldEnv(BaseEnv):
         
         self.last_observation_dict = self.api.getAgentObservation(agentIdx=0)
         
-        system_message = OpenAIMessage(
-            role="system",
-            content=[TextContent(
-                type="text",
-                text=self._build_system_prompt()
-            )]
-        )
+        system_message = {"role": "system", "content": self._build_system_prompt()}
+        
         self.conversation_history.append(system_message)
         
         observation_text = self._format_observation(
@@ -179,20 +175,31 @@ class DiscoveryWorldEnv(BaseEnv):
             action_narration="Environment initialized. Ready to begin task."
         )
         
-        user_content: List[MessageContent] = [
-            TextContent(type="text", text=observation_text)
-        ]
-        
         frame_base64 = None
         if self.use_vision:
             frame_base64 = self._get_current_frame()
             if frame_base64:
-                user_content.append(self._create_image_content(frame_base64))
-                if self.capture_frames:
-                    self.frame_history.append(frame_base64)
-        
-        user_message = OpenAIMessage(role="user", content=user_content)
-        self.conversation_history.append(user_message)
+                self.conversation_history.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": observation_text
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{frame_base64}"
+                                }
+                            }
+                        ]
+                    }
+                )
+            else:
+                self.conversation_history.append(
+                    {"role": "user", "content":observation_text}
+                )
         
         info = {
             "scenario": self.scenario_name,
@@ -261,10 +268,7 @@ class DiscoveryWorldEnv(BaseEnv):
                 )
         
         try:
-            assistant_message = OpenAIMessage(
-                role="assistant",
-                content=[TextContent(type="text", text=action)]
-            )
+            assistant_message = {"role": "assistant", "content": action}
             self._add_to_conversation_history(assistant_message)
             
             # 兼容性处理：方向动作
@@ -421,28 +425,8 @@ class DiscoveryWorldEnv(BaseEnv):
                 info={"error": str(e), "step": self.step_count, "traceback": error_details}
             )
     
-    def get_task_prompts(self) -> PromptOutput:
-        if not self.conversation_history:
-            raise RuntimeError("Conversation history is empty. Call reset() first.")
-        
-        system_message = self.conversation_history[0]
-        
-        user_message = None
-        for msg in reversed(self.conversation_history):
-            if msg.role == "user":
-                user_message = msg
-                break
-        
-        if user_message is None:
-            user_message = self.conversation_history[1] if len(self.conversation_history) > 1 else system_message
-        
-        return PromptOutput(
-            system_message=system_message,
-            user_message=user_message
-        )
-    
-    def get_task_prompt(self) -> PromptOutput:
-        return self.get_task_prompts()
+    def get_task_prompt(self) -> List[ChatCompletionMessageParam]:
+        return self.conversation_history
     
     def render(self) -> RenderOutput:
         """生成组合帧：视觉 + 文本信息"""
@@ -843,7 +827,7 @@ class DiscoveryWorldEnv(BaseEnv):
         if self.verbose:
             print(f"[INFO] Environment closed (thread_id={self.thread_id})")
     
-    def _add_to_conversation_history(self, message: OpenAIMessage):
+    def _add_to_conversation_history(self, message):
         self.conversation_history.append(message)
         
         if self.max_history_length and len(self.conversation_history) > self.max_history_length:
@@ -1299,7 +1283,7 @@ The JSON MUST be on the last line and properly formatted."""
             return {}
         return self.api.getTaskScorecard()
     
-    def get_conversation_history(self) -> List[OpenAIMessage]:
+    def get_conversation_history(self) -> List[ChatCompletionMessageParam]:
         return self.conversation_history.copy()
     
     def get_frame_history(self) -> Optional[List[str]]:
