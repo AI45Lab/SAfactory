@@ -6,6 +6,7 @@ import aiohttp
 from typing import List, Dict, Tuple, Type
 from openai.types.chat import ChatCompletionMessageParam
 from core.types.base import PromptOutput, TextContent, OpenAIMessage, MessageContent
+from core.data_manager.db_utils import  load_env_lists
 from .llm import LLM, BaseURLProvider
 
 class InteractorServer:
@@ -147,10 +148,12 @@ class InteractorServer:
 
         return env_key, rewards
     
-    async def run_all_environments(self) -> Dict[str, float]:
+    async def run_all_environments(self, db_path :str,table_name:Optional[str] = None ) -> Dict[str, float]:
+        env_name_list, env_id_list = load_env_lists(db_path, table_name)
         """并行运行所有配置的远程环境"""
-        env_name_list = ["trading_gym"] * 20
-        env_id_list = [i for i in range(1, 21)]
+        #TODO: below is used for manual test when the env is not aggregated from the yaml configs.
+        # env_name_list = ["trading_gym"] * 20
+        # env_id_list = [i for i in range(1, 21)]
         semaphore = asyncio.Semaphore(self.max_workers)
         
         async def bounded_task(env_name, env_id):
