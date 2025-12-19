@@ -41,14 +41,16 @@ def test_osgym():
                 print("https://huggingface.co/datasets/xlangai/ubuntu_osworld/resolve/main/Ubuntu.qcow2.zip")
                 return
 
-        # 加载任务配置文件
+        # 加载任务配置文件 (从 datasets/osworld_cases.jsonl 读取第一个任务)
         task_config_path = os.path.join(
-            CURRENT_DIR, "evaluation_risk_examples", "os", "os_00.json"
+            CURRENT_DIR, "datasets", "osworld_cases.jsonl"
         )
         with open(task_config_path, "r", encoding="utf-8") as f:
-            task_config = json.load(f)
+            # JSONL 格式：每行一个 JSON 对象，读取第一行作为测试任务
+            first_line = f.readline().strip()
+            task_config = json.loads(first_line)
 
-        print(f"加载任务配置: {task_config.get('id')}")
+        print(f"加载任务配置: {task_config.get('id')} (from osworld_cases.jsonl)")
 
         env = OSGym(
             provider_name="docker",
