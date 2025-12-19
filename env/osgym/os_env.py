@@ -31,15 +31,13 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
 
-# Add current directory to path for local imports
+# Get current directory for relative paths
 CURRENT_DIR = Path(__file__).resolve().parent
-if str(CURRENT_DIR) not in sys.path:
-    sys.path.insert(0, str(CURRENT_DIR))
 
 try:
     from desktop_env.desktop_env import DesktopEnv
 except ImportError:
-    print(f"Warning: Could not import DesktopEnv from {CURRENT_DIR}. Please ensure desktop_env is present.")
+    print("Warning: Could not import DesktopEnv. Please run: pip install -r requirements.txt")
     DesktopEnv = None
 
 from core.env.base_env import BaseEnv
@@ -117,6 +115,9 @@ class OSGym(BaseEnv):
         self.max_steps = max_steps
         self.enable_recording = enable_recording
 
+        # Load credentials for tasks that need authentication
+        self._load_credentials()
+
         # Load and validate task configuration from dataset
         self._validate_and_load_task_config()
 
@@ -167,6 +168,26 @@ class OSGym(BaseEnv):
         # Register cleanup on exit
         atexit.register(self.close)
 
+    def _load_credentials(self):
+        """Load credentials from credentials.yaml for tasks that need authentication."""
+        self.credentials = {}
+        credentials_path = os.path.join(CURRENT_DIR, "credentials.yaml")
+
+        if os.path.exists(credentials_path):
+            try:
+                import yaml
+                with open(credentials_path, 'r') as f:
+                    self.credentials = yaml.safe_load(f) or {}
+                logger.info(f"Loaded credentials from {credentials_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load credentials: {e}")
+        else:
+            logger.debug(f"No credentials file found at {credentials_path}")
+
+    def _get_credentials(self, key: str) -> Optional[Dict]:
+        """Get credentials for a specific service (e.g., 'google', 'googledrive')."""
+        return self.credentials.get(key)
+
     def _validate_and_load_task_config(self):
         """Validate and load task configuration from dataset."""
         required_fields = ['id', 'instruction']
@@ -189,7 +210,65 @@ class OSGym(BaseEnv):
             if 'evaluator' not in self.dataset:
                 logger.warning(f"Task {self.task_id} missing evaluator")
 
+        # Replace settings_file references with credentials
+        self._inject_credentials_into_config()
+
         logger.info(f"Loaded task: {self.task_id} (domain: {self.task_domain}, benchmark: {self.benchmark_type})")
+
+    def _inject_credentials_into_config(self):
+        """
+        Replace settings_file references in task config with actual credentials.
+
+        Supports two formats in task config:
+        1. "settings_file": "evaluation_examples/settings/google/settings.json"
+           -> Extracts "google" and injects credentials from credentials.yaml
+        2. "credential_key": "google"
+           -> Directly uses the specified key to get credentials
+        """
+        def inject_credentials(obj):
+            """Recursively process config and inject credentials."""
+            if isinstance(obj, dict):
+                # Check for settings_file pattern
+                if 'settings_file' in obj:
+                    settings_path = obj['settings_file']
+                    # Extract credential key from path like "evaluation_examples/settings/google/settings.json"
+                    parts = settings_path.split('/')
+                    if 'settings' in parts:
+                        idx = parts.index('settings')
+                        if idx + 1 < len(parts):
+                            credential_key = parts[idx + 1]
+                            creds = self._get_credentials(credential_key)
+                            if creds:
+                                # Inject credentials directly into config
+                                obj['_credentials'] = creds
+                                logger.debug(f"Injected credentials for '{credential_key}'")
+                            else:
+                                logger.warning(f"No credentials found for '{credential_key}'. "
+                                             f"Please configure in credentials.yaml")
+
+                # Check for direct credential_key
+                if 'credential_key' in obj:
+                    credential_key = obj['credential_key']
+                    creds = self._get_credentials(credential_key)
+                    if creds:
+                        obj['_credentials'] = creds
+                        logger.debug(f"Injected credentials for '{credential_key}'")
+                    else:
+                        logger.warning(f"No credentials found for '{credential_key}'")
+
+                # Recurse into nested dicts
+                for value in obj.values():
+                    inject_credentials(value)
+
+            elif isinstance(obj, list):
+                for item in obj:
+                    inject_credentials(item)
+
+        # Process config sections
+        if 'config' in self.task_config:
+            inject_credentials(self.task_config['config'])
+        if 'evaluator' in self.task_config:
+            inject_credentials(self.task_config['evaluator'])
 
     def _create_desktop_env(self):
         """Create and configure the DesktopEnv instance."""

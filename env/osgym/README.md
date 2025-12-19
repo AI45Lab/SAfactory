@@ -77,8 +77,8 @@ cd env/osgym && pip install -r requirements.txt
 
 **验证环境：**
 ```bash
-cd AIEvoBox/env/osgym
-python test_osgym.py
+cd AIEvoBox
+python -m env.osgym.test_osgym
 ```
 
 **运行评测：**
@@ -97,4 +97,9 @@ bash examples/run_os_env.sh
 ## 7. 注意事项
 
 - 如需运行需要联网的任务但虚拟机无法正常联网，请自行配置虚拟机网络代理。
-- 部分任务可能需要 Google Drive 认证或其他外部服务，请参考 OSWorld 和 RiOSWorld 项目文档。
+- 部分任务可能需要 Google Drive 认证或其他外部服务，请参考 OSWorld 和 RiOSWorld 项目文档，并在 `credentials.yaml` 中配置相应的凭据。
+- RiOSWorld 部分任务涉及钓鱼攻击等风险场景，需要在执行测试前先启动钓鱼服务：
+    ```bash
+    python -m env_risk_utils.arxiv_phishing
+    ```
+    服务具体名称请参考 RiOSWorld 文档。
