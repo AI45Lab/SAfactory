@@ -37,6 +37,7 @@ from matplotlib.font_manager import FontProperties
 import gymnasium as gym
 
 # AIEvoBox core
+from openai.types.chat import ChatCompletionMessageParam
 from core.types.base import (
     ResetOutput, StepOutput, RenderOutput,
     PromptOutput, OpenAIMessage, MessageContent, TextContent
@@ -688,7 +689,7 @@ class DABStepEnv(BaseEnv):
 
         return ResetOutput(observation=obs, info=info)
 
-    def get_task_prompt(self) -> PromptOutput:
+    def get_task_prompt(self) -> List[ChatCompletionMessageParam]:
         """
         返回任务提示。
         - 第一次调用（_step_i == 0）：返回初始 system + user message
@@ -742,9 +743,6 @@ class DABStepEnv(BaseEnv):
                 "3) Computing the answer step by step\n\n"
                 "**Code template:**\n```python\n" + demo + "```\n"
             )
-
-            sys_msg = OpenAIMessage(role="system", content=[MessageContent(root=TextContent(text=sys_text))])
-            usr_msg = OpenAIMessage(role="user",   content=[MessageContent(root=TextContent(text=usr_text))])
             
             # 初始化对话历史
             self._conversation_history = [
@@ -752,7 +750,7 @@ class DABStepEnv(BaseEnv):
                 {"role": "user", "content": usr_text}
             ]
             
-            return PromptOutput(system_message=sys_msg, user_message=usr_msg)
+            return self._conversation_history
         
         # ===== 后续调用：返回包含完整历史的格式化消息 =====
         else:
@@ -798,16 +796,7 @@ class DABStepEnv(BaseEnv):
             history_text += "REMEMBER: Use print() to show results!\n"
             history_text += "="*80 + "\n"
             
-            sys_msg = OpenAIMessage(
-                role="system", 
-                content=[MessageContent(root=TextContent(text=sys_text))]
-            )
-            usr_msg = OpenAIMessage(
-                role="user",
-                content=[MessageContent(root=TextContent(text=history_text))]
-            )
-            
-            return PromptOutput(system_message=sys_msg, user_message=usr_msg)
+            return self._conversation_history
 
     def step(self, action: str) -> StepOutput:
         """
