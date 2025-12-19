@@ -2,6 +2,7 @@ environments:
   - env_name: discoveryworld
     env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
     env_num: 1
+    dataset: ""
     env_params:
       thread_id: 11
       scenario_name: "Proteomics"
@@ -17,6 +18,7 @@ environments:
   - env_name: discoveryworld
     env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
     env_num: 1
+    dataset: ""
     env_params:
       thread_id: 12
       scenario_name: "Proteomics"
