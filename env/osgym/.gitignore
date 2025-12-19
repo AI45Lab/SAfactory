@@ -6,3 +6,4 @@ datasets/
 evaluation_osworld_examples/
 evaluation_risk_examples/
 .DS_Store
+*.png

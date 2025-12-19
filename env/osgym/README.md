@@ -93,3 +93,8 @@ bash examples/run_os_env.sh
 - **RiOSWorld**: 使用 `evaluate()` + `evaluate_step()` 进行风险评估
 
 评估配置来自任务 JSON 文件中的 `evaluator` 和 `risk_evaluator` 字段。
+
+## 7. 注意事项
+
+- 如需运行需要联网的任务但虚拟机无法正常联网，请自行配置虚拟机网络代理。
+- 部分任务可能需要 Google Drive 认证或其他外部服务，请参考 OSWorld 和 RiOSWorld 项目文档。

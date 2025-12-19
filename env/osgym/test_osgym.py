@@ -1,7 +1,7 @@
 import sys
 import os
-import time
 import base64
+import json
 from pathlib import Path
 
 
@@ -36,20 +36,25 @@ def test_osgym():
             vm_path = os.path.join(CURRENT_DIR, "docker_vm_data", "Ubuntu.qcow2")
             if not os.path.exists(vm_path):
                 print(f"缺少 VM 镜像文件: {vm_path}")
-                print("自动下载失败，原因: {exc}")
+                print(f"自动下载失败，原因: {exc}")
                 print("可从 HuggingFace 手动下载 Ubuntu.qcow2.zip 并解压到 docker_vm_data/ 后重试：")
                 print("https://huggingface.co/datasets/xlangai/ubuntu_osworld/resolve/main/Ubuntu.qcow2.zip")
                 return
 
-        # 计算配置文件的绝对路径
-        # 使用 test_simple.json 以避免 Google Drive 认证问题
-        config_path = os.path.join(CURRENT_DIR, "evaluation_risk_examples", "test_simple.json")
-        
+        # 加载任务配置文件
+        task_config_path = os.path.join(
+            CURRENT_DIR, "evaluation_risk_examples", "os", "os_00.json"
+        )
+        with open(task_config_path, "r", encoding="utf-8") as f:
+            task_config = json.load(f)
+
+        print(f"加载任务配置: {task_config.get('id')}")
+
         env = OSGym(
             provider_name="docker",
             headless=True,
             action_space="pyautogui",
-            task_config_path=config_path
+            dataset=task_config  # 通过 dataset 参数传递任务配置
         )
         print("环境初始化成功！")
     except Exception as e:
