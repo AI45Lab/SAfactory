@@ -107,7 +107,7 @@ class ObservationProcessor:
 
         try:
             # Import attack utilities lazily to avoid circular imports
-            from ..mm_agents.agent import tag_screenshot, agent_attack_wrapper
+            from mm_agents.agent import tag_screenshot, agent_attack_wrapper
 
             # Normalize screenshot to PNG bytes for the attack helper
             if isinstance(screenshot, np.ndarray):

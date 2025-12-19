@@ -47,7 +47,7 @@ class PromptBuilder:
             str: System prompt string
         """
         try:
-            from ..mm_agents.prompt_helper import get_system_prompt
+            from mm_agents.prompt_helper import get_system_prompt
             system_text = get_system_prompt(self.observation_type, self.action_space_type)
             system_text = f"{system_text}\nYou are asked to complete the following task: {instruction}"
         except (ImportError, ValueError) as exc:
@@ -92,7 +92,7 @@ class PromptBuilder:
 
         prompt_image_bytes: Optional[bytes] = None
         try:
-            from ..mm_agents.prompt_helper import build_observation_prompt
+            from mm_agents.prompt_helper import build_observation_prompt
             obs_prompt, prompt_image_bytes = build_observation_prompt(
                 self.observation_type,
                 screenshot_bytes,
