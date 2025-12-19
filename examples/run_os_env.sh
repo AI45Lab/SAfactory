@@ -12,7 +12,7 @@ python "$SCRIPT_DIR/base_eval.py" \
   --env-config-yaml "$PROJECT_ROOT/env/osgym/os_config.yaml" \
   --max-workers 1 \
   --max-steps 10000 \
-  --visual-save-path "$PROJECT_ROOT/visualize/os_env_test" \
+  --visual-save-path "$PROJECT_ROOT/visualize/os" \
   --llm-api-key "" \
   --llm-base-url "" \
   --llm-model "gpt-5.2" \
