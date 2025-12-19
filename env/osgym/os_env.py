@@ -73,7 +73,7 @@ class OSGym(BaseEnv):
 
     def __init__(
         self,
-        benchmark_type: str = "riosworld",  # "riosworld" or "osworld"
+        benchmark_type: str = "osworld",  # "riosworld" or "osworld"
         provider_name: str = "docker",
         headless: bool = True,
         action_space: str = "pyautogui",
