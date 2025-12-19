@@ -5,5 +5,7 @@ results/
 datasets/
 evaluation_osworld_examples/
 evaluation_risk_examples/
+env_risk_utils/induced_texts/
+env_risk_utils/popup_logos/
 .DS_Store
 *.png
