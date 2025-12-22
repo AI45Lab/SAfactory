@@ -10,13 +10,13 @@ import asyncio
 import json
 import yaml
 import pandas as pd
-# from env.tradinggym.trading_env import TradingGym  # 导入环境来注册
-# from env.androidgym.android_env import AndroidGym
-# from env.search.search_env import SearchEnv
-# from env.gitgym.git_env import GitGym
+from env.tradinggym.trading_env import TradingGym  # 导入环境来注册
+from env.androidgym.android_env import AndroidGym
+from env.search.search_env import SearchEnv
+from env.gitgym.git_env import GitGym
 from env.embodiedgym.embodied_env import EmbodiedAlfredGym  # 导入 Alfred 环境来注册
-# from env.dabstep.dabstep_env import DABStepEnv
-# from env.dwgym.dw_env import DiscoveryWorldEnv
+from env.dabstep.dabstep_env import DABStepEnv
+from env.dwgym.dw_env import DiscoveryWorldEnv
 from core.llm import StaticBaseURLProvider
 from core.interactor import Interactor
 from core.data_manager.load_yaml import load_yaml_configs
