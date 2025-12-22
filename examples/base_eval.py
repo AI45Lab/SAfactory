@@ -10,13 +10,13 @@ import asyncio
 import json
 import yaml
 import pandas as pd
-from env.tradinggym.trading_env import TradingGym  # 导入环境来注册
-from env.androidgym.android_env import AndroidGym
-from env.search.search_env import SearchEnv
-from env.gitgym.git_env import GitGym
+# from env.tradinggym.trading_env import TradingGym  # 导入环境来注册
+# from env.androidgym.android_env import AndroidGym
+# from env.search.search_env import SearchEnv
+# from env.gitgym.git_env import GitGym
 from env.embodiedgym.embodied_env import EmbodiedAlfredGym  # 导入 Alfred 环境来注册
-from env.dabstep.dabstep_env import DABStepEnv
-from env.dwgym.dw_env import DiscoveryWorldEnv
+# from env.dabstep.dabstep_env import DABStepEnv
+# from env.dwgym.dw_env import DiscoveryWorldEnv
 from core.llm import StaticBaseURLProvider
 from core.interactor import Interactor
 from core.data_manager.load_yaml import load_yaml_configs
@@ -182,7 +182,7 @@ async def run_interaction(args):
     print("\n" + "="*50)
     print("所有环境运行结果：")
     for env_key, total_reward in results.items():
-        print(f"  {env_key}：总奖励 = {total_reward:.2f}")
+        print(f"  {env_key}：总奖励 = {total_reward}")
     print("="*50)
 
     # 关闭数据库
