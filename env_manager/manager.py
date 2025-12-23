@@ -201,17 +201,58 @@ class EnvPoolManager:
 
             self._initialized = True
 
-    # TODO: add the clean rayCluster logic
     async def close_all(self) -> None:
         """
-        Close underlying resources owned by the manager process.
+        Shutdown hook: stop + delete all RayJobs created/owned by this manager.
         """
         async with self._state_lock:
+            jobs: List[Tuple[str, str]] = []
+            for info in self._clusters_by_image.values():
+                if info and info.job_name:
+                    jobs.append((info.project, info.job_name))
+
+            jobs = list(dict.fromkeys(jobs))
+
             client, self._http_client = self._http_client, None
+
             self._initialized = False
 
+            async with self._pool_lock:
+                self._pool.clear()
+                self._actor_routes.clear()
+                self._db_offset = 0
+
+            self._env_bindings.clear()
+            self._clusters_by_image.clear()
+
         if client is not None:
-            await client.aclose()
+            try:
+                await client.aclose()
+            except Exception as e:
+                print(f"[manager] http client close failed (ignored): {e}")
+
+        if not jobs:
+            return
+
+        for project, job_name in jobs:
+            try:
+                await asyncio.to_thread(self._rayjob_manager.stop, project, job_name)
+            except Exception as e:
+                print(
+                    "[manager] stop rayjob failed (ignored): "
+                    f"project='{project}', job_name='{job_name}', err={e}"
+                )
+
+        for project, job_name in jobs:
+            try:
+                await asyncio.to_thread(self._rayjob_manager.delete, project, job_name)
+            except Exception as e:
+                print(
+                    "[manager] delete rayjob failed (ignored): "
+                    f"project='{project}', job_name='{job_name}', err={e}"
+                )
+
+
 
     # ------------------------------------------------------------------ #
     # Public API                                                         #
