@@ -64,7 +64,7 @@ class LLM:
             # 每次重试创建新的 session，避免连接状态问题
             timeout = aiohttp.ClientTimeout(total=300)
             try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
                     logger.info(f"[LLM] POST {url} (thread={threading.current_thread().name}, attempt={attempt})")
                     async with session.post(url, json=payload, headers=headers) as resp:
                         logger.info(f"[LLM] POST {url} got response status={resp.status}")

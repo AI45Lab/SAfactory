@@ -1,4 +1,5 @@
 from typing import Optional, Dict, Any, Tuple, Callable, List
+from openai.types.chat import ChatCompletionMessageParam
 from core.types.base import ResetOutput, StepOutput, RenderOutput, PromptOutput, TextContent, OpenAIMessage, MessageContent
 from core.env.base_env import BaseEnv
 from core.env.env_register import register_env
@@ -544,19 +545,14 @@ class GitGym(BaseEnv):
         task_config_path: Optional[str] = None,
         task_config: Optional[Dict[str, Any]] = None,
         verification_path: Optional[str] = None,
-        env_id: Optional[str] = None,  # 从 interactor 传入，但不需要使用
-        env_name: Optional[str] = None,  # 从 interactor 传入，但不需要使用
         **kwargs: Any,
     ) -> None:
-        super().__init__()
-        
-        # 保存env_id和env_name（从interactor传入），但不会传递给CoreGitEnvLite
-        self.env_id = env_id
-        self.env_name = env_name
+        super().__init__(**kwargs)
         
         # 从kwargs中移除这些参数，避免传递给CoreGitEnvLite时重复
         kwargs.pop('env_id', None)
         kwargs.pop('env_name', None)
+        kwargs.pop('dataset', None)
         
         self.repo_name = repo_name
         
@@ -594,7 +590,7 @@ class GitGym(BaseEnv):
         
         # 创建核心环境实例
         # 使用传入的 env_id（如果有）或默认值，但确保不会从 kwargs 中重复传入
-        core_env_id = env_id if env_id else "git_env"
+        core_env_id = self.env_id if self.env_id else "git_env"
         # 确保 kwargs 中不包含 env_id，避免重复参数
         core_kwargs = {k: v for k, v in kwargs.items() if k != 'env_id'}
         
@@ -669,6 +665,9 @@ class GitGym(BaseEnv):
     def step(self, action: str) -> StepOutput:
         """执行一步环境交互（支持LLM文本响应）"""
         super().step(action=action)
+        self.messages.append(
+            {"role": "assistant", "content": action}
+        )
         
         # 解析LLM响应，提取动作和文件索引
         act, idx = self.core_env.parse_llm_response(action)
@@ -889,8 +888,8 @@ class GitGym(BaseEnv):
             info=updated_info
         )
 
-    def get_task_prompt(self) -> PromptOutput:
-        """获取任务提示信息（返回PromptOutput格式）- 每次调用都会获取最新的环境状态"""
+    def get_task_prompt(self) -> List[ChatCompletionMessageParam]:
+        """获取任务提示信息- 每次调用都会获取最新的环境状态"""
         # 确保状态是最新的
         self._sync_state()
         
@@ -902,26 +901,20 @@ class GitGym(BaseEnv):
         prompt_text = self._build_text_prompt(repo_obs, task_prompt_text)
         
         # 构建system消息
-        system_content = TextContent(
-            text="You are a Python developer working in a Git-like environment. "
-                 "Your task is to complete software development tasks by generating code, committing changes, and running tests."
-        )
-        system_message = OpenAIMessage(
-            role="system",
-            content=[MessageContent(root=system_content)]
+        system_prompt = "You are a Python developer working in a Git-like environment. Your task is to complete software development tasks by generating code, committing changes, and running tests."
+        
+        self.messages = [
+            {"role": "system", "content": system_prompt}
+        ]
+        
+        self.messages.append(
+            {
+                "role": "user",
+                "content": prompt_text
+            }
         )
         
-        # 构建user消息
-        user_content = TextContent(text=prompt_text)
-        user_message = OpenAIMessage(
-            role="user",
-            content=[MessageContent(root=user_content)]
-        )
-        
-        return PromptOutput(
-            system_message=system_message,
-            user_message=user_message
-        )
+        return self.messages
 
     def render(self) -> RenderOutput:
         """渲染仓库快照并返回RenderOutput（纯文本格式）- 包含每一步的状态变化"""
@@ -1308,7 +1301,7 @@ class GitGym(BaseEnv):
         """保存生成的代码到本地文件（用于调试和查看）"""
         try:
             # 创建保存目录（使用env_id作为子目录，如果有的话）
-            base_dir = os.path.join(os.getcwd(), "generated_code")
+            base_dir = os.path.join(os.getcwd(), "env/gitgym/generated_code")
             if self.env_id:
                 save_dir = os.path.join(base_dir, f"env_{self.env_id}")
             else:

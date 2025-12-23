@@ -1,5 +1,6 @@
 import os
 import sys
+
 # --- make project root importable ---
 current_file_path = os.path.abspath(__file__)
 examples_dir = os.path.dirname(current_file_path)
@@ -10,23 +11,21 @@ import asyncio
 import uvicorn
 import yaml
 import httpx
-
-from typing import Dict, Tuple, Optional
-from fastapi import FastAPI, HTTPException, Request
+from typing import Dict, Tuple, Any, Optional
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from db_loader import get_connection
 from manager import EnvPoolManager
+from core.types.base import ResetOutput, StepOutput, RenderOutput
+
 
 # ---------------- Config ----------------
-
-#TODO: should not hard code the config path, start up with  args.
 def load_config(path: str = "env_manager/config.yaml") -> dict:
     with open(path, "r") as f:
         return yaml.safe_load(f)
-
-
 
 CFG = load_config()
 
@@ -44,15 +43,12 @@ httpx_pool_max = int(server_cfg.get("httpx_max_connections", 2048))
 httpx_keepalive_max = int(server_cfg.get("httpx_max_keepalive", 256))
 
 
-# ---------------- App & Manager ----------------
-
-app = FastAPI(title="Ray Env Router")
-#TODO: origins used for unblocking the CORS when the requests comes from the frontend.
+# ---------------- App----------------
+# app = FastAPI(title="Ray Env Router")
 origins =[
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -77,9 +73,7 @@ async def limit_concurrency(request: Request, call_next):
     async with _REQ_SEM:
         return await call_next(request)
 
-
 # ---------------- Helpers ----------------
-
 def _binding_or_404(env: str):
     """
     Resolve which Ray cluster (job/head IP) is responsible for this env_name.
@@ -120,6 +114,7 @@ def _strip_hop_by_hop(headers: Dict[str, str]) -> Dict[str, str]:
         "trailer",
         "transfer-encoding",
         "upgrade",
+        # also remove request-only headers that should be set by httpx/uvicorn
         "host",
         "content-length",
     }
@@ -211,6 +206,20 @@ async def _shutdown():
 def healthz():
     return {"ok": True}
 
+
+@app.get("/readyz")
+def readyz():
+    """
+    Router is 'ready' when:
+    - DB connection is present
+    - EnvPoolManager has at least one env->cluster binding
+    """
+    return {
+        "db_attached": DB is not None,
+        "clusters_initialized": bool(POOL.env_cluster_map),
+    }
+
+
 @app.get("/pool/status")
 async def pool_status():
     """
@@ -222,28 +231,28 @@ async def pool_status():
 
 # ---------------- Env API (pure forwarding) ----------------
 @app.post("/{env}/{id}/step")
-async def step(env: str, id: int, request: Request):
+async def step(env: str, id: str, request: Request):
     timeout_q = request.query_params.get("timeout_s")
     timeout = float(timeout_q) if timeout_q is not None else UPSTREAM_TIMEOUT_S
     return await _proxy_stream(env, id, "POST", f"/{env}/{id}/step", request, timeout_s=timeout)
 
 
 @app.get("/{env}/{id}/get_task_prompt")
-async def get_task_prompt(env: str, id: int, request: Request):
-    # Forward exactly as a GET. If your upstream uses POST, add a POST variant below.
+async def get_task_prompt(env: str, id: str, request: Request):
     return await _proxy_stream(env, id, "GET", f"/{env}/{id}/get_task_prompt", request)
 
 
+
 @app.get("/{env}/{id}/render")
-async def render(env: str, id: int, request: Request):
+async def render(env: str, id: str, request: Request):
     return await _proxy_stream(env, id, "GET", f"/{env}/{id}/render", request)
 
 
 @app.post("/{env}/{id}/close")
-async def close_env(env: str, id: int):
+async def close_env(env: str, id: str):
     """
     Manager-controlled close:
-      - manager will POST /{env}/{id}/close to the owning cluster
+      - manager will POST /{env}/{id}/close to the owning cluster (best-effort),
       - remove (env,id) from its local pool & routing,
       - reserve next DB row and POST /{env}/{new_id}/reset to lazily create
         a new actor on the appropriate cluster.

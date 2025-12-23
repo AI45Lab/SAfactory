@@ -1,4 +1,6 @@
+import asyncio
 import sqlite3
+import traceback
 import httpx
 import time
 import requests
@@ -30,9 +32,13 @@ class RayClusterInfo:
     job_name: str
     head_ip: str  # filled after RayJob becomes ready
 
-#TODO: EncClusterBing =={RayClusterInfo + env_name} no need this data class
+
 @dataclass(slots=True)
 class EnvClusterBinding:
+    """
+    Binding between an env_name and a Ray cluster.
+    Different envs may share the same cluster if they use the same image.
+    """
     env_name: str
     image: str
     project: str
@@ -45,7 +51,7 @@ class PoolEntry:
     """
     Lightweight record of a *remote* actor in the pool.
 
-    NOT keep Ray actor handles locally. The identity is solely:
+    We do NOT keep Ray actor handles locally. The identity is solely:
         - env_name
         - env_id
 
@@ -53,7 +59,7 @@ class PoolEntry:
     the cluster-side HTTP service (first POST /{env}/{id}/reset).
     """
     env_name: str
-    env_id: int
+    env_id: str
     row_id: Optional[int]  # DB primary key if available (for tracing)
     image: str  # quick reverse lookup
     job_name: str  # which RayJob it belongs to
@@ -83,8 +89,6 @@ class EnvPoolManager:
       - close_and_refill(env, id): close a remote actor (POST /{env}/{id}/close),
         remove it from the pool, then pull the next DB row and create a new
         remote actor (POST /{env}/{id}/reset) to keep the pool at target size.
-
-    TODO: ShutDown controlling missed @Bin
     """
 
     def __init__(self, cfg: dict, conn: sqlite3.Connection) -> None:
@@ -92,16 +96,16 @@ class EnvPoolManager:
         self.conn = conn
 
         # ---- pool config ----
-        self.pool_size: int = int(self.cfg.get("pool_size", 1) or 1)
+        self.pool_size: int = int(self.cfg.get("pool_size", 0) or 0)
 
         # ---- cluster & RayJob config ----
         cluster_cfg = dict(self.cfg.get("cluster", {}) or {})
         rayjob_cfg = dict(self.cfg.get("rayjob", {}) or {})
 
-        #TODO: remove the base image logic. as we required all the env should input a image when aggregator the yaml
         # base image for envs without explicit image in DB
         self._base_image: str = str(cluster_cfg.get("base_image") or "").strip()
         if not self._base_image:
+            # legacy fallback
             self._base_image = str(self.cfg.get("base_image", "")).strip()
 
         if not rayjob_cfg:
@@ -147,16 +151,17 @@ class EnvPoolManager:
             cluster_cfg.get("head_ip_poll_timeout_s", 600.0)
         )
 
-
+        # ---- in-memory state ----
+        # image -> RayClusterInfo
         self._clusters_by_image: Dict[str, RayClusterInfo] = {}
-
+        # env_name -> EnvClusterBinding
         self._env_bindings: Dict[str, EnvClusterBinding] = {}
         # (env_name, env_id) -> PoolEntry (represents a *remote* actor)
-        self._pool: Dict[Tuple[str, int], PoolEntry] = {}
+        self._pool: Dict[Tuple[str, str], PoolEntry] = {}
         # per-actor routing index (same keys as _pool; separated for clarity)
-        self._actor_routes: Dict[Tuple[str, int], Tuple[str, int]] = {}  # (head_ip, port)
+        self._actor_routes: Dict[Tuple[str, str], Tuple[str, str]] = {}  # (head_ip, port)
 
-        #TODO: db cursor should be locked as there may be not more than one requests at the meantime
+        # TODO: db cursor should be locked as there may be not more than one requests at the meantime
         # DB cursor offset for sequential row reservation
         self._db_offset: int = 0
 
@@ -189,7 +194,6 @@ class EnvPoolManager:
             # 2) poll until head_ip is ready for each cluster
             await self._wait_for_head_ips()
 
-            # time.sleep(50)
             await self._wait_for_head_http_services()
 
             # 3) pre-warm remote actor pool
@@ -197,17 +201,58 @@ class EnvPoolManager:
 
             self._initialized = True
 
-    #TODO: add the clean rayCluster logic
     async def close_all(self) -> None:
         """
-        Close underlying resources owned by the manager process.
+        Shutdown hook: stop + delete all RayJobs created/owned by this manager.
         """
         async with self._state_lock:
+            jobs: List[Tuple[str, str]] = []
+            for info in self._clusters_by_image.values():
+                if info and info.job_name:
+                    jobs.append((info.project, info.job_name))
+
+            jobs = list(dict.fromkeys(jobs))
+
             client, self._http_client = self._http_client, None
+
             self._initialized = False
 
+            async with self._pool_lock:
+                self._pool.clear()
+                self._actor_routes.clear()
+                self._db_offset = 0
+
+            self._env_bindings.clear()
+            self._clusters_by_image.clear()
+
         if client is not None:
-            await client.aclose()
+            try:
+                await client.aclose()
+            except Exception as e:
+                print(f"[manager] http client close failed (ignored): {e}")
+
+        if not jobs:
+            return
+
+        for project, job_name in jobs:
+            try:
+                await asyncio.to_thread(self._rayjob_manager.stop, project, job_name)
+            except Exception as e:
+                print(
+                    "[manager] stop rayjob failed (ignored): "
+                    f"project='{project}', job_name='{job_name}', err={e}"
+                )
+
+        for project, job_name in jobs:
+            try:
+                await asyncio.to_thread(self._rayjob_manager.delete, project, job_name)
+            except Exception as e:
+                print(
+                    "[manager] delete rayjob failed (ignored): "
+                    f"project='{project}', job_name='{job_name}', err={e}"
+                )
+
+
 
     # ------------------------------------------------------------------ #
     # Public API                                                         #
@@ -215,13 +260,16 @@ class EnvPoolManager:
 
     @property
     def env_cluster_map(self) -> Dict[str, EnvClusterBinding]:
+        """
+        Read-only view of env -> cluster binding (for routing by env_name).
+        """
         return self._env_bindings
 
     def get_cluster_for_env(self, env_name: str) -> Optional[EnvClusterBinding]:
         return self._env_bindings.get(env_name)
 
     # Backward-compatible shim for old interface
-    def get(self, env: str, id_: int) -> Optional[EnvClusterBinding]:
+    def get(self, env: str, id_: str) -> Optional[EnvClusterBinding]:
         return self.get_cluster_for_env(env)
 
     async def list_status(self, parallelism: int = 128) -> List[dict]:
@@ -253,12 +301,12 @@ class EnvPoolManager:
                 for entry in self._pool.values()
             ]
 
-    def get_actor_route(self, env: str, id_: int) -> Optional[Tuple[str, int]]:
+    def get_actor_route(self, env: str, id_: str) -> Optional[Tuple[str, str]]:
         """
         Return (head_ip, port) for a specific remote actor if tracked;
         fallback to env-level binding if the exact (env,id) was not yet warmed.
         """
-        key = (env, int(id_))
+        key = (env, str(id_))
         if key in self._actor_routes:
             return self._actor_routes[key]
         binding = self._env_bindings.get(env)
@@ -266,27 +314,24 @@ class EnvPoolManager:
             return None
         return (binding.head_ip, self._cluster_http_port)
 
-    async def close_and_remove(self, env: str, id_: int) -> None:
+    async def close_and_remove(self, env: str, id_: str) -> None:
         """
         Legacy API compatibility; alias to close_and_refill().
         """
         await self.close_and_refill(env, id_)
 
-    async def close_and_refill(self, env: str, id_: int) -> None:
-        """
-        Close the one actor and scan the DB for next row to create a new actor
-        """
+    async def close_and_refill(self, env: str, id_: str) -> None:
+
         if self._http_client is None:
             raise RuntimeError("HTTP client is not initialized")
 
         async with self._pool_lock:
-            # --- 0) check whether the actor should be closed
-            key = (env, int(id_))
+            key = (env, str(id_))
             route = self._actor_routes.get(key)
 
             if route is not None:
                 head_ip, port = route
-                close_url = f"http://{head_ip}:{port}/{env}/{int(id_)}/close"
+                close_url = f"http://{head_ip}:{port}/{env}/{str(id_)}/close"
             else:
                 binding = self._env_bindings.get(env)
                 if not binding or not binding.head_ip:
@@ -295,7 +340,6 @@ class EnvPoolManager:
                     )
                 close_url = self._build_actor_close_url(binding, env, id_)
 
-            # --- 1) close remote actor ---
             try:
                 resp = await self._http_client.post(close_url)
                 if resp.status_code >= 400:
@@ -306,11 +350,9 @@ class EnvPoolManager:
             except Exception as e:
                 print(f"[manager] remote close error: env='{env}', id={id_}, err={e}")
 
-            # --- 2) remove he actor information ---
             self._pool.pop(key, None)
             self._actor_routes.pop(key, None)
 
-            # --- 3) scan the db for the next actor ---
             next_row = self._reserve_one_row()
             if not next_row:
                 print("[manager] no more DB rows to refill the pool")
@@ -588,11 +630,14 @@ class EnvPoolManager:
             row: Dict[str, Any],
             sem: Optional[asyncio.Semaphore] = None,
     ) -> None:
+        """
+            POST http://{head_ip}:{port}/{env}/{id}/reset
+        """
         if self._http_client is None:
             raise RuntimeError("HTTP client is not initialized")
 
         env_name = str(row.get("env_name"))
-        env_id = int(row.get("env_id"))
+        env_id = str(row.get("env_id"))
 
         image = (row.get("image") or "").strip()
         if not image:
@@ -731,17 +776,17 @@ class EnvPoolManager:
     # HTTP helpers                                                       #
     # ------------------------------------------------------------------ #
 
-    def _build_actor_reset_url(self, binding: EnvClusterBinding, env: str, env_id: int) -> str:
+    def _build_actor_reset_url(self, binding: EnvClusterBinding, env: str, env_id: str) -> str:
         host = binding.head_ip
-        return f"http://{host}:{self._cluster_http_port}/{env}/{int(env_id)}/reset"
+        return f"http://{host}:{self._cluster_http_port}/{env}/{str(env_id)}/reset"
 
-    def _build_actor_close_url(self, binding: EnvClusterBinding, env: str, id_: int) -> str:
+    def _build_actor_close_url(self, binding: EnvClusterBinding, env: str, id_: str) -> str:
         host = binding.head_ip
-        return f"http://{host}:{self._cluster_http_port}/{env}/{int(id_)}/close"
+        return f"http://{host}:{self._cluster_http_port}/{env}/{str(id_)}/close"
 
-    def _build_actor_step_url(self, binding: EnvClusterBinding, env: str, id_: int) -> str:
+    def _build_actor_step_url(self, binding: EnvClusterBinding, env: str, id_: str) -> str:
         host = binding.head_ip
-        return f"http://{host}:{self._cluster_http_port}/{env}/{int(id_)}/step"
+        return f"http://{host}:{self._cluster_http_port}/{env}/{str(id_)}/step"
 
 
 async def check_head_http_ready(head_ip: str, port: int = 36663, timeout: float = 5.0) -> bool:

@@ -19,6 +19,9 @@ env/androidgym/screenshot
 env/androidgym/judgement
 env/androidgym/CLIP
 
+# gitgym env
+env/gitgym/generated_code
+
 # python logging
 *.log.*
 

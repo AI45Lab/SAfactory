@@ -35,6 +35,7 @@ def parse_args():
                       help="LLM 模型名称")
     parser.add_argument("--llm-temperature", type=float, default=0.3,
                       help="LLM 生成响应的温度参数（0-1）")
+    parser.add_argument("--db-path", type=str, default="",help="yaml聚合后的数据存储位置")
     
     return parser.parse_args()
 
@@ -56,7 +57,7 @@ async def run_interaction(args):
         max_steps=args.max_steps,
     )
     
-    results = await interactor.run_all_environments()
+    results = await interactor.run_all_environments(db_path=args.db_path)
     print("\n" + "="*50)
     print("所有环境运行结果：")
     for env_id, total_reward in results.items():

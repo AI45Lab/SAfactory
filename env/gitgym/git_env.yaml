@@ -1,6 +1,7 @@
 environments:
   - env_name: core_git_env
     env_num: 1
+    dataset: ""
     env_params:
       repo_name: "stack_project"
       task_config_path: "reqs/stack.json"
@@ -9,6 +10,7 @@ environments:
 
   - env_name: core_git_env
     env_num: 1
+    dataset: ""
     env_params:
       repo_name: "stack_project_2"
       task_config_path: "reqs/stack.json"
@@ -18,6 +20,7 @@ environments:
   # 最长公共子序列（LCS）- 经典动态规划
   - env_name: core_git_env
     env_num: 1
+    dataset: ""
     env_params:
       repo_name: "lcs_project"
       task_config_path: "reqs/lcs.json"
@@ -27,6 +30,7 @@ environments:
   # 零钱兑换（最少硬币数）- 经典动态规划
   - env_name: core_git_env
     env_num: 1
+    dataset: ""
     env_params:
       repo_name: "coin_change_project"
       task_config_path: "reqs/coin_change.json"
@@ -36,6 +40,7 @@ environments:
   # 斐波那契数列 - 经典动态规划/递归
   - env_name: core_git_env
     env_num: 1
+    dataset: ""
     env_params:
       repo_name: "fibonacci_project"
       task_config_path: "reqs/fibonacci.json"
@@ -45,6 +50,7 @@ environments:
   # IOI 2016 – Aliens（参数化搜索 + DP）
   - env_name: core_git_env
     env_num: 1
+    dataset: ""
     env_params:
       repo_name: "aliens_project"
       task_config_path: "reqs/aliens.json"
