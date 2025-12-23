@@ -22,24 +22,20 @@ if [ -f "${SCRIPT_DIR}/.env" ]; then
 fi
 
 export PYTHONBUFFERED=16
-
-# # for Qwen3-4B-Instruct-2507: ensure rotary_base matches HF rope_theta
-# export MODEL_ARGS_ROTARY_BASE=5000000
-# Load model configuration (uses MODEL_ARGS_ROTARY_BASE)
-source "/root/slime/scripts/models/qwen2.5-7B.sh"
+NUM_GPUS=${NUM_GPUS:-8}
 
 CKPT_ARGS=(
-   --hf-checkpoint Qwen/Qwen2.5-7B-Instruct
-   --ref-load /root/steai-yinzhenyun/Qwen2.5-7B-Instruct_torch_dist
-   --load /root/steai-yinzhenyun/Qwen2.5-7B-Instruct_slime
-   --save /root/steai-yinzhenyun/Qwen2.5-7B-Instruct_slime
-   --save-interval 20
+   --hf-checkpoint /root/steai-yinzhenyun/Qwen3-VL-4B-Instruct
+   --ref-load /root/steai-yinzhenyun/Qwen3-VL-4B-Instruct
+   --load /root/steai-yinzhenyun/Qwen3-VL-4B-Instruct_fsdp_slime
+   --save /root/steai-yinzhenyun/Qwen3-VL-4B-Instruct_fsdp_slime
+   --save-interval 10
 )
 
 ROLLOUT_ARGS=(
    --rollout-function-path rl.rollout_buffer_slime.generate_rollout
    --rollout-buffer-url ${ROLLOUT_BUFFER_URL}
-   --prompt-data ${SCRIPT_DIR}/dummy.jsonl
+   --prompt-data ${SCRIPT_DIR}/dummy_vl.jsonl
    --input-key prompt
    --rollout-shuffle
    --num-rollout 300
@@ -52,17 +48,19 @@ ROLLOUT_ARGS=(
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 2
-   --sequence-parallel
-   --pipeline-model-parallel-size 1
-   --context-parallel-size 1
-   --expert-model-parallel-size 1
-   --expert-tensor-parallel-size 1
-   --recompute-granularity full
-   --recompute-method uniform
-   --recompute-num-layers 1
+   --balance-data
    --use-dynamic-batch-size
    --max-tokens-per-gpu 9216
+)
+
+FSDP_ARGS=(
+   --train-backend fsdp
+   --update-weight-buffer-size $((512 * 1024 * 1024))
+   --gradient-checkpointing
+   --sglang-attention-backend fa3
+   # Use PyTorch SDPA instead of FlashAttention3 to avoid missing FA3 dependency errors.
+   --attn-implementation flash_attention_3
+   --train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}'
 )
 
 GRPO_ARGS=(
@@ -95,23 +93,17 @@ WANDB_ARGS=(
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1
-   --sglang-mem-fraction-static 0.7
+   --sglang-mem-fraction-static 0.9
+   --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
    --sglang-log-level error
    --sglang-log-level-http error
 )
 
-MISC_ARGS=(
-   --attention-dropout 0.0
-   --hidden-dropout 0.0
-   --accumulate-allreduce-grads-in-fp32
-   --attention-softmax-in-fp32
-   --attention-backend flash
-   --calculate-per-token-loss
-)
+MISC_ARGS=()
 
 # Start Ray
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats
 
 export SGLANG_LOGGING_CONFIG_PATH=${SGLANG_LOGGING_CONFIG_PATH:-"/root/AIEvoBox/rl/sglang_logging.json"}
 
@@ -126,17 +118,18 @@ RUNTIME_ENV_JSON="{\
 
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- python3 /root/slime/train_async.py \
+   -- python3 /root/zeocax/pip-e/slime-vl/train_async.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 4 \
-   --rollout-num-gpus 4 \
-   ${MODEL_ARGS[@]} \
+   --actor-num-gpus-per-node 2 \
+   --rollout-num-gpus 2 \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
    ${OPTIMIZER_ARGS[@]} \
    ${GRPO_ARGS[@]} \
    ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
+   ${FSDP_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
    ${MISC_ARGS[@]} \
+   --multimodal-keys '{"image": "images"}' \
    --disable-rewards-normalization
