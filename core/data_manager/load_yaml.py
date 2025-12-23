@@ -1,7 +1,24 @@
 import os
 import yaml
 import json
-from typing import Dict, List
+from typing import Any, Dict, List
+
+import numpy as np
+
+
+def _convert_numpy_types(obj: Any) -> Any:
+    """递归转换 numpy 类型为 Python 原生类型"""
+    if isinstance(obj, np.ndarray):
+        return [_convert_numpy_types(item) for item in obj.tolist()]
+    elif isinstance(obj, np.generic):
+        # 处理所有 numpy 标量类型
+        return obj.item()
+    elif isinstance(obj, dict):
+        return {k: _convert_numpy_types(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_convert_numpy_types(item) for item in obj]
+    return obj
+
 
 def load_dataset_file(base_dir: str, path: str):
         """
@@ -53,10 +70,10 @@ def load_dataset_file(base_dir: str, path: str):
                     import pandas as pd
                 except ImportError:
                     raise ImportError("加载parquet文件需要安装pandas: pip install pandas pyarrow")
-                
+
                 df = pd.read_parquet(path)
-                # 将DataFrame转换为字典列表
-                data_list = df.to_dict(orient="records")
+                # 将DataFrame转换为字典列表，并转换 numpy 类型
+                data_list = [_convert_numpy_types(row) for row in df.to_dict(orient="records")]
 
             else:
                 raise ValueError(f"不支持的文件格式: {ext}，仅支持 json/jsonl/yaml/parquet")

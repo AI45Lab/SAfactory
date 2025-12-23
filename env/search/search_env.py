@@ -8,30 +8,13 @@ import gymnasium as gym
 import matplotlib.pyplot as plt
 import requests
 import yaml
-from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
-from functools import wraps
-import time
 
 from core.env.base_env import BaseEnv
 from core.env.env_register import register_env
 from core.types.base import RenderOutput, ResetOutput, StepOutput
 
 logger = logging.getLogger(__name__)
-
-# 全局数据集缓存，避免重复加载
-_dataset_cache: Dict[str, "pd.DataFrame"] = {}
-
-
-def _get_cached_dataset(dataset_path: str) -> "pd.DataFrame":
-    """获取缓存的数据集，避免重复加载 parquet 文件"""
-    import pandas as pd
-
-    if dataset_path not in _dataset_cache:
-        logger.info(f"Loading dataset from {dataset_path}")
-        _dataset_cache[dataset_path] = pd.read_parquet(dataset_path)
-        logger.info(f"Dataset loaded: {len(_dataset_cache[dataset_path])} rows")
-    return _dataset_cache[dataset_path]
 
 
 @register_env("search")
@@ -40,56 +23,46 @@ class SearchEnv(BaseEnv):
     一个基于 Web 搜索的问答环境。
 
     - observation_space: 当前问题 + 多轮对话历史（压缩为文本）
-    - action_space: LLM 的完整回复字符串（包含 <think>、<tool_use> 等）
+    - action_space: LLM 的完整回复字符串（包含 <function_call> 等）
     - get_task_prompt(): 返回 system + user，两者共同编码当前对话历史
-    - step(action): 解析 LLM 回复中的 <tool_use name="search"> 调用，执行搜索，
-      并将 <tool_result> 形式的结果追加到对话历史（作为 user 消息）
+    - step(action): 解析 LLM 回复中的 <function_call> 调用，执行搜索，
+      并将 <function_result> 形式的结果追加到对话历史（作为 user 消息）
     - render(): 将最近几轮对话绘制成简单图片，方便可视化
     """
 
     def __init__(
         self,
-        dataset: Optional[Dict[str, Any]] = None,
-        dataset_path: Optional[str] = None,
-        dataset_index: Optional[int] = None,
-        top_k: Optional[int] = None,
-        search_api_url: Optional[str] = None,
-        search_timeout: Optional[float] = None,
-        judge: Optional[Dict[str, Any]] = None,
+        dataset: Dict[str, Any],
+        config_path: Optional[str] = None,
         env_id: str = "",
         env_name: str = "",
     ) -> None:
         """
         Args:
-            dataset: 自动展开的数据集行数据，包含 question 和 golden_answers 字段（新格式，优先使用）
-            dataset_path: parquet 数据集路径（旧格式，仅在 dataset 为空时使用）
-            dataset_index: 使用数据集中的哪一行（旧格式，仅在 dataset 为空时使用）
-            top_k: 搜索返回的最大结果数
-            search_api_url: 检索服务的 URL
-            search_timeout: 搜索超时时间
-            judge: LLM 判别器配置
+            dataset: 数据集行数据，包含 question 和 golden_answers 字段
+            config_path: 运行时配置文件路径（默认使用同目录下的 search_env_runtime.yaml）
         """
         super().__init__(env_id=env_id, env_name=env_name)
 
+        # ---- 从运行时配置文件加载参数 ----
+        if config_path is None:
+            config_path = str(Path(__file__).with_name("search_env_runtime.yaml"))
+
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                runtime_cfg = yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            logger.warning(f"Runtime config not found: {config_path}, using defaults")
+            runtime_cfg = {}
+
+        top_k = runtime_cfg.get("top_k")
+        search_api_url = runtime_cfg.get("search_api_url")
+        search_timeout = runtime_cfg.get("search_timeout")
+        judge_url = runtime_cfg.get("judge_url")
+
         # ---- 获取 question / ground_truth ----
-        # 优先使用自动展开的 dataset 参数（新格式）
-        if dataset and isinstance(dataset, dict) and dataset.get("question"):
-            question = dataset.get("question")
-            answers = dataset.get("golden_answers")
-        else:
-            # 回退到旧格式：从 dataset_path 加载
-            if dataset_path is None:
-                raise ValueError("SearchEnv requires either 'dataset' (auto-expanded) or 'dataset_path', but none was provided.")
-
-            # 使用缓存，避免重复加载 parquet 文件
-            df = _get_cached_dataset(str(dataset_path))
-            idx = int(dataset_index) if dataset_index is not None else 0
-            if idx < 0 or idx >= len(df):
-                raise IndexError(f"dataset_index {idx} out of range for dataset of size {len(df)}")
-            row = df.iloc[idx]
-
-            question = row.get("question")
-            answers = row.get("golden_answers")
+        question = dataset.get("question")
+        answers = dataset.get("golden_answers")
 
         if question is None:
             raise ValueError("SearchEnv requires a question column in dataset, but got None.")
@@ -117,22 +90,8 @@ class SearchEnv(BaseEnv):
         self.search_api_url: str = str(search_api_url if search_api_url is not None else "http://100.99.186.41:8000/retrieve")
         self.search_timeout: float = float(search_timeout if search_timeout is not None else 10.0)
 
-        # LLM 判别器配置（可选）
-        judge_cfg = judge if judge is not None else {}
-        judge_api_key = judge_cfg.get("api_key") or ""
-        judge_base_url = judge_cfg.get("base_url") or ""
-        judge_model = judge_cfg.get("model") or ""
-        judge_temperature = float(judge_cfg.get("temperature", 0.0))
-
-        self._judge_client: Optional[OpenAI] = None
-        self._judge_model: Optional[str] = None
-        self._judge_temperature: float = float(judge_temperature)
-        if judge_base_url:
-            self._judge_client = OpenAI(
-                api_key=str(judge_api_key),
-                base_url=str(judge_base_url),
-            )
-            self._judge_model = str(judge_model)
+        # Judge API URL
+        self._judge_url: Optional[str] = judge_url
 
         # 环境状态
         self.step_count: int = 0
@@ -148,19 +107,6 @@ class SearchEnv(BaseEnv):
         # 当前环境不依赖 observation 内容，这里给一个空的 Dict 空间
         self.observation_space = gym.spaces.Dict({})
 
-    def format_validate(self, action: str, is_final_action: bool = False) -> bool:
-        """
-        验证 action 格式是否符合预期。
-        """
-        if is_final_action:
-            # 对于最终答案，不能包含工具调用
-            if "<tool_use>" in action:
-                return False
-        # 任何情况下都不能包含工具结果
-        if "<tool_result>" in action:
-            return False
-        return True
-
     # ------------------------------------------------------------------
     # 环境核心接口
     # ------------------------------------------------------------------
@@ -171,16 +117,17 @@ class SearchEnv(BaseEnv):
         self.total_search_calls = 0
         self.final_answer = None
 
-        system_text = """You are an intelligent assistant.
-Your goal is to answer the user's question as accurately and concisely as possible.
-You MUST first think in <think>...</think> whenever you receive new information.
-If, after thinking, you find that you need external knowledge, you may call the search tool exactly as:
-  <tool_use name="search">{"query": "real_query"}</tool_use>
-The environment will then send you another user message containing the search results, formatted as:
-  <tool_result>{"result": [{"title": "title text", "content": "short summary"}, ...]}</tool_result>
-You may use the search tool multiple times across the conversation, but at most once per message.
-When you have enough information, stop calling tools and reply with the final answer in natural language, without any special tags.
-"""
+        system_text = """# Tools
+You may call one or more functions to assist with the user query.
+You are provided with function signatures within <function>...</function> XML tags:
+<function>
+{"name": "search", "description": "Search external knowledge to answer user questions", "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Search query string"}}, "required": ["query"]}}
+</function>
+
+For each function call, return a json object with function name and arguments within <function_call></function_call> XML tags:
+<function_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</function_call>"""
         # 初始化完整 messages：system + 首条 user（问题）
         self.messages = [
             {"role": "system", "content": system_text},  # type: ignore[typeddict-item]
@@ -206,9 +153,9 @@ When you have enough information, stop calling tools and reply with the final an
         """
         接收 LLM 的回复：
         - 追加到对话历史（assistant）
-        - 若包含 <tool_use name="search"> 调用，则执行一次搜索并追加 <tool_result> 消息
+        - 若包含 <function_call> 调用，则执行一次搜索并追加 <function_result> 消息
         - 若不包含工具调用，则视为已经给出最终答案，直接终止 episode
-        - 奖励：query 步（成功解析工具调用）给 1；answer 步若配置了 LLM 判别器则根据正确性给 0/1
+        - 奖励：answer 步根据 judge API 返回的正确性给 0/1
         """
         self.step_count += 1
 
@@ -221,7 +168,7 @@ When you have enough information, stop calling tools and reply with the final an
             "total_search_calls": self.total_search_calls,
             "num_messages": len(self.messages),
             "final_answer": self.final_answer,
-            "judger": extra_info.get("judger"),
+            "judger": extra_info.get("judger", {}),
             "conversation": list(self.messages),
         }
 
@@ -300,15 +247,21 @@ When you have enough information, stop calling tools and reply with the final an
             {"role": "assistant", "content": msg}  # type: ignore[typeddict-item]
         )
 
-        reward: float = 0.0
-        judge_result: Optional[Dict[str, Any]] = None
+        msg = re.sub(r"<think>.*?</think>", "", msg, flags=re.DOTALL).strip()
 
+        reward: float = 0.0
         # 尝试解析单个 search 工具调用
         query = self._extract_search_query(msg)
-        is_final_action = False
-        llm_as_a_judge_score: float = 0.0
+
         # case 1: 存在工具调用 -> 执行一次搜索，并继续对话（不终止）
         if query:
+            if "<function_result>" in msg or "</function_result>" in msg:
+                terminated = True
+                truncated = False
+                self.done = True
+                reward = 0.0
+                return reward, terminated, truncated, {}
+
             results = self._run_web_search(query)
             logger.info(
                 "[SearchEnv] search query: %s",
@@ -317,16 +270,17 @@ When you have enough information, stop calling tools and reply with the final an
             self.total_search_calls += 1
             payload = {"result": results}
             self.messages.append(
-                {"role": "user", "content": f"<tool_result>{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}</tool_result>"}  # type: ignore[typeddict-item]
+                {"role": "user", "content": f"<function_result>\n{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n</function_result>"}  # type: ignore[typeddict-item]
             )
-
             terminated = False
             truncated = False
+            return reward, terminated, truncated, {}
+
 
         # case 2: 无工具调用 -> 视为已经给出最终答案，调用 LLM 判别器打分
         else:
-            is_final_action = True
-            self.final_answer = re.sub(r"<think>.*?</think>", "", msg, flags=re.DOTALL).strip()
+            
+            self.final_answer = msg
             logger.info(
                 "[SearchEnv] final answer: %s",
                 self.final_answer
@@ -335,142 +289,75 @@ When you have enough information, stop calling tools and reply with the final an
             truncated = False
             self.done = True
 
-            # 若配置了判别器则用 LLM 打 0/1 分
-            try:
-                judge_result = self._llm_judge(
-                    question=self.question, answer=self.final_answer
-                )
-                logger.debug(
-                    "[SearchEnv] llm judge ground truth: %s",
-                    " or ".join(self.ground_truth)
-                )
-                logger.debug(
-                    "[SearchEnv] llm judge score=%f", 
-                    judge_result.get("score", 0.0) or 0.0
-                )
-                llm_as_a_judge_score = judge_result.get("score", 0.0) or 0.0
-            except Exception as e:
-                logger.error(
-                    "[SearchEnv] llm judge error: %s", 
-                    e
-                )
-                judge_result = {"error": f"{type(e).__name__}: {e}"}
-                
-        # apply format validate
-        if not self.format_validate(msg, is_final_action):
-            reward = 0.0
-        else:
-            reward = max(0.1, llm_as_a_judge_score)
-        extra_info: Dict[str, Any] = {"judger": judge_result}
-        return reward, terminated, truncated, extra_info
+            if "<function_call>" in msg or "</function_call>" in msg or "<function_result>" in msg or "</function_result>" in msg:
+                reward = 0.0
+                return reward, terminated, truncated, {}
+
+            # 调用 judge API 打分
+            judge_result = self._judge_answer(
+                question=self.question, answer=self.final_answer
+            )
+            reward = max(0.1, judge_result.get("score"))
+            return reward, terminated, truncated, {"judger": judge_result}
     
-    def _parse_judge_response(self, raw: str) -> dict:
-        """用正则提取 score 和 explanation"""
-        score_match = re.search(r'"score"\s*:\s*(\d+)', raw)
-        expl_match = re.search(r'"explanation"\s*:\s*"(.+?)"\s*,\s*"score"', raw, re.DOTALL)
-
-        if score_match and expl_match:
-            return {
-                "explanation": expl_match.group(1),
-                "score": int(score_match.group(1)),
-            }
-        raise ValueError(f"No valid JSON with 'explanation' and 'score' found in: {raw}")
-
-
-    def retry(max_retries: int = 10, sleep: int = 1, exceptions: tuple = (Exception,)):
-        def decorator(func):
-            @wraps(func)
-            def wrapper(*args, **kwargs):
-                last_exception = None
-                for i in range(max_retries):
-                    try:
-                        return func(*args, **kwargs)
-                    except exceptions as e:
-                        logger.error(f"Error in {func.__name__}, retry {i+1} of {max_retries}: {type(e).__name__}")
-                        last_exception = e
-                        if i < max_retries - 1 and sleep:
-                            time.sleep(sleep)
-                raise last_exception
-            return wrapper
-        return decorator
-
-    @retry(max_retries=5, sleep=1, exceptions=(Exception,))
-    def _llm_judge(self, question: str, answer: str) -> Dict[str, Any]:
+    def _judge_answer(self, question: str, answer: str) -> Dict[str, Any]:
         """
-        使用配置好的 LLM 对 (question, answer) 进行打分。
+        调用 judge API 对 (question, answer) 进行打分。
 
         返回：
         {
-          "score": 0 或 1,
+          "score": 0.0 或 1.0,
           "explanation": str,
-          "raw_response": str
         }
         """
-        if self._judge_client is None or self._judge_model is None:
-            raise RuntimeError("LLM judger is not configured for this SearchEnv.")
+        if self._judge_url is None:
+            raise RuntimeError("Judge URL is not configured for this SearchEnv.")
 
-        prompt_system = """You are a strict evaluator for question-answer pairs.
-Given a user question, a list of ground-truth answers, and a candidate answer, you must decide whether the candidate answer is correct (1) with respect to at least one ground-truth answer, or incorrect (0).
-Respond ONLY with a JSON object of the form:
-{"explanation": "<short explanation>", "score": 0 or 1}"""
-
-        # 将 ground truth 列表格式化到 prompt 中
-        gt_lines = [f"- {gt}" for gt in (self.ground_truth or [])]
-        gt_block = "\n".join(gt_lines) if gt_lines else "(none provided)"
-
-        prompt_user = f"""Question:
-{question}
-
-Ground-truth answers (list):
-{gt_block}
-
-Candidate Answer:
-{answer}
-
-Now produce the JSON object."""
-        response = self._judge_client.chat.completions.create(
-            model=self._judge_model,
-            messages=[
-                {"role": "system", "content": prompt_system},
-                {"role": "user", "content": prompt_user},
-            ],
-            temperature=self._judge_temperature
-        )
-
-        raw = (response.choices[0].message.content or "").strip()
-        
-        obj = self._parse_judge_response(raw)
+        payload = {
+            "question": question,
+            "answer": answer,
+            "ground_truth": self.ground_truth,
+        }
+        resp = requests.post(self._judge_url, json=payload, timeout=30.0)
+        resp.raise_for_status()
+        data = resp.json()
 
         return {
-            "score": float(obj.get("score", 0.0)),
-            "explanation": obj.get("explanation", ""),
-            "raw_response": raw,
+            "score": 1.0 if data.get("correct") == "yes" else 0.0,
+            "explanation": data.get("reasoning", ""),
         }
 
     @staticmethod
     def _extract_search_query(text: str) -> Optional[str]:
         """
-        从 LLM 回复中提取 <tool_use name="search"> 的 query 字符串。
+        从 LLM 回复中提取 <function_call> 的 search query 字符串。
 
         期望格式：
-        <tool_use name="search">{"query": "real_query"}</tool_use>
+        <function_call>
+        {"name": "search", "arguments": {"query": "real_query"}}
+        </function_call>
         """
         if not text:
             return None
 
-        pattern = re.compile(
-            r'<tool_use\s+name\s*=\s*["\']search["\']\s*>(.*?)</tool_use>',
-            re.IGNORECASE | re.DOTALL,
-        )
+        pattern = re.compile(r'<function_call>(.*?)</function_call>', re.DOTALL)
         m_block = pattern.search(text)
         if not m_block:
             return None
 
         try:
             data = json.loads(m_block.group(1).strip())
-            q = data.get("query", "")
-            return q.strip() or None if isinstance(q, str) else None
-        except (json.JSONDecodeError, AttributeError):
+            if isinstance(data, dict) and data.get("name") != "search":
+                return None
+            args = data.get("arguments", {})
+            if isinstance(args, dict):
+                q = args.get("query", "")
+                if not isinstance(q, str):
+                    return None
+                return q.strip() or None
+            else:
+                return None
+        except (json.JSONDecodeError, AttributeError, TypeError):
             return None
 
 

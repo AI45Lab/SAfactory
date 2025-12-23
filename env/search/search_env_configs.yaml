@@ -2,12 +2,4 @@ environments:
   - env_name: search
     env_num: 1
     dataset: /mnt/shared-storage-user/evobox-share/hf-hub/datasets--PeterJinGo--nq_hotpotqa_train/snapshots/b7d80abfee334a7a91cb377544f09180d58b34f6/train.parquet
-    env_params:
-      top_k: 5
-      search_api_url: "http://100.99.124.177:8000/retrieve"
-      search_timeout: 10.0
-      judge:
-        api_key: ""
-        base_url: "http://100.99.124.177:30000/v1"
-        model: ""
-        temperature: 0.0
+    # 运行时参数（top_k, search_api_url, judge 等）从 search_env_runtime.yaml 加载
