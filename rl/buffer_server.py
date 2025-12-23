@@ -309,12 +309,32 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     session_id = row.get("session_id", "")
     env_id = row.get("env_id", "")
 
+    # 从 env_state 中解析 weight_version（若存在）
+    weight_version = 0
+    env_state_raw = row.get("env_state")
+    if env_state_raw:
+        try:
+            state = json.loads(env_state_raw)
+            wv = state.get("weight_version")
+            if wv is None:
+                weight_version = 0
+            elif isinstance(wv, str) and wv == "default":
+                weight_version = 0
+            else:
+                try:
+                    weight_version = int(wv)
+                except Exception:
+                    weight_version = 0
+        except Exception:
+            weight_version = 0
+
     extra_info = {
         "timestamp": _parse_timestamp(row.get("session_end_time")) or _parse_timestamp(row.get("timestamp")) or time.time(),
         "steps": row.get("step_id", 0),
         "finish_reason": "stop",
         "session_id": session_id,
         "env_id": env_id,
+        "weight_version": weight_version,
     }
 
     return {
@@ -441,12 +461,31 @@ async def get_rollout_data(request: Request):
 
     total_samples = len(ready_items)
     avg_reward = sum(raw_rewards) / len(raw_rewards) if raw_rewards else 0.0
+
+    # 统计权重版本信息，用于后续在 Slime 侧计算数据 age
+    weight_versions: List[int] = []
+    for item in ready_items:
+        extra = item.get("extra_info") or {}
+        wv = extra.get("weight_version", 0)
+        try:
+            weight_versions.append(int(wv))
+        except Exception:
+            weight_versions.append(0)
+
+    if weight_versions:
+        max_wv = max(weight_versions)
+        mean_wv = sum(weight_versions) / len(weight_versions)
+    else:
+        max_wv = 0.0
+        mean_wv = 0.0
     finished_groups = list(sorted(set(finished_ids)))
 
     meta_info = {
         "total_samples": total_samples,
         "avg_reward": avg_reward,
         "finished_groups": finished_groups,
+        "avg_weight_version": mean_wv,
+        "max_weight_version": max_wv,
     }
 
     if total_samples == 0:

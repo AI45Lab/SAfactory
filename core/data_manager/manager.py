@@ -241,6 +241,7 @@ class DataManager:
                 "prompt": step.prompt,
                 "response": step.response,
                 "reward": step.reward,
+                "env_state": step.env_state,
                 "timestamp": step.timestamp.isoformat() if step.timestamp else None,
                 "done": step.done,
                 "session_id": session.session_id if session else None,

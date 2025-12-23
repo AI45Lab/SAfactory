@@ -197,25 +197,40 @@ def log_raw_info(args, all_meta_info, rollout_id):
                 if "avg_reward" in meta and "total_samples" in meta
             )
 
-            final_meta_info.update(
-                {
-                    "avg_reward": weighted_reward_sum / total_samples,
-                }
-            )
+            final_meta_info["avg_reward"] = weighted_reward_sum / total_samples
+
             if hasattr(args, "use_wandb") and args.use_wandb:
                 log_dict = {
-                    f"rollout/no_filter/total_samples": final_meta_info["total_samples"],
-                    f"rollout/no_filter/avg_reward": final_meta_info["avg_reward"],
+                    "rollout/total_samples": final_meta_info["total_samples"],
+                    "rollout/avg_reward": final_meta_info["avg_reward"],
                 }
                 try:
+                    # 当前版本：使用 rollout 对应的“train step”近似
                     step = (
                         rollout_id
                         if not args.wandb_always_use_train_step
                         else rollout_id * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
                     )
+
+                    # 计算被使用数据的平均 age（step - 生成时版本）
+                    # Buffer Server 在 meta_info 中提供 avg_weight_version（按样本数加权的权重版本）
+                    weighted_version_sum = sum(
+                        meta.get("avg_weight_version", 0.0) * meta["total_samples"]
+                        for meta in all_meta_info
+                        if "total_samples" in meta
+                    )
+                    if total_samples > 0:
+                        avg_weight_version = weighted_version_sum / total_samples
+                        # 对齐 step 与 version：初始时我们已经做过一次 update_weights，
+                        # 所以可以用 (step + 1) 近似当前版本，这样第一步 age=0。
+                        avg_data_age = (step + 1) - avg_weight_version
+                        final_meta_info["avg_weight_version"] = avg_weight_version
+                        final_meta_info["avg_data_age"] = avg_data_age
+                        log_dict["rollout/avg_data_age"] = avg_data_age
+
                     if args.use_wandb:
                         log_dict["rollout/step"] = step
-                        wandb.log(log_dict)
+                        wandb.log(log_dict, step=step)
 
                     if args.use_tensorboard:
                         from slime.utils.tensorboard_utils import _TensorboardAdapter

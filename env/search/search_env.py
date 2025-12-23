@@ -10,6 +10,8 @@ import requests
 import yaml
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
+from functools import wraps
+import time
 
 from core.env.base_env import BaseEnv
 from core.env.env_register import register_env
@@ -365,7 +367,38 @@ When you have enough information, stop calling tools and reply with the final an
             reward = max(0.1, llm_as_a_judge_score)
         extra_info: Dict[str, Any] = {"judger": judge_result}
         return reward, terminated, truncated, extra_info
+    
+    def _parse_judge_response(self, raw: str) -> dict:
+        """用正则提取 score 和 explanation"""
+        score_match = re.search(r'"score"\s*:\s*(\d+)', raw)
+        expl_match = re.search(r'"explanation"\s*:\s*"(.+?)"\s*,\s*"score"', raw, re.DOTALL)
 
+        if score_match and expl_match:
+            return {
+                "explanation": expl_match.group(1),
+                "score": int(score_match.group(1)),
+            }
+        raise ValueError(f"No valid JSON with 'explanation' and 'score' found in: {raw}")
+
+
+    def retry(max_retries: int = 10, sleep: int = 1, exceptions: tuple = (Exception,)):
+        def decorator(func):
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                last_exception = None
+                for i in range(max_retries):
+                    try:
+                        return func(*args, **kwargs)
+                    except exceptions as e:
+                        logger.error(f"Error in {func.__name__}, retry {i+1} of {max_retries}: {type(e).__name__}")
+                        last_exception = e
+                        if i < max_retries - 1 and sleep:
+                            time.sleep(sleep)
+                raise last_exception
+            return wrapper
+        return decorator
+
+    @retry(max_retries=5, sleep=1, exceptions=(Exception,))
     def _llm_judge(self, question: str, answer: str) -> Dict[str, Any]:
         """
         使用配置好的 LLM 对 (question, answer) 进行打分。
@@ -381,57 +414,40 @@ When you have enough information, stop calling tools and reply with the final an
             raise RuntimeError("LLM judger is not configured for this SearchEnv.")
 
         prompt_system = """You are a strict evaluator for question-answer pairs.
-Given a user question, a list of ground-truth answers, and a candidate answer, you must decide whether the candidate answer is essentially correct and sufficient (1) with respect to at least one ground-truth answer, or incorrect/insufficient (0).
+Given a user question, a list of ground-truth answers, and a candidate answer, you must decide whether the candidate answer is correct (1) with respect to at least one ground-truth answer, or incorrect (0).
 Respond ONLY with a JSON object of the form:
-{"score": 0 or 1, "explanation": "<short explanation>"}"""
+{"explanation": "<short explanation>", "score": 0 or 1}"""
 
         # 将 ground truth 列表格式化到 prompt 中
         gt_lines = [f"- {gt}" for gt in (self.ground_truth or [])]
         gt_block = "\n".join(gt_lines) if gt_lines else "(none provided)"
 
-        prompt_user = (
-            "Question:\n"
-            f"{question}\n\n"
-            "Ground-truth answers (list):\n"
-            f"{gt_block}\n\n"
-            "Candidate Answer:\n"
-            f"{answer}\n\n"
-            "Now produce the JSON object."
-        )
+        prompt_user = f"""Question:
+{question}
+
+Ground-truth answers (list):
+{gt_block}
+
+Candidate Answer:
+{answer}
+
+Now produce the JSON object."""
         response = self._judge_client.chat.completions.create(
             model=self._judge_model,
             messages=[
                 {"role": "system", "content": prompt_system},
                 {"role": "user", "content": prompt_user},
             ],
-            temperature=self._judge_temperature,
-            max_tokens=1024
+            temperature=self._judge_temperature
         )
 
         raw = (response.choices[0].message.content or "").strip()
-        score = 0.0
-        explanation = ""
-
-        try:
-            text = raw
-            start = text.find("{")
-            end = text.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                json_str = text[start : end + 1]
-            else:
-                json_str = text
-
-            data = json.loads(json_str)
-            score_int = int(data.get("score", 0) or 0)
-            score = 1.0 if score_int == 1 else 0.0
-            explanation = str(data.get("explanation", "") or "").strip()
-        except Exception:
-            explanation = raw
-            score = 0.0
+        
+        obj = self._parse_judge_response(raw)
 
         return {
-            "score": float(score),
-            "explanation": explanation,
+            "score": float(obj.get("score", 0.0)),
+            "explanation": obj.get("explanation", ""),
             "raw_response": raw,
         }
 
