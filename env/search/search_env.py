@@ -49,53 +49,48 @@ class SearchEnv(BaseEnv):
 
     def __init__(
         self,
+        dataset: Optional[Dict[str, Any]] = None,
         dataset_path: Optional[str] = None,
         dataset_index: Optional[int] = None,
-        config_path: Optional[str] = None,
+        top_k: Optional[int] = None,
+        search_api_url: Optional[str] = None,
+        search_timeout: Optional[float] = None,
+        judge: Optional[Dict[str, Any]] = None,
         env_id: str = "",
         env_name: str = "",
     ) -> None:
         """
         Args:
-            dataset_path: parquet 数据集路径，必须提供，用于从数据集中读取 question / ground_truth
-            dataset_index: 使用数据集中的哪一行（问题索引）
-        其他环境参数（top_k、search_api_url、judger 配置等）统一从配置文件中加载，
-        不再通过构造函数显式传入。
+            dataset: 自动展开的数据集行数据，包含 question 和 golden_answers 字段（新格式，优先使用）
+            dataset_path: parquet 数据集路径（旧格式，仅在 dataset 为空时使用）
+            dataset_index: 使用数据集中的哪一行（旧格式，仅在 dataset 为空时使用）
+            top_k: 搜索返回的最大结果数
+            search_api_url: 检索服务的 URL
+            search_timeout: 搜索超时时间
+            judge: LLM 判别器配置
         """
         super().__init__(env_id=env_id, env_name=env_name)
 
-        # ---- 从配置文件加载通用参数 ----
-        if config_path is None:
-            # 默认使用与本文件同目录下的 search_env_runtime.yaml
-            default_path = Path(__file__).with_name("search_env_runtime.yaml")
-            config_path = str(default_path)
-
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f) or {}
-        except FileNotFoundError:
-            cfg = {}
-
-        # ---- 解析数据集路径 ----
-        if dataset_path is None:
-            # 优先读取顶层 dataset_path，兼容旧版 dataset.path
-            dataset_path = cfg.get("dataset_path")
+        # ---- 获取 question / ground_truth ----
+        # 优先使用自动展开的 dataset 参数（新格式）
+        if dataset and isinstance(dataset, dict) and dataset.get("question"):
+            question = dataset.get("question")
+            answers = dataset.get("golden_answers")
+        else:
+            # 回退到旧格式：从 dataset_path 加载
             if dataset_path is None:
-                ds_cfg = cfg.get("dataset", {}) or {}
-                dataset_path = ds_cfg.get("path")
-        if dataset_path is None:
-            raise ValueError("SearchEnv requires dataset_path (either argument or config.dataset_path), but none was provided.")
+                raise ValueError("SearchEnv requires either 'dataset' (auto-expanded) or 'dataset_path', but none was provided.")
 
-        # ---- 从数据集获取 question / ground_truth ----
-        # 使用缓存，避免重复加载 parquet 文件
-        df = _get_cached_dataset(str(dataset_path))
-        idx = int(dataset_index) if dataset_index is not None else 0
-        if idx < 0 or idx >= len(df):
-            raise IndexError(f"dataset_index {idx} out of range for dataset of size {len(df)}")
-        row = df.iloc[idx]
+            # 使用缓存，避免重复加载 parquet 文件
+            df = _get_cached_dataset(str(dataset_path))
+            idx = int(dataset_index) if dataset_index is not None else 0
+            if idx < 0 or idx >= len(df):
+                raise IndexError(f"dataset_index {idx} out of range for dataset of size {len(df)}")
+            row = df.iloc[idx]
 
-        question = row.get("question")
-        answers = row.get("golden_answers")
+            question = row.get("question")
+            answers = row.get("golden_answers")
+
         if question is None:
             raise ValueError("SearchEnv requires a question column in dataset, but got None.")
 
@@ -115,14 +110,15 @@ class SearchEnv(BaseEnv):
         # 归一化 ground truth，统一为字符串列表
         self.ground_truth: List[str] = [str(x) for x in ground_truth]
 
-        self.top_k: int = int(cfg.get("top_k", 5))
+        # 使用传入参数，提供默认值
+        self.top_k: int = int(top_k if top_k is not None else 5)
 
         # 检索服务配置
-        self.search_api_url: str = str(cfg.get("search_api_url", "http://100.99.186.41:8000/retrieve"))
-        self.search_timeout: float = float(cfg.get("search_timeout", 10.0))
+        self.search_api_url: str = str(search_api_url if search_api_url is not None else "http://100.99.186.41:8000/retrieve")
+        self.search_timeout: float = float(search_timeout if search_timeout is not None else 10.0)
 
-        # LLM 判别器配置（可选），统一从配置中读取
-        judge_cfg = cfg.get("judge", {}) or {}
+        # LLM 判别器配置（可选）
+        judge_cfg = judge if judge is not None else {}
         judge_api_key = judge_cfg.get("api_key") or ""
         judge_base_url = judge_cfg.get("base_url") or ""
         judge_model = judge_cfg.get("model") or ""
