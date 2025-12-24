@@ -17,22 +17,58 @@ embodiedgym/
 
 ### 1. 前置依赖
 
-确保已安装以下依赖：
+请按照以下步骤安装和配置环境：
 
 ```bash
-# EmbodiedBench 依赖
-cd /Users/gaozhenkun/study/eaieval/EmbodiedBench-master
-pip install -r requirements.txt
+# 1. 克隆 AIEvoBox 仓库
+git clone https://gitee.pjlab.org.cn/L2/safeai/kilab/AIEvoBox.git
 
-# AI2THOR 模拟器
-pip install ai2thor
+# 2. 进入 embodiedgym 目录
+# 注意：根据实际克隆后的目录名称可能为 AIEvoBox 或 AIEvoBox-new
+cd AIEvoBox/env/embodiedgym
 
-# AIEvoBox 依赖
-cd /Users/gaozhenkun/study/eval/AIEvoBox
-pip install -r requirements.txt
+# 3. 克隆 EmbodiedBench
+git clone git@github.com:EmbodiedBench/EmbodiedBench.git
+
+# 4. 创建并激活 Conda 环境
+# 进入 EmbodiedBench 源码目录 (如果克隆下来的目录名是 EmbodiedBench-master 请相应修改)
+cd EmbodiedBench-master
+conda env create -f conda_envs/envir.yaml --prefix /root/envs/embench1
+conda activate /root/envs/embench1
+pip install -e .
+
+# 5. 安装系统依赖
+sudo apt-get update
+sudo apt-get install -y xvfb
+# 启动 Xvfb
+Xvfb :1 -screen 0 1024x768x24 &
+
+# 安装字体
+apt-get update
+apt-get install -y fonts-ubuntu
+
+# 6. 配置 AI2THOR 资源
+# 复制预下载的 AI2THOR 数据
+cp -r /mnt/shared-storage-user/evobox-share/gaozhenkun/gzk/ai2thor/.ai2thor ~/.ai2thor
 ```
 
-### 2. 启动 VLLM 服务
+### 2. 数据准备
+
+下载并配置 EB-ALFRED 数据集：
+
+```bash
+# 确保在环境中
+conda activate embench1
+
+# 下载数据集
+git clone https://huggingface.co/datasets/EmbodiedBench/EB-ALFRED
+
+# 移动数据到指定目录
+# 注意：以下操作假设当前目录为 EmbodiedBench-master
+mv EB-ALFRED embodiedbench/envs/eb_alfred/data/json_2.1.0
+```
+
+### 3. 启动 VLLM 服务
 
 确保 VLLM 服务已启动并运行 Qwen2.5-VL-7B-Instruct 模型：
 
@@ -43,32 +79,34 @@ vllm serve /mnt/shared-storage-user/steai-share/hf-hub/Qwen2.5-VL-7B-Instruct \
     --tensor-parallel-size 1 \
     --pipeline-parallel-size 1 \
     --gpu-memory-utilization 0.9 \
-    --max_model_len 20000
+    --max_model_len 30000
 ```
 
-### 3. 运行测试
+> **注意**：启动服务后，请修改 `examples/run_8_trading_envs.sh` 中的 `baseurl` 和 `port` 为实际服务地址。
+
+### 4. 运行测试
 
 测试环境是否正常工作：
 
 ```bash
-cd /Users/gaozhenkun/study/eval/AIEvoBox/env/embodiedgym
+cd /AIEvoBox/env/embodiedgym
 python test_embodied_env.py
 ```
 
-### 4. 运行示例
+### 5. 运行示例
 
 #### 方式 1：使用 Python 脚本
 
 ```bash
-cd /Users/gaozhenkun/study/eval/AIEvoBox
+cd /AIEvoBox
 python examples/multi_env_example.py
 ```
 
 #### 方式 2：使用 Shell 脚本
 
 ```bash
-cd /Users/gaozhenkun/study/eval/AIEvoBox
-bash examples/run_8_trading_envs.sh
+cd AIEvoBox
+bash examples/run_8_embodied_envs1.sh
 ```
 
 ## ⚙️ 配置说明
@@ -101,163 +139,7 @@ environments:
       exp_name: "test_base"
 ```
 
-## 🔧 核心类：EmbodiedAlfredGym
 
-### 初始化
-
-```python
-from env.embodiedgym.embodied_env import EmbodiedAlfredGym
-
-env = EmbodiedAlfredGym(
-    eval_set='base',
-    down_sample_ratio=1.0,
-    resolution=500,
-    max_episode_steps=30
-)
-```
-
-### 主要方法
-
-#### reset()
-重置环境到初始状态
-
-```python
-reset_output = env.reset()
-# reset_output.observation: 包含图像、指令、可用动作
-# reset_output.info: 包含 episode 信息
-```
-
-#### step(action: str)
-执行动作（LLM 输出的 JSON 字符串）
-
-```python
-llm_output = '''
-{
-    "reasoning": "需要先找到苹果",
-    "executable_plan": [
-        {"action_id": 0, "description": "find a apple"}
-    ]
-}
-'''
-
-step_output = env.step(llm_output)
-# step_output.observation: 新观测
-# step_output.reward: 奖励值
-# step_output.terminated: 是否终止
-# step_output.info: 额外信息
-```
-
-#### get_task_prompt()
-生成包含图像的多模态 prompt
-
-```python
-prompt_output = env.get_task_prompt()
-# prompt_output.system_message: System 消息
-# prompt_output.user_message: User 消息（包含图像）
-```
-
-#### render()
-渲染当前环境状态
-
-```python
-render_output = env.render()
-# render_output.image_data: 图像二进制数据
-# render_output.image_base64: Base64 编码图像
-# render_output.step: 当前步骤
-```
-
-#### close()
-关闭环境释放资源
-
-```python
-env.close()
-```
-
-## 🎯 LLM 输出格式
-
-LLM 必须输出以下 JSON 格式：
-
-```json
-{
-  "reasoning": "你的推理过程",
-  "executable_plan": [
-    {
-      "action_id": 123,
-      "description": "find a apple"
-    },
-    {
-      "action_id": 456,
-      "description": "pick up the apple"
-    }
-  ]
-}
-```
-
-**关键要求**：
-- `executable_plan` 必须是列表，至少包含一个动作
-- 每个动作必须有 `action_id`（整数，范围：0 到动作空间大小-1）
-- 可以规划多步，但建议从 1-3 个动作开始
-
-## 📊 评测集说明
-
-| 评测集 | 说明 | Episode 数量（约） |
-|--------|------|-------------------|
-| `base` | 基础评测集 | 140 |
-| `common_sense` | 常识推理 | 30 |
-| `complex_instruction` | 复杂指令 | 30 |
-| `spatial` | 空间推理 | 30 |
-| `visual_appearance` | 视觉外观 | 30 |
-| `long_horizon` | 长期规划 | 30 |
-
-## 🐛 故障排查
-
-### 1. AI2THOR 启动失败
-
-**症状**：`Failed to start AI2THOR`
-
-**解决方案**：
-- 确保系统有 X Display（Linux）或 GUI 环境
-- 检查 GPU 是否可用
-- 尝试设置环境变量：`export DISPLAY=:0`
-
-### 2. EmbodiedBench 模块未找到
-
-**症状**：`ModuleNotFoundError: No module named 'embodiedbench'`
-
-**解决方案**：
-- 检查 EmbodiedBench 路径是否正确
-- 修改 `embodied_env.py` 中的 `embodied_bench_path` 变量
-
-### 3. JSON 解析失败
-
-**症状**：步骤显示 "LLM 输出解析失败"
-
-**解决方案**：
-- 检查 LLM 输出格式是否正确
-- 确保 `executable_plan` 存在且为列表
-- 确保 `action_id` 在有效范围内
-
-### 4. 图像分辨率过大导致慢
-
-**症状**：环境运行缓慢
-
-**解决方案**：
-- 降低 `resolution` 参数（如 300）
-- 减少 `down_sample_ratio`（如 0.1）
-
-## 📝 日志和结果
-
-运行结果会保存在以下位置：
-
-```
-running/eb_alfred/{exp_name}/
-├── images/          # 每步的截图
-│   └── episode_X/
-│       └── step_Y.png
-├── results/         # 评测结果
-│   └── episode_X_final_res.json
-└── episode_X_step_Y.json  # 交互日志
-```
 
 ## 🔗 相关链接
 

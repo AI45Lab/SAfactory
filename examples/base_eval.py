@@ -27,6 +27,7 @@ from core.env.env_register import list_registered_envs
 
 DB_PATH = "sqlite://test_envs.db"
 
+
 def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(

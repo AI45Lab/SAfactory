@@ -40,6 +40,10 @@ __pycache__/
 # C extensions
 *.so
 
+# Embodiedgym
+# Ignore the EmbodiedBench-master directory
+env/embodiedgym/EmbodiedBench-master/
+
 # Distribution / packaging
 .Python
 build/

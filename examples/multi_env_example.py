@@ -53,8 +53,10 @@ async def main():
         exp_name="aievobox_alfred_spatial_test"
     )
 
+
     # 3. 初始化 LLM 配置
     base_url_provider = StaticBaseURLProvider(base_url="http://100.99.102.69:8001/v1")
+    
 
     # 4. 运行交互器
     interactor = Interactor(
