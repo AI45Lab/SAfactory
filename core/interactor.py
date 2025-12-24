@@ -4,7 +4,6 @@ import os
 import time
 from datetime import datetime
 from typing import List, Dict, Tuple, Type
-
 from .llm import LLM, BaseURLProvider
 from .data_manager.manager import DataManager
 from .data_manager.models import EnvironmentConfig, InteractionSession
@@ -131,7 +130,7 @@ class Interactor:
                     response = await llm.generate(messages=messages_cut)
                 else:
                     messages_cut += remaining_messages[-keep_count:]
-                    response = await llm.generate(messages=messages_cut)                
+                    response = await llm.generate(messages=messages_cut)
 
                 # 环境执行动作（统一接口假设：step返回(state, reward, done, info)）
                 # 使用线程池执行可能包含同步阻塞调用的 step 方法
