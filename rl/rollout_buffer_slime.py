@@ -327,9 +327,8 @@ def log_raw_info(args, all_meta_info, rollout_id):
                     )
                     if total_samples > 0:
                         avg_weight_version = weighted_version_sum / total_samples
-                        # 对齐 step 与 version：初始时我们已经做过一次 update_weights，
-                        # 所以可以用 (step + 1) 近似当前版本，这样第一步 age=0。
-                        avg_data_age = (step + 1) - avg_weight_version
+                        # 好像第0个step是1，第一个step还是1
+                        avg_data_age = max(step - avg_weight_version, 0)
                         final_meta_info["avg_weight_version"] = avg_weight_version
                         final_meta_info["avg_data_age"] = avg_data_age
                         log_dict["rollout/avg_data_age"] = avg_data_age

@@ -4,10 +4,6 @@ import os
 import time
 from datetime import datetime
 from typing import List, Dict, Tuple, Type
-import json
-import logging
-
-logger = logging.getLogger(__name__)
 
 from .llm import LLM, BaseURLProvider
 from .data_manager.manager import DataManager
@@ -135,25 +131,7 @@ class Interactor:
                     response = await llm.generate(messages=messages_cut)
                 else:
                     messages_cut += remaining_messages[-keep_count:]
-                    response = await llm.generate(messages=messages_cut)
-
-                # 从最近一次 LLM 返回的 metadata 中提取权重版本
-                weight_version_int = None
-                try:
-                    meta = getattr(llm, "last_metadata", None)
-                    if isinstance(meta, dict):
-                        wv_raw = meta.get("weight_version")
-                        if wv_raw is not None:
-                            if isinstance(wv_raw, str) and wv_raw == "default":
-                                weight_version_int = 0
-                            else:
-                                try:
-                                    weight_version_int = int(wv_raw)
-                                except Exception:
-                                    # 无法解析为整数时忽略
-                                    weight_version_int = None
-                except Exception:
-                    weight_version_int = None
+                    response = await llm.generate(messages=messages_cut)                
 
                 # 环境执行动作（统一接口假设：step返回(state, reward, done, info)）
                 # 使用线程池执行可能包含同步阻塞调用的 step 方法
@@ -184,25 +162,12 @@ class Interactor:
                     with open(save_path, 'wb') as f:
                         f.write(image_bytes)
 
-                if done:
-                    logger.debug(
-                        "[Interactor] step info: %s",
-                        json.dumps(step_output.info, ensure_ascii=False, separators=(',', ':'))
-                    )
-
-                # 记录交互步骤
-                env_state_payload = None
-                if weight_version_int is not None:
-                    # 使用 env_state JSON 存储 weight_version，方便下游读取
-                    env_state_payload = json.dumps({"weight_version": weight_version_int}, ensure_ascii=False)
-
                 await self.data_manager.record_step(
                     session=session,
                     step_id=step_id,
                     prompt=prompt,
                     response=response,
                     reward=reward,
-                    env_state=env_state_payload,
                     done=done,
                 )
 
