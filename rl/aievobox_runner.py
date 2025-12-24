@@ -20,6 +20,8 @@ from typing import Any, Dict
 import yaml
 from tqdm import tqdm
 
+from core.data_manager.load_yaml import load_yaml_configs
+
 # Add AIEvoBox to path
 AIEVOBOX_ROOT = os.environ.get("AIEVOBOX_ROOT", "/root/AIEvoBox")
 if AIEVOBOX_ROOT not in sys.path:
@@ -78,14 +80,12 @@ async def run_rollout(config: Dict[str, Any]):
     await dm.init()
     logger.info(f"DataManager initialized with DB: {db_url}")
 
-    # # Load environment configs
+    # # Load environment configs (using load_yaml_configs to properly expand dataset)
     # env_config_path = os.path.join(AIEVOBOX_ROOT, "env/search/search_env_configs.yaml")
     # if os.path.exists(env_config_path):
-    #     with open(env_config_path, "r", encoding="utf-8") as f:
-    #         cfg = yaml.safe_load(f)
+    #     env_configs_from_yaml = load_yaml_configs(env_config_path)
 
-    #     envs_to_add = cfg.get("environments", [])
-    #     for env in tqdm(envs_to_add, desc="Adding environment configs"):
+    #     for env in tqdm(env_configs_from_yaml, desc="Adding environment configs"):
     #         try:
     #             await dm.add_environment_config(
     #                 env_name=env["env_name"],
@@ -93,6 +93,8 @@ async def run_rollout(config: Dict[str, Any]):
     #             )
     #         except Exception as e:
     #             logger.error(f"Error adding environment config: {e}")
+    # else:
+    #     logger.warning(f"Environment config file not found: {env_config_path}")
 
     envs = await dm.get_all_environments()
     logger.info(f"Loaded {len(envs)} environments")

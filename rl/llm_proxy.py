@@ -79,6 +79,7 @@ class ProxyState:
         self.trajectory_mask_builder: Optional[TrajectoryMaskBuilder] = None
         self.remote_engine_url: Optional[str] = None
         self._http_client: Optional[httpx.AsyncClient] = None
+        self.max_length: Optional[int] = None  # 总 token 限制
 
     def get_http_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with connection pooling."""
@@ -110,6 +111,7 @@ STATE = ProxyState()
 class InitRequest(BaseModel):
     tokenizer_path: str
     remote_engine_url: str
+    max_length: Optional[int] = None  # 总 token 限制 (prompt + completion)
 
 
 class MaskRequest(BaseModel):
@@ -134,9 +136,11 @@ async def init_proxy(request: InitRequest):
         if "/v1" not in engine_url:
             engine_url = engine_url + "/v1"
         STATE.remote_engine_url = engine_url
+        STATE.max_length = request.max_length
 
         logger.info(f"Initialized with tokenizer: {request.tokenizer_path}")
         logger.info(f"Remote engine URL: {STATE.remote_engine_url}")
+        logger.info(f"Max length: {STATE.max_length}")
 
         return {"success": True, "message": "Proxy initialized"}
     except Exception as e:
@@ -159,6 +163,20 @@ async def proxy_chat_completions(session_id: str, request: Request):
         raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
 
     messages = payload.get("messages", [])
+
+    # 如果设置了 max_length，计算并设置 max_tokens
+    if STATE.max_length is not None and STATE.tokenizer is not None:
+        prompt_tokens = len(STATE.tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True
+        ))
+        max_tokens = STATE.max_length - prompt_tokens
+        if max_tokens > 0:
+            payload["max_tokens"] = max_tokens
+            logger.debug(f"Set max_tokens={max_tokens} (max_length={STATE.max_length}, prompt_tokens={prompt_tokens})")
+        else:
+            logger.warning(f"Prompt tokens ({prompt_tokens}) >= max_length ({STATE.max_length})")
 
     # Forward to remote engine
     http_client = STATE.get_http_client()

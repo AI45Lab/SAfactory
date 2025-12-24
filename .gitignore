@@ -22,8 +22,13 @@ env/androidgym/CLIP
 # gitgym env
 env/gitgym/generated_code
 
+# osgym env
+env/osgym/docker_vm_data
+
 # python logging
 *.log.*
+
+mask_segments_*
 
 # ========== python .gitignore ==========
 # Source: https://github.com/github/gitignore/blob/main/Python.gitignore
@@ -184,6 +189,7 @@ activemq-data/
 .env
 .envrc
 .venv
+# env/
 venv/
 ENV/
 env.bak/

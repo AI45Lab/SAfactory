@@ -1,6 +1,6 @@
 import asyncio
 import os
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import logging
 import aiohttp
 import threading
@@ -37,6 +37,8 @@ class LLM:
         self.max_retries = int(max_retries)  # -1 表示无限重试
         self.retry_backoff = float(retry_backoff)
         self.max_retry_delay = float(max_retry_delay)
+        # 存储最近一次请求返回的 metadata（例如 weight_version）
+        self.last_metadata: Optional[Dict[str, Any]] = None
 
     async def generate(self, messages: List[dict]) -> str:
         """
@@ -71,6 +73,12 @@ class LLM:
                         resp.raise_for_status()
                         data = await resp.json()
                     logger.info(f"[LLM] POST {url} returned")
+                    # 记录 metadata（例如来自 SGLang 的 weight_version）
+                    if isinstance(data, dict):
+                        self.last_metadata = data.get("metadata") or {}
+                    else:
+                        self.last_metadata = None
+
                     content = data["choices"][0]["message"]["content"]
                     if not content:
                         raise RuntimeError("LLM returned empty content")

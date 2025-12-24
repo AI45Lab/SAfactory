@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import time
@@ -114,6 +115,111 @@ def tokenize_with_char_mask_ranges(tokenizer, messages_str: str, mask_ranges: Li
     return all_token_ids, truncated_loss_mask, response_length
 
 
+_MASK_SEGMENTS_LOG_PATH: str | None = None
+
+
+def _get_mask_segments_log_path() -> str:
+    global _MASK_SEGMENTS_LOG_PATH
+    if _MASK_SEGMENTS_LOG_PATH:
+        return _MASK_SEGMENTS_LOG_PATH
+
+    env_path = os.environ.get("MASK_SEGMENTS_LOG_PATH")
+    if env_path:
+        _MASK_SEGMENTS_LOG_PATH = env_path
+        log_dir = os.path.dirname(env_path)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        return _MASK_SEGMENTS_LOG_PATH
+
+    log_dir = os.environ.get("MASK_SEGMENTS_LOG_DIR")
+    if not log_dir:
+        aievobox_root = os.environ.get("AIEVOBOX_ROOT", "/root/AIEvoBox")
+        log_dir = os.path.join(aievobox_root, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    _MASK_SEGMENTS_LOG_PATH = os.path.join(log_dir, f"mask_segments_{os.getpid()}.jsonl")
+    return _MASK_SEGMENTS_LOG_PATH
+
+
+def _sanitize_and_merge_mask_ranges(mask_ranges: List[tuple], text_len: int) -> List[tuple[int, int]]:
+    cleaned: List[tuple[int, int]] = []
+    for r in mask_ranges or []:
+        try:
+            start = int(r[0])
+            end = int(r[1])
+        except Exception:
+            continue
+        if end <= start:
+            continue
+        if start < 0:
+            start = 0
+        if end < 0:
+            continue
+        if start > text_len:
+            continue
+        if end > text_len:
+            end = text_len
+        if end <= start:
+            continue
+        cleaned.append((start, end))
+
+    if not cleaned:
+        return []
+
+    cleaned.sort(key=lambda x: (x[0], x[1]))
+    merged: List[list[int]] = []
+    for start, end in cleaned:
+        if not merged or start > merged[-1][1]:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+    return [(s, e) for s, e in merged]
+
+
+def split_messages_str_by_mask_ranges(messages_str: str, mask_ranges: List[tuple]) -> List[tuple[str, int]]:
+    """Split messages_str into labeled segments according to mask_ranges."""
+    text_len = len(messages_str)
+    merged_ranges = _sanitize_and_merge_mask_ranges(mask_ranges, text_len=text_len)
+    if not merged_ranges:
+        return [(messages_str, 0)]
+
+    segments: List[tuple[str, int]] = []
+    prev_end = 0
+    for start, end in merged_ranges:
+        if start > prev_end:
+            segments.append((messages_str[prev_end:start], 0))
+        segments.append((messages_str[start:end], 1))
+        prev_end = end
+    if prev_end < text_len:
+        segments.append((messages_str[prev_end:], 0))
+    return segments
+
+
+def log_mask_segments_to_file(
+    *,
+    session_id: str,
+    messages_str: str,
+    mask_ranges: List[tuple],
+    instance_id: str | None = None,
+    uid: str | None = None,
+) -> None:
+    """Append mask split info to a local jsonl file (not wandb)."""
+    try:
+        path = _get_mask_segments_log_path()
+        segments = split_messages_str_by_mask_ranges(messages_str, mask_ranges)
+        record = {
+            "ts": time.time(),
+            "session_id": session_id,
+            "instance_id": instance_id,
+            "uid": uid,
+            "segments": [(s, m) for s, m in segments],
+        }
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"Failed to log mask segments: {e}")
+
+
 def select_rollout_data(args, results, need_length):
     """
     Select the most recent groups when there are too many samples.
@@ -197,25 +303,39 @@ def log_raw_info(args, all_meta_info, rollout_id):
                 if "avg_reward" in meta and "total_samples" in meta
             )
 
-            final_meta_info.update(
-                {
-                    "avg_reward": weighted_reward_sum / total_samples,
-                }
-            )
+            final_meta_info["avg_reward"] = weighted_reward_sum / total_samples
+
             if hasattr(args, "use_wandb") and args.use_wandb:
                 log_dict = {
-                    f"rollout/no_filter/total_samples": final_meta_info["total_samples"],
-                    f"rollout/no_filter/avg_reward": final_meta_info["avg_reward"],
+                    "rollout/total_samples": final_meta_info["total_samples"],
+                    "rollout/avg_reward": final_meta_info["avg_reward"],
                 }
                 try:
+                    # 当前版本：使用 rollout 对应的“train step”近似
                     step = (
                         rollout_id
                         if not args.wandb_always_use_train_step
                         else rollout_id * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
                     )
+
+                    # 计算被使用数据的平均 age（step - 生成时版本）
+                    # Buffer Server 在 meta_info 中提供 avg_weight_version（按样本数加权的权重版本）
+                    weighted_version_sum = sum(
+                        meta.get("avg_weight_version", 0.0) * meta["total_samples"]
+                        for meta in all_meta_info
+                        if "total_samples" in meta
+                    )
+                    if total_samples > 0:
+                        avg_weight_version = weighted_version_sum / total_samples
+                        # 好像第0个step是1，第一个step还是1
+                        avg_data_age = max(step - avg_weight_version, 0)
+                        final_meta_info["avg_weight_version"] = avg_weight_version
+                        final_meta_info["avg_data_age"] = avg_data_age
+                        log_dict["rollout/avg_data_age"] = avg_data_age
+
                     if args.use_wandb:
                         log_dict["rollout/step"] = step
-                        wandb.log(log_dict)
+                        wandb.log(log_dict, step=step)
 
                     if args.use_tensorboard:
                         from slime.utils.tensorboard_utils import _TensorboardAdapter
@@ -228,6 +348,120 @@ def log_raw_info(args, all_meta_info, rollout_id):
                     print(f"no filter rollout log {rollout_id}: {final_meta_info}")
             else:
                 print(f"no filter rollout log {rollout_id}: {final_meta_info}")
+
+
+def _compute_log_step(args, rollout_id: int) -> int:
+    """Compute the logging step used for wandb/tensorboard."""
+    try:
+        always_use_train_step = bool(getattr(args, "wandb_always_use_train_step", False))
+        if not always_use_train_step:
+            return int(rollout_id)
+        rollout_batch_size = int(getattr(args, "rollout_batch_size"))
+        n_samples_per_prompt = int(getattr(args, "n_samples_per_prompt"))
+        global_batch_size = int(getattr(args, "global_batch_size"))
+        return int(rollout_id * rollout_batch_size * n_samples_per_prompt // global_batch_size)
+    except Exception:
+        return int(rollout_id)
+
+
+_WANDB_STEP_METRICS_DEFINED: set[str] = set()
+
+
+def _maybe_define_wandb_step_metric(prefix: str) -> None:
+    """Configure W&B so `{prefix}/*` uses `{prefix}/step` as the default x-axis."""
+    if prefix in _WANDB_STEP_METRICS_DEFINED:
+        return
+    try:
+        # Only define metrics after wandb.init(); otherwise this may error.
+        if getattr(wandb, "run", None) is None:
+            return
+        wandb.define_metric(f"{prefix}/step")
+        wandb.define_metric(f"{prefix}/*", step_metric=f"{prefix}/step")
+        _WANDB_STEP_METRICS_DEFINED.add(prefix)
+    except Exception as e:
+        print(f"Failed to define wandb step metric for {prefix}: {e}")
+
+
+def log_used_batch_info(args, batch_samples, rollout_id: int, prefix: str = "rollout_used") -> None:
+    """Log metrics computed from the actual batch returned to the trainer."""
+    try:
+        step = _compute_log_step(args, rollout_id)
+        use_wandb = bool(getattr(args, "use_wandb", False))
+        use_tensorboard = bool(getattr(args, "use_tensorboard", False))
+
+        # batch_samples is typically List[List[Sample]] (grouped by prompt)
+        flat_samples = []
+        if isinstance(batch_samples, list):
+            for group in batch_samples:
+                if isinstance(group, list):
+                    flat_samples.extend(group)
+                else:
+                    flat_samples.append(group)
+
+        num_prompts = len(batch_samples) if isinstance(batch_samples, list) else 0
+        total_samples = len(flat_samples)
+        if total_samples <= 0:
+            return
+
+        norm_rewards = []
+        raw_rewards = []
+        response_lengths = []
+        weight_versions = []
+        for sample in flat_samples:
+            try:
+                r = getattr(sample, "reward", None)
+                if r is not None:
+                    norm_rewards.append(float(r))
+            except Exception:
+                pass
+            try:
+                rl = getattr(sample, "response_length", None)
+                if rl is not None:
+                    response_lengths.append(float(rl))
+            except Exception:
+                pass
+            try:
+                meta = getattr(sample, "metadata", None)
+                if isinstance(meta, dict):
+                    rr = meta.get("raw_reward", None)
+                    if rr is not None:
+                        raw_rewards.append(float(rr))
+                    wv = meta.get("weight_version", None)
+                    if wv is not None:
+                        weight_versions.append(float(wv))
+            except Exception:
+                pass
+
+        log_dict = {
+            f"{prefix}/step": step,
+            f"{prefix}/num_prompts": num_prompts,
+            f"{prefix}/total_samples": total_samples,
+        }
+        if raw_rewards:
+            log_dict[f"{prefix}/avg_reward"] = sum(raw_rewards) / len(raw_rewards)
+        elif norm_rewards:
+            # Fallback when raw_reward is not available.
+            log_dict[f"{prefix}/avg_reward"] = sum(norm_rewards) / len(norm_rewards)
+        if norm_rewards:
+            log_dict[f"{prefix}/avg_reward_norm"] = sum(norm_rewards) / len(norm_rewards)
+        if response_lengths:
+            log_dict[f"{prefix}/avg_response_length"] = sum(response_lengths) / len(response_lengths)
+        if weight_versions:
+            avg_weight_version = sum(weight_versions) / len(weight_versions)
+            log_dict[f"{prefix}/avg_weight_version"] = avg_weight_version
+            log_dict[f"{prefix}/avg_data_age"] = (step + 1) - avg_weight_version
+
+        if use_wandb:
+            _maybe_define_wandb_step_metric(prefix)
+            wandb.log(log_dict, step=step)
+        if use_tensorboard:
+            from slime.utils.tensorboard_utils import _TensorboardAdapter
+
+            tb = _TensorboardAdapter(args)
+            tb.log(data=log_dict, step=step)
+        print(f"used-batch rollout log {rollout_id}: {log_dict}")
+    except Exception as e:
+        print(f"Failed to log used-batch metrics: {e}")
 
 
 async def get_rollout_data(api_base_url: str) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -319,7 +553,9 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
         print(
             f"❕buffer length: {data_buffer.get_buffer_length()}, buffer has enough data, return {args.rollout_batch_size} prompts"
         )
-        return data_buffer.get_samples(args.rollout_batch_size)
+        final_return_results = data_buffer.get_samples(args.rollout_batch_size)
+        log_used_batch_info(args, final_return_results, rollout_id)
+        return final_return_results
     assert (
         data_number_to_fetch % args.n_samples_per_prompt == 0
     ), "data_number_to_fetch must be a multiple of n_samples_per_prompt"
@@ -378,11 +614,18 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
 
             # Get mask from LLM Proxy
             mask_ranges = get_mask_ranges_from_server(session_id, messages_str)
+            log_mask_segments_to_file(
+                session_id=session_id,
+                messages_str=messages_str,
+                mask_ranges=mask_ranges,
+                instance_id=str(record.get("instance_id", "")),
+                uid=str(record.get("uid", "")),
+            )
 
             # Tokenize with mask ranges
             token_ids, loss_mask, response_length = tokenize_with_char_mask_ranges(
                 tokenizer, messages_str, mask_ranges
-            )
+                )
 
             group_results.append(
                 Sample(
@@ -398,13 +641,14 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
                         else Sample.Status.TRUNCATED
                     ),
                     loss_mask=loss_mask,
-                    metadata={**record["extra_info"]},
+                    metadata={**record["extra_info"], "raw_reward": record.get("raw_reward")},
                 )
             )
         sample_results.append(group_results)
 
     data_buffer.add_samples(sample_results)
     final_return_results = data_buffer.get_samples(args.rollout_batch_size)  # type: ignore
+    log_used_batch_info(args, final_return_results, rollout_id)
 
     return final_return_results
 
