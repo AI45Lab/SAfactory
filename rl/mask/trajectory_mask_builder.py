@@ -118,8 +118,21 @@ class TrajectoryMaskBuilder:
             tokenize=False
         )
 
-        # 对新增长的 assistant 文本位置全部置为 1
-        current_mask = current_mask + [1] * (len(full_messages_str) - len(current_mask))
+        # 新增部分默认全部置为 0（不计入损失）
+        current_mask = current_mask + [0] * (len(full_messages_str) - len(current_mask))
+
+        # 仅对 assistant_text + "<im_end>" 置为 1，其它位置保持 0
+        if assistant_text:
+            assistant_start = full_messages_str.rfind(assistant_text)
+            if assistant_start != -1:
+                assistant_end = assistant_start + len(assistant_text)
+                current_mask[assistant_start:assistant_end] = [1] * (assistant_end - assistant_start)
+
+        im_end_token = "<|im_end|>"
+        im_end_start = full_messages_str.rfind(im_end_token)
+        if im_end_start != -1:
+            im_end_end = im_end_start + len(im_end_token)
+            current_mask[im_end_start:im_end_end] = [1] * (im_end_end - im_end_start)
 
         # 记录下这条完整轨迹
         self.session_masks[session_id].append((full_messages_str, current_mask))

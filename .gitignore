@@ -28,6 +28,8 @@ env/osgym/docker_vm_data
 # python logging
 *.log.*
 
+mask_segments_*
+
 # ========== python .gitignore ==========
 # Source: https://github.com/github/gitignore/blob/main/Python.gitignore
 # Byte-compiled / optimized / DLL files
