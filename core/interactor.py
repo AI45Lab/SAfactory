@@ -140,9 +140,12 @@ class Interactor:
                 truncated = step_output.truncated
                 # 基于环境信号 + 最大步数限制综合判断 done
                 done = terminated or truncated
-                # 若达到或超过最大步数，也视为 episode 结束（在 Interactor 层生效）
-                if self.max_steps is not None and step_id >= int(self.max_steps):
-                    done = True
+                try:
+                    # 若达到或超过最大步数，也视为 episode 结束（在 Interactor 层生效）
+                    if self.max_steps is not None and step_id >= int(self.max_steps):
+                        done = True
+                except Exception:
+                    pass
 
                 # 可选渲染
                 if self.enable_render:
@@ -161,13 +164,14 @@ class Interactor:
                     with open(save_path, 'wb') as f:
                         f.write(image_bytes)
 
+                # 记录交互步骤
                 await self.data_manager.record_step(
                     session=session,
                     step_id=step_id,
                     prompt=prompt,
                     response=response,
                     reward=reward,
-                    done=done,
+                    done=done
                 )
 
                 # 累积 trajectory（简化格式：只记录 step 和 response）
