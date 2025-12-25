@@ -58,12 +58,13 @@ def parse_args():
                       help="LLM 模型名称")
     parser.add_argument("--llm-temperature", type=float, default=0.3,
                       help="LLM 生成响应的温度参数（0-1）")
+    parser.add_argument("--llm-proxy", type=str, default="",
+                      help="LLM 代理")
     
     return parser.parse_args()
 
-async def sync_configs_to_db(yaml_configs, dry_run):
+async def sync_configs_to_db(data_manager, yaml_configs, dry_run):
     """同步YAML配置到数据库，自动生成env_id"""
-    data_manager = DataManager(db_url=DB_PATH)
     await data_manager.init()
 
     # 数据库现有配置：通过(env_name + env_params)判断唯一性（避免重复生成env_id）
@@ -134,11 +135,8 @@ async def sync_configs_to_db(yaml_configs, dry_run):
     await data_manager.close()
     return not dry_run
 
-async def run_interaction(args):
+async def run_interaction(data_manager, args):
     """运行多环境交互逻辑"""
-    # 初始化数据管理器
-    data_manager = DataManager(db_url=DB_PATH)
-    await data_manager.init()
 
     # 查看已注册环境
     registered_envs = list_registered_envs()
@@ -173,6 +171,7 @@ async def run_interaction(args):
         model=args.llm_model,
         data_manager=data_manager,
         temperature=args.llm_temperature,
+        llm_proxy=args.llm_proxy,
         max_workers=args.max_workers,
         max_steps=args.max_steps,
         visual_save_path=args.visual_save_path
@@ -197,11 +196,12 @@ async def main():
         print(f"成功加载YAML配置：{args.env_config_yaml}（共{len(yaml_configs)}条有效配置）")
         
         # 2. 同步配置到数据库
-        sync_success = await sync_configs_to_db(yaml_configs, args.dry_run)
+        data_manager = DataManager(storage_type="sqlite", db_url=DB_PATH, enable_buffer=True, buffer_size=100, flush_interval=5.0)
+        sync_success = await sync_configs_to_db(data_manager, yaml_configs, args.dry_run)
         
         # 3. 若同步成功且非试运行，运行交互
         if sync_success:
-            await run_interaction(args)
+            await run_interaction(data_manager, args)
             
     except Exception as e:
         print(f"程序运行失败：{str(e)}")

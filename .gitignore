@@ -18,6 +18,8 @@ env/androidgym/icons
 env/androidgym/screenshot
 env/androidgym/judgement
 env/androidgym/CLIP
+env/androidgym/*.apk
+env/androidgym/*.jsonl
 
 # gitgym env
 env/gitgym/generated_code
