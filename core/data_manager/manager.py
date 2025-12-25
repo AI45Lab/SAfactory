@@ -37,10 +37,21 @@ class DataManager:
     async def close(self):
         await self.strategy.close()
  
- 
     @property
     def buffer_stats(self):
         # 只有 SqliteStrategy 才有 buffer
         if isinstance(self.strategy, SqliteStrategy):
             return self.strategy.buffer_stats
+        return None
+
+    async def fetch_done_steps_with_context(self, *args, **kwargs):
+        # buffer相关代码
+        if isinstance(self.strategy, SqliteStrategy):
+            return self.strategy.fetch_done_steps_with_context(*args, **kwargs)
+        return None
+
+    async def get_max_step_id(self):
+        # buffer相关代码
+        if isinstance(self.strategy, SqliteStrategy):
+            return self.strategy.get_max_step_id()
         return None

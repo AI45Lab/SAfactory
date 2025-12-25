@@ -14,8 +14,6 @@ import os
 import resource
 import sys
 
-import yaml
-
 # Increase file descriptor limit for high concurrency
 _soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
 resource.setrlimit(resource.RLIMIT_NOFILE, (min(65536, _hard), _hard))
@@ -34,7 +32,7 @@ _AIEVOBOX_ROOT = os.environ.get("AIEVOBOX_ROOT", os.path.dirname(_SCRIPT_DIR))
 DB_URL = os.environ.get("AIEVOBOX_DB_URL", f"sqlite:///{_AIEVOBOX_ROOT}/rl/test.db")
 
 # LLM 引擎地址（直接连接，不经过 proxy）
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", os.environ.get("LLM_PROXY_URL", "http://100.99.102.150:30000/v1"))
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", os.environ.get("LLM_PROXY_URL", "http://100.99.63.135:30000/v1"))
 
 # LLM / Agent 配置
 API_KEY = os.environ.get("OPENAI_API_KEY", "test")
@@ -67,6 +65,7 @@ def _ensure_project_root_in_path() -> None:
 _ensure_project_root_in_path()
 
 from core.data_manager.manager import DataManager
+from core.data_manager.load_yaml import load_yaml_configs
 from core.interactor import Interactor
 from core.llm import StaticBaseURLProvider
 
@@ -93,12 +92,11 @@ async def main() -> None:
     await data_manager.init()
     logger.info("DataManager 初始化完成")
 
-    # 加载环境配置
+    # 加载环境配置（使用 load_yaml_configs 正确展开 dataset）
     # if os.path.exists(ENV_CONFIG_PATH):
-    #     with open(ENV_CONFIG_PATH, "r", encoding="utf-8") as f:
-    #         cfg = yaml.safe_load(f)
+    #     env_configs_from_yaml = load_yaml_configs(ENV_CONFIG_PATH)
 
-    #     for env in tqdm(cfg.get("environments", []), desc="Adding environment configs"):
+    #     for env in tqdm(env_configs_from_yaml, desc="Adding environment configs"):
     #         try:
     #             await data_manager.add_environment_config(
     #                 env_name=env["env_name"],

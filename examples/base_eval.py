@@ -180,8 +180,9 @@ async def run_interaction(data_manager, args):
     results = await interactor.run_all_environments()
     print("\n" + "="*50)
     print("所有环境运行结果：")
-    for env_key, total_reward in results.items():
-        print(f"  {env_key}：总奖励 = {total_reward}")
+    for env_key, rewards in results.items():
+        avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
+        print(f"  {env_key}：平均奖励 = {avg_reward:.2f} ({len(rewards)} episodes)")
     print("="*50)
 
     # 关闭数据库

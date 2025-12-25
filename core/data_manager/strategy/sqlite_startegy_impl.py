@@ -128,3 +128,51 @@ class SqliteStrategy(StorageStrategy):
     @property
     def buffer_stats(self) -> Optional[dict]:
         return self._write_buffer.stats if self._write_buffer else None
+    
+    async def fetch_done_steps_with_context(self, after_id: int = 0, limit: int = 100) -> List[Dict]:
+        """
+        获取已完成的步骤及其上下文信息（游标分页）
+
+        Args:
+            after_id: 只返回 id > after_id 的记录
+            limit: 最大返回数量
+
+        Returns:
+            包含 step、session、env 信息的字典列表
+        """
+        await self.init()
+
+        steps = await InteractionStep.filter(
+            done=True,
+            id__gt=after_id
+        ).prefetch_related(
+            "session", "session__env"
+        ).order_by("id").limit(limit)
+
+        results = []
+        for step in steps:
+            session = step.session
+            env = session.env if session else None
+
+            results.append({
+                "step_pk": step.id,
+                "step_id": step.step_id,
+                "prompt": step.prompt,
+                "response": step.response,
+                "reward": step.reward,
+                "env_state": step.env_state,
+                "timestamp": step.timestamp.isoformat() if step.timestamp else None,
+                "done": step.done,
+                "session_id": session.session_id if session else None,
+                "session_end_time": session.end_time.isoformat() if session and session.end_time else None,
+                "env_id": env.env_id if env else None,
+                "env_name": env.env_name if env else None,
+            })
+
+        return results
+    
+    async def get_max_step_id(self) -> int:
+        """获取当前最大的 step id，用于初始化游标"""
+        await self.init()
+        latest = await InteractionStep.all().order_by("-id").first()
+        return latest.id if latest else 0
