@@ -26,6 +26,7 @@ class LLM:
         base_url: str,
         model: str,
         temperature: float = 1,
+        llm_proxy: str = "",
         max_retries: int = DEFAULT_MAX_RETRIES,
         retry_backoff: float = DEFAULT_RETRY_BACKOFF,
         max_retry_delay: float = DEFAULT_MAX_RETRY_DELAY,
@@ -34,6 +35,7 @@ class LLM:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.temperature = temperature
+        self.llm_proxy = llm_proxy
         self.max_retries = int(max_retries)  # -1 表示无限重试
         self.retry_backoff = float(retry_backoff)
         self.max_retry_delay = float(max_retry_delay)
@@ -68,7 +70,7 @@ class LLM:
             try:
                 async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
                     logger.info(f"[LLM] POST {url} (thread={threading.current_thread().name}, attempt={attempt})")
-                    async with session.post(url, json=payload, headers=headers) as resp:
+                    async with session.post(url, json=payload, headers=headers, proxy=self.llm_proxy) as resp:
                         logger.info(f"[LLM] POST {url} got response status={resp.status}")
                         resp.raise_for_status()
                         data = await resp.json()

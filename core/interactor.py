@@ -17,6 +17,7 @@ class Interactor:
         model: str,
         data_manager: DataManager,
         temperature: float = 1.0,
+        llm_proxy: str = "",
         max_workers: int = 5,
         max_steps: int = 1000,
         visual_save_path: str = None,
@@ -28,6 +29,7 @@ class Interactor:
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
+        self.llm_proxy = llm_proxy
         self.data_manager = data_manager
         self.max_workers = max_workers  # 最大并行环境数
         self.max_steps = max_steps      # 每个环境最大交互步数
@@ -89,6 +91,7 @@ class Interactor:
             base_url=base_url,
             model=self.model,
             temperature=self.temperature,
+            llm_proxy=self.llm_proxy,
         )
 
         total_reward = 0.0
