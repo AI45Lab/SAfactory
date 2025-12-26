@@ -4,16 +4,35 @@ from core.data_manager.strategy_factory import StorageFactory
 class DataManager:
     def __init__(
         self,
-        # 指定存储类型
         storage_type: str = "sqlite", 
-        
-        # 接收所有其他配置参数 (db_url, api_url, buffer_size等)
         **storage_config
     ):
-        #无论未来加多少种策略，这里都不用改
-        #storage_type: "sqlite" | "cloud" | "kafka" ...
-        #**storage_config: 透传给具体 Strategy 的初始化参数
-        self.strategy = StorageFactory.create(storage_type, **storage_config)
+        self.strategy = None
+        
+        try:
+            print(f"Initializing DataManager with strategy: '{storage_type}'")
+            self.strategy = StorageFactory.create(storage_type, **storage_config)
+            print(f"DataManager initialized successfully using {self.strategy.__class__.__name__}")
+        
+        # 异常收口处理：告诉用户类型错误
+        except ValueError as e:
+            # Factory 抛出不支持该类型 异常
+            error_msg = f"Unsupported storage type: '{storage_type}'. Please check registered types."
+            print(f"{error_msg} Original Error: {e}")
+            raise ValueError(error_msg) from e
+        
+        except TypeError as e:
+            # Factory 找到了类型，但是透传的 **storage_config 参数不对
+            error_msg = f"Invalid configuration for storage type '{storage_type}'."
+            print(f"{error_msg} Missing or invalid arguments. Original Error: {e}")
+            raise ValueError(error_msg) from e
+        
+        except Exception as e:
+            # 具体的 Strategy 内部初始化炸了（比如数据库连不上、鉴权失败等）
+            # 收口处理：包装成 RuntimeError
+            error_msg = f"Failed to initialize storage strategy '{storage_type}' due to an internal error."
+            print(f"{error_msg} Original Error: {e}")
+            raise RuntimeError(error_msg) from e
 
     #所有方法直接委托给strategy
     async def init(self):
