@@ -66,11 +66,11 @@ class DataManager:
     async def fetch_done_steps_with_context(self, *args, **kwargs):
         # buffer相关代码
         if isinstance(self.strategy, SqliteStrategy):
-            return self.strategy.fetch_done_steps_with_context(*args, **kwargs)
+            return await self.strategy.fetch_done_steps_with_context(*args, **kwargs)
         return None
 
     async def get_max_step_id(self):
         # buffer相关代码
         if isinstance(self.strategy, SqliteStrategy):
-            return self.strategy.get_max_step_id()
+            return await self.strategy.get_max_step_id()
         return None

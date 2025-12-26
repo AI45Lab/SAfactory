@@ -8,7 +8,7 @@ import json
 from datetime import datetime
 
 class SqliteStrategy(StorageStrategy):
-    def __init__(self, db_url, enable_buffer, buffer_size, flush_interval):
+    def __init__(self, db_url: str, enable_buffer: bool = True, buffer_size: int = 100, flush_interval: float = 5.0):
         self.db_url = db_url
         self.initialized = False
         self._enable_buffer = enable_buffer
