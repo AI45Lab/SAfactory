@@ -186,7 +186,7 @@ async def _proxy_stream(
 
 # ---------------- App factory ----------------
 
-def create_app(config_path: Optional[str] = None) -> FastAPI:
+def create_app(config_path: str="manager/config.yaml") -> FastAPI:
     cfg = _load_config(config_path)
 
     server_cfg = cfg.get("server", {}) or {}
@@ -220,7 +220,7 @@ def create_app(config_path: Optional[str] = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.cfg_path = cfg_path
+        app.state.cfg_path = config_path
         app.state.cfg = cfg
         app.state.upstream_port = upstream_port
         app.state.upstream_timeout_s = upstream_timeout_s
@@ -413,7 +413,7 @@ def main():
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default=None, help="Path to config.yaml")
+    parser.add_argument("--config", default="manager/config.yaml", help="Path to config.yaml")
     args = parser.parse_args()
     cfg = _load_config(args.config)
     host = str((cfg.get("server") or {}).get("host", "0.0.0.0"))
