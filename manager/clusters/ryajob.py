@@ -2,15 +2,58 @@ from __future__ import annotations
 
 from typing import Any, List, Optional
 
+import re
 import secrets
+import string
 import sys
 
 from rayjob_sdk import HeadConfig, RayJobClient, SDKException, WorkerGroupConfig
 
 
-def _random_name_hint() -> str:
-    """Return a short random name hint like 'AABBCC'."""
-    return secrets.token_hex(3).upper()
+# Platform constraint (DNS-1123 label-like):
+# must match: [a-z]([-a-z0-9]*[a-z0-9])?
+_JOBNAME_PATTERN = re.compile(r"^[a-z]([-a-z0-9]*[a-z0-9])?$")
+_INVALID_CHARS = re.compile(r"[^a-z0-9-]+")
+
+
+def _random_jobname_hint(length: int = 6) -> str:
+    if length < 1:
+        length = 1
+    first = secrets.choice(string.ascii_lowercase)  # must start with [a-z]
+    if length == 1:
+        return first
+    rest_choices = string.ascii_lowercase + string.digits
+    rest = "".join(secrets.choice(rest_choices) for _ in range(length - 1))
+    return first + rest
+
+
+def _sanitize_jobname_hint(name: Optional[str], *, fallback_len: int = 6, max_len: int = 63) -> str:
+    if not name or not str(name).strip():
+        return _random_jobname_hint(fallback_len)
+
+    s = str(name).strip().lower()
+    s = _INVALID_CHARS.sub("-", s)
+    s = re.sub(r"-{2,}", "-", s).strip("-")
+
+    if not s:
+        return _random_jobname_hint(fallback_len)
+
+    # Must start with a letter
+    if not ("a" <= s[0] <= "z"):
+        s = "r" + s  # prefix with a letter
+
+    # Enforce max length
+    if len(s) > max_len:
+        s = s[:max_len]
+
+    # Cannot end with '-'
+    s = s.rstrip("-")
+
+    # If after trimming it's empty or invalid, fallback to random
+    if not s or not _JOBNAME_PATTERN.match(s):
+        return _random_jobname_hint(fallback_len)
+
+    return s
 
 
 def _extract_job_name(result: Any) -> str:
@@ -30,6 +73,7 @@ def _extract_job_name(result: Any) -> str:
 
 
 class RayJobManager:
+    """Lightweight manager class for RayJob (Ray cluster) operations."""
 
     def __init__(
         self,
@@ -40,17 +84,6 @@ class RayJobManager:
         token: Optional[str] = None,
         verify: bool = False,
     ) -> None:
-        """
-        Initialize RayJob manager.
-
-        Args:
-            domain: RayJob platform domain.
-            tenant: Tenant name.
-            access_key: Access key for authentication.
-            secret_key: Secret key for authentication.
-            token: Optional token for authentication.
-            verify: Whether to verify HTTPS certificates.
-        """
         self.client = RayJobClient(
             domain=domain,
             tenant=tenant,
@@ -76,8 +109,25 @@ class RayJobManager:
         backoff_limit: int = 5,
         active_deadline_seconds: int = 86400,
     ) -> str:
-        if not name or not str(name).strip():
-            name = _random_name_hint()
+        """
+        Create a new RayJob (Ray cluster).
+
+        IMPORTANT:
+          - The platform may ignore the provided `name` and generate the final job name itself.
+          - BUT the request `jobName` field must be VALID. So we pass a valid *hint*.
+          - This method returns the **platform-created job name**.
+
+        Returns:
+            platform-created job name (string).
+        """
+        if not str(project).strip():
+            raise ValueError("project must be non-empty")
+        if not str(image).strip():
+            raise ValueError("image must be non-empty")
+        if not str(entrypoint).strip():
+            raise ValueError("entrypoint must be non-empty")
+
+        name_hint = _sanitize_jobname_hint(name, fallback_len=6, max_len=63)
 
         if head_config is None:
             head_config = HeadConfig(
@@ -87,8 +137,8 @@ class RayJobManager:
                     "nvidia.com/gpu": "0",
                 }
             )
+
         if worker_group_config is None:
-            # Default worker group
             worker_group_config = [
                 WorkerGroupConfig(
                     groupName="worker-group-1",
@@ -108,7 +158,7 @@ class RayJobManager:
         try:
             result = self.client.create(
                 project=project,
-                name=name,
+                name=name_hint,  # hint ONLY, but must be valid
                 image=image,
                 entrypoint=entrypoint,
                 quotagroup=quotagroup,
@@ -122,7 +172,7 @@ class RayJobManager:
             )
 
             job_name = _extract_job_name(result)
-            print(f"Created rayjob: {job_name} (name_hint={name})")
+            print(f"Created rayjob: {job_name} (jobName_hint={name_hint})")
             return job_name
 
         except SDKException as e:
@@ -130,7 +180,6 @@ class RayJobManager:
             raise
 
     def delete(self, project: str, name: str) -> Any:
-        """Delete a RayJob (Ray cluster)."""
         try:
             result = self.client.delete(project=project, name=name)
             print(f"Deleted rayjob: {name}")
@@ -140,7 +189,6 @@ class RayJobManager:
             raise
 
     def list(self, project: str, verbose: bool = False) -> List[Any]:
-        """List RayJobs under a project."""
         try:
             result = self.client.list(project=project)
             jobs = getattr(result, "data", result)
@@ -154,7 +202,6 @@ class RayJobManager:
             raise
 
     def get(self, project: str, name: str, verbose: bool = False) -> Any:
-        """Get RayJob details."""
         try:
             result = self.client.get(project=project, name=name)
             if verbose:
@@ -170,7 +217,6 @@ class RayJobManager:
             raise
 
     def stop(self, project: str, name: str) -> Any:
-        """Stop a running RayJob."""
         try:
             result = self.client.stop(project=project, name=name)
             print(f"Stopped rayjob: {name}")
@@ -180,7 +226,6 @@ class RayJobManager:
             raise
 
     def replicas(self, project: str, name: str, verbose: bool = False) -> List[Any]:
-        """Get replica pod information for a RayJob."""
         try:
             result = self.client.replicas(project=project, name=name)
             pods = getattr(result, "data", result)
@@ -204,24 +249,18 @@ class RayJobManager:
             return None
 
         def _is_head(pod: Any) -> bool:
-            # 1) Dedicated boolean flags
             for attr in ("isHead", "head"):
                 v = getattr(pod, attr, None)
                 if isinstance(v, bool) and v:
                     return True
-
-            # 2) Role/type markers
             for attr in ("role", "type", "nodeType"):
                 v = getattr(pod, attr, None)
                 if isinstance(v, str) and v.lower() == "head":
                     return True
-
-            # 3) Fallback: any name/id including the word 'head'
             for attr in ("name", "podName", "id"):
                 v = getattr(pod, attr, None)
                 if isinstance(v, str) and "head" in v.lower():
                     return True
-
             return False
 
         head_candidates = [pod for pod in pods if _is_head(pod)]
