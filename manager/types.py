@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
+
+ActorKey = Tuple[str, str]     # (env_name, env_id)
+ActorRoute = Tuple[str, int]   # (host, port)
+
+
+@dataclass(slots=True)
+class RayClusterInfo:
+    """
+    Descriptor of one cluster.
+
+    Remote mode: one image -> one RayJob; head_ip resolved by polling.
+    Local mode: synthetic cluster info; head_ip is local host.
+    """
+    image: str
+    project: str
+    job_name: str
+    head_ip: str
+
+
+@dataclass(slots=True)
+class EnvClusterBinding:
+    """
+    Binding between env_name and a cluster.
+    """
+    env_name: str
+    image: str
+    project: str
+    job_name: str
+    head_ip: str
+
+
+@dataclass(slots=True)
+class PoolEntry:
+    """
+    Local record of an actor that exists behind an HTTP env service.
+    """
+    env_name: str
+    env_id: str
+    row_id: Optional[int]
+    image: str
+    job_name: str
+    head_ip: str
+    status: str = "ready"
+
+
+@dataclass(slots=True)
+class ClusterRegistry:
+    """
+    Shared registry used by pool and manager.
+    """
+    clusters_by_image: Dict[str, RayClusterInfo]
+    env_bindings: Dict[str, EnvClusterBinding]

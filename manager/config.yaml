@@ -19,6 +19,11 @@ database:
 pool_size: 200
 
 cluster:
+  mode: local
+  local:
+    host: "127.0.0.0"
+    poll_timeout_s: 60
+    poll_interval_s: 1
   base_image: "registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:base"
 
   entrypoint:
