@@ -37,8 +37,6 @@ def _load_config(path: str) -> dict:
     return cfg
 
 
-
-
 def _strip_hop_by_hop(headers: Dict[str, str]) -> Dict[str, str]:
     """
     Remove hop-by-hop headers per RFC 7230 §6.1 to avoid proxy issues.
