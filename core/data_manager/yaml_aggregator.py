@@ -2,14 +2,14 @@ from pathlib import Path
 import sqlite3
 import json
 import uuid
-from load_yaml import load_yaml_configs
+from .load_yaml import load_yaml_configs
 
 
 TABLE_NAME = "v2"
 TABLE_SQL = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
-  env       TEXT    NOT NULL,
+  env_name  TEXT    NOT NULL,
   env_id    TEXT    NOT NULL,
   env_param TEXT    NULL,
   image     TEXT    NULL
@@ -67,7 +67,7 @@ def insert_from_yaml(conn: sqlite3.Connection, yaml_path: Path) -> None:
 
             cur.execute(
                 f"""
-                INSERT INTO {TABLE_NAME} (env, env_id, env_param, image)
+                INSERT INTO {TABLE_NAME} (env_name, env_id, env_param, image)
                 VALUES (?, ?, ?, ?)
                 """,
                 (env, env_id, env_param_str, image),

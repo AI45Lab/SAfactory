@@ -19,11 +19,11 @@ def get_connection(cfg: dict) -> sqlite3.Connection:
         raise Exception("No database path specified")
 
 
-def get_active_data(conn: sqlite3.Connection, limit: int, offset: int) -> List[Dict[str, Any]]:
-    query = """
+def get_active_data(conn: sqlite3.Connection, limit: int, offset: int, tableName:str="v2") -> List[Dict[str, Any]]:
+    query = f"""
     SELECT
         id, env_name, env_id, env_param, image
-    FROM trad
+    FROM {tableName}
     ORDER BY id ASC
     LIMIT ? OFFSET ?;
     """
@@ -31,13 +31,13 @@ def get_active_data(conn: sqlite3.Connection, limit: int, offset: int) -> List[D
     cols = [d[0] for d in cursor.description]
     return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
-def get_env_image_map(conn: sqlite3.Connection) -> Dict[str, Any]:
+def get_env_image_map(conn: sqlite3.Connection, tableName:str="v2") -> Dict[str, Any]:
     """
     scan the db to load all the envs required image.
     """
-    query = """
+    query = f"""
     SELECT env_name, image
-    FROM trad
+    FROM {tableName}
     ORDER BY id ASC;
     """
     cursor = conn.execute(query)
@@ -51,11 +51,11 @@ def get_env_image_map(conn: sqlite3.Connection) -> Dict[str, Any]:
             result[env_name] = None
     return result
 
-def get_all_image(conn: sqlite3.Connection) -> Dict[str,str]:
+def get_all_image(conn: sqlite3.Connection, tableName:str="v2") -> Dict[str,str]:
     image_to_env : Dict[str, str]={}
-    query="""
+    query=f"""
     SELECT image, env_name 
-    FROM trad
+    FROM {tableName}
     WHERE image IS NOT NULL AND TRIM(image) !='' AND env_name IS NOT NULL
     """
     cursor = conn.execute(query)

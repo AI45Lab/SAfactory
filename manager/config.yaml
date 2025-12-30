@@ -14,9 +14,9 @@ ray:
 database:
   driver: "sqlite"
   # Change this to your actual DB path
-  sqlite_path: "AIEvoBox/examples/testdata/env.db"
+  sqlite_path: "AIEvoBox/examples/test_data/env.db"
 
-pool_size: 200
+pool_size: 2
 
 cluster:
   mode: local
@@ -32,7 +32,7 @@ cluster:
     mc: "python /mnt/shared-storage-user/leishanzhe/repo/AIEvoBox/env/mc/service/app_comm.py"
     emb: "bash run.sh"
 
-  quotagroup: "evobox_gpu"
+  quotagroup: "evobox_cpu_task"
   description: "RL env Ray cluster"
 
   http:

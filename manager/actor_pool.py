@@ -98,10 +98,10 @@ class ActorPool:
             tasks = [asyncio.create_task(self._create_actor_for_row(row, registry, sem)) for row in rows]
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def close_and_refill(self, *, env: str, env_id: str, registry: ClusterRegistry) -> None:
+    async def close_and_refill(self, *, env: str, env_id: str, registry):
         env = str(env)
         env_id = str(env_id)
-        key: ActorKey = (env, env_id)
+        key = (env, env_id)
 
         # Resolve route without holding lock during HTTP
         async with self._lock:
@@ -121,13 +121,28 @@ class ActorPool:
             host = binding.head_ip
 
         if host:
-            close_url = f"http://{host}:{self._http_port}/{env}/{env_id}/close"
+            delete_url = f"http://{host}:{self._http_port}/{env}/{env_id}"
+
+            legacy_post_url = f"http://{host}:{self._http_port}/{env}/{env_id}/close"
+
             try:
-                resp = await self._http.post(close_url)
-                if resp.status_code >= 400:
-                    print(f"[manager] close failed: {close_url} status={resp.status_code} body={resp.text[:200]}")
+                resp = await self._http.delete(delete_url)
+                if resp.status_code == 404:
+                    # fallback to legacy
+                    resp2 = await self._http.post(legacy_post_url)
+                    if resp2.status_code >= 400:
+                        print(
+                            f"[manager] close failed: {legacy_post_url} "
+                            f"status={resp2.status_code} body={resp2.text}"
+                        )
+                elif resp.status_code >= 400:
+                    print(
+                        f"[manager] close failed: {delete_url} "
+                        f"status={resp.status_code} body={resp.text}"
+                    )
+
             except Exception as e:
-                print(f"[manager] close error: {close_url} err={e}")
+                print(f"[manager] close error: env='{env}', id='{env_id}', err={e}")
         else:
             print(f"[manager] close skipped: no route/binding for env='{env}' id='{env_id}'")
 
@@ -135,7 +150,7 @@ class ActorPool:
             print("[manager] no more DB rows to refill pool")
             return
 
-        await self._create_actor_for_row(next_row, registry, sem=None)
+        await self._create_actor_for_row(row=next_row, registry=registry, sem=None)
 
     # ------------------------------------------------------------------ #
 

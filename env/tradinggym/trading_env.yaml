@@ -1,6 +1,6 @@
 environments:
   - env_name: trading_gym
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:tradinggym001
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:trad0001
     env_num: 2
     dataset: ""
     env_params:
@@ -10,7 +10,7 @@ environments:
       window_size: 7
 
   - env_name: trading_gym
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:tradinggym001
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:trad0001
     env_num: 1
     dataset: ""
     env_params:
@@ -20,7 +20,7 @@ environments:
       window_size: 7
 
   - env_name: trading_gym
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:tradinggym001
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:trad0001
     env_num: 2
     dataset: ""
     env_params:
@@ -30,7 +30,7 @@ environments:
       window_size: 7
 
   - env_name: trading_gym
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:tradinggym001
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:trad0001
     env_num: 4
     dataset: ""
     env_params:
@@ -40,7 +40,7 @@ environments:
       window_size: 7
 
   - env_name: trading_gym
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:tradinggym001
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:trad0001
     env_num: 1
     dataset: ""
     env_params:
@@ -50,7 +50,7 @@ environments:
       window_size: 7
 
   - env_name: trading_gym
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:tradinggym001
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:trad0001
     env_num: 1
     dataset: ""
     env_params:
@@ -60,7 +60,7 @@ environments:
       window_size: 7
 
   - env_name: trading_gym
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:tradinggym001
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:trad0001
     env_num: 1
     dataset: ""
     env_params:
@@ -71,7 +71,7 @@ environments:
       window_size: 7
 
   - env_name: trading_gym
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:tradinggym001
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:trad0001
     env_num: 2
     dataset: ""
     env_params:
