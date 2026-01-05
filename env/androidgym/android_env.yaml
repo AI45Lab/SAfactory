@@ -1,6 +1,6 @@
 environments:
   - env_name: android_gym
-    env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:andorid001
     env_num: 1
     dataset: cases.jsonl
     env_params:

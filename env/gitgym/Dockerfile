@@ -1,5 +1,6 @@
 FROM registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:base
 
+
 ENV PIP_INDEX_URL="http://mirrors.i.h.pjlab.org.cn/pypi/simple/" \
     PIP_EXTRA_INDEX_URL="http://pypi.i.h.pjlab.org.cn/brain/dev/+simple" \
     PIP_TRUSTED_HOST="mirrors.i.h.pjlab.org.cn pypi.i.h.pjlab.org.cn"
@@ -7,8 +8,6 @@ ENV PIP_INDEX_URL="http://mirrors.i.h.pjlab.org.cn/pypi/simple/" \
 WORKDIR /app
 
 COPY . /app
-
-USER root
 
 RUN pip install --no-cache-dir \
     gymnasium \
@@ -26,3 +25,4 @@ RUN pip install --no-cache-dir \
 RUN pip install fastapi uvicorn
 
 EXPOSE 36663
+

@@ -10,6 +10,11 @@ COPY . /app
 
 USER root
 
+RUN mkdir -p /app/video
+
+RUN chmod -R 777 /app
+
+
 RUN pip install --no-cache-dir \
     gymnasium \
     ipython \

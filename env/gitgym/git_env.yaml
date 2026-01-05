@@ -1,6 +1,7 @@
 environments:
   - env_name: core_git_env
     env_num: 1
+    image: egistry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:git001
     dataset: ""
     env_params:
       repo_name: "stack_project"
@@ -9,6 +10,7 @@ environments:
       max_steps: 50
 
   - env_name: core_git_env
+    image: egistry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:git001
     env_num: 1
     dataset: ""
     env_params:
@@ -19,6 +21,7 @@ environments:
 
   # 最长公共子序列（LCS）- 经典动态规划
   - env_name: core_git_env
+    image: egistry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:git001
     env_num: 1
     dataset: ""
     env_params:
@@ -29,6 +32,7 @@ environments:
 
   # 零钱兑换（最少硬币数）- 经典动态规划
   - env_name: core_git_env
+    image: egistry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:git001
     env_num: 1
     dataset: ""
     env_params:
@@ -39,6 +43,7 @@ environments:
 
   # 斐波那契数列 - 经典动态规划/递归
   - env_name: core_git_env
+    image: egistry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:git001
     env_num: 1
     dataset: ""
     env_params:
@@ -49,6 +54,7 @@ environments:
 
   # IOI 2016 – Aliens（参数化搜索 + DP）
   - env_name: core_git_env
+    image: egistry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:git001
     env_num: 1
     dataset: ""
     env_params:
