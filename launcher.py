@@ -13,7 +13,8 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Set, Tuple, List
 
 from core.llm import StaticBaseURLProvider
-from core.data_manager.yaml_aggregator import populate_env_table, TABLE_NAME
+from core.data_manager.manager import DataManager
+from core.data_manager.yaml_aggregator import all_env_yaml_load, sync_configs_to_db
 
 from interactor import Interactor, ActorHandle, ActorPool
 from manager import EnvPoolManager
@@ -380,18 +381,23 @@ async def main():
     upstream_log_path = os.path.join(args.log_dir, "upstream.log")
     log.info("main log file: %s", main_log_path)
 
-    # 0) rebuild DB if requested
-    if bool(args.rebuild_table):
-        log.info("dropping table %s in %s", TABLE_NAME, args.db_path)
-        drop_table(args.db_path, TABLE_NAME)
+    # # 0) rebuild DB if requested
+    # if bool(args.rebuild_table):
+    #     log.info("dropping table %s in %s", TABLE_NAME, args.db_path)
+    #     drop_table(args.db_path, TABLE_NAME)
 
-    # 1) populate DB
-    log.info("populate_env_table: env_root=%s db_path=%s", args.env_root, args.db_path)
-    populate_env_table(db_path=args.db_path, env_root=args.env_root)
+    # # 1) populate DB
+    # log.info("populate_env_table: env_root=%s db_path=%s", args.env_root, args.db_path)
+    # populate_env_table(db_path=args.db_path, env_root=args.env_root)
 
-    # 2) open sqlite connection
+    # # 2) open sqlite connection
+    # conn = sqlite3.connect(args.db_path)
+    # conn.row_factory = sqlite3.Row
+    
+    data_manager = DataManager(storage_type="sqlite", db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
+    yaml_config_list = all_env_yaml_load(env_root=args.env_root)
+    await sync_configs_to_db(data_manager, yaml_config_list)
     conn = sqlite3.connect(args.db_path)
-    conn.row_factory = sqlite3.Row
 
     local_proc: Optional[subprocess.Popen] = None
     pool: Optional[ActorPool] = None
@@ -448,6 +454,7 @@ async def main():
             base_url_provider=base_url_provider,
             api_key=args.llm_api_key,
             model=args.llm_model,
+            data_manager=data_manager,
             temperature=args.llm_temperature,
             max_steps=args.max_steps,
             message_cut=args.message_cut,

@@ -54,11 +54,11 @@ class SqliteStrategy(StorageStrategy):
         await self.init()
         return await EnvironmentConfig.all()  # 直接返回所有记录
 
-    async def create_session(self, env_config: EnvironmentConfig, llm_model: str) -> InteractionSession:
+    async def create_session(self, env_id, llm_model: str) -> InteractionSession:
         """创建 session（走 buffer，update 时会检测并合并到同一对象）"""
         await self.init()
         session = InteractionSession(
-            env_id=env_config.env_id,
+            env_id=env_id,
             llm_model=llm_model
         )
         if self._write_buffer:
