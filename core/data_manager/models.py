@@ -14,6 +14,7 @@ class EnvironmentConfig(Model):
     )
     env_name = fields.CharField(max_length=100, description="环境名称（需与注册的环境名称一致）")
     env_params = fields.JSONField(description="用户自定义参数")
+    image = fields.CharField(max_length=100, description="环境镜像")
     created_at = fields.DatetimeField(auto_now_add=True)
 
     class Meta:

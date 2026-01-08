@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 import httpx
 from core.llm import LLM, BaseURLProvider
+from core.data_manager.manager import DataManager
 
 log = logging.getLogger("interactor")
 
@@ -44,6 +45,7 @@ class Interactor:
         base_url_provider: BaseURLProvider,
         api_key: str,
         model: str,
+        data_manager: DataManager,
         temperature: float = 0.3,
         max_steps: int = 1000,
         message_cut: int = 3,
@@ -64,6 +66,9 @@ class Interactor:
         self.verbose = bool(verbose)
 
         self.log_actions_preview_chars = max(0, int(log_actions_preview_chars))
+        
+        self.model = model
+        self.data_manager = data_manager
 
         base_url = self._get_base_url(base_url_provider)
         self.llm = LLM(
@@ -200,8 +205,14 @@ class Interactor:
     async def _run_one_environment(self, a: ActorHandle, worker_id: int) -> float:
         total_reward = 0.0
         env_key = f"{a.env_name}_{a.env_id}"
+        trajectory = ""
+        
+        session = await self.data_manager.create_session(
+            env_id=a.env_id,
+            llm_model=self.model
+        )
 
-        for step_i in range(self.max_steps):
+        for step_i in range(1, self.max_steps + 1):
             prompt_raw = await self._request_json("GET", self._url(a, "get_task_prompt"), ctx=f"{env_key}/prompt")
             prompt = self._trim_messages(prompt_raw)
             if not prompt:
@@ -226,6 +237,7 @@ class Interactor:
 
             terminated = bool(out.get("terminated", False))
             truncated = bool(out.get("truncated", False))
+            done = terminated or truncated
 
             log.debug(
                 "worker=%d env=%s step=%d reward=%.4f total=%.4f terminated=%s truncated=%s",
@@ -235,6 +247,25 @@ class Interactor:
             if terminated or truncated:
                 log.info("worker=%d env=%s done: terminated=%s truncated=%s", worker_id, env_key, terminated, truncated)
                 break
+            
+            # 记录交互步骤
+            await self.data_manager.record_step(
+                session=session,
+                step_id=step_i,
+                prompt=prompt,
+                response=action,
+                reward=reward,
+                done=done
+            )
+            
+            trajectory += f"Step {step_i}:\nResponse: {action}\n\n"
+            
+        await self.data_manager.update_session(
+                session=session,
+                trajectory=trajectory,
+                total_reward=total_reward,
+                is_completed=True
+            )
 
         return total_reward
 

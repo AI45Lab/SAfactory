@@ -29,3 +29,7 @@ class StorageStrategy(ABC):
     @abstractmethod
     async def close(self):
         pass
+    
+    @abstractmethod
+    def get_sync_connection(self):
+        pass

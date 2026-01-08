@@ -189,7 +189,7 @@ class ActorPool:
 
         url = f"http://{cluster.head_ip}:{self._http_port}/{env_name}/{env_id}/reset"
         payload = {
-            "env_param": row.get("env_param"),
+            "env_param": row.get("env_params"),
             "seed": row.get("seed", self._default_seed),
         }
 

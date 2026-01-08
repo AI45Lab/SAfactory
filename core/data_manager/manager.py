@@ -44,8 +44,8 @@ class DataManager:
     async def get_all_environments(self):
         return await self.strategy.get_all_environments()
 
-    async def create_session(self, env_config, llm_model: str):
-        return await self.strategy.create_session(env_config, llm_model)
+    async def create_session(self, env_id, llm_model: str):
+        return await self.strategy.create_session(env_id, llm_model)
 
     async def update_session(self, *args, **kwargs):
         return await self.strategy.update_session(*args, **kwargs)
@@ -55,6 +55,9 @@ class DataManager:
 
     async def close(self):
         await self.strategy.close()
+        
+    def get_sync_connection(self):
+        return self.strategy.get_sync_connection()
  
     @property
     def buffer_stats(self):
