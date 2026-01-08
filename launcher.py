@@ -326,7 +326,7 @@ def parse_args():
 
     # DB / YAML-aggregator
     p.add_argument("--env-root", type=str, default="env")
-    p.add_argument("--db-path", type=str, default="examples/test_data/env.db")
+    p.add_argument("--db-path", type=str, default="sqlite://test_envs.db")
     p.add_argument("--rebuild-table", action="store_true", default=True)
 
     # Pool overrides
@@ -348,9 +348,9 @@ def parse_args():
     p.add_argument("--http-retries", type=int, default=2)
 
     # LLM
-    p.add_argument("--llm-base-url", type=str, default="http://100.99.119.50:30000/v1")
+    p.add_argument("--llm-base-url", type=str, default="http://100.99.167.223:30000/v1")
     p.add_argument("--llm-api-key", type=str, default="EMPTY")
-    p.add_argument("--llm-model", type=str, default="Qwen2.5-VL-7B-Instruct")
+    p.add_argument("--llm-model", type=str, default="Qwen3-30B-Instruct")
     p.add_argument("--llm-temperature", type=float, default=0.3)
 
     # Logging
@@ -383,8 +383,7 @@ async def main():
     
     data_manager = DataManager(storage_type="sqlite", db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
     yaml_config_list = all_env_yaml_load(env_root=args.env_root)
-    await sync_configs_to_db(data_manager, yaml_config_list)
-    conn = sqlite3.connect(args.db_path)
+    conn = await sync_configs_to_db(data_manager, yaml_config_list)
 
     local_proc: Optional[subprocess.Popen] = None
     pool: Optional[ActorPool] = None

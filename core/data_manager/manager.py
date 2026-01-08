@@ -55,6 +55,9 @@ class DataManager:
 
     async def close(self):
         await self.strategy.close()
+        
+    def get_sync_connection(self):
+        return self.strategy.get_sync_connection()
  
     @property
     def buffer_stats(self):

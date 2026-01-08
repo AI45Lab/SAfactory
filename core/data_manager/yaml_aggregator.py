@@ -94,11 +94,17 @@ def populate_env_table(db_path: str | Path, env_root: str | Path = "env") -> Non
     finally:
         conn.close()
 
-def all_env_yaml_load(env_root):
+def all_env_yaml_load(env_root: str | Path = "env"):
     yaml_config_list = []
+    env_root = Path(env_root)
     for yaml_path in iter_child_yaml_files(env_root):
-        yaml_configs = load_yaml_configs(yaml_path)
-        yaml_config_list.append(yaml_configs)
+        print(f"Populating from: {yaml_path}")
+        try:
+            yaml_configs = load_yaml_configs(str(yaml_path))
+        except Exception as e:
+            print(f"[SKIP] failed to parse the yaml file: {yaml_path} -> {e}")
+            continue
+        yaml_config_list.extend(yaml_configs)
         
     return yaml_config_list
 
@@ -171,4 +177,7 @@ async def sync_configs_to_db(data_manager, yaml_configs):
             print(f"删除环境配置实例：{db_cfg.env_name}（env_id: {db_cfg.env_id}）")
 
     print(f"\n配置同步结果：新增{added} | 保留{len(yaml_config_keys)-added} | 删除{deleted}")
-    await data_manager.close()
+    
+    conn = data_manager.get_sync_connection()
+    
+    return conn

@@ -5,6 +5,7 @@ from tortoise import Tortoise
 from typing import List, Dict, Optional, Tuple
 import uuid
 import json
+import sqlite3
 from datetime import datetime
 
 class SqliteStrategy(StorageStrategy):
@@ -124,6 +125,32 @@ class SqliteStrategy(StorageStrategy):
             await self._write_buffer.stop()
         if self.initialized:
             await Tortoise.close_connections()
+            
+    def get_sync_connection(self) -> sqlite3.Connection:
+        """
+        解析 db_url 并返回一个原生的 sqlite3 同步连接对象
+        """
+        # 1. 解析 URL (例如: sqlite:///mnt/.../db.sqlite3?journal_mode=DELETE)
+        if not self.db_url.startswith("sqlite://"):
+            raise ValueError("只支持 sqlite:// 协议")
+        
+        # 去掉 sqlite:// 前缀
+        url_suffix = self.db_url[9:]
+        
+        # 处理参数 (去掉 ?journal_mode=...)
+        if "?" in url_suffix:
+            file_path = url_suffix.split("?")[0]
+        else:
+            file_path = url_suffix
+
+        # 2. 建立原生连接
+        # check_same_thread=False 允许在不同线程使用该连接（根据你的需求可选）
+        conn = sqlite3.connect(file_path, check_same_thread=False)
+        
+        # 推荐：配置 row_factory 以便可以通过列名访问数据
+        conn.row_factory = sqlite3.Row
+        
+        return conn
     
     @property
     def buffer_stats(self) -> Optional[dict]:

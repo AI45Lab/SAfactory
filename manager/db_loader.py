@@ -22,7 +22,7 @@ def get_connection(cfg: dict) -> sqlite3.Connection:
 def get_active_data(conn: sqlite3.Connection, limit: int, offset: int, tableName:str="environment_configs") -> List[Dict[str, Any]]:
     query = f"""
     SELECT
-        id, env_name, env_id, env_param, image
+        id, env_name, env_id, env_params, image
     FROM {tableName}
     ORDER BY id ASC
     LIMIT ? OFFSET ?;
