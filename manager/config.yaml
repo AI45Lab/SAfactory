@@ -14,7 +14,7 @@ ray:
 database:
   driver: "sqlite"
   # Change this to your actual DB path
-  sqlite_path: "AIEvoBox/examples/test_data/env.db"
+  sqlite_path: "AIEvoBox/test_envs.db"
 
 pool_size: 2
 
@@ -38,7 +38,7 @@ cluster:
   http:
     port: 36663
     # HTTP timeout from global manager -> cluster
-    timeout_s: 100
+    timeout_s: 600
     # Max concurrent HTTP calls from manager when prewarming actors
     concurrency: 200
 

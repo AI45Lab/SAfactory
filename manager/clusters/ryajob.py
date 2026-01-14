@@ -132,10 +132,11 @@ class RayJobManager:
         if head_config is None:
             head_config = HeadConfig(
                 resources={
-                    "cpu": "15",
-                    "memory": "40Gi",
+                    "cpu": "10",
+                    "memory": "20Gi",
                     "nvidia.com/gpu": "0",
-                }
+                },
+                privileged=True
             )
 
         if worker_group_config is None:
@@ -146,7 +147,7 @@ class RayJobManager:
                     negativeTags=[],
                     localStorage="0",
                     privateMachine=self.tenant,
-                    replicas=1,
+                    replicas=0,
                     resources={
                         "cpu": "3",
                         "memory": "10Gi",
