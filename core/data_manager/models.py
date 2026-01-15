@@ -13,6 +13,7 @@ class EnvironmentConfig(Model):
         description="环境唯一标识UUID"
     )
     group_id = fields.CharField(max_length=150)
+    finished = fields.BooleanField(default=False)
     env_name = fields.CharField(max_length=100, description="环境名称（需与注册的环境名称一致）")
     env_params = fields.JSONField(description="用户自定义参数")
     image = fields.CharField(max_length=100, description="环境镜像")
