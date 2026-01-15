@@ -22,6 +22,7 @@ class ActorHandle:
     base_url: str
     env_name: str
     env_id: str
+    group_id: str
 
 
 class ActorPool(Protocol):
@@ -209,7 +210,8 @@ class Interactor:
         
         session = await self.data_manager.create_session(
             env_id=a.env_id,
-            llm_model=self.model
+            llm_model=self.model,
+            group_id=a.group_id
         )
 
         for step_i in range(1, self.max_steps + 1):

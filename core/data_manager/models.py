@@ -12,6 +12,7 @@ class EnvironmentConfig(Model):
         unique=True, 
         description="环境唯一标识UUID"
     )
+    group_id = fields.CharField(max_length=150)
     env_name = fields.CharField(max_length=100, description="环境名称（需与注册的环境名称一致）")
     env_params = fields.JSONField(description="用户自定义参数")
     image = fields.CharField(max_length=100, description="环境镜像")
@@ -36,6 +37,7 @@ class InteractionSession(Model):
         on_delete=fields.CASCADE,
         to_field="env_id"  # 明确关联EnvironmentConfig的env_id字段（UUID）
     )
+    group_id = fields.CharField(max_length=150)
     llm_model = fields.CharField(max_length=150)
     start_time = fields.DatetimeField(auto_now_add=True)
     end_time = fields.DatetimeField(null=True)
