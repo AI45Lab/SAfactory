@@ -209,7 +209,7 @@ class Interactor:
         
         session = await self.data_manager.create_session(
             env_id=a.env_id,
-            llm_model=self.model
+            llm_model=self.model,
         )
 
         for step_i in range(1, self.max_steps + 1):
