@@ -92,6 +92,7 @@ async def sync_configs_to_db(data_manager, yaml_configs, dry_run):
     for cfg in yaml_configs:
         env_name = cfg["env_name"].strip()
         env_params = cfg.get("env_params", {})
+        image = cfg.get("env_image", "")
         env_num = cfg.get("env_num", 1)  # 默认创建1个实例
         if not isinstance(env_num, int) or env_num < 1:
             raise ValueError(f"env_num必须是正整数，{env_name}配置错误")
@@ -105,7 +106,8 @@ async def sync_configs_to_db(data_manager, yaml_configs, dry_run):
                 if not dry_run:
                     await EnvironmentConfig.create(
                         env_name=env_name,
-                        env_params=env_params  # env_id自动生成
+                        env_params=env_params,  # env_id自动生成
+                        image=image
                     )
                 added += 1
                 print(f"新增环境配置实例：{env_name}（序号：{index}/{env_num}，自动生成env_id）")

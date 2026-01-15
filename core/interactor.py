@@ -80,7 +80,7 @@ class Interactor:
             pass
         env = await self._init_environment(env_config)
         session = await self.data_manager.create_session(
-            env_config=env_config,
+            env_id=env_config.env_id,
             llm_model=self.model
         )
 
