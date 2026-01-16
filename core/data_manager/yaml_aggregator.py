@@ -76,6 +76,35 @@ def insert_from_yaml(conn: sqlite3.Connection, yaml_path: Path) -> None:
 
     conn.commit()
 
+def _resolve_env_config_path(
+    *,
+    env_config: str | Path,
+    env_root: str | Path = "env",
+) -> Path:
+    """Resolve env_config to an existing yaml/yml file path.
+
+    - If env_config is an absolute path, use it directly.
+    - If it's a relative path:
+        1) try as-is (relative to current working dir)
+        2) if not exists, try join with env_root
+    """
+    root = Path(env_root)
+    p = Path(env_config)
+
+    if not p.is_absolute() and not p.exists():
+        p2 = root / p
+        if p2.exists():
+            p = p2
+
+    if not p.is_file():
+        raise ValueError(f"env_config must be an existing yaml file, got: {p}")
+
+    if p.suffix.lower() not in (".yaml", ".yml"):
+        raise ValueError(f"env_config must be a .yaml/.yml file, got: {p}")
+
+    return p
+
+
 
 def populate_env_table(db_path: str | Path, env_root: str | Path = "env") -> None:
     """iter all the yaml files under the given env root and insert it into the given db path"""
@@ -94,9 +123,25 @@ def populate_env_table(db_path: str | Path, env_root: str | Path = "env") -> Non
     finally:
         conn.close()
 
-def all_env_yaml_load(env_root: str | Path = "env"):
+def all_env_yaml_load(
+    env_root: str | Path = "env",
+    *,
+    env_config: str | Path | None = None,
+):
+    """Load env yaml configs.
+
+    - If env_config is provided: only load that yaml file.
+    - Else: load all yaml files under env_root.
+    """
     yaml_config_list = []
     env_root = Path(env_root)
+
+    if env_config:
+        yaml_path = _resolve_env_config_path(env_config=env_config, env_root=env_root)
+        print(f"Populating from (env_config): {yaml_path}")
+        yaml_config_list.extend(load_yaml_configs(str(yaml_path)) or [])
+        return yaml_config_list
+
     for yaml_path in iter_child_yaml_files(env_root):
         print(f"Populating from: {yaml_path}")
         try:
@@ -105,7 +150,7 @@ def all_env_yaml_load(env_root: str | Path = "env"):
             print(f"[SKIP] failed to parse the yaml file: {yaml_path} -> {e}")
             continue
         yaml_config_list.extend(yaml_configs)
-        
+
     return yaml_config_list
 
 async def sync_configs_to_db(data_manager, yaml_configs):

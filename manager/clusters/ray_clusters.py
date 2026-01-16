@@ -104,10 +104,20 @@ def _normalize_entrypoints(raw: Any) -> Dict[str, str]:
     raise TypeError(f"Unsupported entrypoint config type: {type(raw)!r}")
 
 
+def _jobname_hint(env_name: str, idx: int) -> str:
+    """Job name hint: prefix before '_' + index.
+
+    Example:
+      trading_gym, idx=1 -> trading-1
+    """
+    base = (str(env_name).split("_", 1)[0] or str(env_name)).strip()
+    if not base:
+        base = "rayjob"
+    return f"{base}-{int(idx)}"
+
+
 class RemoteRayJobBackend(ClusterBackend):
-    """
-    Remote backend that manages Ray clusters via RayJobManager (rayjob_sdk).
-    """
+    """Remote backend that manages Ray clusters via RayJobManager (rayjob_sdk)."""
 
     def __init__(
         self,
@@ -136,45 +146,76 @@ class RemoteRayJobBackend(ClusterBackend):
             verify=bool(rayjob_cfg.get("verify", False)),
         )
 
+        # Keep raw cluster config for per-env env_types lookup
         self._cluster_cfg: Dict[str, Any] = dict(cluster_cfg or {})
         self._env_types: Dict[str, Any] = dict(self._cluster_cfg.get("env_types", {}) or {})
 
         self._quotagroup: str = str(self._cluster_cfg.get("quotagroup", "")).strip()
+        # New config.yaml places description under rayjob; keep compatibility with older cluster.description.
         self._description: str = str(
-             rayjob_cfg.get("description", self._cluster_cfg.get("description", "RL env Ray cluster"))
+            rayjob_cfg.get("description", self._cluster_cfg.get("description", "RL env Ray cluster"))
         ).strip()
-        self._entrypoints: Dict[str, str] = _normalize_entrypoints(self._cluster_cfg.get("entrypoint"))
 
+        self._entrypoints: Dict[str, str] = _normalize_entrypoints(self._cluster_cfg.get("entrypoint"))
         self._default_entrypoint: str = (
             str(self._cluster_cfg.get("default_entrypoint", DEFAULT_ENTRYPOINT)).strip() or DEFAULT_ENTRYPOINT
         )
 
-        self._poll_interval_s: float = float(cluster_cfg.get("head_ip_poll_interval_s", 5.0))
-        self._poll_timeout_s: float = float(cluster_cfg.get("head_ip_poll_timeout_s", 600.0))
+        self._poll_interval_s: float = float(self._cluster_cfg.get("head_ip_poll_interval_s", 5.0))
+        self._poll_timeout_s: float = float(self._cluster_cfg.get("head_ip_poll_timeout_s", 600.0))
 
-        self._clusters_by_image: Dict[str, RayClusterInfo] = {}
+        # NOTE: the dict key is a *cluster id* (not necessarily image).
+        # We use "{env_name}#{idx}" so ActorPool can schedule by env and pick the least-loaded job.
+        self._clusters: Dict[str, RayClusterInfo] = {}
 
     async def start(self, plan: BindingPlan) -> ClusterRegistry:
-        if not plan.images_needed:
+        if not plan.env_to_image:
             return ClusterRegistry(clusters_by_image={}, env_bindings={})
 
-        tasks = [self._ensure_cluster_for_image(image=img, plan=plan) for img in plan.images_needed]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        env_job_counts = dict(plan.env_job_counts or {})
+        if not env_job_counts:
+            # Backward-compatible fallback
+            env_job_counts = {env: 1 for env in plan.env_to_image.keys()}
 
-        errors = [r for r in results if isinstance(r, Exception)]
-        if errors:
-            for e in errors[:3]:
-                print(f"[manager] ERROR: rayjob create failed: {e}")
-            raise RuntimeError(f"RayJob cluster creation failed for {len(errors)} image(s).")
+        tasks: List[asyncio.Task] = []
+        for env_name, image in plan.env_to_image.items():
+            image = (image or "").strip()
+            if not image:
+                continue
+
+            n = max(1, int(env_job_counts.get(env_name, 1) or 1))
+            for idx in range(1, n + 1):
+                tasks.append(
+                    asyncio.create_task(
+                        self._ensure_cluster_for_env_job(env_name=env_name, idx=idx, image=image)
+                    )
+                )
+
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            errors = [r for r in results if isinstance(r, Exception)]
+            if errors:
+                for e in errors[:3]:
+                    print(f"[manager] ERROR: rayjob create failed: {e}")
+                raise RuntimeError(f"RayJob cluster creation failed for {len(errors)} job(s).")
 
         await self._wait_for_head_ips()
         await self._wait_for_head_http_services()
 
+        # Pick one binding per env as the fallback route. ActorPool will do the real scheduling.
         env_bindings: Dict[str, EnvClusterBinding] = {}
         for env_name, image in plan.env_to_image.items():
-            info = self._clusters_by_image.get(image)
+            cid = f"{env_name}#1"
+            info = self._clusters.get(cid)
+            if not info:
+                # fallback: any cluster starting with env_name#
+                for k, v in self._clusters.items():
+                    if str(k).startswith(f"{env_name}#"):
+                        info = v
+                        break
             if not info:
                 continue
+
             env_bindings[env_name] = EnvClusterBinding(
                 env_name=env_name,
                 image=image,
@@ -183,16 +224,16 @@ class RemoteRayJobBackend(ClusterBackend):
                 head_ip=info.head_ip,
             )
 
-        return ClusterRegistry(clusters_by_image=dict(self._clusters_by_image), env_bindings=env_bindings)
+        return ClusterRegistry(clusters_by_image=dict(self._clusters), env_bindings=env_bindings)
 
     async def close(self) -> None:
         jobs: List[Tuple[str, str]] = []
-        for info in self._clusters_by_image.values():
+        for info in self._clusters.values():
             if info.job_name:
                 jobs.append((info.project, info.job_name))
 
         jobs = list(dict.fromkeys(jobs))
-        self._clusters_by_image.clear()
+        self._clusters.clear()
 
         # stop then delete; each best-effort
         for project, job_name in jobs:
@@ -209,21 +250,25 @@ class RemoteRayJobBackend(ClusterBackend):
 
     # ------------------------------------------------------------------ #
 
-    async def _ensure_cluster_for_image(self, *, image: str, plan: BindingPlan) -> None:
-        if not image:
-            return
-        if image in self._clusters_by_image:
+    async def _ensure_cluster_for_env_job(self, *, env_name: str, idx: int, image: str) -> None:
+        env_name = str(env_name)
+        image = (image or "").strip()
+        if not env_name or not image:
             return
 
-        env_name = plan.image_to_env.get(image, "")
+        cluster_id = f"{env_name}#{int(idx)}"
+        if cluster_id in self._clusters:
+            return
+
         env_cfg = dict(self._env_types.get(env_name, {}) or {})
+
+        # Prefer new config: cluster.env_types.<env>.entrypoint
         entrypoint = str(
             env_cfg.get("entrypoint")
             or self._entrypoints.get(env_name)
             or self._entrypoints.get("*")
             or self._default_entrypoint
         ).strip()
-
         if not entrypoint:
             raise RuntimeError(
                 f"No entrypoint configured for env='{env_name}'. "
@@ -232,18 +277,20 @@ class RemoteRayJobBackend(ClusterBackend):
             )
 
         quotagroup = str(env_cfg.get("quotagroup") or self._quotagroup).strip()
-        head_config,volumes = build_rayjob_config(self._cluster_cfg, env_name)
+        head_config ,volumes= build_rayjob_config(self._cluster_cfg, env_name)
+        name_hint = _jobname_hint(env_name, idx)
 
         def _create_job_sync() -> str:
             return str(
                 self._rayjob_manager.create(
                     project=self._rayjob_project,
+                    name=name_hint,
                     image=image,
                     entrypoint=str(entrypoint),
                     quotagroup=str(quotagroup),
-                    head_config=head_config,
                     volumes=volumes,
-                    description=self._description or f"Env cluster for image={image}",
+                    description=self._description or f"Env cluster for env={env_name}",
+                    head_config=head_config,
                 )
             )
 
@@ -252,39 +299,41 @@ class RemoteRayJobBackend(ClusterBackend):
         for attempt in range(1, max_attempts + 1):
             try:
                 job_name = await asyncio.to_thread(_create_job_sync)
-                self._clusters_by_image[image] = RayClusterInfo(
+                self._clusters[cluster_id] = RayClusterInfo(
                     image=image,
                     project=self._rayjob_project,
                     job_name=job_name,
                     head_ip="",
                 )
-                print(f"[manager] RayJob created for image='{image}', job_name='{job_name}'")
+                print(
+                    f"[manager] RayJob created: env='{env_name}', idx={idx}, image='{image}', job_name='{job_name}'"
+                )
                 return
             except Exception as e:
                 last_err = e
                 sleep_s = min(5.0, 0.5 * (2 ** (attempt - 1)))
                 print(
                     f"[manager] RayJob create failed (attempt {attempt}/{max_attempts}) "
-                    f"for image='{image}': {e}. Retry in {sleep_s}s"
+                    f"env='{env_name}', idx={idx}, image='{image}': {e}. Retry in {sleep_s}s"
                 )
                 if attempt < max_attempts:
                     await asyncio.sleep(sleep_s)
 
-        raise RuntimeError(f"RayJob create failed for image='{image}': {last_err}")
+        raise RuntimeError(f"RayJob create failed for env='{env_name}', idx={idx}, image='{image}': {last_err}")
 
     async def _wait_for_head_ips(self) -> None:
-        if not self._clusters_by_image:
+        if not self._clusters:
             return
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._poll_timeout_s
         attempt = 0
 
-        def missing_images() -> List[str]:
-            return [img for img, info in self._clusters_by_image.items() if not info.head_ip]
+        def missing_ids() -> List[str]:
+            return [cid for cid, info in self._clusters.items() if not info.head_ip]
 
         while True:
-            missing = missing_images()
+            missing = missing_ids()
             if not missing:
                 print("[manager] all clusters have head_ip")
                 return
@@ -296,32 +345,32 @@ class RemoteRayJobBackend(ClusterBackend):
                 asyncio.to_thread(
                     self._rayjob_manager.get_head_ip,
                     self._rayjob_project,
-                    self._clusters_by_image[img].job_name,
+                    self._clusters[cid].job_name,
                 )
-                for img in missing
+                for cid in missing
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            for img, res in zip(missing, results):
+            for cid, res in zip(missing, results):
                 if isinstance(res, Exception):
-                    print(f"[manager] get_head_ip failed for image='{img}': {res}")
+                    print(f"[manager] get_head_ip failed for cluster='{cid}': {res}")
                     continue
                 ip = (res or "").strip()
                 if ip:
-                    self._clusters_by_image[img].head_ip = ip
-                    print(f"[manager] head_ip resolved: image='{img}' -> {ip}")
+                    self._clusters[cid].head_ip = ip
+                    print(f"[manager] head_ip resolved: cluster='{cid}' -> {ip}")
 
-            if not missing_images():
+            if not missing_ids():
                 print("[manager] head_ip polling finished")
                 return
 
             if loop.time() >= deadline:
-                raise RuntimeError(f"Timeout waiting for head IPs: {missing_images()}")
+                raise RuntimeError(f"Timeout waiting for head IPs: {missing_ids()}")
 
             await asyncio.sleep(self._poll_interval_s)
 
     async def _wait_for_head_http_services(self) -> None:
-        if not self._clusters_by_image:
+        if not self._clusters:
             return
 
         loop = asyncio.get_running_loop()
@@ -329,7 +378,7 @@ class RemoteRayJobBackend(ClusterBackend):
         attempt = 0
 
         while True:
-            clusters = [(img, info) for img, info in self._clusters_by_image.items() if info.head_ip]
+            clusters = [(cid, info) for cid, info in self._clusters.items() if info.head_ip]
             if not clusters:
                 raise RuntimeError("No head_ip resolved; cannot check HTTP readiness")
 
@@ -337,9 +386,9 @@ class RemoteRayJobBackend(ClusterBackend):
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             not_ready: List[Tuple[str, RayClusterInfo]] = []
-            for (img, info), res in zip(clusters, results):
+            for (cid, info), res in zip(clusters, results):
                 if isinstance(res, Exception) or not res:
-                    not_ready.append((img, info))
+                    not_ready.append((cid, info))
 
             if not not_ready:
                 print("[manager] all head HTTP services are ready")
@@ -347,11 +396,11 @@ class RemoteRayJobBackend(ClusterBackend):
 
             attempt += 1
             if loop.time() >= deadline:
-                remaining = ", ".join(f"{img}@{info.head_ip}" for img, info in not_ready)
+                remaining = ", ".join(f"{cid}@{info.head_ip}" for cid, info in not_ready)
                 raise RuntimeError(f"Timeout waiting for head HTTP services: {remaining}")
 
             print(
                 f"[manager] head HTTP not ready (attempt {attempt}), retry in {self._poll_interval_s}s. "
-                f"not_ready={[img for img, _ in not_ready]}"
+                f"not_ready={[cid for cid, _ in not_ready]}"
             )
             await asyncio.sleep(self._poll_interval_s)

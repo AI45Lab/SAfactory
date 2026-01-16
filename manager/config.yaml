@@ -26,25 +26,25 @@ cluster:
           gpu: 0
           memory: 20Gi
       limit: 30                             #TODO required
-      git_gym:
-        quotagroup: "evobox_cpu_task"
-        entrypoint: "python /app/app.py"
-      mc:
-        quotagroup: "evobox_cpu_task"
-        entrypoint: "python /mnt/shared-storage-user/leishanzhe/repo/AIEvoBox/env/mc/service/app_comm.py"
-        limit: 1
-      emb:
-        quotagroup: "evobox_gpu"
-        entrypoint: "bash run.sh"
-        limit: 1
-      os_gym:
-        quotagroup: "evobox_cpu_task"
-        entrypoint: "bash run.sh"
-        limit: 1
-      android_gym:
-        quotagroup: "evobox_cpu_task"
-        entrypoint: "python env/app.py"
-        limit: 1
+    git_gym:
+      quotagroup: "evobox_cpu_task"
+      entrypoint: "python /app/app.py"
+    mc:
+      quotagroup: "evobox_cpu_task"
+      entrypoint: "python /mnt/shared-storage-user/leishanzhe/repo/AIEvoBox/env/mc/service/app_comm.py"
+      limit: 1
+    emb:
+      quotagroup: "evobox_gpu"
+      entrypoint: "bash run.sh"
+      limit: 1
+    os_gym:
+      quotagroup: "evobox_cpu_task"
+      entrypoint: "bash run.sh"
+      limit: 1
+    android_gym:
+      quotagroup: "evobox_cpu_task"
+      entrypoint: "python env/app.py"
+      limit: 1
 
 rayjob:
   domain: "https://h.pjlab.org.cn"

@@ -321,11 +321,12 @@ def parse_args():
     )
 
     # YAML
-    p.add_argument("--config", type=str, default="./manager/config.yaml", help="Path to unified YAML config")
+    p.add_argument("--manager-config", type=str, default="./manager/config.yaml", help="Path to unified YAML config")
     p.add_argument("--mode", choices=["local", "remote"], default="local")
 
     # DB / YAML-aggregator
-    p.add_argument("--env-root", type=str, default="env")
+    p.add_argument("--env-config", type=str, help="env config which used for specify the input env configs, and it's incompatible with  env-root")
+    p.add_argument("--env-root", type=str, default="env", help="only works when env-config is not specified")
     p.add_argument("--db-path", type=str, default="sqlite://test_envs.db")
     p.add_argument("--rebuild-table", action="store_true", default=True)
 
@@ -382,7 +383,8 @@ async def main():
     log.info("main log file: %s", main_log_path)
     
     data_manager = DataManager(storage_type="sqlite", db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
-    yaml_config_list = all_env_yaml_load(env_root=args.env_root)
+    yaml_config_list =all_env_yaml_load(env_root=args.env_root,env_config=args.env_config)
+
     conn = await sync_configs_to_db(data_manager, yaml_config_list)
 
     local_proc: Optional[subprocess.Popen] = None
@@ -390,8 +392,8 @@ async def main():
 
     try:
         # 3) load YAML config
-        cfg = _load_yaml(args.config)
-        log.info("loaded config: %s", args.config)
+        cfg = _load_yaml(args.manager_config)
+        log.info("loaded config: %s", args.manager_config)
 
         # Ensure config points to our DB path
         _set_nested(cfg, ["database", "driver"], cfg.get("database", {}).get("driver", "sqlite"))

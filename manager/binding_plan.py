@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 
 from .repository import EnvDataRepository
 
@@ -11,9 +11,13 @@ class BindingPlan:
     env_to_image: Dict[str, str]
     image_to_env: Dict[str, str]
     images_needed: Set[str]
+    env_job_counts: Dict[str, int]    #Record how many RayJobs (clusters) we want per env in the initial start.
 
 
-def build_binding_plan(repo: EnvDataRepository, base_image: str) -> BindingPlan:
+def build_binding_plan(repo: EnvDataRepository,
+                       base_image: str,
+                       env_job_counts: Optional[Dict[str, int]] = None
+    ) -> BindingPlan:
     """
     Build env->image bindings and discover distinct images needed.
 
@@ -21,7 +25,7 @@ def build_binding_plan(repo: EnvDataRepository, base_image: str) -> BindingPlan:
     """
     env_image_map = repo.get_env_image_map()
     if not env_image_map:
-        return BindingPlan(env_to_image={}, image_to_env={}, images_needed=set())
+        return BindingPlan(env_to_image={}, image_to_env={}, images_needed=set(), env_job_counts={})
 
     base_image = (base_image or "").strip()
     needs_base = any(not (img or "").strip() for img in env_image_map.values())
@@ -50,4 +54,5 @@ def build_binding_plan(repo: EnvDataRepository, base_image: str) -> BindingPlan:
         env_to_image=final_env_image,
         image_to_env=image_to_env,
         images_needed=images_needed,
+        env_job_counts=dict(env_job_counts or {}),
     )

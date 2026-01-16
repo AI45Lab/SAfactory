@@ -21,24 +21,12 @@ def _detect_mode(cfg: Dict[str, Any]) -> str:
       4) otherwise -> local
     """
 
-    mode = str(cfg.get("mode", "")).strip().lower()
-    if mode in ("local", "localhost"):
+    top_mode = str(cfg.get("mode", "")).strip().lower()
+    if top_mode in ("local", "localhost"):
         return "local"
-    if mode in ("remote", "rayjob", "cluster"):
+    if top_mode in ("remote", "rayjob", "cluster"):
         return "remote"
-
-    cluster_cfg = dict(cfg.get("cluster", {}) or {})
-    mode = str(cluster_cfg.get("mode", "")).strip().lower()
-    if mode in ("local", "localhost"):
-        return "local"
-    if mode in ("remote", "rayjob", "cluster"):
-        return "remote"
-
-    rayjob_cfg = dict(cfg.get("rayjob", {}) or {})
-    required = ["domain", "tenant", "access_key", "secret_key"]
-    if all(str(rayjob_cfg.get(k, "")).strip() for k in required):
-        return "remote"
-    return "local"
+    return "remote" # if no mode set, start up with remote mode
 
 
 class EnvPoolManager:
@@ -50,6 +38,19 @@ class EnvPoolManager:
 
         cluster_cfg: Dict[str, Any] = dict(self.cfg.get("cluster", {}) or {})
         rayjob_cfg: Dict[str, Any] = dict(self.cfg.get("rayjob", {}) or {})
+
+        env_types_cfg: Dict[str, Any] = dict(cluster_cfg.get("env_types", {}) or {})
+        self._env_limits: Dict[str, int] = {}
+        for env_name, env_cfg in env_types_cfg.items():
+            if not isinstance(env_cfg, dict):
+                continue
+            lim = env_cfg.get("limit")
+            if lim is None:
+                continue
+            try:
+                self._env_limits[str(env_name)] = int(lim)
+            except Exception:
+                continue
 
         self._base_image: str = str(cluster_cfg.get("base_image") or self.cfg.get("base_image") or "").strip()
 
@@ -75,6 +76,7 @@ class EnvPoolManager:
             http_concurrency=self._http_concurrency,
             base_image=self._base_image,
             default_seed=self._default_seed,
+            env_limits=self._env_limits,
         )
 
         self._registry: ClusterRegistry = ClusterRegistry(clusters_by_image={}, env_bindings={})
@@ -88,15 +90,43 @@ class EnvPoolManager:
 
             await self._http.start()
 
-            plan = build_binding_plan(self._repo, base_image=self._base_image)
-            if not plan.env_to_image:
+            tmp_plan = build_binding_plan(self._repo, base_image=self._base_image)
+            if not tmp_plan.env_to_image:
                 print("[manager] No env/image mapping found in DB; nothing to start.")
                 self._registry = ClusterRegistry(clusters_by_image={}, env_bindings={})
                 self._initialized = True
                 return
 
-            self._registry = await self._backend.start(plan)
-            await self._pool.prewarm(self._registry)
+            # peek first `pool_size` rows as initial batch
+            prewarm_rows: Optional[List[dict]] = None
+            batch_counts: Dict[str, int] = {}
+            if self._pool_size > 0:
+                prewarm_rows = self._repo.fetch_active_rows(self._pool_size)
+                for row in prewarm_rows:
+                    env_name = str(row.get("env_name", "")).strip()
+                    if not env_name:
+                        continue
+                    batch_counts[env_name] = batch_counts.get(env_name, 0) + 1
+
+            # compute per-env RayJob counts using env.limit
+            env_job_counts: Dict[str, int] = {}
+            for env_name in tmp_plan.env_to_image.keys():
+                cnt = int(batch_counts.get(env_name, 0) or 0)
+                lim = int(self._env_limits.get(env_name, 0) or 0)
+                if lim > 0:
+                    jobs = (max(cnt, 1) + lim - 1) // lim
+                else:
+                    jobs = 1
+                env_job_counts[env_name] = max(1, int(jobs))
+            final_plan =type(tmp_plan)(
+                    env_to_image = tmp_plan.env_to_image,
+                    image_to_env = tmp_plan.image_to_env,
+                    images_needed = tmp_plan.images_needed,
+                    env_job_counts = env_job_counts,
+            )
+
+            self._registry = await self._backend.start(final_plan)
+            await self._pool.prewarm(self._registry, rows=prewarm_rows)
 
             self._initialized = True
             print(f"[manager] started in mode='{self._mode}', pool_size={self._pool_size}")
