@@ -404,13 +404,13 @@ async def main():
 
         # Mode override
         if args.mode in ("local", "remote"):
-            _set_nested(cfg, ["cluster", "mode"], args.mode)
-            log.info("override cluster.mode=%s", args.mode)
+            cfg["mode"] = args.mode
+            log.info("override mode=%s", args.mode)
 
         # Local mode upstream service handling
-        cluster_mode = str((cfg.get("cluster") or {}).get("mode", "")).lower()
-        if cluster_mode == "local" or (args.mode == "local"):
-            _set_nested(cfg, ["cluster", "mode"], "local")
+        mode = str(cfg.get("mode") or (cfg.get("cluster") or {}).get("mode", "")).lower()
+        if mode == "local" or (args.mode == "local"):
+            cfg["mode"] = "local"
             _set_nested(cfg, ["cluster", "local", "host"], "127.0.0.1")
             _set_nested(cfg, ["cluster", "http", "port"], int(args.local_upstream_port))
 

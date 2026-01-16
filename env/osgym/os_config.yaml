@@ -1,6 +1,6 @@
 environments:
   - env_name: os_gym
-    env_image: ailab-evobox-evobox_cpu/evoboxenv:latest
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:ost001
     env_num: 1
     dataset: datasets/osworld_cases.jsonl  # JSONL dataset file with task configurations
     env_params:

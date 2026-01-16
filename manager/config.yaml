@@ -1,57 +1,58 @@
-server:
-  host: "0.0.0.0"
-  port: 36008
-
-  max_inflight_requests: 512
-  list_status_parallelism: 128
-  ray_call_timeout_s: 10.0
-
-ray:
-  # Used by the per-cluster GenericEnvActor in ray_env_server.py
-  actor_num_cpus: 0.03
-  max_concurrency: 1
+mode: remote
 
 database:
   driver: "sqlite"
-  # Change this to your actual DB path
-  sqlite_path: "AIEvoBox/test_envs.db"
+  sqlite_path: "AIEvoBox/test_envs.db"    # Change this to your actual DB path
 
 pool_size: 2
 
 cluster:
-  mode: local
-  local:
-    host: "127.0.0.0"
-    poll_timeout_s: 60
-    poll_interval_s: 1
-  base_image: "registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:base"
-
-  entrypoint:
-    trading_gym: "python /app/app.py"
-    git_gym: "python /app/app.py"
-    mc: "python /mnt/shared-storage-user/leishanzhe/repo/AIEvoBox/env/mc/service/app_comm.py"
-    emb: "bash run.sh"
-
-  quotagroup: "evobox_cpu_task"
-  description: "RL env Ray cluster"
-
-  http:
+  base_image: "AAAA" # TODO the base image should be deleted, we will have distinguished image for each env
+  http:                    #shared, all the env services export the same port for connection
     port: 36663
-    # HTTP timeout from global manager -> cluster
-    timeout_s: 600
-    # Max concurrent HTTP calls from manager when prewarming actors
-    concurrency: 200
+    timeout_s: 100         # Connection timeouts from manager to env clusters
+    concurrency: 200       # Max concurrent HTTP calls from manager when prewarming actors
+  env_types:
+    trading_gym:
+      quotagroup: "evobox_cpu_task"         #TODO each env can specify it's distinguished quotagroup
+      entrypoint: "python /app/app.py"      #TODO reqiured
+      volumes:                              #TODO this is example , not required, but we can use mount for code and data change
+        - fsType: "mount.brainpp.cn/gpfs"
+          endpoint: "gpfs://gpfs1/evobox-share"
+          containerPath: "/mnt/shared-storage-user/evobox-share"
+      resources:                            #TODO not required, below is the default value if not setting for each env
+        head:
+          cpu: 10
+          gpu: 0
+          memory: 20Gi
+      limit: 30                             #TODO required
+      git_gym:
+        quotagroup: "evobox_cpu_task"
+        entrypoint: "python /app/app.py"
+      mc:
+        quotagroup: "evobox_cpu_task"
+        entrypoint: "python /mnt/shared-storage-user/leishanzhe/repo/AIEvoBox/env/mc/service/app_comm.py"
+        limit: 1
+      emb:
+        quotagroup: "evobox_gpu"
+        entrypoint: "bash run.sh"
+        limit: 1
+      os_gym:
+        quotagroup: "evobox_cpu_task"
+        entrypoint: "bash run.sh"
+        limit: 1
+      android_gym:
+        quotagroup: "evobox_cpu_task"
+        entrypoint: "python env/app.py"
+        limit: 1
 
 rayjob:
   domain: "https://h.pjlab.org.cn"
   tenant: "ailab"
   access_key: "0190c46827d4f2cd6632607bc1c2a0ca"
   secret_key: "8cf77e57dd77c977f4a59d43a507ebd1"
-
   token: ""
-  # Whether to verify TLS certificates (set true in production)
-  verify: false
-
-  # Logical project name used on the RayJob platform
-  project: "ailab-evobox"
-
+  verify: false                        # Whether to verify TLS certificates (set true in production)
+  quotagroup: "evobox_cpu_task"        # Default quotagroup for all envs
+  project: "ailab-evobox"              # Logical project name used on the RayJob platform
+  description: "RL env Ray cluster"

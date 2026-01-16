@@ -7,8 +7,7 @@ import secrets
 import string
 import sys
 
-from rayjob_sdk import HeadConfig, RayJobClient, SDKException, WorkerGroupConfig
-
+from rayjob_sdk import HeadConfig, RayJobClient, SDKException, WorkerGroupConfig, Volume
 
 # Platform constraint (DNS-1123 label-like):
 # must match: [a-z]([-a-z0-9]*[a-z0-9])?
@@ -104,6 +103,7 @@ class RayJobManager:
         description: str = "",
         ray_version: str = "2.49.2",
         head_config: Optional[HeadConfig] = None,
+        volumes:Optional[List[Volume]] = None,
         worker_group_config: Optional[List[WorkerGroupConfig]] = None,
         ttl_seconds: int = 604800,
         backoff_limit: int = 5,
@@ -166,6 +166,7 @@ class RayJobManager:
                 description=description,
                 rayVersion=ray_version,
                 headConfg=head_config,
+                volumes=volumes,
                 workerGroupConfig=worker_group_config,
                 ttlSecondsAfterFinished=ttl_seconds,
                 backoffLimit=backoff_limit,

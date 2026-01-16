@@ -15,10 +15,18 @@ from .clusters.base import ClusterBackend
 def _detect_mode(cfg: Dict[str, Any]) -> str:
     """
     Priority:
-      1) cluster.mode if set
-      2) if rayjob required keys exist -> remote
-      3) otherwise -> local
+      1) root `mode` if set (new config)
+      2) cluster.mode if set (backward compatible)
+      3) if rayjob required keys exist -> remote
+      4) otherwise -> local
     """
+
+    mode = str(cfg.get("mode", "")).strip().lower()
+    if mode in ("local", "localhost"):
+        return "local"
+    if mode in ("remote", "rayjob", "cluster"):
+        return "remote"
+
     cluster_cfg = dict(cfg.get("cluster", {}) or {})
     mode = str(cluster_cfg.get("mode", "")).strip().lower()
     if mode in ("local", "localhost"):

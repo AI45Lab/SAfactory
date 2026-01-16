@@ -12,7 +12,65 @@ from .ryajob import RayJobManager
 
 
 # If you don't provide a default entrypoint, we will try per-env entrypoints only.
-DEFAULT_ENTRYPOINT = ""
+DEFAULT_ENTRYPOINT = "python env/app.py"
+
+
+def build_rayjob_config(cluster_cfg: Dict[str, Any], env_name: str) -> Tuple[Optional[Any], List[Any]]:
+    """
+    Build rayjob_sdk.HeadConfig and a list of rayjob_sdk.Volume objects.
+
+    Returns:
+        Tuple(HeadConfig, List[Volume])
+    """
+    env_types = dict(cluster_cfg.get("env_types", {}) or {})
+    env_cfg = dict(env_types.get(str(env_name), {}) or {})
+
+    # Expected shape:
+    #   cluster.env_types.<env>.resources.head: {cpu, gpu, memory}
+    head_res = dict(((env_cfg.get("resources") or {}).get("head") or {}) or {})
+    raw_volumes = env_cfg.get("volumes")
+
+    if not head_res and not raw_volumes:
+        return None, []
+
+    resources: Dict[str, str] = {}
+    if "cpu" in head_res and head_res.get("cpu") is not None:
+        resources["cpu"] = str(head_res.get("cpu"))
+    if "memory" in head_res and head_res.get("memory") is not None:
+        resources["memory"] = str(head_res.get("memory"))
+
+    gpu = head_res.get("gpu")
+    if gpu is None:
+        gpu = head_res.get("nvidia.com/gpu")
+    if gpu is not None:
+        resources["nvidia.com/gpu"] = str(gpu)
+
+    from rayjob_sdk import HeadConfig, Volume
+
+    sdk_volumes = []
+    if raw_volumes and isinstance(raw_volumes, list):
+        for vol_data in raw_volumes:
+            if isinstance(vol_data, dict):
+                sdk_volumes.append(Volume(**vol_data))
+
+    kwargs: Dict[str, Any] = {}
+    if resources:
+        kwargs["resources"] = resources
+
+    if raw_volumes:
+        kwargs["volumes"] = raw_volumes
+
+    head_config = None
+    if kwargs:
+        try:
+            head_config = HeadConfig(**kwargs)
+        except TypeError:
+            kwargs.pop("volumes", None)
+            if kwargs:
+                head_config = HeadConfig(**kwargs)
+
+    return head_config, sdk_volumes
+
 
 
 def _normalize_entrypoints(raw: Any) -> Dict[str, str]:
@@ -78,12 +136,17 @@ class RemoteRayJobBackend(ClusterBackend):
             verify=bool(rayjob_cfg.get("verify", False)),
         )
 
-        self._quotagroup: str = str(cluster_cfg.get("quotagroup", "")).strip()
-        self._description: str = str(cluster_cfg.get("description", "RL env Ray cluster")).strip()
+        self._cluster_cfg: Dict[str, Any] = dict(cluster_cfg or {})
+        self._env_types: Dict[str, Any] = dict(self._cluster_cfg.get("env_types", {}) or {})
 
-        self._entrypoints: Dict[str, str] = _normalize_entrypoints(cluster_cfg.get("entrypoint"))
+        self._quotagroup: str = str(self._cluster_cfg.get("quotagroup", "")).strip()
+        self._description: str = str(
+             rayjob_cfg.get("description", self._cluster_cfg.get("description", "RL env Ray cluster"))
+        ).strip()
+        self._entrypoints: Dict[str, str] = _normalize_entrypoints(self._cluster_cfg.get("entrypoint"))
+
         self._default_entrypoint: str = (
-            str(cluster_cfg.get("default_entrypoint", DEFAULT_ENTRYPOINT)).strip() or DEFAULT_ENTRYPOINT
+            str(self._cluster_cfg.get("default_entrypoint", DEFAULT_ENTRYPOINT)).strip() or DEFAULT_ENTRYPOINT
         )
 
         self._poll_interval_s: float = float(cluster_cfg.get("head_ip_poll_interval_s", 5.0))
@@ -153,15 +216,23 @@ class RemoteRayJobBackend(ClusterBackend):
             return
 
         env_name = plan.image_to_env.get(image, "")
-        entrypoint = (
-            self._entrypoints.get(env_name)
+        env_cfg = dict(self._env_types.get(env_name, {}) or {})
+        entrypoint = str(
+            env_cfg.get("entrypoint")
+            or self._entrypoints.get(env_name)
             or self._entrypoints.get("*")
             or self._default_entrypoint
-        )
+        ).strip()
+
         if not entrypoint:
             raise RuntimeError(
-                f"No entrypoint configured for env='{env_name}'. Provide cluster_cfg['entrypoint'] or default_entrypoint."
+                f"No entrypoint configured for env='{env_name}'. "
+                f"Provide cluster.env_types['{env_name}'].entrypoint (preferred) "
+                "or cluster_cfg['entrypoint']/default_entrypoint (legacy)."
             )
+
+        quotagroup = str(env_cfg.get("quotagroup") or self._quotagroup).strip()
+        head_config,volumes = build_rayjob_config(self._cluster_cfg, env_name)
 
         def _create_job_sync() -> str:
             return str(
@@ -169,7 +240,9 @@ class RemoteRayJobBackend(ClusterBackend):
                     project=self._rayjob_project,
                     image=image,
                     entrypoint=str(entrypoint),
-                    quotagroup=self._quotagroup,
+                    quotagroup=str(quotagroup),
+                    head_config=head_config,
+                    volumes=volumes,
                     description=self._description or f"Env cluster for image={image}",
                 )
             )
