@@ -1,11 +1,15 @@
 # AI Sandbox Environment
 
-一个通用 AI 沙箱开发套件，提供标准化接口，兼容任意任务、环境和评估手段，实现对多个真实世界环境的逼真建模。
+一个通用 AI 沙箱开发套件，提供标准化接口，兼容任意任务、环境和评估手段，实现对多个真实世界环境的逼真建模；内置交易、安卓交互、检索等多种开箱即用的预配置环境，同时具备完善的环境生命周期管理能力，支持高并发处理以显著提升强化学习训练效率，并提供多种运行模式以兼容不同的用户环境配置。
 
 本项目旨在为大模型和智能体开发者提供统一平台：
-- 大模型开发者可测试不同任务与环境下基座模型的Agentic表现
-- 业务智能体开发者可在统一Pipeline上测试和选型不同模型
-- 所有测试结果可固化为模型训练数据，形成能力提升闭环
+
+* 大模型开发者可测试不同任务与环境下基座模型的 Agentic 表现
+* 业务智能体开发者可在统一 Pipeline 上测试和选型不同模型
+* 所有测试结果可固化为模型训练数据，形成能力提升闭环
+* 依托环境生命周期管理与高并发处理机制，大幅提升强化学习训练效率
+* 灵活的运行模式（本地 / 远程）适配不同用户的环境配置，降低部署与使用门槛
+* 内置交易、安卓交互、检索、操作系统交互等多种预配置环境，开箱即用无需重复适配
 
 ## 🚀 Quick Start
 
@@ -18,11 +22,110 @@ cd AISandbox
 
 # 安装核心依赖
 pip install -r requirements.txt
+
+#配置核心参数 
+llm-url,llm-api-key, llm-model 以及运行模式 mode,
+
+python launcher.py \
+  --mode local \
+  --manager-config /manager/config.yaml \
+  --env-config <required_testing_env> \
+  --llm-base-url <http://example_llm_url>\
+  --llm-api-key <LLM service required key > \  # set to EMPTY when api key is not required
+  --llm-model Qwen3-30B-Instruct \
+  --pool-size 2 
+  
+```
+
+### 本地模式运行
+* 本地模式下，框架会自动启动环境 HTTP 服务（默认端口 36663）；若需手动启动，可执行
+```aiignore
+python -m uvicorn env.app:app --host 0.0.0.0 --port 36663
+```
+* LLM 服务需提前部署（如 vLLM/SGLang），并确保--llm-base-url可访问
+
+
+## 参数配置详解
+框架配置分为命令行参数（Launcher） 和配置文件参数（config.yaml） 两类，支持分层覆盖（命令行参数优先级高于配置文件）。
+### Launcher 命令行参数
+
+| 参数分类   | 参数名                   | 说明                               | 默认值                   | 是否启动必须值 |
+|--------|-----------------------|----------------------------------|-----------------------|---------|
+| 配置文件   | --manager-config      | 框架核心配置文件路径                       | /manager/config.yaml  | 否       |
+|        | --env-config          | 自定义环境任务配置文件路径                    | None                  | 否       |
+|        | --env-root            | 环境配置根目录,与env_config互斥            | env                   | 否       |
+| 运行模式   | --mode                | 运行模式（local/remote）               | local                 | 是       |
+| 数据库    | --db-path             | SQLite 数据库路径                     | sqlite://test_envs.db | 是       |
+|        | --rebuild-table       | 是否丢弃前一次推演任务环境                    | True                  | 否       |
+| 环境池    | --pool-size           | 环境池大小（0 表示使用配置文件值）               | 0                     | 否       |
+| 本地服务   | --local-upstream-port | 本地环境 HTTP 服务端口                   | 36663                 | 否       |
+|        | --wait-timeout        | 等待本地服务启动超时时间（秒）                  | 60.0                  | 否       |
+| 交互控制   | --max-steps           | 单个环境最大交互步数                       | 1000                  | 否       |
+|        | --message-cut         | LLM 提示词保留的最近对话轮数                 | 3                     | 否       |
+|        | --env-http-timeout-s  | 环境 HTTP 请求超时时间                   | 50.0                  |         |
+|        | --workers             | 并发工作线程数（0 表示使用环境池大小）             | 0                     | 否       |
+| LLM 配置 | --llm-base-url        | LLM 服务 API 地址                    | None                  | 是       |
+|        | --llm-api-key         | LLM 服务 API 密钥                    | EMPTY                 | 否       |
+|        | --llm-model           | LLM 模型名称                         | None                  | 是       |
+|        | --llm-temperature     | LLM 生成温度                         | 0.3                   | 是       |
+| 日志     | --log-dir             | 日志存储目录                           | logs                  | 否       |
+|        | --console-log-level   | 控制台日志级别（DEBUG/INFO/WARNING/ERROR | INFO                  | 否       |
+|        | --file-log-level      | 文件日志级别                           | DEBUG                 | 否       |
+
+### 环境管理框架config.yaml 配置参数
+  配置文件分为数据库、集群、RayJob、环境类型四大核心模块，关键参数说明如下：
+1. 全局基础配置
+```aiignore
+mode: remote  # 运行模式（local/remote），可被命令行--mode覆盖
+pool_size: 2  # 环境池默认大小，可被命令行--pool-size覆盖
+```
+2. 数据库配置
+```aiignore
+database:
+  driver: "sqlite"          # 数据库驱动（仅支持sqlite）
+  sqlite_path: "test_envs.db"  # 数据库路径，可被命令行--db-path覆盖
+```
+3. 集群配置（remote 模式生效）
+```aiignore
+cluster:
+  base_image: "AAAA"        # 环境镜像（待废弃，将按环境类型区分）
+  http:                     # 环境HTTP服务通用配置
+    port: 36663             # 端口
+    timeout_s: 100          # 管理器到环境集群的连接超时
+    concurrency: 200        # 预热Actor时的最大并发HTTP调用数
+  env_types:                # 各类型环境的专属配置
+    trading_gym:            # 环境注册名
+      quotagroup: "evobox_cpu_task"  # 资源配额组
+      entrypoint: "python /app/app.py"  # 环境启动入口
+      volumes:              # 挂载卷配置（示例）
+        - fsType: "mount.brainpp.cn/gpfs"
+          endpoint: "gpfs://gpfs1/evobox-share"
+          containerPath: "/mnt/shared-storage-user/evobox-share"
+      resources:            # 资源配置（head节点）
+        head:
+          cpu: 10
+          gpu: 0
+          memory: 20Gi
+      limit: 30             # 环境实例上限
+    # 其他环境类型（git_gym/mc/emb等）配置同trading_gym
+```
+4. RayJob 配置（remote 模式生效）
+```aiignore
+rayjob:
+  domain: "https://h.pjlab.org.cn"  # RayJob平台域名
+  tenant: "ailab"                   # 租户名
+  access_key: "xxx"                 # 访问密钥
+  secret_key: "xxx"                 # 密钥
+  verify: false                     # 是否验证TLS证书（生产环境设为true）
+  quotagroup: "evobox_cpu_task"     # 默认资源配额组
+  project: "ailab-evobox"           # 项目名称
+  description: "RL env Ray cluster" # 集群描述
 ```
 
 ### 运行交易环境示例
 
 运行脚本前先使用推理框架（例如`vLLM`，`SGLang`）部署`LLM`并在`examples/run_8_trading_envs.sh`中配置`agent-api-key` `agent-base-url` `agent-model` `agent-temperature`。
+
 
 ```bash
 # 脚本运行
@@ -107,21 +210,7 @@ from env.tradinggym.trading_env import TradingGym
 
 `examples/base_eval.py`提供了基础的环境测试脚本，注册新环境后可实现全自动交互模拟，下面为示例以及参数解释，其中`env-config-yaml` 环境配置文件中每个环境应包含两个参数`env_name`和`env_params`，`env_params`中包含新创建的环境类中的所有参数配置。
 
-```bash
-# 环境测试脚本
-python examples/base_eval.py \
-  # 环境配置yaml文件
-  --env-config-yaml "/mnt/shared-storage-user/chenxinquan/ai_sandbox/examples/configs/trading_env_configs.yaml" \
-  # 环境并行数量
-  --max-workers 8 \
-  # 环境最大运行步长
-  --max-steps 1000 \
-  # Agent相关配置
-  --agent-api-key "EMPTY" \
-  --agent-base-url "http://localhost:8001/v1" \
-  --agent-model "Qwen3-30B-Instruct" \
-  --agent-temperature 0.3
-```
+
 
 ### task_list：用列表列出环境任务，减少重复配置
 
