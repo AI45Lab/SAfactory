@@ -67,6 +67,7 @@ class WriteBuffer:
         self._running = False
         self._auto_start = auto_start
         self._flush_order = flush_order or []
+        self._background_tasks: Set[asyncio.Task] = set()
 
         # 统计信息
         self._stats = {
@@ -91,13 +92,22 @@ class WriteBuffer:
     async def stop(self):
         """停止缓冲器并确保所有数据写入"""
         self._running = False
+        
+        # 1. 停止周期性任务
         if self._flush_task:
             self._flush_task.cancel()
             try:
                 await self._flush_task
             except asyncio.CancelledError:
                 pass
-        # 最终刷新，确保数据不丢失
+        
+        # 2. 等待所有由 buffer_create/update 触发的临时任务完成
+        # 避免在关闭 DB 连接时这些任务还在运行
+        if self._background_tasks:
+            logger.info(f"Waiting for {len(self._background_tasks)} background flush tasks...")
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+
+        # 3. 最终刷新，确保数据不丢失
         await self.flush()
         logger.info(f"WriteBuffer stopped: stats={self._stats}")
 
@@ -128,7 +138,7 @@ class WriteBuffer:
 
         # 达到阈值时触发该模型的写入
         if should_flush:
-            asyncio.create_task(self.flush_model(model_class, operation="create"))
+            self._create_flush_task(self.flush_model(model_class, operation="create"))
 
         return instance
 
@@ -177,7 +187,13 @@ class WriteBuffer:
                 should_flush = True
 
         if should_flush:
-            asyncio.create_task(self.flush_model(model_class, operation="update"))
+            self._create_flush_task(self.flush_model(model_class, operation="update"))
+            
+    def _create_flush_task(self, coro):
+        """创建一个被追踪的后台任务"""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     def _sort_models_by_priority(self, models: List[Type[Model]]) -> List[Type[Model]]:
         """按 flush_order 排序模型，确保外键依赖顺序正确"""

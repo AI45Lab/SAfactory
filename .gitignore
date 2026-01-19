@@ -20,6 +20,7 @@ env/androidgym/judgement
 env/androidgym/CLIP
 env/androidgym/*.apk
 env/androidgym/*.jsonl
+env/androidgym/db_data
 
 # gitgym env
 env/gitgym/generated_code

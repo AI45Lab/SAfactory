@@ -212,60 +212,65 @@ class Interactor:
             llm_model=self.model,
         )
 
-        for step_i in range(1, self.max_steps + 1):
-            prompt_raw = await self._request_json("GET", self._url(a, "get_task_prompt"), ctx=f"{env_key}/prompt")
-            prompt = self._trim_messages(prompt_raw)
-            if not prompt:
-                log.info("worker=%d env=%s: empty prompt -> end episode", worker_id, env_key)
-                break
+        try:
+            for step_i in range(1, self.max_steps + 1):
+                prompt_raw = await self._request_json("GET", self._url(a, "get_task_prompt"), ctx=f"{env_key}/prompt")
+                prompt = self._trim_messages(prompt_raw)
+                if not prompt:
+                    log.info("worker=%d env=%s: empty prompt -> end episode", worker_id, env_key)
+                    break
 
-            action = await self._llm_generate(prompt)
+                action = await self._llm_generate(prompt)
 
-            if self.log_actions_preview_chars > 0:
-                preview = action.replace("\n", "\\n")[: self.log_actions_preview_chars]
-                log.debug("worker=%d env=%s step=%d action_preview=%r", worker_id, env_key, step_i, preview)
+                if self.log_actions_preview_chars > 0:
+                    preview = action.replace("\n", "\\n")[: self.log_actions_preview_chars]
+                    log.debug("worker=%d env=%s step=%d action_preview=%r", worker_id, env_key, step_i, preview)
 
-            out = await self._request_json(
-                "POST",
-                self._url(a, "step"),
-                json_body={"action": action},
-                ctx=f"{env_key}/step",
-            )
+                out = await self._request_json(
+                    "POST",
+                    self._url(a, "step"),
+                    json_body={"action": action},
+                    ctx=f"{env_key}/step",
+                )
 
-            reward = float(out.get("reward", 0.0) or 0.0)
-            total_reward += reward
+                reward = float(out.get("reward", 0.0) or 0.0)
+                total_reward += reward
 
-            terminated = bool(out.get("terminated", False))
-            truncated = bool(out.get("truncated", False))
-            done = terminated or truncated
+                terminated = bool(out.get("terminated", False))
+                truncated = bool(out.get("truncated", False))
+                done = terminated or truncated
 
-            log.debug(
-                "worker=%d env=%s step=%d reward=%.4f total=%.4f terminated=%s truncated=%s",
-                worker_id, env_key, step_i, reward, total_reward, terminated, truncated
-            )
-
-            if terminated or truncated:
-                log.info("worker=%d env=%s done: terminated=%s truncated=%s", worker_id, env_key, terminated, truncated)
-                break
-            
-            # 记录交互步骤
-            await self.data_manager.record_step(
-                session=session,
-                step_id=step_i,
-                prompt=prompt,
-                response=action,
-                reward=reward,
-                done=done
-            )
-            
-            trajectory += f"Step {step_i}:\nResponse: {action}\n\n"
-            
-        await self.data_manager.update_session(
-                session=session,
-                trajectory=trajectory,
-                total_reward=total_reward,
-                is_completed=True
-            )
+                log.debug(
+                    "worker=%d env=%s step=%d reward=%.4f total=%.4f terminated=%s truncated=%s",
+                    worker_id, env_key, step_i, reward, total_reward, terminated, truncated
+                )
+                
+                # 记录交互步骤
+                await self.data_manager.record_step(
+                    session=session,
+                    step_id=step_i,
+                    prompt=prompt,
+                    response=action,
+                    reward=reward,
+                    done=done
+                )
+                
+                trajectory += f"Step {step_i}:\nResponse: {action}\n\n"
+                
+                if terminated or truncated:
+                    log.info("worker=%d env=%s done: terminated=%s truncated=%s", worker_id, env_key, terminated, truncated)
+                    break
+        
+        except Exception:
+            raise
+        
+        finally:
+            await self.data_manager.update_session(
+                    session=session,
+                    trajectory=trajectory,
+                    total_reward=total_reward,
+                    is_completed=True
+                )
 
         return total_reward
 

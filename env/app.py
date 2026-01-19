@@ -21,6 +21,7 @@ from env.tradinggym.trading_env import TradingGym
 # from env.dabstep.dabstep_env import DABStepEnv
 # from env.dwgym.dw_env import DiscoveryWorldEnv
 # from env.embodiedgym.embodied_env import EmbodiedAlfredGym
+from env.androidgym.android_env import AndroidGym
 
 from core.types.base import ResetOutput, RenderOutput, StepOutput, dumps_json_bytes
 
@@ -29,7 +30,8 @@ from core.types.base import ResetOutput, RenderOutput, StepOutput, dumps_json_by
 # Add more envs here if you have multiple implementations.
 # -------------------------------------------------------------------
 ENV_CLASS_REGISTRY: Dict[str, type] = {
-    "trading_gym": TradingGym,   # match @register_env("trading_gym")
+    "android_gym": AndroidGym
+    # "trading_gym": TradingGym,   # match @register_env("trading_gym")
     # "TradingGym": TradingGym,    # convenience alias
     # "git_gym": GitGym,
     # "dab_gym": DABStepEnv,

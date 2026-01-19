@@ -349,9 +349,9 @@ def parse_args():
     p.add_argument("--http-retries", type=int, default=2)
 
     # LLM
-    p.add_argument("--llm-base-url", type=str, default="http://100.99.167.223:30000/v1")
+    p.add_argument("--llm-base-url", type=str, default="http://100.102.201.218:30000/v1")
     p.add_argument("--llm-api-key", type=str, default="EMPTY")
-    p.add_argument("--llm-model", type=str, default="Qwen3-30B-Instruct")
+    p.add_argument("--llm-model", type=str, default="Qwen2.5-VL-72B-Instruct")
     p.add_argument("--llm-temperature", type=float, default=0.3)
 
     # Logging
@@ -466,14 +466,26 @@ async def main():
     finally:
         if pool is not None:
             try:
+                log.info("Closing actor pool...")
                 await pool.aclose()
             except Exception:
                 log.exception("pool.aclose failed (ignored)")
 
+        if local_proc is not None:
+            await stop_process(local_proc)
+            
+        await asyncio.sleep(0.5)
+        
+        try:
+            log.info("Closing data manager...")
+            await data_manager.close()
+        except Exception:
+            log.exception("db manager failed close")
+        
         try:
             conn.close()
         except Exception:
-            log.exception("db close failed (ignored)")
+            log.exception("conn close failed (ignored)")
 
         if local_proc is not None:
             await stop_process(local_proc)
