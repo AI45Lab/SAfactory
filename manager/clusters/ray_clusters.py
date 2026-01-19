@@ -172,19 +172,28 @@ class RemoteRayJobBackend(ClusterBackend):
         if not plan.env_to_image:
             return ClusterRegistry(clusters_by_image={}, env_bindings={})
 
-        env_job_counts = dict(plan.env_job_counts or {})
-        if not env_job_counts:
-            # Backward-compatible fallback
-            env_job_counts = {env: 1 for env in plan.env_to_image.keys()}
+        # required counts per env (computed by manager using batch_size/limit)
+        required_counts = dict(getattr(plan, "env_job_counts", None) or {})
+        if not required_counts:
+            required_counts = {env: 1 for env in plan.env_to_image.keys()}
 
+        # Over-provision by +30%: ceil(required * 1.3)
+        # integer ceil: ceil(req * 13 / 10) = (req*13 + 9)//10
+        create_counts: Dict[str, int] = {}
+        for env_name, req in required_counts.items():
+            req_i = max(1, int(req or 1))
+            required_counts[env_name] = req_i
+            create_counts[env_name] = max(req_i, (req_i * 13 + 9) // 10)
+
+        # 1) create RayJobs (over-provisioned)
         tasks: List[asyncio.Task] = []
         for env_name, image in plan.env_to_image.items():
             image = (image or "").strip()
             if not image:
                 continue
 
-            n = max(1, int(env_job_counts.get(env_name, 1) or 1))
-            for idx in range(1, n + 1):
+            n_create = max(1, int(create_counts.get(env_name, 1) or 1))
+            for idx in range(1, n_create + 1):
                 tasks.append(
                     asyncio.create_task(
                         self._ensure_cluster_for_env_job(env_name=env_name, idx=idx, image=image)
@@ -195,22 +204,85 @@ class RemoteRayJobBackend(ClusterBackend):
             results = await asyncio.gather(*tasks, return_exceptions=True)
             errors = [r for r in results if isinstance(r, Exception)]
             if errors:
+                # 注意：多起的那 30% 里有失败不一定是致命的，只要最终能满足 required 就继续
                 for e in errors[:3]:
-                    print(f"[manager] ERROR: rayjob create failed: {e}")
-                raise RuntimeError(f"RayJob cluster creation failed for {len(errors)} job(s).")
+                    print(f"[manager] WARN: rayjob create failed (ignored if capacity enough): {e}")
 
-        await self._wait_for_head_ips()
-        await self._wait_for_head_http_services()
+        # sanity: ensure created >= required per env
+        created_counts: Dict[str, int] = {env: 0 for env in required_counts.keys()}
+        for cid in list(self._clusters.keys()):
+            env = str(cid).split("#", 1)[0]
+            if env in created_counts:
+                created_counts[env] += 1
 
-        # Pick one binding per env as the fallback route. ActorPool will do the real scheduling.
+        lacking = {env: (created_counts.get(env, 0), req)
+                   for env, req in required_counts.items()
+                   if created_counts.get(env, 0) < req}
+        if lacking:
+            raise RuntimeError(f"Not enough RayJobs created to satisfy required counts: {lacking}")
+
+        # 2) wait until required number of clusters per env have head_ip
+        await self._wait_for_head_ips(required_counts=required_counts)
+
+        # 3) select KEEP set: for each env keep exactly `required` clusters (prefer READY ones)
+        def _cid_idx(cid: str) -> int:
+            try:
+                return int(str(cid).split("#", 1)[1])
+            except Exception:
+                return 10 ** 9
+
+        keep_ids: set[str] = set()
+        keep_infos: List[RayClusterInfo] = []
+        keep_first_by_env: Dict[str, RayClusterInfo] = {}
+
+        for env_name, req in required_counts.items():
+            prefix = f"{env_name}#"
+            ready = [(cid, info) for cid, info in self._clusters.items()
+                     if str(cid).startswith(prefix) and getattr(info, "head_ip", "")]
+            ready.sort(key=lambda x: _cid_idx(x[0]))
+
+            if len(ready) < int(req):
+                # 理论上不应发生，因为 _wait_for_required_head_ips 已满足 required
+                raise RuntimeError(
+                    f"Required head_ip satisfied but ready clusters still < required for env='{env_name}'. "
+                    f"ready={len(ready)}, required={req}"
+                )
+
+            chosen = ready[: int(req)]
+            for cid, info in chosen:
+                keep_ids.add(str(cid))
+                keep_infos.append(info)
+
+            # record one binding per env (stable)
+            keep_first_by_env[env_name] = chosen[0][1]
+
+        # 4) delete the rest (ALL others, even if they already have head_ip)
+        delete_ids = [cid for cid in list(self._clusters.keys()) if str(cid) not in keep_ids]
+
+        cleanup_task = asyncio.create_task(self._stop_and_delete_clusters(delete_ids))
+        http_task = asyncio.create_task(self._wait_for_head_http_services(cluster_infos=keep_infos))
+
+        # wait both
+        await asyncio.gather(http_task, cleanup_task)
+
+        deleted_ids = cleanup_task.result() if cleanup_task.done() else []
+
+        # remove successfully deleted from internal state (optional, avoids later noisy cleanup)
+        for cid in deleted_ids:
+            self._clusters.pop(cid, None)
+
+        # 5) build registry ONLY with kept clusters (so ActorPool won't schedule onto extras)
+        kept_clusters: Dict[str, RayClusterInfo] = {cid: self._clusters[cid] for cid in keep_ids if
+                                                    cid in self._clusters}
+
         env_bindings: Dict[str, EnvClusterBinding] = {}
         for env_name, image in plan.env_to_image.items():
-            cid = f"{env_name}#1"
-            info = self._clusters.get(cid)
+            info = keep_first_by_env.get(env_name)
             if not info:
-                # fallback: any cluster starting with env_name#
-                for k, v in self._clusters.items():
-                    if str(k).startswith(f"{env_name}#"):
+                # fallback: any kept cluster for this env
+                prefix = f"{env_name}#"
+                for cid, v in kept_clusters.items():
+                    if str(cid).startswith(prefix):
                         info = v
                         break
             if not info:
@@ -224,29 +296,19 @@ class RemoteRayJobBackend(ClusterBackend):
                 head_ip=info.head_ip,
             )
 
-        return ClusterRegistry(clusters_by_image=dict(self._clusters), env_bindings=env_bindings)
+        return ClusterRegistry(clusters_by_image=kept_clusters, env_bindings=env_bindings)
 
     async def close(self) -> None:
-        jobs: List[Tuple[str, str]] = []
-        for info in self._clusters.values():
-            if info.job_name:
-                jobs.append((info.project, info.job_name))
+        # Snapshot all cluster ids (including extras that might have failed deletion earlier)
+        cluster_ids = list(self._clusters.keys())
 
-        jobs = list(dict.fromkeys(jobs))
-        self._clusters.clear()
+        # Try cleanup with retries
+        try:
+            await self._stop_and_delete_clusters(cluster_ids)
+        finally:
+            # Always clear local state (remote side best-effort)
+            self._clusters.clear()
 
-        # stop then delete; each best-effort
-        for project, job_name in jobs:
-            try:
-                await asyncio.to_thread(self._rayjob_manager.stop, project, job_name)
-            except Exception as e:
-                print(f"[manager] stop rayjob failed (ignored): project={project}, job={job_name}, err={e}")
-
-        for project, job_name in jobs:
-            try:
-                await asyncio.to_thread(self._rayjob_manager.delete, project, job_name)
-            except Exception as e:
-                print(f"[manager] delete rayjob failed (ignored): project={project}, job={job_name}, err={e}")
 
     # ------------------------------------------------------------------ #
 
@@ -321,7 +383,16 @@ class RemoteRayJobBackend(ClusterBackend):
 
         raise RuntimeError(f"RayJob create failed for env='{env_name}', idx={idx}, image='{image}': {last_err}")
 
-    async def _wait_for_head_ips(self) -> None:
+
+    async def _wait_for_head_ips(self, required_counts: Optional[Dict[str, int]] = None) -> None:
+        """Poll head IPs.
+
+        - If required_counts is None: wait until ALL clusters have head_ip.
+        - If required_counts is provided: wait until for each env we have >= required head_ip.
+
+        required_counts key: env_name
+        env_name is inferred from cluster_id format: "{env_name}#{idx}"
+        """
         if not self._clusters:
             return
 
@@ -329,78 +400,185 @@ class RemoteRayJobBackend(ClusterBackend):
         deadline = loop.time() + self._poll_timeout_s
         attempt = 0
 
-        def missing_ids() -> List[str]:
-            return [cid for cid, info in self._clusters.items() if not info.head_ip]
+        def _env_of_cluster_id(cid: str) -> str:
+            return str(cid).split("#", 1)[0]
 
         while True:
-            missing = missing_ids()
-            if not missing:
-                print("[manager] all clusters have head_ip")
-                return
+            # ---------------------------
+            # Check if satisfied + decide which clusters to poll next
+            # ---------------------------
+            if required_counts is None:
+                # Wait ALL clusters
+                missing_cids = [cid for cid, info in self._clusters.items() if not getattr(info, "head_ip", "")]
+                if not missing_cids:
+                    print("[manager] all clusters have head_ip")
+                    return
+
+                short_envs = None
+                ready_counts = None
+            else:
+                # Wait per-env required counts
+                # Normalize required envs: ignore <=0
+                req_envs = {str(env): int(req) for env, req in (required_counts or {}).items() if int(req or 0) > 0}
+
+                ready_counts: Dict[str, int] = {env: 0 for env in req_envs.keys()}
+                for cid, info in self._clusters.items():
+                    env = _env_of_cluster_id(cid)
+                    if env in ready_counts and getattr(info, "head_ip", ""):
+                        ready_counts[env] += 1
+
+                short_envs = [env for env, req in req_envs.items() if ready_counts.get(env, 0) < req]
+                if not short_envs:
+                    print(f"[manager] required head_ip satisfied: {ready_counts}")
+                    return
+
+                # Only poll clusters belonging to envs that are still short
+                missing_cids = []
+                short_env_set = set(short_envs)
+                for cid, info in self._clusters.items():
+                    if getattr(info, "head_ip", ""):
+                        continue
+                    env = _env_of_cluster_id(cid)
+                    if env in short_env_set:
+                        missing_cids.append(cid)
+
+                if not missing_cids:
+                    raise RuntimeError(
+                        f"Still short on head_ip but no remaining clusters to poll. "
+                        f"required={req_envs}, ready={ready_counts}"
+                    )
 
             attempt += 1
-            print(f"[manager] head_ip poll attempt {attempt}, missing={missing}")
-
-            tasks = [
-                asyncio.to_thread(
-                    self._rayjob_manager.get_head_ip,
-                    self._rayjob_project,
-                    self._clusters[cid].job_name,
+            if required_counts is None:
+                print(f"[manager] head_ip poll attempt={attempt}, missing={missing_cids}")
+            else:
+                print(
+                    f"[manager] head_ip poll attempt={attempt}, short_envs={short_envs}, "
+                    f"missing={missing_cids}, ready={ready_counts}"
                 )
-                for cid in missing
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            for cid, res in zip(missing, results):
-                if isinstance(res, Exception):
-                    print(f"[manager] get_head_ip failed for cluster='{cid}': {res}")
+            # ---------------------------
+            # Poll head IPs for selected clusters
+            # ---------------------------
+            cid_list: List[str] = []
+            tasks: List[Any] = []
+            for cid in missing_cids:
+                info = self._clusters.get(cid)
+                if not info:
                     continue
-                ip = (res or "").strip()
-                if ip:
-                    self._clusters[cid].head_ip = ip
-                    print(f"[manager] head_ip resolved: cluster='{cid}' -> {ip}")
+                job_name = str(getattr(info, "job_name", "") or "").strip()
+                if not job_name:
+                    continue
+                cid_list.append(cid)
+                tasks.append(asyncio.to_thread(self._rayjob_manager.get_head_ip, self._rayjob_project, job_name))
 
-            if not missing_ids():
-                print("[manager] head_ip polling finished")
-                return
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for cid, res in zip(cid_list, results):
+                    if isinstance(res, Exception):
+                        print(f"[manager] get_head_ip failed for cluster='{cid}': {res}")
+                        continue
+                    ip = (res or "").strip()
+                    if ip:
+                        self._clusters[cid].head_ip = ip
+                        print(f"[manager] head_ip resolved: cluster='{cid}' -> {ip}")
 
+            # ---------------------------
+            # Timeout check + sleep
+            # ---------------------------
             if loop.time() >= deadline:
-                raise RuntimeError(f"Timeout waiting for head IPs: {missing_ids()}")
+                if required_counts is None:
+                    still_missing = [cid for cid, info in self._clusters.items() if not getattr(info, "head_ip", "")]
+                    raise RuntimeError(f"Timeout waiting for head IPs: {still_missing}")
+                else:
+                    raise RuntimeError(f"Timeout waiting for required head IPs. required={required_counts}")
 
             await asyncio.sleep(self._poll_interval_s)
 
-    async def _wait_for_head_http_services(self) -> None:
-        if not self._clusters:
-            return
+
+    async def _wait_for_head_http_services(self, cluster_infos: Optional[List[RayClusterInfo]] = None) -> None:
+        if cluster_infos is None:
+            cluster_infos = [info for info in self._clusters.values() if getattr(info, "head_ip", "")]
+        else:
+            cluster_infos = [info for info in cluster_infos if getattr(info, "head_ip", "")]
+
+        if not cluster_infos:
+            raise RuntimeError("No head_ip resolved; cannot check HTTP readiness")
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._poll_timeout_s
         attempt = 0
 
-        while True:
-            clusters = [(cid, info) for cid, info in self._clusters.items() if info.head_ip]
-            if not clusters:
-                raise RuntimeError("No head_ip resolved; cannot check HTTP readiness")
+        infos = list(cluster_infos)  # stable snapshot
 
-            tasks = [self._http.check_envs_ready(info.head_ip, self._http_port) for _, info in clusters]
+        while True:
+            tasks = [self._http.check_envs_ready(info.head_ip, self._http_port) for info in infos]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            not_ready: List[Tuple[str, RayClusterInfo]] = []
-            for (cid, info), res in zip(clusters, results):
+            not_ready: List[RayClusterInfo] = []
+            for info, res in zip(infos, results):
                 if isinstance(res, Exception) or not res:
-                    not_ready.append((cid, info))
+                    not_ready.append(info)
 
             if not not_ready:
-                print("[manager] all head HTTP services are ready")
+                print("[manager] all head HTTP services are ready (snapshot)")
                 return
 
             attempt += 1
             if loop.time() >= deadline:
-                remaining = ", ".join(f"{cid}@{info.head_ip}" for cid, info in not_ready)
+                remaining = ", ".join(f"{getattr(i, 'job_name', '')}@{getattr(i, 'head_ip', '')}" for i in not_ready)
                 raise RuntimeError(f"Timeout waiting for head HTTP services: {remaining}")
 
             print(
                 f"[manager] head HTTP not ready (attempt {attempt}), retry in {self._poll_interval_s}s. "
-                f"not_ready={[cid for cid, _ in not_ready]}"
+                f"not_ready={[getattr(i, 'job_name', '') for i in not_ready]}"
             )
             await asyncio.sleep(self._poll_interval_s)
+
+
+    async def _stop_and_delete_clusters(self, cluster_ids: List[str]) -> List[str]:
+        """Stop then delete clusters. Best-effort.
+        Returns:
+            cluster_ids that were successfully deleted.
+        """
+        if not cluster_ids:
+            return []
+
+        jobs: List[Tuple[str, str, str]] = []  # (cid, project, job_name)
+        for cid in cluster_ids:
+            info = self._clusters.get(cid)
+            if not info:
+                continue
+            job_name = str(getattr(info, "job_name", "") or "").strip()
+            if not job_name:
+                continue
+            project = str(getattr(info, "project", "") or self._rayjob_project).strip() or self._rayjob_project
+            jobs.append((cid, project, job_name))
+
+        if not jobs:
+            return []
+
+        async def _cleanup_one(cid: str, project: str, job_name: str) -> Optional[str]:
+            try:
+                await asyncio.to_thread(self._rayjob_manager.stop, project, job_name)
+            except Exception as e:
+                # stop 可能因为还在启动/状态未就绪失败，继续尝试 delete
+                print(f"[manager] stop rayjob failed (ignored): cluster={cid}, job={job_name}, err={e}")
+
+            try:
+                await asyncio.to_thread(self._rayjob_manager.delete, project, job_name)
+                print(f"[manager] deleted extra rayjob: cluster={cid}, job={job_name}")
+                return cid
+            except Exception as e:
+                print(f"[manager] delete rayjob failed (ignored): cluster={cid}, job={job_name}, err={e}")
+                return None
+
+        tasks = [asyncio.create_task(_cleanup_one(cid, project, job_name)) for cid, project, job_name in jobs]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        deleted: List[str] = []
+        for r in results:
+            if isinstance(r, str) and r:
+                deleted.append(r)
+        return deleted
+
