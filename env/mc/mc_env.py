@@ -47,9 +47,17 @@ rich_console = console.Console()
 
 @register_env("mc_gym")
 class MCGym(BaseEnv):
-    def __init__(self, env_config: str = "", env_id: str = "", env_name: str = ""):
+    def __init__(
+        self,
+        env_config: str = "",
+        env_id: str = "",
+        env_name: str = "",
+        dataset=None,
+        **kwargs,
+    ):
         super().__init__(env_id, env_name)
         self.env_config = env_config
+        self.dataset = dataset
         self.instructions = ""  # 初始化 instructions
         self.obs_size = (360, 640)  # 默认值 (height, width)，会在 init_simulator 中更新
         self.simulator: MinecraftSim = self.init_simulator(env_config)
@@ -341,8 +349,11 @@ class MCGym(BaseEnv):
             render_output = self.render()
             # 确保 base64 图像使用正确的 data URL 格式
             base64_str = render_output.image_base64
-            if not base64_str.startswith('data:'):
-                base64_str = f"data:image/png;base64,{base64_str}"
+            # 统一得到 data URL 格式，避免重复添加前缀导致解析失败
+            if base64_str.startswith('data:'):
+                base64_url = base64_str
+            else:
+                base64_url = f"data:image/png;base64,{base64_str}"
             self.messages.append(
                 {
                     "role": "user",
@@ -354,7 +365,7 @@ class MCGym(BaseEnv):
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/png;base64,{base64_str}"
+                                "url": base64_url
                             }
                         }
                     ]

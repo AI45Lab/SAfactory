@@ -11,6 +11,7 @@ import json
 import yaml
 import pandas as pd
 from env.tradinggym.trading_env import TradingGym  # 导入环境来注册
+from env.mc.mc_env import MCGym  # 导入以触发 mc_gym 注册
 from env.androidgym.android_env import AndroidGym
 from env.search.search_env import SearchEnv
 from env.gitgym.git_env import GitGym

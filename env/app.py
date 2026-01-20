@@ -17,6 +17,7 @@ from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from env.tradinggym.trading_env import TradingGym
+from env.mc.mc_env import MCGym
 # from env.gitgym.git_env import GitGym
 # from env.dabstep.dabstep_env import DABStepEnv
 # from env.dwgym.dw_env import DiscoveryWorldEnv
@@ -31,7 +32,7 @@ from core.types.base import ResetOutput, RenderOutput, StepOutput, dumps_json_by
 # -------------------------------------------------------------------
 ENV_CLASS_REGISTRY: Dict[str, type] = {
     "android_gym": AndroidGym
-    # "trading_gym": TradingGym,   # match @register_env("trading_gym")
+    # "mc_gym": MCGym,
     # "TradingGym": TradingGym,    # convenience alias
     # "git_gym": GitGym,
     # "dab_gym": DABStepEnv,

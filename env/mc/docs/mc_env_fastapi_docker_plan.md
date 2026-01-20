@@ -10,7 +10,7 @@
 ## 1. 运行与测试（先上手，后了解细节）
 - 构建（离线 wheel 可选）：  
   ```
-  docker build -f Dockerfile.mc-env -t mc-fastapi \
+  docker build --no-cache -f env/mc/Dockerfile.mc-env -t mc-fastapi \
     --build-arg USE_LOCAL_WHEELS=true \
     --build-arg http_proxy="$http_proxy" \
     --build-arg https_proxy="$https_proxy" \
@@ -66,7 +66,7 @@
 ## 2. 基础镜像选择
 - 已指定使用 `registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:base`（约 10.3 GB，8 周前版本），该镜像自带 Ray 运行时且定位为 CPU 场景。  
 - 仍保留 `ARG RAY_BASE_IMAGE` 以便未来替换，但默认值锁定为上述镜像。  
-- 为保持与现有代码中硬编码路径一致，镜像内将直接创建 `/mnt/shared-storage-user/leishanzhe/repo/AIEvoBox` 目录，并把仓库完整复制进去。  
+- 镜像内默认使用 `/workspace/AIEvoBox` 作为项目根（`PROJECT_ROOT` 可重写）。  
 - 目前不考虑 GPU/CUDA 依赖，Dockerfile 与运行说明均以 CPU-only 角度编写。
 
 ## 2. 系统依赖
@@ -77,17 +77,15 @@
 
 ## 3. Python 依赖与 MineStudio 安装
 1. 将 `env/mc/requirements.txt` 拷贝到镜像（如 `/tmp/requirements_mc.txt`），执行 `pip install --no-cache-dir -r /tmp/requirements_mc.txt`。  
-2. 使用 `ARG PROJECT_ROOT=/mnt/shared-storage-user/leishanzhe/repo/AIEvoBox`，在镜像内创建同名目录并 `COPY . ${PROJECT_ROOT}`，保证代码中所有绝对路径（含 MineStudio）保持不变。  
+2. 使用 `ARG PROJECT_ROOT=/workspace/AIEvoBox`，在镜像内创建目录并 `COPY . ${PROJECT_ROOT}`。  
 3. 在容器内执行 `pip install --no-cache-dir -e ${PROJECT_ROOT}/env/mc/MineStudio`，保证可编辑安装生效。  
 4. 若 `requirements.txt` 后续增加依赖，优先更新该文件，避免在 Dockerfile 内重复 `pip install`。  
 5. 通过 `ENV PYTHONPATH=${PROJECT_ROOT}:${PYTHONPATH}` 让 FastAPI 服务能 import 项目模块。
 
 ## 4. 绝对路径问题处理
-`minestudio/simulator/minerl/env/malmo.py`、`minestudio/simulator/entry.py`、`minestudio/utils/temp.py` 等文件依赖固定路径 `/mnt/shared-storage-user/leishanzhe/repo/AIEvoBox/...`。  
-新的策略：不再改动这些源码，而是在 Docker 镜像中还原同样的目录层级，保证所有硬编码路径都能直接找到资源。  
-- 构建阶段 `COPY . /mnt/shared-storage-user/leishanzhe/repo/AIEvoBox`，并保留 `env/mc/build/offline-mcprec-6.13.jar` 原位置。  
-- 如需覆盖 Jar，可通过 `--build-arg LOCAL_JAR=...` 或容器运行时挂载相同路径。  
-- FastAPI 服务仍可选读 `MINECRAFT_JAR_PATH`/`MC_ENV_CONFIG`，但默认情况下无需额外环境变量即可运行。
+`minestudio/simulator/minerl/env/malmo.py`、`minestudio/simulator/entry.py`、`minestudio/utils/temp.py` 已改为优先读取 `MINECRAFT_JAR_PATH`/`MINESTUDIO_DIR`，并以 `PROJECT_ROOT`（默认 `/workspace/AIEvoBox`）为兜底，避免硬编码宿主机路径。  
+- Jar 默认放在 `${PROJECT_ROOT}/env/mc/build/offline-mcprec-6.13.jar`，也可通过环境变量覆盖。  
+- 保持 `ENV PYTHONPATH=${PROJECT_ROOT}` 以便 import 项目模块。
 
 ## 5. FastAPI 服务设计
 - 位置建议：`env/mc/service/app.py` 与 `env/mc/service/env_manager.py`。  
@@ -103,7 +101,7 @@
 ## 6. Dockerfile 结构（初稿）
 ```
 ARG RAY_BASE_IMAGE=registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:base
-ARG PROJECT_ROOT=/mnt/shared-storage-user/leishanzhe/repo/AIEvoBox
+ARG PROJECT_ROOT=/workspace/AIEvoBox
 FROM ${RAY_BASE_IMAGE} AS runtime
 
 # 1. apt 安装系统依赖（含 xvfb + openjdk-8-jre-headless）
@@ -118,10 +116,9 @@ FROM ${RAY_BASE_IMAGE} AS runtime
 
 ## 7. 待确认事项
 - ✅ 基础镜像：`registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:base`。  
-- ✅ `offline-mcprec-6.13.jar` 随镜像分发，并保留在 `/mnt/shared-storage-user/leishanzhe/repo/AIEvoBox/env/mc/build/`。  
+- ✅ `offline-mcprec-6.13.jar` 随镜像分发，并保留在 `AIEvoBox/env/mc/build/`。  
 - ✅ FastAPI 无需鉴权。  
 - ✅ 暂不考虑 GPU/EGL 依赖。  
 - ✅ API schema 暂不固定版本。  
 - ✅ 动作/观测 JSON 示例已在运行步骤中提供。  
-- 尚需讨论：日志/模型输出挂载路径、Ray 集群接入方式等细节。
-
+- 尚需讨论：日志/模型输出挂载路径、Ray 集群接入方式等细节。  

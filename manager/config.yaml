@@ -31,7 +31,7 @@ cluster:
       entrypoint: "python /app/app.py"
     mc:
       quotagroup: "evobox_cpu_task"
-      entrypoint: "python /mnt/shared-storage-user/leishanzhe/repo/AIEvoBox/env/mc/service/app_comm.py"
+      entrypoint: "python /app/app.py"
       limit: 1
     emb:
       quotagroup: "evobox_gpu"

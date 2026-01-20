@@ -3,3 +3,4 @@ mc/MineStudio/*MineStudio/
 MineStudio/*
 tmp/*
 build/*
+pip_wheels/*

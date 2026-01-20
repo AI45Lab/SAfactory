@@ -1,5 +1,6 @@
 ARG RAY_BASE_IMAGE=registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:base
-ARG PROJECT_ROOT=/mnt/shared-storage-user/leishanzhe/repo/AIEvoBox
+# Default to a container-local workspace path to avoid host-specific coupling.
+ARG PROJECT_ROOT=/workspace/AIEvoBox
 FROM ${RAY_BASE_IMAGE} AS runtime
 ARG PROJECT_ROOT
 USER root
@@ -46,7 +47,8 @@ trusted-host = mirrors.h.pjlab.org.cn pypi.i.h.pjlab.org.cn
 EOF
 ARG USE_LOCAL_WHEELS=false
 ARG WHEEL_DIR=/tmp/pip_wheels
-COPY pip_wheels ${WHEEL_DIR}
+# 本地轮子放在仓库的 env/mc/pip_wheels
+COPY env/mc/pip_wheels ${WHEEL_DIR}
 RUN if [ "${USE_LOCAL_WHEELS}" = "true" ] && [ -d "${WHEEL_DIR}" ] && [ "$(ls -A ${WHEEL_DIR})" ]; then \
         pip install --no-cache-dir --no-index --find-links ${WHEEL_DIR} -r /tmp/requirements_mc.txt ; \
     else \
@@ -65,11 +67,10 @@ RUN pip install --no-cache-dir -e env/mc/MineStudio
 ENV MINESTUDIO_DIR=${PROJECT_ROOT}/env/mc/MineStudio/minestudio \
     MINECRAFT_JAR_PATH=${PROJECT_ROOT}/env/mc/build/offline-mcprec-6.13.jar \
     PYTHONPATH=${PROJECT_ROOT} \
-    MC_ENV_CONFIG=env/mc/config/kill/kill_zombie.yaml \
-    UVICORN_HOST=0.0.0.0 \
-    UVICORN_PORT=8000
+    MC_ENV_CONFIG=env/mc/config/kill/kill_zombie.yaml
 
-EXPOSE 8000
+EXPOSE 36663
 
-CMD ["bash", "-lc", "uvicorn env.mc.service.app:app --host ${UVICORN_HOST} --port ${UVICORN_PORT}"]
+# Run unified FastAPI entrypoint that registers mc_gym and other envs.
+CMD ["bash", "-lc", "python env/app.py"]
 
