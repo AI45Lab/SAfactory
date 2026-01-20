@@ -21,21 +21,26 @@ if [ -f "${SCRIPT_DIR}/.env" ]; then
     source "${SCRIPT_DIR}/.env"
 fi
 
+# Construct URLs from host and port
+ROLLOUT_BUFFER_URL="http://${BUFFER_SERVER_HOST}:${BUFFER_SERVER_PORT}"
+LLM_PROXY_URL="http://${LLM_PROXY_HOST}:${LLM_PROXY_PORT}"
+
 export PYTHONBUFFERED=16
 NUM_GPUS=${NUM_GPUS:-8}
 
+source "/root/slime/scripts/models/qwen2.5-7B.sh"
 CKPT_ARGS=(
-   --hf-checkpoint /root/steai-yinzhenyun/Qwen3-VL-4B-Instruct
-   --ref-load /root/steai-yinzhenyun/Qwen3-VL-4B-Instruct
-   --load /root/steai-yinzhenyun/Qwen3-VL-4B-Instruct_fsdp_slime
-   --save /root/steai-yinzhenyun/Qwen3-VL-4B-Instruct_fsdp_slime
-   --save-interval 10
+   --hf-checkpoint Qwen/Qwen2.5-7B-Instruct
+   --ref-load /root/steai-yinzhenyun/Qwen2.5-7B-Instruct_torch_dist
+   --load /root/evobox-yinzhenyun/slime/checkpoints/Qwen2.5-7B-Instruct_slime
+   --save /root/evobox-yinzhenyun/slime/checkpoints/Qwen2.5-7B-Instruct_slime
+   --save-interval 20
 )
 
 ROLLOUT_ARGS=(
-   --rollout-function-path rl.rollout_buffer_slime.generate_rollout
+   --rollout-function-path rl.slime_generator.generate_rollout
    --rollout-buffer-url ${ROLLOUT_BUFFER_URL}
-   --prompt-data ${SCRIPT_DIR}/dummy_vl.jsonl
+   --prompt-data ${SCRIPT_DIR}/dummy.jsonl
    --input-key prompt
    --rollout-shuffle
    --num-rollout 300
@@ -48,29 +53,23 @@ ROLLOUT_ARGS=(
 )
 
 PERF_ARGS=(
-   --balance-data
+   --tensor-model-parallel-size 1
+   --pipeline-model-parallel-size 1
+   --context-parallel-size 1
+   --expert-model-parallel-size 1
+   --expert-tensor-parallel-size 1
+   --recompute-granularity full
+   --recompute-method uniform
+   --recompute-num-layers 1
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 9216
-)
-
-FSDP_ARGS=(
-   --train-backend fsdp
-   --update-weight-buffer-size $((512 * 1024 * 1024))
-   --gradient-checkpointing
-   --sglang-attention-backend fa3
-   # Use PyTorch SDPA instead of FlashAttention3 to avoid missing FA3 dependency errors.
-   --attn-implementation flash_attention_3
-   --train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}'
+   --max-tokens-per-gpu 5000
 )
 
 GRPO_ARGS=(
    --advantage-estimator grpo
-   --use-kl-loss
-   --kl-loss-coef 0.001
-   --kl-loss-type low_var_kl
    --entropy-coef 0.00
    --eps-clip 0.2
-   --eps-clip-high 0.28
+   --eps-clip-high 0.2
 )
 
 OPTIMIZER_ARGS=(
@@ -88,7 +87,7 @@ WANDB_ARGS=(
     --wandb-team aievobox
     --wandb-group slime
     --wandb-dir /root/wandb_logs
-    --wandb-always-use-train-step
+    # --wandb-always-use-train-step
 )
 
 SGLANG_ARGS=(
@@ -99,11 +98,18 @@ SGLANG_ARGS=(
    --sglang-log-level-http error
 )
 
-MISC_ARGS=()
+MISC_ARGS=(
+   --attention-dropout 0.0
+   --hidden-dropout 0.0
+   --accumulate-allreduce-grads-in-fp32
+   --attention-softmax-in-fp32
+   --attention-backend flash
+   --calculate-per-token-loss
+)
 
 # Start Ray
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats
 
 export SGLANG_LOGGING_CONFIG_PATH=${SGLANG_LOGGING_CONFIG_PATH:-"/root/AIEvoBox/rl/sglang_logging.json"}
 
@@ -112,24 +118,23 @@ RUNTIME_ENV_JSON="{\
     \"PYTHONPATH\": \"/root:${SCRIPT_DIR}:/root/AIEvoBox:/root/Megatron-LM/\",\
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",\
     \"LLM_PROXY_URL\": \"${LLM_PROXY_URL}\",\
-    \"ROLLOUT_BUFFER_URL\": \"${ROLLOUT_BUFFER_URL}\"\
+    \"ROLLOUT_BUFFER_URL\": \"${ROLLOUT_BUFFER_URL}\",\
+    \"SLIME_OFF_BY_N\": \"${SLIME_OFF_BY_N:-0}\"\
   }\
 }"
 
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- python3 /root/zeocax/pip-e/slime-vl/train_async.py \
+   -- python3 /root/slime/train_async.py \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node 2 \
-   --rollout-num-gpus 2 \
+   --rollout-num-gpus 6 \
+   ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
-   ${ROLLOUT_ARGS[@]} \
-   ${OPTIMIZER_ARGS[@]} \
-   ${GRPO_ARGS[@]} \
-   ${WANDB_ARGS[@]} \
-   ${PERF_ARGS[@]} \
-   ${FSDP_ARGS[@]} \
-   ${SGLANG_ARGS[@]} \
-   ${MISC_ARGS[@]} \
-   --multimodal-keys '{"image": "images"}' \
-   --disable-rewards-normalization
+    ${ROLLOUT_ARGS[@]} \
+    ${OPTIMIZER_ARGS[@]} \
+    ${GRPO_ARGS[@]} \
+    ${WANDB_ARGS[@]} \
+    ${PERF_ARGS[@]} \
+    ${SGLANG_ARGS[@]} \
+    ${MISC_ARGS[@]}

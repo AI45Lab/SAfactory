@@ -15,7 +15,7 @@ export PYTHONPATH="${PYTHONPATH:-}:/root/AIEvoBox"
 export AIEVOBOX_ROOT="${AIEVOBOX_ROOT:-/root/AIEvoBox}"
 export AIEVOBOX_DB_URL="${AIEVOBOX_DB_URL:-sqlite://${SCRIPT_DIR}/rl.db}"
 export ROLLBUF_HOST="${ROLLBUF_HOST:-0.0.0.0}"
-export ROLLBUF_PORT="${ROLLBUF_PORT:-8889}"
+export ROLLBUF_PORT="${ROLLBUF_PORT:-18889}"
 
 echo "Starting Buffer Server..."
 echo "  Host: ${ROLLBUF_HOST}"

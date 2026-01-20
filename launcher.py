@@ -12,7 +12,7 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from typing import Any, Dict, Optional, Set, Tuple, List
 
-from core.llm import StaticBaseURLProvider
+from core.llm import StaticBaseURLProvider, SessionSuffixBaseURLProvider
 from core.data_manager.manager import DataManager
 from core.data_manager.yaml_aggregator import all_env_yaml_load, sync_configs_to_db
 
@@ -254,10 +254,11 @@ class ManagerActorPool(ActorPool):
         for item in actors:
             env = str(item["env_name"])
             env_id = str(item["env_id"])
+            group_id = str(item.get("group_id") or "")
             base_url = self._actor_base_url(env, env_id)
             if base_url:
                 self._known.add((env, env_id))
-                self._q.put_nowait(ActorHandle(base_url=base_url, env_name=env, env_id=env_id))
+                self._q.put_nowait(ActorHandle(base_url=base_url, env_name=env, env_id=env_id, group_id=group_id))
                 log.debug("enqueued actor: %s/%s -> %s", env, env_id, base_url)
             else:
                 self._q.put_nowait(None)
@@ -276,6 +277,9 @@ class ManagerActorPool(ActorPool):
 
     async def _discover_one_new_actor(self) -> Optional[ActorHandle]:
         actors = await self.mgr.list_pool_actors()
+        return self._discover_from_actor_list(actors)
+
+    def _discover_from_actor_list(self, actors: List[dict]) -> Optional[ActorHandle]:
         current = {(str(x["env_name"]), str(x["env_id"])) for x in actors}
         candidates = list(current - self._known)
         if not candidates:
@@ -286,24 +290,39 @@ class ManagerActorPool(ActorPool):
         if not base_url:
             return None
 
+        # Find group_id from the actors list
+        group_id = ""
+        for x in actors:
+            if str(x["env_name"]) == env and str(x["env_id"]) == env_id:
+                group_id = str(x.get("group_id") or "")
+                break
+
         self._known.add((env, env_id))
         log.debug("discovered new actor: %s/%s -> %s", env, env_id, base_url)
-        return ActorHandle(base_url=base_url, env_name=env, env_id=env_id)
+        return ActorHandle(base_url=base_url, env_name=env, env_id=env_id, group_id=group_id)
 
     async def done(self, actor: ActorHandle) -> None:
-        async with self._lock:
-            old_key = (str(actor.env_name), str(actor.env_id))
-            self._known.discard(old_key)
+        old_key = (str(actor.env_name), str(actor.env_id))
+        log.info("done(): close_and_refill env=%s id=%s", actor.env_name, actor.env_id)
 
-            log.info("done(): close_and_refill env=%s id=%s", actor.env_name, actor.env_id)
-            try:
-                await self.mgr.close_and_refill(actor.env_name, actor.env_id)
-            except Exception:
-                log.exception("close_and_refill failed for %s/%s; enqueuing None", actor.env_name, actor.env_id)
+        try:
+            await self.mgr.close_and_refill(actor.env_name, actor.env_id)
+        except Exception:
+            log.exception("close_and_refill failed for %s/%s; enqueuing None", actor.env_name, actor.env_id)
+            async with self._lock:
+                # Remove from known so discovery doesn't get stuck on a dead key.
+                self._known.discard(old_key)
                 self._q.put_nowait(None)
-                return
+            return
 
-            new_actor = await self._discover_one_new_actor()
+        # Fetch the current pool actors without holding our local lock. We'll only
+        # lock around _known / _q updates to avoid serializing network I/O.
+        actors = await self.mgr.list_pool_actors()
+        async with self._lock:
+            # Only now it's safe to remove the old key from _known; otherwise a concurrent
+            # done() could rediscover the still-present old actor and re-enqueue it.
+            self._known.discard(old_key)
+            new_actor = self._discover_from_actor_list(actors)
             self._q.put_nowait(new_actor)
 
     async def aclose(self) -> None:
@@ -353,6 +372,10 @@ def parse_args():
     p.add_argument("--llm-api-key", type=str, default="EMPTY")
     p.add_argument("--llm-model", type=str, default="Qwen2.5-VL-72B-Instruct")
     p.add_argument("--llm-temperature", type=float, default=0.3)
+    p.add_argument("--rl-use-session-suffix-url", action="store_true", default=False,
+                   help="Use SessionSuffixBaseURLProvider (for LLM Proxy with session routing)")
+    p.add_argument("--rl-env-num", type=int, default=0,
+                   help="Override env_num for all environments (0 = keep YAML config, used for num_repeat_per_sample)")
 
     # Logging
     p.add_argument("--log-dir", type=str, default="logs", help="Directory to store log files")
@@ -383,7 +406,13 @@ async def main():
     log.info("main log file: %s", main_log_path)
     
     data_manager = DataManager(storage_type="sqlite", db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
-    yaml_config_list =all_env_yaml_load(env_root=args.env_root,env_config=args.env_config)
+    yaml_config_list = all_env_yaml_load(env_root=args.env_root, env_config=args.env_config)
+
+    # 如果指定了 --rl-env-num，覆盖所有环境的 env_num
+    if args.rl_env_num > 0:
+        for cfg in yaml_config_list:
+            cfg["env_num"] = args.rl_env_num
+        log.info("Override env_num=%d for all %d environments", args.rl_env_num, len(yaml_config_list))
 
     conn = await sync_configs_to_db(data_manager, yaml_config_list)
 
@@ -435,7 +464,13 @@ async def main():
         mgr = EnvPoolManager(cfg, conn)
         pool = ManagerActorPool(mgr, pool_size=int(cfg.get("pool_size", 1) or 1))
 
-        base_url_provider = StaticBaseURLProvider(base_url=args.llm_base_url)
+        # 根据参数选择 BaseURLProvider
+        if args.rl_use_session_suffix_url:
+            base_url_provider = SessionSuffixBaseURLProvider(base_url_root=args.llm_base_url)
+            log.info("Using SessionSuffixBaseURLProvider with root: %s", args.llm_base_url)
+        else:
+            base_url_provider = StaticBaseURLProvider(base_url=args.llm_base_url)
+            log.info("Using StaticBaseURLProvider: %s", args.llm_base_url)
 
         interactor = Interactor(
             pool=pool,

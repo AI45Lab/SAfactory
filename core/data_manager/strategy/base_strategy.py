@@ -15,7 +15,7 @@ class StorageStrategy(ABC):
         pass
 
     @abstractmethod
-    async def create_session(self, env_config, llm_model: str):   
+    async def create_session(self, env_id, llm_model: str, group_id: str = ""):
         pass
 
     @abstractmethod
@@ -23,7 +23,7 @@ class StorageStrategy(ABC):
         pass
 
     @abstractmethod
-    async def record_step(self, session, step_id, prompt, response, reward, env_state, done):
+    async def record_step(self, session, step_id, prompt, response, reward, env_state, done, truncated=False):
         pass
 
     @abstractmethod

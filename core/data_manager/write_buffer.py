@@ -63,6 +63,7 @@ class WriteBuffer:
         self._buffer_size = buffer_size
         self._flush_interval = flush_interval
         self._lock = asyncio.Lock()
+        self._flush_lock = asyncio.Lock()  # 全局 flush 锁，确保 flush 操作串行执行
         self._flush_task: Optional[asyncio.Task] = None
         self._running = False
         self._auto_start = auto_start
@@ -136,9 +137,14 @@ class WriteBuffer:
             if buffer_len >= self._buffer_size:
                 should_flush = True
 
-        # 达到阈值时触发该模型的写入
+        # 达到阈值时触发写入：
+        # - 若存在 flush_order（外键依赖），必须按顺序整体 flush，避免子表先于父表落库
+        # - 否则可按模型单独 flush
         if should_flush:
-            self._create_flush_task(self.flush_model(model_class, operation="create"))
+            if self._flush_order:
+                self._create_flush_task(self.flush())
+            else:
+                self._create_flush_task(self.flush_model(model_class, operation="create"))
 
         return instance
 
@@ -187,8 +193,11 @@ class WriteBuffer:
                 should_flush = True
 
         if should_flush:
-            self._create_flush_task(self.flush_model(model_class, operation="update"))
-            
+            if self._flush_order:
+                self._create_flush_task(self.flush())
+            else:
+                self._create_flush_task(self.flush_model(model_class, operation="update"))
+
     def _create_flush_task(self, coro):
         """创建一个被追踪的后台任务"""
         task = asyncio.create_task(coro)
@@ -212,32 +221,33 @@ class WriteBuffer:
         Returns:
             各操作写入的记录数统计
         """
-        results = {"created": 0, "updated": 0}
+        async with self._flush_lock:
+            results = {"created": 0, "updated": 0}
 
-        # 获取所有需要刷新的模型
-        async with self._lock:
-            create_models = list(self._create_buffers.keys())
-            update_models = list(self._update_buffers.keys())
+            # 获取所有需要刷新的模型
+            async with self._lock:
+                create_models = list(self._create_buffers.keys())
+                update_models = list(self._update_buffers.keys())
 
-        # 按依赖顺序排序，确保父表先于子表 flush
-        create_models = self._sort_models_by_priority(create_models)
-        update_models = self._sort_models_by_priority(update_models)
+            # 按依赖顺序排序，确保父表先于子表 flush
+            create_models = self._sort_models_by_priority(create_models)
+            update_models = self._sort_models_by_priority(update_models)
 
-        # 刷新所有创建缓冲
-        for model_class in create_models:
-            count = await self.flush_model(model_class, operation="create")
-            results["created"] += count
+            # 刷新所有创建缓冲
+            for model_class in create_models:
+                count = await self._flush_model_unlocked(model_class, operation="create")
+                results["created"] += count
 
-        # 刷新所有更新缓冲
-        for model_class in update_models:
-            count = await self.flush_model(model_class, operation="update")
-            results["updated"] += count
+            # 刷新所有更新缓冲
+            for model_class in update_models:
+                count = await self._flush_model_unlocked(model_class, operation="update")
+                results["updated"] += count
 
-        if results["created"] > 0 or results["updated"] > 0:
-            self._stats["flush_count"] += 1
-            logger.debug(f"WriteBuffer flushed: {results}")
+            if results["created"] > 0 or results["updated"] > 0:
+                self._stats["flush_count"] += 1
+                logger.debug(f"WriteBuffer flushed: {results}")
 
-        return results
+            return results
 
     async def flush_model(
         self,
@@ -254,6 +264,15 @@ class WriteBuffer:
         Returns:
             写入的记录数
         """
+        async with self._flush_lock:
+            return await self._flush_model_unlocked(model_class, operation=operation)
+
+    async def _flush_model_unlocked(
+        self,
+        model_class: Type[Model],
+        operation: str = "all",
+    ) -> int:
+        """flush_model 的无锁实现（由 flush/flush_model 持有 _flush_lock 调用）"""
         total = 0
 
         if operation in ("create", "all"):

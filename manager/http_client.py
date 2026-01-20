@@ -12,7 +12,11 @@ class HttpServiceClient:
 
     async def start(self) -> None:
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self._timeout_s, trust_env=self._trust_env)
+            self._client = httpx.AsyncClient(
+                timeout=self._timeout_s,
+                trust_env=self._trust_env,
+                limits=httpx.Limits(max_connections=None, max_keepalive_connections=None),
+            )
 
     async def close(self) -> None:
         if self._client is not None:

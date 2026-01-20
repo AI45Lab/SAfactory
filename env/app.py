@@ -23,6 +23,7 @@ from env.mc.mc_env import MCGym
 # from env.dwgym.dw_env import DiscoveryWorldEnv
 # from env.embodiedgym.embodied_env import EmbodiedAlfredGym
 from env.androidgym.android_env import AndroidGym
+from env.search.search_env import SearchEnv
 
 from core.types.base import ResetOutput, RenderOutput, StepOutput, dumps_json_bytes
 
@@ -39,6 +40,7 @@ ENV_CLASS_REGISTRY: Dict[str, type] = {
     # "dab": DABStepEnv,
     # "dwgym": DiscoveryWorldEnv,
     # "emb": EmbodiedAlfredGym
+    "search": SearchEnv,
 }
 
 
@@ -172,7 +174,7 @@ def on_startup() -> None:
 
 
 @app.get("/envs")
-def list_envs() -> Dict[str, Any]:
+async def list_envs() -> Dict[str, Any]:
     """List all currently tracked env actors."""
     with _ENV_LOCK:
         envs = [{"envname": k[0], "id": k[1]} for k in _ENV_ACTORS.keys()]
@@ -180,7 +182,7 @@ def list_envs() -> Dict[str, Any]:
 
 
 @app.post("/{envname}/{env_id}/reset")
-def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
+async def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
     """
     Reset env identified by (envname, env_id).
 
@@ -232,77 +234,77 @@ def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
     # Best-effort cleanup of old actor (if any)
     if old_actor is not None:
         try:
-            ray.get(old_actor.close.remote())
+            await old_actor.close.remote()
         except Exception:
             pass
         ray.kill(old_actor, no_restart=True)
     # Call reset on the new actor, return JSON bytes directly
-    result_bytes: bytes = ray.get(actor.reset.remote(req.seed))
+    result_bytes: bytes = await actor.reset.remote(req.seed)
     return Response(content=result_bytes, media_type="application/json")
 
 
 @app.post("/{envname}/{env_id}/step")
-def step_env(envname: str, env_id: str, req: StepRequest) -> Response:
+async def step_env(envname: str, env_id: str, req: StepRequest) -> Response:
     """Forward step(action) to the existing actor."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
         actor = _ENV_ACTORS.get(key)
     if actor is None:
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
-    result_bytes: bytes = ray.get(actor.step.remote(req.action))
+    result_bytes: bytes = await actor.step.remote(req.action)
     return Response(content=result_bytes, media_type="application/json")
 
 
 @app.get("/{envname}/{env_id}/render")
-def render_env(envname: str, env_id:str) -> Response:
+async def render_env(envname: str, env_id:str) -> Response:
     """Forward render() to the existing actor."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
         actor = _ENV_ACTORS.get(key)
     if actor is None:
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
-    result_bytes: bytes = ray.get(actor.render.remote())
+    result_bytes: bytes = await actor.render.remote()
     return Response(content=result_bytes, media_type="application/json")
 
 
 @app.get("/{envname}/{env_id}/get_task_prompt")
-def get_task_prompt(envname: str, env_id: str) -> Response:
+async def get_task_prompt(envname: str, env_id: str) -> Response:
     """Forward get_task_prompt() to the existing actor."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
         actor = _ENV_ACTORS.get(key)
     if actor is None:
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
-    result_bytes: bytes = ray.get(actor.get_task_prompt.remote())
+    result_bytes: bytes = await actor.get_task_prompt.remote()
     return Response(content=result_bytes, media_type="application/json")
 
 
 @app.get("/{envname}/{env_id}/is_done")
-def is_done(envname: str, env_id: str) -> Dict[str, Any]:
+async def is_done(envname: str, env_id: str) -> Dict[str, Any]:
     """Check if the env is done."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
         actor = _ENV_ACTORS.get(key)
     if actor is None:
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
-    value: bool = ray.get(actor.is_done.remote())
+    value: bool = await actor.is_done.remote()
     return {"envname": envname, "id": env_id, "done": value}
 
 
 @app.get("/{envname}/{env_id}/health")
-def health(envname: str, env_id: str) -> Dict[str, Any]:
+async def health(envname: str, env_id: str) -> Dict[str, Any]:
     """Health check for this env actor."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
         actor = _ENV_ACTORS.get(key)
     if actor is None:
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
-    value: bool = ray.get(actor.health.remote())
+    value: bool = await actor.health.remote()
     return {"envname": envname, "id": env_id, "healthy": value}
 
 
 @app.get("{envname}/{env_id}/describe")
-def describe(envname: str, env_id: str) -> Dict[str, Any]:
+async def describe(envname: str, env_id: str) -> Dict[str, Any]:
     """Expose EnvActor.describe()."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
@@ -311,19 +313,19 @@ def describe(envname: str, env_id: str) -> Dict[str, Any]:
     if actor is None:
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
 
-    info: dict = ray.get(actor.describe.remote())
+    info: dict = await actor.describe.remote()
     return info
 
 
 @app.delete("/{envname}/{env_id}")
-def close_env(envname: str, env_id: str) -> Dict[str, Any]:
+async def close_env(envname: str, env_id: str) -> Dict[str, Any]:
     """Close and remove the env actor for (envname, env_id)."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
         actor = _ENV_ACTORS.pop(key, None)
     if actor is not None:
         try:
-            ray.get(actor.close.remote())
+            await actor.close.remote()
         except Exception:
             pass
         ray.kill(actor, no_restart=True)

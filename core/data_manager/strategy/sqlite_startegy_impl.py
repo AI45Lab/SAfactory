@@ -55,12 +55,13 @@ class SqliteStrategy(StorageStrategy):
         await self.init()
         return await EnvironmentConfig.all()  # 直接返回所有记录
 
-    async def create_session(self, env_id, llm_model: str) -> InteractionSession:
+    async def create_session(self, env_id, llm_model: str, group_id: str = "") -> InteractionSession:
         """创建 session（走 buffer，update 时会检测并合并到同一对象）"""
         await self.init()
         session = InteractionSession(
             env_id=env_id,
-            llm_model=llm_model
+            llm_model=llm_model,
+            group_id=group_id
         )
         if self._write_buffer:
             await self._write_buffer.buffer_create(session)
@@ -89,7 +90,7 @@ class SqliteStrategy(StorageStrategy):
             await session.save()
         return session
 
-    async def record_step(self, session: InteractionSession, step_id: int, prompt: list, response: str, reward: float, env_state: Optional[str] = None, done: bool = False):
+    async def record_step(self, session: InteractionSession, step_id: int, prompt: list, response: str, reward: float, env_state: Optional[str] = None, done: bool = False, truncated: bool = False):
         """
         记录交互步骤
 
@@ -109,7 +110,8 @@ class SqliteStrategy(StorageStrategy):
             response=response,
             reward=reward,
             env_state=env_state,
-            done=done
+            done=done,
+            truncated=truncated
         )
 
         # 根据是否启用缓冲决定写入方式
@@ -190,10 +192,12 @@ class SqliteStrategy(StorageStrategy):
                 "env_state": step.env_state,
                 "timestamp": step.timestamp.isoformat() if step.timestamp else None,
                 "done": step.done,
+                "truncated": step.truncated,
                 "session_id": session.session_id if session else None,
                 "session_end_time": session.end_time.isoformat() if session and session.end_time else None,
                 "env_id": env.env_id if env else None,
                 "env_name": env.env_name if env else None,
+                "group_id": env.group_id if env else None,
             })
 
         return results

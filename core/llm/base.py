@@ -39,14 +39,17 @@ class LLM:
         self.max_retries = int(max_retries)  # -1 表示无限重试
         self.retry_backoff = float(retry_backoff)
         self.max_retry_delay = float(max_retry_delay)
-        # 存储最近一次请求返回的 metadata（例如 weight_version）
-        self.last_metadata: Optional[Dict[str, Any]] = None
 
-    async def generate(self, messages: List[dict]) -> str:
+    async def generate(self, messages: List[dict]) -> Dict[str, Any]:
         """
         基于 OpenAI messages 列表调用 chat.completions（异步接口，内置失败重试）。
 
         messages 必须是形如 [{"role": "...", "content": "..."}] 的标准结构。
+
+        返回:
+            Dict 包含:
+            - "content": str - LLM 生成的内容
+            - "finish_reason": str - 结束原因 ("stop", "length" 等)
 
         重试策略：指数退避，最大延迟封顶，适应模型权重更新场景。
         """
@@ -75,16 +78,20 @@ class LLM:
                         resp.raise_for_status()
                         data = await resp.json()
                     logger.info(f"[LLM] POST {url} returned")
-                    # 记录 metadata（例如来自 SGLang 的 weight_version）
-                    if isinstance(data, dict):
-                        self.last_metadata = data.get("metadata") or {}
-                    else:
-                        self.last_metadata = None
 
-                    content = data["choices"][0]["message"]["content"]
+                    choice = data["choices"][0]
+                    content = choice["message"]["content"]
+                    finish_reason = choice.get("finish_reason", "stop")
+                    # 从 metadata 中获取 weight_version（SGLang 等引擎会返回）
+                    metadata = data.get("metadata") or {}
+                    weight_version = metadata.get("weight_version")
                     if not content:
                         raise RuntimeError("LLM returned empty content")
-                    return content
+                    return {
+                        "content": content,
+                        "finish_reason": finish_reason,
+                        "weight_version": weight_version,
+                    }
             except Exception as e:
                 last_error = e
                 attempt += 1

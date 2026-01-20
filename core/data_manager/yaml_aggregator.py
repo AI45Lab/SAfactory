@@ -2,6 +2,7 @@ from pathlib import Path
 import sqlite3
 import json
 import uuid
+from collections import defaultdict
 from .load_yaml import load_yaml_configs
 from core.data_manager.models import EnvironmentConfig
 
@@ -158,22 +159,32 @@ async def sync_configs_to_db(data_manager, yaml_configs):
     await data_manager.init()
 
     # 数据库现有配置：通过(env_name + env_params)判断唯一性（避免重复生成env_id）
-    db_configs = await EnvironmentConfig.all()
+    # NOTE: Make ordering explicit so "instance index" is stable across runs.
+    db_configs = await EnvironmentConfig.all().order_by("id")
     # 构建唯一标识：env_name + 用户参数的哈希值 + 序号 （区分同配置的不同实例）
+    def _params_json(env_params) -> str:
+        return json.dumps(env_params, sort_keys=True)
+
     def get_config_key(env_name, env_params, index):
-        import json
-        params_hash = hash(json.dumps(env_params, sort_keys=True))
+        params_hash = hash(_params_json(env_params))
+        return f"{env_name}_{params_hash}_{index}"
+
+    def get_config_key_from_params_json(env_name: str, env_params_json: str, index: int) -> str:
+        params_hash = hash(env_params_json)
         return f"{env_name}_{params_hash}_{index}"
     
     # 现有配置键值映射（包含序号）
     db_config_keys = {}
+    # Fast path: single pass O(N) to assign per-(env_name, env_params) instance indices.
+    # Group key uses canonicalized JSON of env_params to avoid relying on dict hashability.
+    group_counts: defaultdict[tuple[str, str], int] = defaultdict(int)
     for cfg in db_configs:
-        # 从现有记录反推序号（同一配置的实例按创建顺序排序）
-        same_configs = [c for c in db_configs 
-                       if c.env_name == cfg.env_name 
-                       and c.env_params == cfg.env_params]
-        index = same_configs.index(cfg) + 1  # 序号从1开始
-        key = get_config_key(cfg.env_name, cfg.env_params, index)
+        env_name = str(cfg.env_name)
+        env_params_json = _params_json(cfg.env_params)
+        group_key = (env_name, env_params_json)
+        group_counts[group_key] += 1
+        index = group_counts[group_key]  # 序号从1开始
+        key = get_config_key_from_params_json(env_name, env_params_json, index)
         db_config_keys[key] = cfg
 
     added, updated, deleted = 0, 0, 0
@@ -184,16 +195,19 @@ async def sync_configs_to_db(data_manager, yaml_configs):
         env_params = cfg.get("env_params", {})
         image = cfg.get("env_image", "")
         env_num = cfg.get("env_num", 1)  # 默认创建1个实例
+        task_idx = cfg.get("task_idx", 1)  # 数据集中的索引
         if not isinstance(env_num, int) or env_num < 1:
             raise ValueError(f"env_num必须是正整数，{env_name}配置错误")
 
-        # 为每个序号创建实例
-        group_id = str(uuid.uuid4())
+        # group_id: 同一原始样本的多个实例共享，用于 RL 场景的 GRPO 聚合
+        # Use a deterministic UUID so existing rows don't get rewritten every sync.
+        group_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{env_name}:{task_idx}"))
+        env_params_json = _params_json(env_params)
         for index in range(1, env_num + 1):
-            config_key = get_config_key(env_name, env_params, index)
-            
+            config_key = get_config_key_from_params_json(env_name, env_params_json, index)
+
             if config_key not in db_config_keys:
-                # 新增实例：自动生成env_id
+                # 新增实例：自动生成env_id，共享group_id
                 await EnvironmentConfig.create(
                     env_name=env_name,
                     env_params=env_params,
@@ -201,10 +215,14 @@ async def sync_configs_to_db(data_manager, yaml_configs):
                     group_id=group_id
                 )
                 added += 1
-                print(f"新增环境配置实例：{env_name}（序号：{index}/{env_num}，自动生成env_id）")
+                print(f"新增环境配置实例：{env_name}（序号：{index}/{env_num}，group_id={group_id}）")
             else:
-                # 实例已存在，无需操作
-                print(f"环境配置实例已存在：{env_name}（序号：{index}/{env_num}，使用现有env_id）")
+                # 实例已存在，确保 group_id 正确
+                existing = db_config_keys[config_key]
+                if existing.group_id != group_id:
+                    existing.group_id = group_id
+                    await existing.save()
+                print(f"环境配置实例已存在：{env_name}（序号：{index}/{env_num}，group_id={group_id}）")
 
     # 处理删除：数据库中存在但YAML中不需要的实例
     yaml_config_keys = set()
@@ -212,8 +230,9 @@ async def sync_configs_to_db(data_manager, yaml_configs):
         env_name = cfg["env_name"].strip()
         env_params = cfg.get("env_params", {})
         env_num = cfg.get("env_num", 1)
+        env_params_json = _params_json(env_params)
         for index in range(1, env_num + 1):
-            key = get_config_key(env_name, env_params, index)
+            key = get_config_key_from_params_json(env_name, env_params_json, index)
             yaml_config_keys.add(key)
 
     # 删除不在YAML配置中的实例

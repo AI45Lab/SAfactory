@@ -59,7 +59,7 @@ class ActorPool:
 
     async def list_actors(self) -> List[dict]:
         async with self._lock:
-            return [{"env_name": e.env_name, "env_id": e.env_id} for e in self._pool.values()]
+            return [{"env_name": e.env_name, "env_id": e.env_id, "group_id": e.group_id} for e in self._pool.values()]
 
     def get_actor_route(self, env: str, env_id: str, fallback: Optional[EnvClusterBinding]) -> Optional[ActorRoute]:
         key = (str(env), str(env_id))
@@ -229,6 +229,7 @@ class ActorPool:
                             image=image,
                             job_name=cluster.job_name,
                             head_ip=cluster.head_ip,
+                            group_id=str(row.get("group_id") or ""),
                             status="ready",
                         )
                         self._actor_routes[key] = (cluster.head_ip, self._http_port)

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ class ActorHandle:
     base_url: str
     env_name: str
     env_id: str
+    group_id: str
 
 
 class ActorPool(Protocol):
@@ -66,17 +68,14 @@ class Interactor:
         self.verbose = bool(verbose)
 
         self.log_actions_preview_chars = max(0, int(log_actions_preview_chars))
-        
+
         self.model = model
         self.data_manager = data_manager
 
-        base_url = self._get_base_url(base_url_provider)
-        self.llm = LLM(
-            api_key=api_key,
-            base_url=base_url,
-            model=model,
-            temperature=float(temperature),
-        )
+        # 保存 LLM 配置，每个 session 动态创建 LLM 实例
+        self.base_url_provider = base_url_provider
+        self.api_key = api_key
+        self.temperature = float(temperature)
 
         limits = httpx.Limits(
             max_connections=max(64, pool.pool_size * 8),
@@ -93,13 +92,15 @@ class Interactor:
             model, float(temperature), self.max_steps, self.message_cut, float(env_http_timeout_s), self.http_retries
         )
 
-    @staticmethod
-    def _get_base_url(provider: BaseURLProvider) -> str:
-        # Compatibility with both provider.get_base_url() and provider.get_base_url(None)
-        try:
-            return provider.get_base_url()
-        except TypeError:
-            return provider.get_base_url(None)
+    def _create_llm_for_session(self, session) -> LLM:
+        """为指定 session 创建 LLM 实例"""
+        base_url = self.base_url_provider.get_base_url(session)
+        return LLM(
+            api_key=self.api_key,
+            base_url=base_url,
+            model=self.model,
+            temperature=self.temperature,
+        )
 
     def _trim_messages(self, prompt: Any) -> List[Dict[str, Any]]:
         """
@@ -123,12 +124,21 @@ class Interactor:
     def _url(self, a: ActorHandle, suffix: str) -> str:
         return f"{a.base_url.rstrip('/')}/{a.env_name}/{a.env_id}/{suffix.lstrip('/')}"
 
-    async def _llm_generate(self, messages: List[Dict[str, Any]]) -> str:
-        # Compatibility with llm.generate(messages=...) and llm.generate(...)
-        try:
-            return await self.llm.generate(messages=messages)
-        except TypeError:
-            return await self.llm.generate(messages)
+    async def _llm_generate(self, llm: LLM, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        调用 LLM 生成响应。
+
+        Args:
+            llm: LLM 实例
+            messages: 消息列表
+
+        返回:
+            Dict 包含:
+            - "content": str - 生成的内容
+            - "finish_reason": str - 结束原因
+            - "weight_version": Optional[int] - 模型权重版本
+        """
+        return await llm.generate(messages=messages)
 
     async def _request_json(
         self,
@@ -206,11 +216,15 @@ class Interactor:
         total_reward = 0.0
         env_key = f"{a.env_name}_{a.env_id}"
         trajectory = ""
-        
+
         session = await self.data_manager.create_session(
             env_id=a.env_id,
             llm_model=self.model,
+            group_id=a.group_id
         )
+
+        # 为此 session 创建 LLM 实例（支持 SessionSuffixBaseURLProvider）
+        llm = self._create_llm_for_session(session)
 
         try:
             for step_i in range(1, self.max_steps + 1):
@@ -220,11 +234,40 @@ class Interactor:
                     log.info("worker=%d env=%s: empty prompt -> end episode", worker_id, env_key)
                     break
 
-                action = await self._llm_generate(prompt)
+                llm_result = await self._llm_generate(llm, prompt)
+                action = llm_result["content"]
+                finish_reason = llm_result.get("finish_reason", "stop")
+                weight_version = llm_result.get("weight_version")
+
+                # 构建 env_state JSON 存储 weight_version
+                env_state = json.dumps({"weight_version": weight_version}) if weight_version is not None else None
 
                 if self.log_actions_preview_chars > 0:
                     preview = action.replace("\n", "\\n")[: self.log_actions_preview_chars]
-                    log.debug("worker=%d env=%s step=%d action_preview=%r", worker_id, env_key, step_i, preview)
+                    log.debug("worker=%d env=%s step=%d action_preview=%r finish_reason=%s",
+                             worker_id, env_key, step_i, preview, finish_reason)
+
+                # 如果 LLM 输出被截断（finish_reason == "length"），直接终止并给 0 奖励
+                if finish_reason == "length":
+                    log.info("worker=%d env=%s step=%d: LLM output truncated (finish_reason=length), terminating with reward=0",
+                            worker_id, env_key, step_i)
+                    reward = 0.0
+                    terminated = True
+                    truncated = True
+                    done = True
+                    # 记录被截断的步骤
+                    await self.data_manager.record_step(
+                        session=session,
+                        step_id=step_i,
+                        prompt=prompt,
+                        response=action,
+                        reward=reward,
+                        env_state=env_state,
+                        done=done,
+                        truncated=truncated
+                    )
+                    trajectory += f"Step {step_i}:\nResponse: {action}\n[TRUNCATED]\n\n"
+                    break
 
                 out = await self._request_json(
                     "POST",
@@ -244,7 +287,7 @@ class Interactor:
                     "worker=%d env=%s step=%d reward=%.4f total=%.4f terminated=%s truncated=%s",
                     worker_id, env_key, step_i, reward, total_reward, terminated, truncated
                 )
-                
+
                 # 记录交互步骤
                 await self.data_manager.record_step(
                     session=session,
@@ -252,18 +295,20 @@ class Interactor:
                     prompt=prompt,
                     response=action,
                     reward=reward,
-                    done=done
+                    env_state=env_state,
+                    done=done,
+                    truncated=truncated
                 )
-                
+
                 trajectory += f"Step {step_i}:\nResponse: {action}\n\n"
-                
+
                 if terminated or truncated:
                     log.info("worker=%d env=%s done: terminated=%s truncated=%s", worker_id, env_key, terminated, truncated)
                     break
-        
+
         except Exception:
             raise
-        
+
         finally:
             await self.data_manager.update_session(
                     session=session,

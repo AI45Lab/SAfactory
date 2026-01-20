@@ -59,6 +59,7 @@ class SearchEnv(BaseEnv):
         search_api_url = runtime_cfg.get("search_api_url")
         search_timeout = runtime_cfg.get("search_timeout")
         judge_url = runtime_cfg.get("judge_url")
+        judge_timeout = runtime_cfg.get("judge_timeout")
 
         # ---- 获取 question / ground_truth ----
         question = dataset.get("question")
@@ -88,10 +89,14 @@ class SearchEnv(BaseEnv):
 
         # 检索服务配置
         self.search_api_url: str = str(search_api_url if search_api_url is not None else "http://100.99.186.41:8000/retrieve")
-        self.search_timeout: float = float(search_timeout if search_timeout is not None else 10.0)
+        # timeout: -1 means no limit (None in requests)
+        _search_timeout = float(search_timeout if search_timeout is not None else 10.0)
+        self.search_timeout: Optional[float] = None if _search_timeout < 0 else _search_timeout
 
-        # Judge API URL
+        # Judge API URL and timeout
         self._judge_url: Optional[str] = judge_url
+        _judge_timeout = float(judge_timeout if judge_timeout is not None else 30.0)
+        self.judge_timeout: Optional[float] = None if _judge_timeout < 0 else _judge_timeout
 
         # 环境状态
         self.step_count: int = 0
@@ -318,7 +323,7 @@ For each function call, return a json object with function name and arguments wi
             "answer": answer,
             "ground_truth": self.ground_truth,
         }
-        resp = requests.post(self._judge_url, json=payload, timeout=30.0)
+        resp = requests.post(self._judge_url, json=payload, timeout=self.judge_timeout)
         resp.raise_for_status()
         data = resp.json()
 

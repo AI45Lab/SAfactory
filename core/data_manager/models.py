@@ -7,13 +7,17 @@ class EnvironmentConfig(Model):
     """环境配置模型，关联注册的环境名称"""
     id = fields.IntField(pk=True, autoincrement=True) # 内部自增ID
     env_id = fields.CharField(
-        max_length=36, 
+        max_length=36,
         default=lambda: str(uuid.uuid4()),  # 自动生成UUID
-        unique=True, 
+        unique=True,
         description="环境唯一标识UUID"
     )
-    group_id = fields.CharField(max_length=150)
-    finished = fields.BooleanField(default=False)
+    group_id = fields.CharField(
+        max_length=150,
+        null=True,
+        description="分组ID，同一原始样本的多个实例共享相同的group_id（用于RL场景的GRPO聚合）"
+    )
+    finished = fields.BooleanField(default=False, description="是否已完成")
     env_name = fields.CharField(max_length=100, description="环境名称（需与注册的环境名称一致）")
     env_params = fields.JSONField(description="用户自定义参数")
     image = fields.CharField(max_length=100, description="环境镜像")
@@ -38,6 +42,7 @@ class InteractionSession(Model):
         on_delete=fields.CASCADE,
         to_field="env_id"  # 明确关联EnvironmentConfig的env_id字段（UUID）
     )
+    group_id = fields.CharField(max_length=150)
     llm_model = fields.CharField(max_length=150)
     start_time = fields.DatetimeField(auto_now_add=True)
     end_time = fields.DatetimeField(null=True)
@@ -64,6 +69,7 @@ class InteractionStep(Model):
     reward = fields.FloatField()
     env_state = fields.TextField(null=True)
     done = fields.BooleanField(default=False)
+    truncated = fields.BooleanField(default=False)
 
     class Meta:
         table = "interaction_steps"

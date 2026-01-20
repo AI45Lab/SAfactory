@@ -44,6 +44,7 @@ class PoolEntry:
     image: str
     job_name: str
     head_ip: str
+    group_id: str = ""
     status: str = "ready"
 
 

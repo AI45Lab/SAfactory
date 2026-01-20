@@ -12,12 +12,20 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional
 
+# Add rl directory to path for utils import
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+
+from utils import get_env
+import llm_proxy
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 # Add AIEvoBox to path
-AIEVOBOX_ROOT = os.environ.get("AIEVOBOX_ROOT", "/root/AIEvoBox")
+AIEVOBOX_ROOT = get_env("AIEVOBOX_ROOT")
 if AIEVOBOX_ROOT not in sys.path:
     sys.path.insert(0, AIEVOBOX_ROOT)
 
@@ -60,8 +68,10 @@ llm_proxy_process: Optional[subprocess.Popen] = None
 # DataManager for querying the database
 data_manager: Optional[DataManager] = None
 
-# LLM Proxy URL
-llm_proxy_url: str = os.environ.get("LLM_PROXY_URL", "http://127.0.0.1:8890")
+# LLM Proxy URL (constructed from host and port)
+_llm_proxy_host = get_env("LLM_PROXY_HOST")
+_llm_proxy_port = get_env("LLM_PROXY_PORT")
+llm_proxy_url: str = f"http://{_llm_proxy_host}:{_llm_proxy_port}/v1"
 
 # Track last served step ID for cursor-based pagination
 last_served_id: int = 0
@@ -71,43 +81,6 @@ pending_items_by_instance: Dict[str, List[Dict[str, Any]]] = {}
 
 # Group size (set by /start_rollout)
 group_size: int = 1
-
-
-def default_is_valid_group(group_data, min_valid_group_size, task_type):
-    instance_id, samples = group_data
-    return len(samples) >= min_valid_group_size
-
-
-def default_get_group_data_meta_info(temp_data: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
-    """
-    Default implementation for getting meta information about the temporary data
-    collected between get_batch calls.
-    """
-    if not temp_data:
-        return {
-            "total_samples": 0,
-            "num_groups": 0,
-            "avg_group_size": 0,
-            "avg_reward": 0,
-        }
-
-    meta_info = {"total_samples": 0, "num_groups": len(temp_data)}
-
-    all_rewards = []
-    # Calculate per-group statistics
-    for instance_id, samples in temp_data.items():
-        group_size = len(samples)
-        group_rewards = [s["reward"] for s in samples]  # Calculate group reward standard deviation
-        meta_info["total_samples"] += group_size
-        all_rewards.extend(group_rewards)
-    # Calculate global statistics
-    meta_info["avg_group_size"] = meta_info["total_samples"] / meta_info["num_groups"]
-
-    if all_rewards:
-        meta_info["avg_reward"] = sum(all_rewards) / len(all_rewards)
-    else:
-        meta_info["avg_reward"] = 0
-    return meta_info
 
 
 @app.middleware("http")
@@ -121,158 +94,6 @@ class BufferResponse(BaseModel):
     success: bool
     message: str = ""
     data: Optional[Dict[str, Any]] = None
-
-
-class BufferQueue:
-    def __init__(
-        self,
-        group_size,
-        task_type="math",
-        transform_group_func=None,
-        is_valid_group_func=None,
-        get_group_data_meta_info_func=None,
-    ):
-        self.data = {}
-        self.temp_data = {}
-        self.group_timestamps = {}
-        self.group_size = group_size
-        self.task_type = task_type
-
-        # Set up function handlers with defaults
-        self.is_valid_group_func = is_valid_group_func or default_is_valid_group
-        self.get_group_data_meta_info_func = get_group_data_meta_info_func or default_get_group_data_meta_info
-        self.transform_group_func = transform_group_func or (lambda group, task_type: group)
-
-    def append(self, item):
-        instance_id = item["instance_id"]
-        current_time = time.time()
-
-        # Update timestamp for this group
-        self.group_timestamps[instance_id] = current_time
-
-        if instance_id not in self.temp_data:
-            self.temp_data[instance_id] = [copy.deepcopy(item)]
-        else:
-            self.temp_data[instance_id].append(copy.deepcopy(item))
-
-        if instance_id not in self.data:
-            self.data[instance_id] = [item]
-        else:
-            self.data[instance_id].append(item)
-
-    def _get_valid_groups_with_timeout(self, del_data=False):
-        """Get valid groups including timeout-based groups"""
-        valid_groups = {}
-        timed_out_groups = {}
-        finished_groups = []
-
-        for instance_id, group_data in self.data.items():
-            if self.is_valid_group_func((instance_id, group_data), self.group_size, self.task_type):
-                valid_groups[instance_id] = group_data
-
-        # Remove finished groups and timed out groups with insufficient data
-        if del_data:
-            for instance_id in finished_groups:
-                self.data.pop(instance_id, None)
-                self.group_timestamps.pop(instance_id, None)
-                # logger.debug(f"Removed finished group {instance_id}")
-
-        # Combine normal valid groups and timeout groups
-        all_valid_groups = {**valid_groups, **timed_out_groups}
-
-        return all_valid_groups, finished_groups
-
-    def get(self):
-        output = {"data": [], "meta_info": {}}
-
-        # Get meta information about temp data before processing
-        meta_info = self.get_group_data_meta_info_func(self.temp_data)
-        output["meta_info"] = meta_info
-
-        valid_groups, finished_groups = self._get_valid_groups_with_timeout(del_data=True)
-        output["meta_info"]["finished_groups"] = finished_groups
-
-        # logger.debug(f"meta info: {json.dumps(meta_info, indent=2)}")
-
-        valid_groups = list(valid_groups.items())
-
-        for instance_id, group in valid_groups:
-            # First filter individual items
-            transformed_group = self.transform_group_func((instance_id, group), self.task_type)
-            output["data"].extend(transformed_group[1])
-
-            if instance_id in self.data:
-                self.data.pop(instance_id)
-
-        return output
-
-    def __len__(self):
-        valid_groups, _ = self._get_valid_groups_with_timeout()
-        num = sum([len(v) for v in valid_groups.values()])
-        num_of_all_groups = sum([len(v) for v in self.data.values()])
-        # logger.debug(f"valid_groups: {len(valid_groups)}, num: {num}, num_of_all_groups: {num_of_all_groups}")
-        return num
-
-
-class RolloutBuffer:
-    def __init__(
-        self,
-        group_size=16,
-        task_type="math",
-        transform_group_func=None,
-        is_valid_group_func=None,
-        get_group_data_meta_info_func=None,
-    ):
-        self.buffer = BufferQueue(
-            group_size=group_size,
-            task_type=task_type,
-            transform_group_func=transform_group_func,
-            is_valid_group_func=is_valid_group_func,
-            get_group_data_meta_info_func=get_group_data_meta_info_func,
-        )
-        self.lock = threading.RLock()
-        self.not_empty = threading.Condition(self.lock)
-        self.total_written = 0
-        self.total_read = 0
-        self.task_type = task_type
-
-    def write(self, data):
-        with self.lock:
-            self.buffer.append(data)
-            self.total_written += 1
-            self.not_empty.notify_all()
-        return data
-
-    def read(self):
-        with self.not_empty:
-            if len(self.buffer) == 0:
-                return {"data": [], "meta_info": {}}
-
-            # Don't clear temp_data for regular read operations
-            result = self.buffer.get()
-            self.total_read += len(result["data"])
-            return result
-
-
-buffer = RolloutBuffer()
-
-
-@app.post("/buffer/write", response_model=BufferResponse)
-async def write_to_buffer(request: Request):
-    try:
-        data = await request.json()
-        item = buffer.write(data)
-        return BufferResponse(
-            success=True,
-            message="Data has been successfully written to buffer",
-            data={"data": [item], "meta_info": "write to buffer"},
-        )
-    except Exception as e:
-        logger.error(f"Write failed: {str(e)}")
-        import traceback
-
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Write failed: {str(e)}")
 
 
 def _parse_timestamp(ts: Optional[str]) -> Optional[float]:
@@ -290,43 +111,19 @@ def _parse_timestamp(ts: Optional[str]) -> Optional[float]:
 
 def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a database row to the expected item format."""
-    # Parse stored prompt (may be JSON serialized messages)
-    base_messages: List[Dict[str, Any]] = []
-    try:
-        prompt_str = row.get("prompt", "")
-        if prompt_str:
-            loaded = json.loads(prompt_str)
-            if isinstance(loaded, list):
-                for msg in loaded:
-                    if isinstance(msg, dict) and "role" in msg:
-                        base_messages.append(msg)
-    except Exception:
-        base_messages = [{"role": "user", "content": str(row.get("prompt", ""))}]
-
-    messages = list(base_messages)
-    messages.append({"role": "assistant", "content": row.get("response", "")})
+    # Parse stored prompt (JSON serialized messages list)
+    prompt_str = row.get("prompt", "")
+    base_messages = json.loads(prompt_str) if prompt_str else []
+    messages = base_messages + [{"role": "assistant", "content": row.get("response", "")}]
 
     session_id = row.get("session_id", "")
     env_id = row.get("env_id", "")
+    group_id = row.get("group_id", "")
 
-    # 从 env_state 中解析 weight_version（若存在）
+    # 从 env_state 中解析 weight_version
     weight_version = 0
-    env_state_raw = row.get("env_state")
-    if env_state_raw:
-        try:
-            state = json.loads(env_state_raw)
-            wv = state.get("weight_version")
-            if wv is None:
-                weight_version = 0
-            elif isinstance(wv, str) and wv == "default":
-                weight_version = 0
-            else:
-                try:
-                    weight_version = int(wv)
-                except Exception:
-                    weight_version = 0
-        except Exception:
-            weight_version = 0
+    if env_state_raw := row.get("env_state"):
+        weight_version = int(json.loads(env_state_raw)["weight_version"])
 
     extra_info = {
         "timestamp": _parse_timestamp(row.get("session_end_time")) or _parse_timestamp(row.get("timestamp")) or time.time(),
@@ -334,12 +131,14 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "finish_reason": "stop",
         "session_id": session_id,
         "env_id": env_id,
+        "group_id": group_id,
         "weight_version": weight_version,
+        "truncated": row.get("truncated", False),
     }
 
     return {
         "uid": str(uuid.uuid4()),
-        "instance_id": str(env_id) if env_id else str(session_id),
+        "instance_id": str(group_id),
         "messages": messages,
         "reward": float(row.get("reward", 0.0)),
         "extra_info": extra_info,
@@ -409,58 +208,24 @@ def accumulate_and_pop_ready_groups(new_items: List[Dict[str, Any]]) -> tuple:
     return ready_groups, finished_instance_ids
 
 
-def normalize_group_rewards(groups: List[tuple], eps: float = 1e-8) -> List[Dict[str, Any]]:
-    """Normalize rewards within each group (GRPO style)."""
-    ready_items = []
-    raw_rewards_for_meta = []
-
-    for instance_id, group in groups:
-        raw_rewards = [float(item.get("reward", 0.0)) for item in group]
-        raw_rewards_for_meta.extend(raw_rewards)
-
-        if not raw_rewards:
-            continue
-
-        mean_r = sum(raw_rewards) / len(raw_rewards)
-        var_r = sum((r - mean_r) ** 2 for r in raw_rewards) / len(raw_rewards)
-        std_r = var_r ** 0.5
-
-        if std_r < eps:
-            normalized = [0.0 for _ in raw_rewards]
-        else:
-            normalized = [(r - mean_r) / (std_r + eps) for r in raw_rewards]
-
-        for item, r_raw, r_norm in zip(group, raw_rewards, normalized):
-            item["raw_reward"] = r_raw
-            item["reward"] = r_norm
-            ready_items.append(item)
-
-    return ready_items, raw_rewards_for_meta
-
-
 @app.post("/get_rollout_data", response_model=BufferResponse)
 async def get_rollout_data(request: Request):
     global pending_items_by_instance
 
-    # First check pending groups
-    ready_groups, finished_ids = accumulate_and_pop_ready_groups([])
-
-    # Fetch new items from database
+    # Fetch new items from database and accumulate groups
     new_items = await fetch_new_items_from_db(limit=None)
-    if new_items:
-        more_groups, more_finished = accumulate_and_pop_ready_groups(new_items)
-        ready_groups.extend(more_groups)
-        finished_ids.extend(more_finished)
+    ready_groups, finished_ids = accumulate_and_pop_ready_groups(new_items)
 
     # Log pending status
     pending_counts = {k: len(v) for k, v in pending_items_by_instance.items()}
     logger.info(f"new_items={len(new_items)}, ready_groups={len(ready_groups)}, pending={pending_counts}")
 
-    # Normalize rewards
-    ready_items, raw_rewards = normalize_group_rewards(ready_groups)
+    # Flatten groups to items
+    ready_items = [item for _, group in ready_groups for item in group]
+    rewards = [float(item.get("reward", 0.0)) for item in ready_items]
 
     total_samples = len(ready_items)
-    avg_reward = sum(raw_rewards) / len(raw_rewards) if raw_rewards else 0.0
+    avg_reward = sum(rewards) / len(rewards) if rewards else 0.0
 
     # 统计权重版本信息，用于后续在 Slime 侧计算数据 age
     weight_versions: List[int] = []
@@ -517,59 +282,11 @@ async def init_data_manager(db_url: str, restart_training: bool = False):
         logger.info(f"restart_training=True, initialized last_served_id={last_served_id}")
 
 
-def start_llm_proxy() -> subprocess.Popen:
-    """Start the LLM Proxy as a subprocess."""
-    aievobox_root = os.environ.get("AIEVOBOX_ROOT", "/root/AIEvoBox")
-    llm_proxy_script = os.path.join(aievobox_root, "rl", "llm_proxy.py")
-
-    env = os.environ.copy()
-    env["LLM_PROXY_HOST"] = "0.0.0.0"
-    env["LLM_PROXY_PORT"] = "8890"
-
-    logger.info(f"Starting LLM Proxy: {llm_proxy_script}")
-
-    process = subprocess.Popen(
-        ["python3", llm_proxy_script],
-        env=env,
-        stdout=None,
-        stderr=None,
-    )
-    logger.info(f"LLM Proxy started with PID: {process.pid}")
-    return process
-
-
-def init_llm_proxy(tokenizer_path: str, remote_engine_url: str, max_length: int = None, max_retries: int = 10):
-    """Initialize the LLM Proxy with tokenizer and remote engine URL."""
-    import requests
-
-    init_url = f"{llm_proxy_url}/init"
-    payload = {
-        "tokenizer_path": tokenizer_path,
-        "remote_engine_url": remote_engine_url,
-        "max_length": max_length,
-    }
-
-    for attempt in range(max_retries):
-        try:
-            resp = requests.post(init_url, json=payload, timeout=10)
-            if resp.status_code == 200:
-                logger.info(f"LLM Proxy initialized successfully")
-                return True
-            else:
-                logger.warning(f"LLM Proxy init failed: {resp.status_code}")
-        except Exception as e:
-            logger.warning(f"LLM Proxy init attempt {attempt+1}/{max_retries} failed: {e}")
-        time.sleep(2)
-
-    logger.error(f"Failed to initialize LLM Proxy after {max_retries} attempts")
-    return False
-
-
 def start_aievobox_process(data: dict):
-    """Start AIEvoBox as a subprocess."""
+    """Start AIEvoBox launcher.py as a subprocess."""
     global aievobox_process, llm_proxy_process, group_size, last_served_id, pending_items_by_instance, data_manager
 
-    # Set group size
+    # Set group size (num_repeat_per_sample)
     group_size = int(data.get("num_repeat_per_sample", 16))
 
     # Clear state for new rollout
@@ -578,7 +295,7 @@ def start_aievobox_process(data: dict):
         pending_items_by_instance.clear()
         logger.info("restart_training=True, cleared pending items")
 
-    # Initialize DataManager
+    # Database path
     db_url = os.environ.get("AIEVOBOX_DB_URL", f"sqlite:///{AIEVOBOX_ROOT}/rl/rl.db")
 
     # Run async init in a new event loop (since we're in a thread)
@@ -591,47 +308,55 @@ def start_aievobox_process(data: dict):
 
     # Start LLM Proxy if not running
     if llm_proxy_process is None or llm_proxy_process.poll() is not None:
-        llm_proxy_process = start_llm_proxy()
+        llm_proxy_process = llm_proxy.start()
         time.sleep(2)  # Wait for proxy to start
 
     # Initialize LLM Proxy with tokenizer and remote engine URL
     tokenizer_path = data.get("tokenizer_path", "")
     remote_engine_url = data.get("remote_engine_url", "")
-    # 从环境变量读取 LLM_MAX_LENGTH
     max_length_str = os.environ.get("LLM_MAX_LENGTH")
     max_length = int(max_length_str) if max_length_str else None
     if tokenizer_path and remote_engine_url:
-        init_llm_proxy(tokenizer_path, remote_engine_url, max_length=max_length)
+        llm_proxy.init(tokenizer_path, remote_engine_url, max_length=max_length)
 
-    # Prepare environment variables for AIEvoBox
-    # AIEvoBox should call LLM Proxy instead of remote engine directly
-    env = os.environ.copy()
-    env["AIEVOBOX_ROLLOUT_CONFIG"] = json.dumps(data)
-    env["AIEVOBOX_DB_URL"] = db_url
-    env["ROLLOUT_BUFFER_URL"] = data.get("remote_buffer_url", os.environ.get("ROLLOUT_BUFFER_URL", "http://127.0.0.1:8889"))
-    env["LLM_PROXY_URL"] = llm_proxy_url  # AIEvoBox uses LLM Proxy
-    env["REMOTE_ENGINE_URL"] = remote_engine_url  # Keep original for reference
-    env["NUM_REPEAT_PER_SAMPLE"] = str(group_size)
-    env["ROLLOUT_MAX_STEPS"] = str(data.get("max_steps", 10))
-
-    # AIEvoBox entry script path
+    # Build launcher.py command line arguments
     aievobox_root = os.environ.get("AIEVOBOX_ROOT", "/root/AIEvoBox")
-    aievobox_script = os.path.join(aievobox_root, "rl", "aievobox_runner.py")
+    launcher_script = os.path.join(aievobox_root, "launcher.py")
+    env_root = get_env("AIEVOBOX_ENV_ROOT")
+    max_steps = int(get_env("AIEVOBOX_MAX_STEPS") or 10)
+    message_cut = int(get_env("AIEVOBOX_MESSAGE_CUT") or 0)
+    llm_model = get_env("RL_MODEL") or "default"
+    llm_temperature = float(get_env("LLM_TEMPERATURE") or 1.0)
+    pool_size = int(get_env("AIEVOBOX_POOL_SIZE") or 16)
 
-    logger.info(f"Starting AIEvoBox subprocess: {aievobox_script}")
+    cmd = [
+        "python3", launcher_script,
+        "--db-path", db_url,
+        "--env-root", env_root,
+        "--llm-base-url", llm_proxy_url,
+        "--llm-model", llm_model,
+        "--llm-temperature", str(llm_temperature),
+        "--max-steps", str(max_steps),
+        "--message-cut", str(message_cut),
+        "--pool-size", str(pool_size),
+        "--rl-use-session-suffix-url",
+        "--rl-env-num", str(group_size),
+    ]
+
+    logger.info(f"Starting launcher.py: {' '.join(cmd)}")
     logger.info(f"Config: group_size={group_size}, db_url={db_url}")
     logger.info(f"LLM Proxy URL: {llm_proxy_url}")
 
     try:
         aievobox_process = subprocess.Popen(
-            ["python3", aievobox_script],
-            env=env,
+            cmd,
+            cwd=aievobox_root,
             stdout=None,  # Inherit stdout
             stderr=None,  # Inherit stderr
         )
-        logger.info(f"AIEvoBox started with PID: {aievobox_process.pid}")
+        logger.info(f"launcher.py started with PID: {aievobox_process.pid}")
     except Exception as e:
-        logger.error(f"Failed to start AIEvoBox: {e}")
+        logger.error(f"Failed to start launcher.py: {e}")
         raise
 
 
@@ -664,10 +389,11 @@ async def health_check():
 
 
 if __name__ == "__main__":
+    port = int(get_env("BUFFER_SERVER_PORT"))
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8889,
+        port=port,
         limit_concurrency=1000,  # Connection concurrency limit
         # limit_max_requests=1000000,  # Maximum request limit
         timeout_keep_alive=5,  # Keep-alive timeout,

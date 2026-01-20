@@ -3,9 +3,9 @@
 LLM Proxy Server
 
 This server:
-1. Proxies LLM requests to the real engine
-2. Records trajectory masks for training loss computation
-3. Provides /get_trajectory_mask endpoint for the training client
+1. Proxies LLM requests to the real engine via /generate API
+2. Records trajectory (tokens, mask, logprobs) for training
+3. Provides /get_tokens, /get_logprobs endpoints for the training client
 """
 
 import asyncio
@@ -13,8 +13,16 @@ import json
 import logging
 import os
 import sys
+import time
 from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional
+
+# Add rl directory to path for utils import
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+
+from utils import get_env
 
 import httpx
 import uvicorn
@@ -23,7 +31,7 @@ from pydantic import BaseModel
 from transformers import AutoTokenizer
 
 # Add AIEvoBox to path
-AIEVOBOX_ROOT = os.environ.get("AIEVOBOX_ROOT", "/root/AIEvoBox")
+AIEVOBOX_ROOT = get_env("AIEVOBOX_ROOT")
 if AIEVOBOX_ROOT not in sys.path:
     sys.path.insert(0, AIEVOBOX_ROOT)
 
@@ -64,12 +72,6 @@ from trajectory_mask_builder import TrajectoryMaskBuilder
 
 app = FastAPI(title="LLM Proxy Server", debug=True)
 
-# Global state
-tokenizer: Optional[AutoTokenizer] = None
-trajectory_mask_builder: Optional[TrajectoryMaskBuilder] = None
-remote_engine_url: Optional[str] = None
-http_client: Optional[httpx.AsyncClient] = None
-
 
 class ProxyState:
     """Global state for the proxy server."""
@@ -77,9 +79,12 @@ class ProxyState:
     def __init__(self):
         self.tokenizer: Optional[AutoTokenizer] = None
         self.trajectory_mask_builder: Optional[TrajectoryMaskBuilder] = None
-        self.remote_engine_url: Optional[str] = None
+        self.remote_engine_url: Optional[str] = None  # Base URL without /v1
         self._http_client: Optional[httpx.AsyncClient] = None
-        self.max_length: Optional[int] = None  # 总 token 限制
+        self.max_length: Optional[int] = None
+        # Sampling params
+        self.temperature: float = 1.0
+        self.top_p: float = 1.0
 
     def get_http_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client with connection pooling."""
@@ -111,10 +116,22 @@ STATE = ProxyState()
 class InitRequest(BaseModel):
     tokenizer_path: str
     remote_engine_url: str
-    max_length: Optional[int] = None  # 总 token 限制 (prompt + completion)
+    max_length: Optional[int] = None
+    temperature: Optional[float] = 1.0
+    top_p: Optional[float] = 1.0
 
 
 class MaskRequest(BaseModel):
+    session_id: str
+    messages_str: str
+
+
+class TokensRequest(BaseModel):
+    session_id: str
+    messages_str: str
+
+
+class LogprobsRequest(BaseModel):
     session_id: str
     messages_str: str
 
@@ -131,16 +148,19 @@ async def init_proxy(request: InitRequest):
         )
         STATE.trajectory_mask_builder = TrajectoryMaskBuilder(tokenizer=STATE.tokenizer)
 
-        # Normalize remote engine URL
+        # Normalize remote engine URL (remove trailing slash and /v1 if present)
         engine_url = request.remote_engine_url.rstrip("/")
-        if "/v1" not in engine_url:
-            engine_url = engine_url + "/v1"
+        if engine_url.endswith("/v1"):
+            engine_url = engine_url[:-3]
         STATE.remote_engine_url = engine_url
         STATE.max_length = request.max_length
+        STATE.temperature = request.temperature or 1.0
+        STATE.top_p = request.top_p or 1.0
 
         logger.info(f"Initialized with tokenizer: {request.tokenizer_path}")
         logger.info(f"Remote engine URL: {STATE.remote_engine_url}")
         logger.info(f"Max length: {STATE.max_length}")
+        logger.info(f"Temperature: {STATE.temperature}, Top-p: {STATE.top_p}")
 
         return {"success": True, "message": "Proxy initialized"}
     except Exception as e:
@@ -151,10 +171,10 @@ async def init_proxy(request: InitRequest):
 @app.post("/v1/{session_id}/chat/completions")
 async def proxy_chat_completions(session_id: str, request: Request):
     """
-    Proxy chat completions to the remote engine.
-    Records the trajectory for mask computation.
+    Proxy chat completions to the remote engine via /generate API.
+    Records the trajectory (tokens, mask, logprobs) for training.
     """
-    if STATE.remote_engine_url is None:
+    if STATE.remote_engine_url is None or STATE.tokenizer is None:
         raise HTTPException(status_code=503, detail="Proxy not initialized. Call /init first.")
 
     try:
@@ -164,64 +184,142 @@ async def proxy_chat_completions(session_id: str, request: Request):
 
     messages = payload.get("messages", [])
 
-    # 如果设置了 max_length，计算并设置 max_tokens
-    if STATE.max_length is not None and STATE.tokenizer is not None:
-        prompt_tokens = len(STATE.tokenizer.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True
-        ))
-        max_tokens = STATE.max_length - prompt_tokens
-        if max_tokens > 0:
-            payload["max_tokens"] = max_tokens
-            logger.debug(f"Set max_tokens={max_tokens} (max_length={STATE.max_length}, prompt_tokens={prompt_tokens})")
-        else:
-            logger.warning(f"Prompt tokens ({prompt_tokens}) >= max_length ({STATE.max_length})")
+    # Get sampling params from payload or use defaults
+    temperature = payload.get("temperature", STATE.temperature)
+    top_p = payload.get("top_p", STATE.top_p)
+    max_tokens = payload.get("max_tokens")
 
-    # Forward to remote engine
+    # Prepare input_ids using matching logic
+    # This reuses historical tokens and only tokenizes new context
+    input_ids, matched_record, matched_prefix_len, matched_tokens_count = STATE.trajectory_mask_builder.prepare_input_ids(
+        session_id, messages
+    )
+
+    # Calculate max_new_tokens
+    if STATE.max_length is not None:
+        remaining = STATE.max_length - len(input_ids)
+        if max_tokens is not None:
+            max_new_tokens = min(max_tokens, remaining)
+        else:
+            max_new_tokens = remaining
+
+        if max_new_tokens <= 0:
+            logger.warning(f"Token budget exhausted: input_ids={len(input_ids)}, max_length={STATE.max_length}")
+            # Return empty response
+            return {
+                "id": f"chatcmpl-{session_id}-{int(time.time())}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": "proxy",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": ""},
+                    "finish_reason": "length"
+                }],
+                "usage": {
+                    "prompt_tokens": len(input_ids),
+                    "completion_tokens": 0,
+                    "total_tokens": len(input_ids)
+                }
+            }
+    else:
+        max_new_tokens = max_tokens or 256
+
+    # Build /generate request
+    generate_payload = {
+        "input_ids": input_ids,
+        "sampling_params": {
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_new_tokens": max_new_tokens,
+        },
+        "return_logprob": True,
+        "stream": False,
+    }
+
+    # Call /generate endpoint
     http_client = STATE.get_http_client()
-    url = f"{STATE.remote_engine_url}/chat/completions"
+    url = f"{STATE.remote_engine_url}/generate"
 
     try:
-        logger.debug(f"Forwarding to {url}, payload: {payload}")
+        logger.debug(f"Calling /generate: input_ids length={len(input_ids)}, max_new_tokens={max_new_tokens}")
         resp = await http_client.post(
             url,
-            json=payload,
+            json=generate_payload,
             headers={"Content-Type": "application/json"}
         )
         resp.raise_for_status()
         resp_json = resp.json()
-        logger.debug(f"Response: {resp_json}")
+        logger.debug(f"Generate response: text length={len(resp_json.get('text', ''))}")
     except Exception as e:
         import traceback
-        logger.error(f"Forward failed: {traceback.format_exc()}")
-        raise HTTPException(status_code=502, detail=f"Failed to call remote engine: {traceback.format_exc()}")
+        logger.error(f"Generate failed: {traceback.format_exc()}")
+        raise HTTPException(status_code=502, detail=f"Failed to call /generate: {traceback.format_exc()}")
 
-    # Extract assistant response
-    try:
-        assistant_text = resp_json["choices"][0]["message"]["content"]
-    except (KeyError, IndexError):
-        assistant_text = ""
+    # Extract response data
+    output_ids = resp_json.get("output_ids", [])
+    output_logprobs = resp_json.get("meta_info", {}).get("output_token_logprobs", [])
+    finish_reason_info = resp_json.get("meta_info", {}).get("finish_reason", {})
 
-    # Save trajectory for mask building
+    # Determine finish_reason
+    if isinstance(finish_reason_info, dict):
+        finish_reason = finish_reason_info.get("type", "stop")
+    else:
+        finish_reason = "stop"
+
+    # Get assistant_text from generate API response (already decoded)
+    assistant_text = resp_json.get("text", "")
+
+    # Save trajectory
     if STATE.trajectory_mask_builder is not None:
         try:
             await asyncio.to_thread(
                 STATE.trajectory_mask_builder.save,
                 session_id,
                 messages,
-                assistant_text
+                input_ids,
+                output_ids,
+                output_logprobs,
+                finish_reason,
+                matched_record,
+                matched_tokens_count,
+                assistant_text,  # 传递 generate API 返回的 text
             )
         except Exception as e:
-            logger.warning(f"Failed to save trajectory: {e}")
+            import traceback
+            logger.warning(f"Failed to save trajectory: {traceback.format_exc()}")
 
-    return resp_json
+    # Build OpenAI-compatible response
+    response = {
+        "id": f"chatcmpl-{session_id}-{int(time.time())}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": "proxy",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": assistant_text
+            },
+            "finish_reason": finish_reason
+        }],
+        "usage": {
+            "prompt_tokens": len(input_ids),
+            "completion_tokens": len(output_ids),
+            "total_tokens": len(input_ids) + len(output_ids)
+        },
+        "metadata": {
+            "weight_version": resp_json.get("meta_info", {}).get("weight_version")
+        }
+    }
+
+    return response
 
 
 @app.post("/get_trajectory_mask")
 async def get_trajectory_mask(request: MaskRequest):
     """
-    Get the trajectory mask for a session.
+    Get the trajectory mask for a session (legacy interface).
     Returns mask_ranges as list of (start, end) tuples where mask=1.
     """
     if STATE.trajectory_mask_builder is None:
@@ -231,24 +329,63 @@ async def get_trajectory_mask(request: MaskRequest):
     messages_str = request.messages_str
 
     try:
-        mask = STATE.trajectory_mask_builder.query(session_id, messages_str)
+        # Use the new token-level query
+        tokens, response_mask = STATE.trajectory_mask_builder.query_tokens(session_id, messages_str)
+
+        # Convert response_mask to ranges
+        mask_ranges = []
+        start = None
+        for i in range(len(response_mask)):
+            if response_mask[i] == 1 and start is None:
+                start = i
+            elif response_mask[i] == 0 and start is not None:
+                mask_ranges.append((start, i))
+                start = None
+        if start is not None:
+            mask_ranges.append((start, len(response_mask)))
+
+        return {"mask_ranges": mask_ranges, "tokens": tokens, "response_mask": response_mask}
     except Exception as e:
         logger.error(f"Failed to query mask: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to query mask: {e}")
 
-    # Convert [0,1] list to ranges of 1s: [(start, end), ...]
-    mask_ranges = []
-    start = None
-    for i in range(len(mask)):
-        if mask[i] == 1 and start is None:
-            start = i
-        elif mask[i] == 0 and start is not None:
-            mask_ranges.append((start, i))
-            start = None
-    if start is not None:
-        mask_ranges.append((start, len(mask)))
 
-    return {"mask_ranges": mask_ranges}
+@app.post("/get_tokens")
+async def get_tokens(request: TokensRequest):
+    """
+    Get the tokens and response_mask for a session.
+    """
+    if STATE.trajectory_mask_builder is None:
+        raise HTTPException(status_code=503, detail="Proxy not initialized")
+
+    session_id = request.session_id
+    messages_str = request.messages_str
+
+    try:
+        tokens, response_mask = STATE.trajectory_mask_builder.query_tokens(session_id, messages_str)
+        return {"tokens": tokens, "response_mask": response_mask}
+    except Exception as e:
+        logger.error(f"Failed to query tokens: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to query tokens: {e}")
+
+
+@app.post("/get_logprobs")
+async def get_logprobs(request: LogprobsRequest):
+    """
+    Get the logprobs for a session.
+    """
+    if STATE.trajectory_mask_builder is None:
+        raise HTTPException(status_code=503, detail="Proxy not initialized")
+
+    session_id = request.session_id
+    messages_str = request.messages_str
+
+    try:
+        logprobs = STATE.trajectory_mask_builder.query_logprobs(session_id, messages_str)
+        return {"logprobs": logprobs}
+    except Exception as e:
+        logger.error(f"Failed to query logprobs: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to query logprobs: {e}")
 
 
 @app.get("/health")
@@ -268,17 +405,62 @@ async def shutdown_event():
 
 
 def main():
-    host = os.environ.get("LLM_PROXY_HOST", "0.0.0.0")
-    port = int(os.environ.get("LLM_PROXY_PORT", "8890"))
+    port = int(get_env("LLM_PROXY_PORT"))
 
-    logger.info(f"Starting on {host}:{port}")
+    logger.info(f"Starting on 0.0.0.0:{port}")
 
     uvicorn.run(
         app,
-        host=host,
+        host="0.0.0.0",
         port=port,
         timeout_keep_alive=5,
     )
+
+
+def start() -> "subprocess.Popen":
+    """Start the LLM Proxy as a subprocess."""
+    import subprocess
+
+    llm_proxy_script = os.path.join(os.path.dirname(__file__), "llm_proxy.py")
+    logger.info(f"Starting LLM Proxy: {llm_proxy_script}")
+
+    process = subprocess.Popen(
+        ["python3", llm_proxy_script],
+        stdout=None,
+        stderr=None,
+    )
+    logger.info(f"LLM Proxy started with PID: {process.pid}")
+    return process
+
+
+def init(tokenizer_path: str, remote_engine_url: str, max_length: int = None, max_retries: int = 10) -> bool:
+    """Initialize the LLM Proxy with tokenizer and remote engine URL."""
+    import requests
+
+    host = get_env("LLM_PROXY_HOST")
+    port = get_env("LLM_PROXY_PORT")
+    init_url = f"http://{host}:{port}/init"
+
+    payload = {
+        "tokenizer_path": tokenizer_path,
+        "remote_engine_url": remote_engine_url,
+        "max_length": max_length,
+    }
+
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(init_url, json=payload, timeout=10)
+            if resp.status_code == 200:
+                logger.info("LLM Proxy initialized successfully")
+                return True
+            else:
+                logger.warning(f"LLM Proxy init failed: {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"LLM Proxy init attempt {attempt+1}/{max_retries} failed: {e}")
+        time.sleep(2)
+
+    logger.error(f"Failed to initialize LLM Proxy after {max_retries} attempts")
+    return False
 
 
 if __name__ == "__main__":

@@ -36,7 +36,7 @@
 
 | 文件 | 说明 |
 |------|------|
-| `rollout_buffer_slime.py` | Slime 训练端客户端，提供 `generate_rollout()` 函数 |
+| `slime_generator.py` | Slime 训练端客户端，提供 `generate_rollout()` 函数 |
 | `buffer_server.py` | Buffer Server，管理数据分组和子进程启动 |
 | `llm_proxy.py` | LLM Proxy，代理 LLM 请求并记录轨迹 mask |
 | `aievobox_runner.py` | AIEvoBox 启动入口，运行 Interactor |
@@ -98,24 +98,28 @@ cd /root/AIEvoBox/rl
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `AIEVOBOX_ROOT` | `/root/AIEvoBox` | AIEvoBox 根目录 |
-| `AIEVOBOX_DB_URL` | `sqlite:////root/AIEvoBox/rollout.db` | 数据库 URL |
-| `LLM_PROXY_URL` | `http://127.0.0.1:8890` | LLM Proxy 地址 |
-| `ROLLOUT_BUFFER_URL` | `http://127.0.0.1:8889` | Buffer Server 地址 |
-| `ROLLOUT_BATCH_SIZE` | `128` | 并发 worker 数量 |
-| `ROLLOUT_MAX_STEPS` | `10` | 每个 episode 最大步数 |
-| `NUM_REPEAT_PER_SAMPLE` | `1` | 每个环境的 episode 数量 |
+| `AIEVOBOX_DB_URL` | `sqlite:///rl/rl.db` | 数据库 URL |
+| `RL_ENV_NUM` | `5` | 每个样本的环境实例数 |
+| `RL_MAX_STEPS` | `10` | 每个 episode 最大步数 |
+| `RL_API_KEY` | - | LLM API Key |
+| `RL_MODEL` | - | LLM 模型名称 |
+| `ROLLOUT_MAX_WORKERS` | `200` | 并发 worker 数量 |
+| `BUFFER_SERVER_HOST` | `127.0.0.1` | Buffer Server 连接地址（服务固定监听 0.0.0.0） |
+| `BUFFER_SERVER_PORT` | `18889` | Buffer Server 端口 |
+| `LLM_PROXY_HOST` | `127.0.0.1` | LLM Proxy 连接地址（服务固定监听 0.0.0.0） |
+| `LLM_PROXY_PORT` | `18890` | LLM Proxy 端口 |
+| `LLM_MAX_LENGTH` | `4608` | 最大 token 长度 |
 
 ## API 端点
 
-### Buffer Server (:8889)
+### Buffer Server (:18889)
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/start_rollout` | POST | 启动 rollout，触发 LLM Proxy 和 AIEvoBox |
 | `/get_rollout_data` | POST | 获取已完成的分组数据 |
-| `/buffer/write` | POST | 写入数据（兼容性保留） |
 
-### LLM Proxy (:8890)
+### LLM Proxy (:18890)
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
@@ -137,7 +141,7 @@ cd /root/AIEvoBox/rl
 3. **Slime 调用 `get_rollout_data()`**
    - Buffer Server 从数据库查询已完成的 steps
    - 按 `instance_id` 分组，达到 `group_size` 后返回
-   - 返回前进行 reward 归一化（GRPO 风格）
+   - reward 归一化在 Slime 训练端完成（GRPO 风格，可通过 `--disable-rewards-normalization` 控制）
 
 4. **Slime 获取 mask**
    - 调用 LLM Proxy 的 `/get_trajectory_mask`
