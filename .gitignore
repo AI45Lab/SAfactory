@@ -21,6 +21,7 @@ env/androidgym/CLIP
 env/androidgym/*.apk
 env/androidgym/*.jsonl
 env/androidgym/db_data
+env/androidgym/run.sh
 
 # gitgym env
 env/gitgym/generated_code

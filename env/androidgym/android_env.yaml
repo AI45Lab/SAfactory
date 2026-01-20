@@ -1,6 +1,6 @@
 environments:
   - env_name: android_gym
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:andorid001
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/android-emu-pjlab:and001
     env_num: 1
     dataset: cases.jsonl
     env_params:
@@ -16,11 +16,11 @@ environments:
       temp_dir: "env/androidgym/icons"
       screenshot_dir: "env/androidgym/screenshot"
       file_dir: "env/androidgym/files"
-      max_step: 30
+      max_step: 10
       seed: 1234
       start_emulator: True
       emulator_name: "nexus_safe"
       emulator_cmd_path: "emulator"
       proxy_address: "http://chenxinquan:3lXACc8UoD2cFnjOejBpmLYKyjpdfPtWL6erFUUHqXRdJXCMQIGgN9AfaSIY@proxy.h.pjlab.org.cn:23128"
-      apk_list: ["env/androidgym/app-debug.apk:com.example.myapplication","env/androidgym/com-booking-901604-70100967-59b84aa09d59c303417f707fb3fc04ab.apk:com.booking"]
+      apk_list: ["env/androidgym/app-debug.apk:com.example.myapplication","env/androidgym/com-booking-901604-70100967-59b84aa09d59c303417f707fb3fc04ab.apk:com.booking","env/androidgym/com.alibaba.aliexpresshd_7.8.5-284_minAPI14(x86)(nodpi)_apkmirror.com.apk:com.example.myapplication"]
       reverse_port: 8000
