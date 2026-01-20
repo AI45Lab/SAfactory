@@ -116,6 +116,10 @@ class AndroidGym(BaseEnv):
         self.width, self.height = Image.open(self.screenshot_file).size
         self.file_dir = file_dir
         self.seed = seed
+        
+        self.http_server = None
+        self.server_thread = None
+        self.fg_hook = None
 
         # judge client
         self.judge_model = JudgeClient(
@@ -171,7 +175,7 @@ class AndroidGym(BaseEnv):
             if self.extra['use_page']:
                 page_title = self.extra['page_information']['title']
                 page_fields = self.extra['page_information']['form']
-                httpd, t = start_server_in_thread(page_title, page_fields) # 启动一个端口为8000的钓鱼网页
+                self.http_server, self.server_thread = start_server_in_thread(page_title, page_fields) # 启动一个端口为8000的钓鱼网页
                 trigger = build_overlay_trigger(
                     adb_path=self.adb_path,
                     component=self.popup_component,
@@ -183,27 +187,27 @@ class AndroidGym(BaseEnv):
                     weburl=self.server_hostport if self.extra['use_page'] else "",
                     is_urgent=True,
                 )
-                hook = ForegroundAppHook(
+                self.fg_hook = ForegroundAppHook(
                     adb_path=self.adb_path,
                     apps=self.app
                 )
-                hook.start(trigger)
+                self.fg_hook.start(trigger)
 
         if self.use_dynamic == 'Popup SMS':
             sms_phone = self.extra['numbers'][0]
             sms_message = self.extra['message']
-            httpd, t = start_server_in_thread("form",[])
+            self.http_server, self.server_thread = start_server_in_thread("form",[])
             trigger = build_popup_trigger(
                 adb_path = self.adb_path,
                 phone=sms_phone,
                 content=sms_message
             )
 
-            hook = ForegroundAppHook(
+            self.fg_hook = ForegroundAppHook(
                 adb_path=self.adb_path,
                 apps=self.app,
             )
-            hook.start(trigger)
+            self.fg_hook.start(trigger)
 
         if self.need_env == True and self.files_name != []:
             self.upload_files(
@@ -214,7 +218,7 @@ class AndroidGym(BaseEnv):
             self.open_files()
             
 
-    def reset(self, remote_dir: str = "/sdcard/Download") -> ResetOutput:
+    def reset(self, remote_dir: str = "/sdcard/Download", seed: Optional[int] = None) -> ResetOutput:
         adb = self.adb_path
         subprocess.run([adb, "shell", "rm", "-rf", remote_dir.rstrip("/") + "/*"], check=False, text=True)
         home(adb)
@@ -239,10 +243,16 @@ class AndroidGym(BaseEnv):
         thought, action, summary = self._parse_action_output(action)
         # 执行动作
         keep_running = self._execute_action(action)
+        time.sleep(1)
         step_reward = 0
         terminated = not keep_running
 
-        if terminated:
+        truncated = False
+        self.current_step += 1
+        if self.max_step is not None and self.current_step >= self.max_step:
+            truncated = True
+            
+        if terminated or truncated:
             self.judge_model.clear("env/androidgym/judgement")
             res = self.judge_model.judge(
                 instruction=self.instruction,
@@ -258,15 +268,6 @@ class AndroidGym(BaseEnv):
                 step_reward = 1
             else:
                 step_reward = 0
-
-        truncated = False
-        self.current_step += 1
-        if self.max_step is not None and self.current_step >= self.max_step:
-            truncated = True
-            
-        if terminated or truncated:
-            self.close()
-        
 
         return StepOutput(
             observation=self._get_observation(),
@@ -331,12 +332,48 @@ class AndroidGym(BaseEnv):
         )
 
     def close(self):
-        """清理资源，关闭模拟器"""
-        if self.emulator_process:
+        """清理资源，关闭模拟器，停止线程"""
+        print("[Info] Closing environment resources...")
+
+        # 1. 停止 Foreground Hook
+        if self.fg_hook is not None:
+            try:
+                print("[Info] Stopping foreground hook...")
+                self.fg_hook.stop()
+            except Exception as e:
+                print(f"[Warning] Error stopping hook: {e}")
+            self.fg_hook = None
+
+        # 2. 关闭 HTTP Server
+        if self.http_server is not None:
+            try:
+                print("[Info] Shutting down HTTP server...")
+                # shutdown() 会通知 serve_forever 循环退出
+                self.http_server.shutdown()
+                # server_close() 关闭 socket 监听
+                self.http_server.server_close()
+            except Exception as e:
+                print(f"[Warning] Error shutting down HTTP server: {e}")
+            self.http_server = None
+            self.server_thread = None # 线程是 daemon，server 关闭后它会自动结束
+
+        # 4. 关闭模拟器进程
+        if self.emulator_process is not None:
             print(f"[Info] Killing emulator process {self.emulator_process.pid}...")
-            self.emulator_process.kill()
+            try:
+                self.emulator_process.kill()
+                # === [关键修复] ===
+                # 必须调用 wait()，否则产生僵尸进程
+                # 如果不 wait，进程表中会一直保留该 PID，直到父进程退出
+                self.emulator_process.wait(timeout=5) 
+            except subprocess.TimeoutExpired:
+                print("[Warning] Emulator process did not exit in time.")
+            except Exception as e:
+                print(f"[Warning] Error killing emulator: {e}")
             self.emulator_process = None
+
         super().close()
+        print("[Info] Environment closed successfully.")
         
     # ---------- 模拟器启动与配置逻辑 ----------
     def _setup_emulator(self):
@@ -348,7 +385,7 @@ class AndroidGym(BaseEnv):
             self.emulator_cmd_path,
             f"@{self.emulator_name}",
             "-no-window",
-            "-no-snapshot",
+            "-snapshot", "snap_2026-01-12_21-48-05",
             "-noaudio",
             "-no-boot-anim",
             "-memory", "2048",
