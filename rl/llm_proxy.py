@@ -332,6 +332,11 @@ async def get_trajectory_mask(request: MaskRequest):
         # Use the new token-level query
         tokens, response_mask = STATE.trajectory_mask_builder.query_tokens(session_id, messages_str)
 
+        # 按 max_length 截断
+        if STATE.max_length is not None and len(tokens) > STATE.max_length:
+            tokens = tokens[:STATE.max_length]
+            response_mask = response_mask[:STATE.max_length]
+
         # Convert response_mask to ranges
         mask_ranges = []
         start = None
@@ -363,6 +368,12 @@ async def get_tokens(request: TokensRequest):
 
     try:
         tokens, response_mask = STATE.trajectory_mask_builder.query_tokens(session_id, messages_str)
+
+        # 按 max_length 截断
+        if STATE.max_length is not None and len(tokens) > STATE.max_length:
+            tokens = tokens[:STATE.max_length]
+            response_mask = response_mask[:STATE.max_length]
+
         return {"tokens": tokens, "response_mask": response_mask}
     except Exception as e:
         logger.error(f"Failed to query tokens: {e}")

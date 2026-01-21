@@ -1,53 +1,129 @@
+# Quick Start
+
+bash run_slime_generator.sh
+then bash run_buffer_server.sh
+
 # AIEvoBox RL Rollout Buffer
 
-基于 slime 的 rollout buffer 实现，用于 AIEvoBox 环境的强化学习训练。
+基于 Slime 的 rollout buffer 实现，用于 AIEvoBox 环境的强化学习训练。
+
+## 目录结构
+
+```
+rl/
+├── slime_generator.py              # Slime 客户端，提供 generate_rollout()
+├── buffer_server.py                # Buffer Server，管理数据分组和子进程
+├── llm_proxy.py                    # LLM Proxy，代理请求并记录轨迹
+├── run_buffer_server.sh            # Buffer Server 启动脚本
+├── run_slime_generator.sh          # Slime 训练启动脚本
+├── .env                            # 环境变量配置
+├── .env.example                    # 环境变量模板
+├── dummy.jsonl                     # 占位数据文件（Slime 需要）
+├── mask/
+│   ├── trajectory_mask_builder.py  # 轨迹 Mask 构建器
+│   └── test_trajectory_mask_builder.py
+└── utils/
+    ├── env_utils.py                # 环境变量工具
+    └── metrics.py                  # W&B 指标记录器
+```
 
 ## 架构
 
 ```
-┌─────────────┐    start_rollout()    ┌─────────────────┐
-│   Slime     │ ────────────────────▶ │  Buffer Server  │
-│   训练端    │                       │  :8889          │
-└──────┬──────┘                       └────────┬────────┘
-       │                                       │
-       │ get_rollout_data()                    │ 1. 启动 LLM Proxy
-       │                                       │ 2. 启动 AIEvoBox Runner
-       │                                       ▼
-       │                              ┌─────────────────┐
-       │                              │  LLM Proxy      │
-       │ get_trajectory_mask()        │  :8890          │
-       │◀─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─│                 │
-       │                              └────────┬────────┘
-       │                                       │
-       │                                       │ 转发到真实 LLM
-       │                                       ▼
-       │                              ┌─────────────────┐
-       │                              │  sglang 引擎    │
-       │                              └─────────────────┘
-       │
-       │         ┌───────────────┐
-       └─────────│   Database    │◀──── AIEvoBox Runner
-      查询 DB     │  (SQLite)     │     (Interactor 写入)
-  (Buffer Server  └───────────────┘
-    http接口)
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Slime Training (Ray)                            │
+│  slime_generator.py                                                     │
+│  ├── generate_rollout()      # 主入口，被 Slime 框架调用                  │
+│  ├── start_rollout()         # 初始化 rollout 流程                       │
+│  ├── get_rollout_data()      # 从 Buffer Server 获取分组数据             │
+│  └── query_trajectory()      # 从 LLM Proxy 查询 tokens 和 mask          │
+└──────────┬──────────────────────────────────┬───────────────────────────┘
+           │                                  │
+           │ /start_rollout                   │ /get_tokens
+           │ /get_rollout_data                │ /get_trajectory_mask
+           ▼                                  ▼
+┌─────────────────────┐              ┌─────────────────────┐
+│   Buffer Server     │──启动──────▶ │    LLM Proxy        │
+│   :18889            │              │    :18890           │
+├─────────────────────┤              ├─────────────────────┤
+│ • 启动 LLM Proxy    │              │ • 代理 LLM 请求      │
+│ • 启动 AIEvoBox     │              │ • 记录轨迹 mask      │
+│ • 数据分组返回      │              │ • Token 前缀复用     │
+└─────────────────────┘              └─────────┬───────────┘
+                                               │
+                                               │ /generate
+                                               ▼
+                                     ┌─────────────────────┐
+                                     │   sglang 引擎       │
+                                     └─────────────────────┘
 ```
 
-## 文件说明
+## 核心组件
 
-| 文件 | 说明 |
-|------|------|
-| `slime_generator.py` | Slime 训练端客户端，提供 `generate_rollout()` 函数 |
-| `buffer_server.py` | Buffer Server，管理数据分组和子进程启动 |
-| `llm_proxy.py` | LLM Proxy，代理 LLM 请求并记录轨迹 mask |
-| `aievobox_runner.py` | AIEvoBox 启动入口，运行 Interactor |
-| `mask/trajectory_mask_builder.py` | 轨迹 Mask 构建器 |
+### 1. Slime Generator (`slime_generator.py`)
+
+Slime 训练框架的客户端接口，提供 `generate_rollout()` 函数。
+
+**核心功能**：
+- `generate_rollout()`: 主入口，被 Slime 框架调用获取训练样本
+- `start_rollout()`: 首次调用时初始化 Buffer Server 和 LLM Proxy
+- `get_rollout_data()`: 从 Buffer Server 获取按 group_id 分组的数据
+- `query_trajectory()`: 从 LLM Proxy 获取 tokens 和 response_mask
+- `build_loss_mask_from_response_mask()`: 将 response_mask 转换为 loss_mask
+
+**特性**：
+- 异步 I/O 操作，支持高并发
+- 权重版本过滤（`RL_OFF_BY_N` 控制，防止使用过时数据）
+- W&B 指标集成（通过 `MetricsRecorder`）
+
+### 2. Buffer Server (`buffer_server.py`)
+
+中心化服务，管理数据收集和子进程。
+
+**核心功能**：
+- `/start_rollout`: 启动 LLM Proxy 和 AIEvoBox Runner 子进程
+- `/get_rollout_data`: 返回按 group_id 分组的完成数据
+- `/health`: 健康检查
+
+**特性**：
+- 游标分页查询，避免重复处理
+- 子进程生命周期管理
+
+### 3. LLM Proxy (`llm_proxy.py`)
+
+代理 LLM 请求，同时记录完整的对话轨迹用于训练。
+
+**核心功能**：
+- `/init`: 初始化 tokenizer 和远程 sglang 引擎 URL
+- `/v1/{session_id}/chat/completions`: 代理 chat completion 请求
+- `/get_tokens`: 获取 session 的 tokens 和 response_mask
+- `/get_trajectory_mask`: 获取轨迹 mask（兼容接口）
+
+**特性**：
+- Token 前缀复用优化（减少 tokenization 开销）
+- 多轮对话轨迹记录
+- 支持采样参数（temperature, top_p 等）
+
+### 4. Trajectory Mask Builder (`mask/trajectory_mask_builder.py`)
+
+构建和管理多轮对话的轨迹 mask。
+
+**核心功能**：
+- `prepare_input_ids()`: 准备输入，复用历史 token
+- `save()`: 记录生成轮次（tokens, response_mask, logprobs）
+- `query_tokens()`: 查询 session 的完整 tokens 和 mask
+- `query_logprobs()`: 查询 logprobs
+
+**特性**：
+- 支持 `<think>...</think>` 标签的可选前缀匹配
+- 字符级匹配转 token 级 mask
 
 ## 服务端口
 
 | 服务 | 默认端口 | 环境变量 |
 |------|----------|----------|
-| Buffer Server | 8889 | `ROLLBUF_PORT` |
-| LLM Proxy | 8890 | `LLM_PROXY_PORT` |
+| Buffer Server | 18889 | `BUFFER_SERVER_PORT` |
+| LLM Proxy | 18890 | `LLM_PROXY_PORT` |
 
 ## 启动流程
 
@@ -62,7 +138,7 @@ cd /root/AIEvoBox/rl
 
 ```bash
 cd /root/AIEvoBox/rl
-./run_slime.sh
+./run_slime_generator.sh
 ```
 
 训练开始后，Buffer Server 会自动：
@@ -74,9 +150,9 @@ cd /root/AIEvoBox/rl
 | 脚本 | 说明 |
 |------|------|
 | `run_buffer_server.sh` | 启动 Buffer Server |
-| `run_slime.sh` | 启动 Slime 训练（包含 Ray、sglang 等） |
+| `run_slime_generator.sh` | 启动 Slime 训练（包含 Ray、sglang 等） |
 | `.env` | 环境变量配置 |
-| `dummy.jsonl` | 占位数据文件（slime 需要但不使用） |
+| `dummy.jsonl` | 占位数据文件（Slime 需要但不使用） |
 
 ## 日志
 
@@ -109,6 +185,8 @@ cd /root/AIEvoBox/rl
 | `LLM_PROXY_HOST` | `127.0.0.1` | LLM Proxy 连接地址（服务固定监听 0.0.0.0） |
 | `LLM_PROXY_PORT` | `18890` | LLM Proxy 端口 |
 | `LLM_MAX_LENGTH` | `4608` | 最大 token 长度 |
+| `LLM_TEMPERATURE` | `1.0` | 采样温度 |
+| `RL_OFF_BY_N` | `0` | 允许的最大权重版本差（0=只用当前版本数据） |
 
 ## API 端点
 
@@ -130,30 +208,64 @@ cd /root/AIEvoBox/rl
 
 ## 数据流
 
-1. **Slime 调用 `start_rollout()`**
-   - Buffer Server 启动 LLM Proxy 和 AIEvoBox Runner
+```
+[1] Slime 首次调用 generate_rollout()
+         │
+         ▼
+    start_rollout() ──▶ Buffer Server /start_rollout
+         │                    │
+         │                    ├──▶ 启动 LLM Proxy 子进程
+         │                    │         └──▶ 初始化 TrajectoryMaskBuilder
+         │                    │
+         │                    └──▶ 启动 AIEvoBox launcher.py 子进程
+         │                              └──▶ 运行 Interactor 环境
+         │                                        │
+         ▼                                        ▼
+[2] Interactor 与环境交互              LLM Proxy 代理请求
+         │                                        │
+         │                                        ├──▶ 转发到 sglang 引擎
+         │                                        └──▶ 记录 tokens + mask
+         │
+         ▼
+[3] Slime 循环调用 get_rollout_data()
+         │
+         ├──▶ Buffer Server 查询已完成数据
+         │         └──▶ 按 group_id 分组返回
+         │
+         ├──▶ 过滤权重版本（RL_OFF_BY_N）
+         │
+         └──▶ query_trajectory() 获取每个样本的 tokens 和 mask
+                   │
+                   └──▶ LLM Proxy /get_tokens
+                            └──▶ 返回 (tokens, response_mask)
 
-2. **AIEvoBox Runner 执行 rollout**
-   - Interactor 通过 LLM Proxy 调用 LLM
-   - LLM Proxy 记录每轮对话的 mask
-   - Interactor 将完成的 step 写入数据库
+[4] 构建训练样本
+         │
+         ├──▶ build_loss_mask_from_response_mask()
+         │         └──▶ 转换为 (token_ids, loss_mask, response_length)
+         │
+         └──▶ 返回 Slime Sample 对象用于 GRPO 训练
+```
 
-3. **Slime 调用 `get_rollout_data()`**
-   - Buffer Server 从数据库查询已完成的 steps
-   - 按 `instance_id` 分组，达到 `group_size` 后返回
-   - reward 归一化在 Slime 训练端完成（GRPO 风格，可通过 `--disable-rewards-normalization` 控制）
-
-4. **Slime 获取 mask**
-   - 调用 LLM Proxy 的 `/get_trajectory_mask`
-   - 使用 `tokenize_with_char_mask_ranges()` 转换为 token 级 mask
+**关键说明**：
+- reward 归一化在 Slime 训练端完成（GRPO 算法，可通过 `--disable-rewards-normalization` 控制）
+- 权重版本过滤确保只使用当前或近期 checkpoint 产生的数据
 
 ## Mask 实现
 
-`TrajectoryMaskBuilder` 维护字符级的轨迹 mask：
+`TrajectoryMaskBuilder` 维护 token 级的轨迹 mask：
 
-- **save()**: 记录每轮对话，assistant 输出部分 mask=1
-- **query()**: 查询给定对话字符串的 mask
-- **特性**: 支持 `<think>...</think>` 可选前缀匹配，多轮对话复用历史 mask
+- **response_mask**: 0=上下文 token，1=生成的 token
+- **save()**: 记录每轮对话的完整 token 序列、response_mask 和 logprobs
+- **query_tokens()**: 查询 session 的 tokens 和 response_mask
+- **特性**: 支持 `<think>...</think>` 可选前缀匹配，多轮对话复用历史 token
+
+## 性能优化
+
+1. **Token 前缀复用**: LLM Proxy 通过前缀匹配复用历史 token，避免重复 tokenization
+2. **异步 I/O**: Slime Generator 使用 async/await 模式支持高并发
+3. **连接池**: httpx 客户端维护持久连接
+4. **游标分页**: Buffer Server 使用自增 ID 游标分页，避免重复处理
 
 ## 与 Slime 原实现的差异
 
@@ -164,3 +276,16 @@ cd /root/AIEvoBox/rl
 | LLM 调用 | 直接调用 | 通过 LLM Proxy 代理 |
 | Mask 计算 | `MultiTurnLossMaskGenerator` 本地 | `TrajectoryMaskBuilder` 服务端 |
 | 进程模型 | Generator 内嵌 | 独立子进程 |
+
+## 调试
+
+**日志文件** (位于 `$AIEVOBOX_ROOT/logs/`)：
+- `buffer_server.log`: Buffer Server 日志
+- `llm_proxy.log`: LLM Proxy 日志
+- `train_*.log`: 调试训练数据（tokens, masks, rewards）
+
+**调试训练样本**：
+Slime Generator 会将每个训练样本写入 `train_*.log`，包含：
+- tokens 序列
+- loss_mask
+- reward 值
