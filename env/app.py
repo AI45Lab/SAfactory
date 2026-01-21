@@ -1,5 +1,6 @@
 import os
 import sys
+
 current_file_path = os.path.abspath(__file__)
 examples_dir = os.path.dirname(current_file_path)
 project_root = os.path.dirname(examples_dir)
@@ -7,42 +8,28 @@ sys.path.append(project_root)
 
 import threading
 import json
-import dataclasses
-import numpy as np
 import ray
 
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, Optional, Tuple, List, Callable, Type
 from openai.types.chat import ChatCompletionMessageParam
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
-# from env.tradinggym.trading_env import TradingGym
-# from env.mc.mc_env import MCGym
-# from env.gitgym.git_env import GitGym
-# from env.dabstep.dabstep_env import DABStepEnv
-# from env.dwgym.dw_env import DiscoveryWorldEnv
-# from env.embodiedgym.embodied_env import EmbodiedAlfredGym
-# from env.androidgym.android_env import AndroidGym
-from env.search.search_env import SearchEnv
-
 from core.types.base import ResetOutput, RenderOutput, StepOutput, dumps_json_bytes
 
-# -------------------------------------------------------------------
-# Env registry: map envname -> concrete env class
-# Add more envs here if you have multiple implementations.
-# -------------------------------------------------------------------
-ENV_CLASS_REGISTRY: Dict[str, type] = {
-    # "android_gym": AndroidGym,
-    # "mc_gym": MCGym,
-    # "TradingGym": TradingGym,    # convenience alias
-    # "git_gym": GitGym,
-    # "dab_gym": DABStepEnv,
-    # "dab": DABStepEnv,
-    # "dwgym": DiscoveryWorldEnv,
-    # "emb": EmbodiedAlfredGym
-    "search": SearchEnv,
-}
+from registry import (_import_os_env,_import_search_env,_import_emb_env,_import_gym_env,
+                      _import_android_gym,_import_trading_env,_import_mc_env)
 
+
+ENV_CLASS_REGISTRY: Dict[str, Callable[[], Type]] = {
+    "android_gym": _import_android_gym,
+    "search": _import_search_env,
+    "trading_gym": _import_trading_env,
+    "mc": _import_mc_env,
+    "emb": _import_emb_env,
+    "git_gym": _import_gym_env,
+    "os_gym": _import_os_env,
+}
 
 
 # -------------------------------------------------------------------
@@ -69,9 +56,15 @@ class EnvActor:
         self.id = str(id_)
 
         try:
-            EnvCls = ENV_CLASS_REGISTRY[envname]
+            env_import_func = ENV_CLASS_REGISTRY[envname]
+            EnvCls = env_import_func()
         except KeyError:
             raise ValueError(f"Unknown envname: {envname} (available: {list(ENV_CLASS_REGISTRY.keys())})")
+        except ImportError as e:
+            raise ImportError(
+                f"Failed to import env '{envname}': {e}\n"
+                f"Please install dependencies for {envname} environment first."
+            )
 
         self.env = EnvCls(**(create_kwargs or {}))
 
@@ -113,7 +106,7 @@ class EnvActor:
 # In-process map: (envname, id) -> EnvActor handle
 # This lives only inside the HTTP process; it routes HTTP calls to actors.
 # -------------------------------------------------------------------
-_ENV_ACTORS: Dict[Tuple[str,str], ray.actor.ActorHandle] = {}
+_ENV_ACTORS: Dict[Tuple[str, str], ray.actor.ActorHandle] = {}
 _ENV_LOCK = threading.RLock()
 
 
@@ -155,6 +148,7 @@ class ResetRequest(BaseModel):
         description="Optional seed passed into env.reset(seed=...).",
     )
 
+
 class StepRequest(BaseModel):
     action: str = Field(..., description="Action string passed into env.step(action).")
 
@@ -190,7 +184,6 @@ async def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
     - If an actor already exists, it is closed and replaced.
     - Returns JSON bytes from EnvActor.reset().
     """
-
     _init_ray_if_needed()
 
     # Validate envname early
@@ -203,7 +196,6 @@ async def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
 
     # ---- decode env_param (can be JSON object or JSON string) ----
     raw_param = req.env_param
-
     if isinstance(raw_param, str):
         # case 1: directly pass the JSON string from DB (env_param)
         try:
@@ -222,7 +214,6 @@ async def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
             detail="env_param must be a JSON object or JSON string.",
         )
 
-
     key = _key(envname, env_id)
 
     # Create new actor and replace old one atomically
@@ -238,6 +229,7 @@ async def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
         except Exception:
             pass
         ray.kill(old_actor, no_restart=True)
+
     # Call reset on the new actor, return JSON bytes directly
     result_bytes: bytes = await actor.reset.remote(req.seed)
     return Response(content=result_bytes, media_type="application/json")
@@ -256,7 +248,7 @@ async def step_env(envname: str, env_id: str, req: StepRequest) -> Response:
 
 
 @app.get("/{envname}/{env_id}/render")
-async def render_env(envname: str, env_id:str) -> Response:
+async def render_env(envname: str, env_id: str) -> Response:
     """Forward render() to the existing actor."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
@@ -303,16 +295,14 @@ async def health(envname: str, env_id: str) -> Dict[str, Any]:
     return {"envname": envname, "id": env_id, "healthy": value}
 
 
-@app.get("{envname}/{env_id}/describe")
+@app.get("/{envname}/{env_id}/describe")  # 修复原代码路径缺少 '/' 的问题
 async def describe(envname: str, env_id: str) -> Dict[str, Any]:
     """Expose EnvActor.describe()."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
         actor = _ENV_ACTORS.get(key)
-
     if actor is None:
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
-
     info: dict = await actor.describe.remote()
     return info
 
@@ -329,7 +319,6 @@ async def close_env(envname: str, env_id: str) -> Dict[str, Any]:
         except Exception:
             pass
         ray.kill(actor, no_restart=True)
-
     return {"status": "ok", "envname": envname, "id": env_id}
 
 
@@ -340,8 +329,6 @@ if __name__ == "__main__":
     import uvicorn
 
     _init_ray_if_needed()
-
     host = "0.0.0.0"
     port = 36663
-
     uvicorn.run(app, host=host, port=port)
