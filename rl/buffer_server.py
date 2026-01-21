@@ -128,7 +128,8 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     extra_info = {
         "timestamp": _parse_timestamp(row.get("session_end_time")) or _parse_timestamp(row.get("timestamp")) or time.time(),
         "steps": row.get("step_id", 0),
-        "finish_reason": "stop",
+        # 注意：finish_reason 与 truncated 不完全等价，finish_reason 仅用于训练侧标记截断状态
+        "finish_reason": "length" if row.get("truncated", False) else "stop",
         "session_id": session_id,
         "env_id": env_id,
         "group_id": group_id,

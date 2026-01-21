@@ -85,8 +85,6 @@ class LLM:
                     # 从 metadata 中获取 weight_version（SGLang 等引擎会返回）
                     metadata = data.get("metadata") or {}
                     weight_version = metadata.get("weight_version")
-                    if not content:
-                        raise RuntimeError("LLM returned empty content")
                     return {
                         "content": content,
                         "finish_reason": finish_reason,
