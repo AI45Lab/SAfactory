@@ -18,6 +18,7 @@
 # ------------------------------------------------------------------------------------------------
 import atexit
 import functools
+import glob
 import locale
 import logging
 import sys
@@ -636,6 +637,39 @@ class MinecraftInstance(object):
     ###########################
     ##### PRIVATE METHODS #####
     ###########################
+    @staticmethod
+    def _list_gpu_indices_from_proc():
+        """
+        根据 /proc/driver/nvidia/gpus 和 nvidia-smi
+        获取可用 GPU 的 index 列表，顺序与 /proc 下的顺序一致。
+        """
+        try:
+            proc_paths = sorted(glob.glob("/proc/driver/nvidia/gpus/*"))
+            if not proc_paths:
+                return []
+
+            smi_out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=index,pci.bus_id", "--format=csv,noheader"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            bus_to_idx = {}
+            for line in smi_out.strip().splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) != 2:
+                    continue
+                bus_to_idx[parts[1].upper()] = parts[0]
+
+            indices = []
+            for p in proc_paths:
+                pci = os.path.basename(p)
+                key = f"00000000:{pci}".upper()
+                if key in bus_to_idx:
+                    indices.append(bus_to_idx[key])
+            return indices
+        except Exception:
+            return []
+
     def _launch_minecraft(self, port, headless, minecraft_dir, working_dir, replaceable=False, device=None):
         """Launch Minecraft listening for malmoenv connections.
         Args:
@@ -659,13 +693,32 @@ class MinecraftInstance(object):
         if self._max_mem:
             cmd += ['-maxMem', self._max_mem]
 
-        try:
-            device = "/dev/dri/card"+str(int(working_dir.split('/')[-2])%8+1)
-        except:
-            device = "/dev/dri/card1"
-        # if self.device is not None:
-        cmd += ['-device', device]
+        # 获取 GPU 列表：设置 CUDA_VISIBLE_DEVICES 并取首个作为 /dev/dri/cardN
+        env = os.environ.copy()
+        cuda_visible = env.get("CUDA_VISIBLE_DEVICES")
+        if not cuda_visible:
+            indices = self._list_gpu_indices_from_proc()
+            if indices:
+                cuda_visible = ",".join(indices)
+                env["CUDA_VISIBLE_DEVICES"] = cuda_visible
 
+        device = None
+        if cuda_visible:
+            first = cuda_visible.split(",")[0].strip()
+            if first.isdigit():
+                # 渲染端口从1开始，渲染端口 = 计算端口 + 1
+                device = f"/dev/dri/card{int(first+1)}"
+
+        if device is None:
+            try:
+                device = "/dev/dri/card"+str(int(working_dir.split('/')[-2])%8+1)
+            except Exception:
+                device = "/dev/dri/card1"
+
+        cmd += ['-device', device]
+        print("*"*20)
+        print(device)
+        print("*"*20)
         cmd_to_print = cmd[:] if not self._seed else cmd[:-2]
         rich.print(f"[bold yellow]INFO: Starting Minecraft process with working_dir: {working_dir}[/bold yellow]")
         rich.print(f"[bold yellow]INFO: Starting Minecraft process with device: {device}[/bold yellow]")
@@ -679,7 +732,8 @@ class MinecraftInstance(object):
                                          stdin=subprocess.DEVNULL,
                                          stdout=subprocess.PIPE,
                                          stderr=subprocess.STDOUT,
-                                         start_new_session=True
+                                         start_new_session=True,
+                                         env=env
                                          )
 
         return minecraft_process
