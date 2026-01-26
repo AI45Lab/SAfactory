@@ -662,10 +662,14 @@ class MinecraftInstance(object):
 
             indices = []
             for p in proc_paths:
-                pci = os.path.basename(p)
-                key = f"00000000:{pci}".upper()
+                pci = os.path.basename(p).upper()
+                # /proc uses shorter domain (e.g., 0000:AB:00.0); nvidia-smi bus_id is 00000000:AB:00.0.
+                bus_part = pci.split(":", 1)[1] if ":" in pci else pci
+                key = f"00000000:{bus_part}"
                 if key in bus_to_idx:
                     indices.append(bus_to_idx[key])
+                elif pci in bus_to_idx:  # fallback in case nvidia-smi omits the prefix
+                    indices.append(bus_to_idx[pci])
             return indices
         except Exception:
             return []
@@ -707,8 +711,10 @@ class MinecraftInstance(object):
             first = cuda_visible.split(",")[0].strip()
             if first.isdigit():
                 # 渲染端口从1开始，渲染端口 = 计算端口 + 1
-                device = f"/dev/dri/card{int(first+1)}"
-
+                device = f"/dev/dri/card{int(first)+1}"
+        print("*"*20)
+        print(device)
+        print("*"*20)
         if device is None:
             try:
                 device = "/dev/dri/card"+str(int(working_dir.split('/')[-2])%8+1)
