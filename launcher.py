@@ -346,6 +346,7 @@ def parse_args():
     # DB / YAML-aggregator
     p.add_argument("--env-config", type=str, help="env config which used for specify the input env configs, and it's incompatible with  env-root")
     p.add_argument("--env-root", type=str, default="env", help="only works when env-config is not specified")
+    p.add_argument("--storage-type", type=str, default="cloud")
     p.add_argument("--db-path", type=str, default="sqlite://test_envs.db")
     p.add_argument("--rebuild-table", action="store_true", default=True)
 
@@ -368,7 +369,7 @@ def parse_args():
     p.add_argument("--http-retries", type=int, default=2)
 
     # LLM
-    p.add_argument("--llm-base-url", type=str, default="http://100.102.201.218:30000/v1")
+    p.add_argument("--llm-base-url", type=str, default="http://100.99.177.21:30000/v1")
     p.add_argument("--llm-api-key", type=str, default="EMPTY")
     p.add_argument("--llm-model", type=str, default="Qwen2.5-VL-72B-Instruct")
     p.add_argument("--llm-temperature", type=float, default=0.3)
@@ -405,7 +406,7 @@ async def main():
     upstream_log_path = os.path.join(args.log_dir, "upstream.log")
     log.info("main log file: %s", main_log_path)
     
-    data_manager = DataManager(storage_type="sqlite", db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
+    data_manager = DataManager(storage_type=args.storage_type, db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
     yaml_config_list = all_env_yaml_load(env_root=args.env_root, env_config=args.env_config)
 
     # 如果指定了 --rl-env-num，覆盖所有环境的 env_num
@@ -414,7 +415,7 @@ async def main():
             cfg["env_num"] = args.rl_env_num
         log.info("Override env_num=%d for all %d environments", args.rl_env_num, len(yaml_config_list))
 
-    conn = await sync_configs_to_db(data_manager, yaml_config_list)
+    conn = await sync_configs_to_db(data_manager, yaml_config_list, args.storage_type)
 
     local_proc: Optional[subprocess.Popen] = None
     pool: Optional[ActorPool] = None

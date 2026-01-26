@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from core.types.base import ResetOutput, RenderOutput, StepOutput, dumps_json_bytes
 
-from registry import (_import_os_env,_import_search_env,_import_emb_env,_import_gym_env,
+from env.registry import (_import_os_env,_import_search_env,_import_emb_env,_import_gym_env,
                       _import_android_gym,_import_trading_env,_import_mc_env)
 
 

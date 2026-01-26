@@ -90,7 +90,7 @@ class SqliteStrategy(StorageStrategy):
             await session.save()
         return session
 
-    async def record_step(self, session: InteractionSession, step_id: int, prompt: list, response: str, reward: float, env_state: Optional[str] = None, done: bool = False, truncated: bool = False):
+    async def record_step(self, session: InteractionSession, step_id: int, prompt: list, response: str, env_key: str, reward: float, env_state: Optional[str] = None, done: bool = False, truncated: bool = False):
         """
         记录交互步骤
 

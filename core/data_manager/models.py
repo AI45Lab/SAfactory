@@ -1,6 +1,6 @@
 from tortoise import Model, fields
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any
 import uuid
 
 class EnvironmentConfig(Model):
@@ -49,6 +49,8 @@ class InteractionSession(Model):
     total_reward = fields.FloatField(default=0.0)
     trajectory = fields.TextField(default="")
     is_completed = fields.BooleanField(default=False)
+    env_cache: Optional[Any] = None 
+    reward_count: Optional[Any] = None
 
     class Meta:
         table = "interaction_sessions"
