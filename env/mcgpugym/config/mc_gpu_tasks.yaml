@@ -1,6 +1,0 @@
----
-# 示例任务列表（每条记录会展开为一个环境实例的参数）
-- scene: "demo_scene"
-  start_pos: [2306, 101, 984]
-  goal_pos: [3306, 101, 984]
-  text: "Navigate from start to goal using GPU simulator."

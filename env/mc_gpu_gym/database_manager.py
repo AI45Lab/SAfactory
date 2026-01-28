@@ -10,6 +10,12 @@ import sys
 import time
 from rich.console import Console
 
+# Ensure repo root on sys.path so pickled objects with package paths
+# like env.mc_gpu_gym.* are importable when this module is run directly.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
 DATABASE_DIR = str(Path(__file__).parent.parent / "tmp" / "database")
 RESETTING_EXPIRE = 5 * 60
 if not os.path.exists(DATABASE_DIR):
@@ -37,6 +43,28 @@ class InstanceRecord:
     uuid: str
     tmp_path: str
 
+
+def _remove_instance_record(uuid: str):
+    """
+    Remove a stale or invalid instance record safely.
+    This is primarily used to clean up pickles that can no longer be
+    loaded because their module path has changed.
+    """
+    try:
+        with instance_list_lock:
+            instance_list: list = database.get("instance_list", [])
+            if uuid in instance_list:
+                instance_list.remove(uuid)
+                database["instance_list"] = instance_list
+    except Exception:
+        pass
+
+    try:
+        if uuid in database:
+            del database[uuid]
+    except Exception:
+        pass
+
 def check_daemon():
     with daemon_lock:
         if "daemon" in database:
@@ -63,7 +91,19 @@ def check_instance(uuid: str, force_remove: bool = False):
     with lock:
         if not uuid in database:
             return
-        record: InstanceRecord = database[uuid]
+        try:
+            record: InstanceRecord = database[uuid]
+        except ModuleNotFoundError as e:
+            # Backward compatibility: cached pickles may refer to the
+            # old package path (e.g. env.mcgpugym.*), which fails to
+            # import when run from a different working directory.
+            Console().log(f"[database] Removing stale instance {uuid}: {e}")
+            _remove_instance_record(uuid)
+            return
+        except Exception as e:
+            Console().log(f"[database] Failed to load instance {uuid}: {e}")
+            _remove_instance_record(uuid)
+            return
         if force_remove or record.parent_pid < 0 or not psutil.pid_exists(record.parent_pid):
             record.parent_pid = -1
             database[uuid] = record

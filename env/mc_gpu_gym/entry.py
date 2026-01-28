@@ -16,7 +16,7 @@ from copy import deepcopy
 from typing import Dict, List, Tuple, Union, Sequence, Mapping, Any, Optional, Literal
 from dataclasses import asdict, dataclass, field, fields
 
-from ._multiagent import MultiAgentEnv
+from _multiagent import MultiAgentEnv
 
 BASIC_RESOLUTION = (640,360)
 
@@ -29,10 +29,13 @@ class MinecraftSim(gymnasium.Env):
         self,  
         render_size: Tuple[int, int] = (640, 360),      # the original resolution of the game is 640x360
         inventory: Dict = {},                           # the initial inventory of the agent
-        num_empty_frames: int = 20,                     # the number of empty frames to skip when calling reset
+        num_empty_frames: int = 10,                     # the number of empty frames to skip when calling reset
+        task: str = "None",
+        scene: str = "None",
         working_dir: str = "None",
         output_dir: str = "None",
         display_port: int = None,
+        xvfb=False,
         **kwargs
     ) -> Any:
         super().__init__()
@@ -40,8 +43,9 @@ class MinecraftSim(gymnasium.Env):
         assert np.abs(render_size[0] / render_size[1] - 640 / 360) < 0.001
         self.num_empty_frames = num_empty_frames
         self.working_dir = working_dir
+        self.task = task
         
-        self.env = MultiAgentEnv(self.working_dir, output_dir, display_port)
+        self.env = MultiAgentEnv(self.task, scene, self.working_dir, output_dir, display_port, xvfb)
 
         self.already_reset = False
         
@@ -57,25 +61,31 @@ class MinecraftSim(gymnasium.Env):
     def command(self, command:str):
         self.env.command(command)
 
-    def reset(self, command: str, reward_fn: Dict) -> Tuple[np.ndarray, Dict]:
+    def reset(self, command: List[str], reward_fn: Dict) -> Tuple[np.ndarray, Dict]:
         self.reward_fn = reward_fn
         self.env.reset(self.reward_fn)
         self.already_reset = True
-        empty_action = {'wait': 1, 'forward': 0, 'back': 0, 'jump': 0, 'look_left': 0, 'look_right': 0, 'look_up': 0, 'look_down': 0, 'a': 0, 'd': 0, 'sneak': 0, 'sprint': 0, 'inventory': 0, 'attack': 0, 'use': 0}
+        empty_action = {'init': 1, 'wait': 0, 'forward': 0, 'back': 0, 'jump': 0, 'look_left': 0, 'look_right': 0, 'look_up': 0, 'look_down': 0, 'a': 0, 'd': 0, 'sneak': 0, 'sprint': 0, 'inventory': 0, 'attack': 0, 'use': 0}
         
+        for cmd in command:
+            self.command(cmd)
+        self.command("f1")
         for _ in range(self.num_empty_frames): # skip the frames to avoid the initial black screen
             obs, reward, done, info = self.env.step(empty_action)
-            
-        for _ in range(8):
-            obs, reward, done, info = self.env.step(empty_action)
-            import time
-            time.sleep(0.02)
-            print("======================")
-            print(command)
-            # TODO: command -> List
-            self.command(command)
         
-        obs, reward, done, info = self.env.step(empty_action)
+        obs, info = self._wrap_obs_info(obs, info)
+        return obs, info
+    
+    def fast_reset(self, command: List[str], reward_fn: Dict) -> Tuple[np.ndarray, Dict]:
+        self.reward_fn = reward_fn
+        self.env.fast_reset(self.reward_fn)
+        self.already_reset = True
+        empty_action = {'init': 1, 'wait': 0, 'forward': 0, 'back': 0, 'jump': 0, 'look_left': 0, 'look_right': 0, 'look_up': 0, 'look_down': 0, 'a': 0, 'd': 0, 'sneak': 0, 'sprint': 0, 'inventory': 0, 'attack': 0, 'use': 0}
+        
+        for cmd in command:
+            self.command(cmd)
+        for _ in range(self.num_empty_frames): # skip the frames to avoid the initial black screen
+            obs, reward, done, info = self.env.step(empty_action)
         
         obs, info = self._wrap_obs_info(obs, info)
         return obs, info
@@ -93,6 +103,9 @@ class MinecraftSim(gymnasium.Env):
 
     def close(self) -> None:
         close_status = self.env.close()
+        return close_status
+    def fast_close(self) -> None:
+        close_status = self.env.fast_close()
         return close_status
     
 

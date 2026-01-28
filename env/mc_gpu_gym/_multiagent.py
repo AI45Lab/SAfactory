@@ -8,14 +8,14 @@ import json
 import logging
 import os
 import struct
-from .malmo import InstanceManager, MinecraftInstance, launch_queue_logger_thread, malmo_version
+from malmo import InstanceManager, MinecraftInstance, launch_queue_logger_thread, malmo_version
 import uuid
 import coloredlogs
 import gym
 import socket
 import time, collections
 from lxml import etree
-from . import comms
+import comms
 import xmltodict
 from concurrent.futures import ThreadPoolExecutor
 import cv2
@@ -24,8 +24,7 @@ import numpy as np
 import subprocess
 import pathlib
 from Xlib import display as Xdisplay
-import time
-import socket
+import socket, errno, time
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -41,7 +40,63 @@ TICK_LENGTH = 0.05
 
 logger = logging.getLogger(__name__)
 
+class ReconnectingSocket:
+    """
+    对真正的 tcp socket 做一层包装：
+    1. send() 时发现断线就自动重连并重发（最多重试 N 次）
+    2. 外部代码照旧只调 send()，无需改业务逻辑
+    """
+    def __init__(self, ip, port, max_retry=3):
+        self._ip, self._port = ip, port
+        self._sock = None
+        self.max_retry = max_retry
+        self._ensure_connected()
 
+    def _ensure_connected(self):
+        """保证此时 self._sock 是活连接"""
+        if self._sock is not None:
+            try:   # 先简单探活
+                self._sock.send(b'')
+                return
+            except socket.error:
+                pass   # 死了，下面重新连
+        # 真正重连
+        for attempt in range(self.max_retry):
+            try:
+                self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                logger.warning(f"[ReconnectingSocket] port {self._port}")
+                logger.warning(f"[ReconnectingSocket] ip {self._ip}")
+                self._sock.connect((self._ip, self._port))
+                return
+            except socket.error as e:
+                logger.warning(f"[ReconnectingSocket] attempt {attempt+1} failed: {e}")
+                time.sleep(0.5 * (attempt + 1))
+        # 实在连不上，让上层感知失败
+        raise ConnectionRefusedError("ReconnectingSocket: all retries exhausted")
+
+    def send(self, data: bytes):
+        """
+        发送数据，遇到断线自动重连并重发一次；
+        如果仍旧失败就抛异常，让上层决定是跳过还是终止
+        """
+        for attempt in range(2):          # 最多“重连→重发”一次
+            try:
+                self._sock.sendall(data)
+                return
+            except (BrokenPipeError, ConnectionResetError, socket.error) as e:
+                logger.warning(f"[ReconnectingSocket] send failed ({e}), try reconnect …")
+                self._ensure_connected()
+        # 重连后依旧失败，抛出去
+        raise BrokenPipeError("ReconnectingSocket: send failed after reconnect")
+
+    def close(self):
+        if self._sock:
+            try:
+                self._sock.close()
+
+            except Exception:
+                pass
+            self._sock = None
 
 class _InfoReader:
     def __init__(self, path: str):
@@ -154,9 +209,12 @@ class MultiAgentEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
     def __init__(self,
+                 task, 
+                 scene, 
                  working_dir,
                  output_dir, 
                  display_port,
+                 xvfb,
                  instances: Optional[List[MinecraftInstance]] = None,
                  is_fault_tolerant: bool = True,
                  verbose: bool = False,
@@ -196,8 +254,11 @@ class MultiAgentEnv(gym.Env):
         self.ip = '127.0.0.1'
         self.port = 12345
         self.working_dir=working_dir
+        self.task = task
         self.output_dir=output_dir
         self.display_port = display_port
+        self.xvfb = xvfb
+        self.scene = scene
 
     def _init_viewer(self) -> None:
         self.viewers = {}
@@ -352,60 +413,85 @@ class MultiAgentEnv(gym.Env):
 
             multi_obs = {}
             multi_reward = {}
-            everyone_is_done = True
             multi_monitor = {}
 
             if not self.has_finished:
                 instance = self.instances[0]
                 os.environ['DISPLAY'] = ':'+str(instance.xvfb_port)
-                env = os.environ.copy()
-                # try:
                 if actions['forward']!=0:
-                    self.send("forward 0.5", 0.5)
+                    self.send("forward 0.2", 0.2)
+                    action_record = 'forward'
                 elif actions['back']!=0:
-                    self.send("s 0.5", 0.5)
+                    self.send("s 0.2", 0.2)
+                    action_record = 's'
                 elif actions['d']!=0:
-                    self.send("d 0.5", 0.5)
+                    self.send("d 0.2", 0.2)
+                    action_record = 'd'
                 elif actions['a']!=0:
-                    self.send("a 0.5", 0.5)
+                    self.send("a 0.2", 0.2)
+                    action_record = 'a'
                 elif actions['jump']!=0:
                     self.send("jump", 0.5)
+                    action_record = 'jump'
                 elif actions['sneak']!=0:
                     self.send("sneak", 0.5)
+                    action_record = 'sneak'
                 elif actions['sprint']!=0:
                     self.send("sneak", 0.5)
+                    action_record = 'sprint'
                 elif actions['inventory']!=0:
                     self.send("inventory", 2.0)
+                    action_record = 'inventory'
                 elif actions['attack']!=0:
                     self.send("attack", 0.3)
+                    action_record = 'attack'
                 elif actions['use']!=0:
                     self.send("use", 1.0)
+                    action_record = 'use'
                 elif actions['look_left']!=0 and actions['look_down']!=0:
-                    self.send("look -90 90", 0.5) 
+                    self.send("turn -30 30 0.5", 0.5) 
+                    action_record = 'look_left_down'
                 elif actions['look_right']!=0 and actions['look_down']!=0:
-                    self.send("look 90 90", 0.5) 
+                    self.send("turn 30 30 0.5", 0.5) 
+                    action_record = 'look_right_down'
                 elif actions['look_right']!=0 and actions['look_up']!=0:
-                    self.send("look 90 -90", 0.5)
+                    self.send("turn 30 -30 0.5", 0.5)
+                    action_record = 'look_right_up'
                 elif actions['look_left']!=0 and actions['look_up']!=0:
-                    self.send("look -90 -90", 0.5)
+                    self.send("turn -30 -30 0.5", 0.5)
+                    action_record = 'look_left_up'
                 elif actions['look_right']!=0:
-                    self.send("look 90 0", 0.5) 
+                    self.send("turn 30 0 0.5", 0.5) 
+                    action_record = 'look_right'
                 elif actions['look_left']!=0:
-                    self.send("look -90 0", 0.5) 
+                    self.send("turn -30 0 0.5", 0.5) 
+                    action_record = 'look_left'
                 elif actions['look_up']!=0:
-                    self.send("look 0 -90", 0.5) 
+                    self.send("turn 0 -30 0.5", 0.5) 
+                    action_record = 'look_up'
                 elif actions['look_down']!=0:
-                    self.send("look 0 90", 0.5) 
+                    self.send("turn 0 30 0.5", 0.5) 
+                    action_record = 'look_down'
                 elif actions['wait']!=0:
                     self.send("wait", 0.5)
+                    action_record = 'wait'
+                elif actions['init']!=0:
+                    self.send("wait", 0.5)
+                    action_record = 'init'
+                elif actions['operate']!="":
+                    self.send(actions['operate'], 0.5)
+                    self.send("use", 1.0)
+                    action_record = 'operate'
                 else:
                     self.send("wait", 0.5)
+                    action_record = 'wrong'
                 # except:
                 #     print(f"errorrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr")
 
+                self.rollout_step+=1
                 img = ImageGrab.grab()
-                img_path = os.path.join(self.working_dir, "obs.jpg")
-                img.save(img_path, format='JPEG')
+                self.img_path = os.path.join(self.output_dir, f"mc_{self.task}_{self.train_step}_{self.rollout_step}_{action_record}.jpg")
+                img.save(self.img_path, format='JPEG')
 
                 # ↓↓↓↓↓ 原来 4 行 socket 通信删掉，换成抓屏 ↓↓↓↓↓
                 # obs, (w, h) = np.array(img), img.size        # bytes
@@ -421,32 +507,32 @@ class MultiAgentEnv(gym.Env):
                 reward = 0
                 done = 0
 
-                if self.reward_fn['type'] == 'navigation':
+                if self.reward_fn['type'] == 'navigation' and actions['init'] == 0:
                     position = [info_reward['x'], info_reward['y'], info_reward['z']]
                     gt_position = self.reward_fn['gt_position']
-                    if (position[0]-gt_position[0])**2+(position[1]-gt_position[1])**2+(position[2]-gt_position[2])**2<200:
+                    if (position[0]-gt_position[0])**2+(position[1]-gt_position[1])**2+(position[2]-gt_position[2])**2<4:
                         reward = 1
                         done = 1
                     else:
                         reward = 0
                         done = 0
-                # print(1111111111111111111111)
-                # print(reward)
-                # print(done)
-                # except:
-                #     info ={"x": 0, "y": 0, "z": 0, "yaw": 0, "pitch": 0}
-                #     reward=0
-                #     done=0
-
-                done = (done == 1)
+                elif self.reward_fn['type'] == 'operation' and actions['init'] == 0:
+                    self.send(f"get_block {self.reward_fn['gt_position'][0]} {self.reward_fn['gt_position'][1]} {self.reward_fn['gt_position'][2]}")
+                    statu = self.socket.recv(4096).decode('utf-8').strip()
+                    print(statu)
+                    if self.reward_fn['gt_obj_status'] in statu:
+                        reward = 1
+                        done=1
+                    else:
+                        reward = 0
+                        done = 0
                 if done:
                     logger.info("Agent has finished")
 
                 self.has_finished = self.has_finished or done
 
-
                 # Process the observation and done state.
-                out_obs, monitor = self._process_observation(img_path, info)
+                out_obs, monitor = self._process_observation(self.img_path, info)
             else:
                 # IF THIS PARTICULAR AGENT IS DONE THEN:
                 reward = 0.0
@@ -457,34 +543,26 @@ class MultiAgentEnv(gym.Env):
             # concatenate multi-agent obs, rew, done
             multi_obs = out_obs
             multi_reward = reward
-            everyone_is_done = everyone_is_done and done
+            self.done =  done
             multi_monitor = monitor
 
-            # this will currently only consider the env done when all agents report done individually
-            self.done = everyone_is_done
-
-        #  WE DON'T CURRENTLY PIPE OUT WHETHER EACH AGENT IS DONE
-        # JUST IF EVERY AGENT IS DONE. THIS CAN BE ASCERTAINED BY
-        # CALLING env.has_finished['agent_name_here]
-        return multi_obs, multi_reward, everyone_is_done, multi_monitor
+        else:
+            reward = 1.0
+            out_obs = self._last_obs
+            done = True
+            monitor = {}
+            # concatenate multi-agent obs, rew, done
+            multi_obs = out_obs
+            multi_reward = reward
+            self.done = done
+            multi_monitor = monitor
+        return multi_obs, multi_reward, self.done, multi_monitor
     
     def command(self, command):
-        instance = self.instances[0]
-        os.environ['DISPLAY'] = ':'+str(instance.xvfb_port)
-        env = os.environ.copy()
-        try:
-            chunk_size = 3
-            command = "/"+command
-            for i in range(0, len(command) + 1, chunk_size):
-                chunk = command[i:i+chunk_size]
-                subprocess.run(['xdotool', 'type', '--delay', '50', f'{chunk}'], check=True)
-                time.sleep(0.05)
-            # subprocess.run(['xdotool', 'type', '--delay', '5', f'/{command}'], env=env, check=True)
-            # time.sleep(0.04)
-            subprocess.run(['xdotool', 'key', 'Return'], env=env, check=True)
-            time.sleep(0.02)
-        except:
-            print(f"command errorrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr")
+        # instance = self.instances[0]
+        # os.environ['DISPLAY'] = ':'+str(instance.xvfb_port)
+        # env = os.environ.copy()
+        self.send(command)
         
     def noop_action(self):
         """Gets the no-op action for the environment.
@@ -540,17 +618,63 @@ class MultiAgentEnv(gym.Env):
             self.has_finished = False
             with open(os.path.join(self.working_dir, "versions/1219/socketpuppet_data/port.txt"), 'r', encoding='utf-8') as f:
                 port = int(f.read().strip())
-            print("---------------------------------")
-            print(port)
-            print("---------------------------------")
             self.socket.connect((self.ip, port))
+            self.train_step = 1
+            self.rollout_step = 0
 
             return self._peek_obs()
 
         finally:
             print(11111111)
 
+    def fast_reset(self, reward_fn) -> Any:
+        """
+        Reset the environment.
 
+        Sets-up the Env from its specification (called everytime the env is reset.)
+
+        Returns:
+            The first observation of the environment. 
+        """
+        self.reward_fn = reward_fn
+        request_uuid = str(uuid.uuid4())
+
+        has_warned = False
+        self.train_step+=1
+        self.rollout_step = 0
+        self.done = False
+        self.has_finished = False
+        self.task = reward_fn['task']
+
+        multi_obs = {}
+        for instance in self.instances:
+            if self.xvfb:
+                self.rec[-1].stop
+                outfile = os.path.join(self.output_dir, f"mc_{self.task}_{self.train_step}.mp4")
+                self.rec.append(XvfbRecorder(instance.xvfb_port, outfile=outfile))
+                self.rec[-1].start()
+            start_time = time.time()
+
+            os.environ['DISPLAY'] = ':'+str(instance.xvfb_port)
+            # self.rec[-1].start()
+            img = ImageGrab.grab()
+            self.img_path = os.path.join(self.output_dir, f"mc_{self.task}_{self.train_step}_{self.rollout_step}_fastreset.jpg")
+            img.save(self.img_path, format='JPEG')
+
+            workdir = instance.working_dir
+            try:
+                info_path = os.path.join(instance.working_dir, "versions/1219/socketpuppet_data/recording.csv") 
+                with open(info_path, newline='', encoding='utf-8') as f:
+                    *_, last_row = csv.reader(f)
+                info = {"x": float(last_row[1]), "y": float(last_row[2]), "z": float(last_row[3]), "yaw": float(last_row[4]), "pitch": float(last_row[5])}
+            except:
+                info ={"x": 0, "y": 0, "z": 0, "yaw": 0, "pitch": 0}
+
+            self.has_finished = self.has_finished
+
+            multi_obs, _ = self._process_observation(self.img_path, info)
+
+        return multi_obs
 
     def _setup_instances(self) -> None:
         """Sets up the instances for the environment 
@@ -564,6 +688,7 @@ class MultiAgentEnv(gym.Env):
                     instance_futures.append(tpe.submit(self._get_new_instance))
             self.instances.extend([f.result() for f in instance_futures])
             self.instances = self.instances[:1]
+
         # Refresh old instances every N setups
         if self._refresh_inst_every is not None and self._inst_setup_cntr % self._refresh_inst_every == 0:
             for i in reversed(range(num_old_instances)):
@@ -590,18 +715,20 @@ class MultiAgentEnv(gym.Env):
             # <<< 唯一改动：把 peek_message 变成空操作，但保留变量 >>>
             peek_message = "<Peek/>"
             for instance in self.instances:
-                outfile = os.path.join(self.output_dir, f"mc_{instance.xvfb_port}.mp4")
-                self.rec.append(XvfbRecorder(instance.xvfb_port, outfile=outfile))
+                if self.xvfb:
+                    outfile = os.path.join(self.output_dir, f"mc_{self.task}_{self.train_step}.mp4")
+                    self.rec.append(XvfbRecorder(instance.xvfb_port, outfile=outfile))
+                    self.rec[-1].start()
                 start_time = time.time()
 
                 os.environ['DISPLAY'] = ':'+str(instance.xvfb_port)
-                self.rec[-1].start()
+                # self.rec[-1].start()
                 img = ImageGrab.grab()
-                img_path = os.path.join(self.working_dir, "obs.jpg")
-                img.save(img_path, format='JPEG')
+                self.img_path = os.path.join(self.output_dir, f"mc_{self.task}_{self.train_step}_{self.rollout_step}_init.jpg")
+                img.save(self.img_path, format='JPEG')
+
 
                 # ↓↓↓↓↓ 原来 4 行 socket 通信删掉，换成抓屏 ↓↓↓↓↓
-                # obs, (w, h) = np.array(img), img.size        # bytes
                 workdir = instance.working_dir
                 try:
                     info_path = os.path.join(instance.working_dir, "versions/1219/socketpuppet_data/recording.csv") 
@@ -610,11 +737,10 @@ class MultiAgentEnv(gym.Env):
                     info = {"x": float(last_row[1]), "y": float(last_row[2]), "z": float(last_row[3]), "yaw": float(last_row[4]), "pitch": float(last_row[5])}
                 except:
                     info ={"x": 0, "y": 0, "z": 0, "yaw": 0, "pitch": 0}
-                # self._info_reader = _InfoReader(info_path)
-                # info = self._info_reader.latest() 
+
                 self.has_finished = self.has_finished
 
-                multi_obs, _ = self._process_observation(img_path, info)
+                multi_obs, _ = self._process_observation(self.img_path, info)
         return multi_obs
 
     #############  CLOSE METHOD ###############
@@ -628,15 +754,22 @@ class MultiAgentEnv(gym.Env):
         if self._already_closed:
             return
 
-        flag=0
-
         for instance in self.instances:
-            self.rec[flag].stop()
+            if self.xvfb:
+                self.rec[-1].stop()
 
             if instance.running:
                 instance.kill()
 
         self._already_closed = True
+    
+
+    def fast_close(self):
+        """gym api close"""
+        logger.debug("Fast Closing MineRL env...")
+
+        # for instance in self.instances:
+            # self.rec[-1].stop()
 
     def is_closed(self):
         return self._already_closed
@@ -747,10 +880,14 @@ class MultiAgentEnv(gym.Env):
         """
         Gets a new instance and sets up a logger if need be. 
         """
+
         instance = InstanceManager.get_instance(os.getpid(), instance_id=instance_id, display_port=self.display_port)
+
         if InstanceManager.is_remote():
             launch_queue_logger_thread(instance, self.is_closed)
+
         instance.launch(replaceable=self._is_fault_tolerant, working_dir=self.working_dir)
+
         # Add  a cleaning flag to the instance
         instance.had_to_clean = False
         return instance

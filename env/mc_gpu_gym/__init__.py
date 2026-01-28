@@ -17,3 +17,10 @@ GPU 版本特性：
 - 需要 NVIDIA GPU 和 VirtualGL 环境
 - 详见 docs/gpu-setup.md
 """
+
+from .myray.client import MCRayClient
+from .myray.actors import MCEnvActor
+
+__version__ = "1.0.0-gpu"
+__backend__ = "gpu"
+__all__ = ["MCRayClient", "MCEnvActor"]

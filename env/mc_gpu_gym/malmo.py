@@ -18,7 +18,6 @@
 # ------------------------------------------------------------------------------------------------
 import atexit
 import functools
-import glob
 import locale
 import logging
 import sys
@@ -26,7 +25,7 @@ import os
 import uuid
 import traceback
 import pathlib
-from . import database_manager
+import database_manager
 import Pyro4.core
 import argparse
 from enum import IntEnum
@@ -50,7 +49,8 @@ import Pyro4
 from pathlib import Path
 
 from random import Random
-from . import comms
+import comms
+import select
 
 
 logger = logging.getLogger(__name__)
@@ -419,17 +419,12 @@ class MinecraftInstance(object):
         return f"actor{self.role}"
 
     def kill_xvfb_on_display(self, display: int):
-        """
-        只杀掉监听在 :<display> 上的 Xvfb 进程
-        例如 display=99  =>  杀 /tmp/.X11-unix/X99
-        """
-        socket_path = f"/tmp/.X11-unix/X{ display }"
-        # 构造命令：sudo fuser -k /tmp/.X11-unix/X99
-        cmd = ["sudo", "fuser", "-k", socket_path]
-        # 如果系统没有 fuser，可改用 lsof 版：
-        # cmd = ["sh", "-c", f"kill -9 $(lsof -t {socket_path} 2>/dev/null)"]
-        subprocess.run(cmd, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            f'kill -9 $(ps -ef | awk "/[X]vfb :{display}/ {{print \\$2}}")',
+            shell=True
+        )
 
+    
     def launch(self, daemonize=False, replaceable=True, working_dir="None"):
         database_manager.collect_garbage()
         database_manager.check_daemon()
@@ -440,6 +435,7 @@ class MinecraftInstance(object):
         if not self.existing:
             if not port:
                 port = InstanceManager._get_valid_port()
+
             self.minecraft_process = self._launch_minecraft(
                 port,
                 InstanceManager.headless,
@@ -448,6 +444,7 @@ class MinecraftInstance(object):
                 replaceable=replaceable,
                 device=self.device)
             self.instance_record.minecraft_pgid = self.minecraft_process.pid
+
             database_manager.write_instance_record(self.instance_record)
 
             # wait until Minecraft process has outputed "CLIENT enter state: DORMANT"
@@ -456,75 +453,123 @@ class MinecraftInstance(object):
             server_ready = False
             flag=0
 
+            path_1 = os.path.join(self.working_dir, 'test.txt')
+            LOG_FILE = Path(path_1)
+            with LOG_FILE.open('w', encoding='utf-8') as f:
+                f.write("")
+            start_time = time.time()
             while True:
-                mine_log_encoding = locale.getpreferredencoding(False)
-                line = self.minecraft_process.stdout.readline().decode(mine_log_encoding)
-                path_1 = os.path.join(self.working_dir, 'test.txt')
-                LOG_FILE = Path(path_1)  
-                with LOG_FILE.open('a', encoding='utf-8') as f:
-                    f.write(line)
-
-                # Check for failures and print useful messages!
-                _check_for_launch_errors(line)
-
-                if not line:
-                    # IF THERE WAS AN ERROR STARTING THE MC PROCESS
-                    # Print the whole logs!
-                    error_str = ""
-                    for l in lines:
-                        spline = "\n".join(l.split("\n")[:-1])
-                        self._logger.error(spline)
-                        error_str += spline + "\n"
-                    # Throw an exception!
-                    raise EOFError(
-                        error_str + "\n\nMinecraft process finished unexpectedly. There was an error with Malmo.")
-
-                lines.append(line)
-                self._log_heuristic("\n".join(line.split("\n")[:-1]))
-
-                MALMOENVPORTSTR = "***** Start MalmoEnvServer on port "
-                port_received = MALMOENVPORTSTR in line
-                if port_received:
-                    self._port = int(line.split(MALMOENVPORTSTR)[-1].strip())
-
-                # client_ready = "CLIENT enter state: DORMANT" in line
-                # server_ready = "SERVER enter state: DORMANT" in line
-                my_ready = "Program link log for sodium:chunk_shader_for_translucent: Vertex info" in line
-                my_ready_2 = "Shader rendertype_entity_translucent_emissive could not find sampler named Sampler2 in the specified shader program" in line
-                if my_ready or my_ready_2:
-                    time.sleep(10) 
-                    env = os.environ.copy()
-                    env['DISPLAY'] = ':'+str(self.xvfb_port)
-                    # subprocess.run(['xdotool', 'mousemove', '860', '550', 'click', '1'], env=env, check=True)
-                    # time.sleep(0.5) 
-                    # subprocess.run(['xdotool', 'mousemove', '860', '500', 'click', '1'], env=env, check=True)
-                    # time.sleep(0.5) 
-                    # subprocess.run(['xdotool', 'mousemove', '800', '753', 'click', '1'], env=env, check=True) 
-                    # time.sleep(5)
-                    subprocess.run(['xdotool', 'key', 'F11'], env=env, check=True) 
-                    LOG_FILE = Path('/mnt/shared-storage-user/steai_share/luozhihao/test.txt')  
+                ready, _, _ = select.select([self.minecraft_process.stdout], [], [], 1.0)
+                if ready:
+                    mine_log_encoding = locale.getpreferredencoding(False)
+                    line = self.minecraft_process.stdout.readline().decode(mine_log_encoding)
                     with LOG_FILE.open('a', encoding='utf-8') as f:
-                        f.write('test all set\n')
-                    break
-                elif "Failure details:" in line:
-                    self.minecraft_process.terminate()
-                    self.kill_xvfb_on_display(self.xvfb_port)
-                    if not port:
-                        port = InstanceManager._get_valid_port()
+                        f.write(line)
 
-                    self.minecraft_process = self._launch_minecraft(
-                        port,
-                        InstanceManager.headless,
-                        self.minecraft_dir,
-                        working_dir,
-                        replaceable=replaceable,
-                        device=self.device)
-                    self.instance_record.minecraft_pgid = self.minecraft_process.pid
+                    # Check for failures and print useful messages!
+                    _check_for_launch_errors(line)
 
-                    database_manager.write_instance_record(self.instance_record)
+                    if not line:
+                        # IF THERE WAS AN ERROR STARTING THE MC PROCESS
+                        # Print the whole logs!
+                        error_str = ""
+                        for l in lines:
+                            spline = "\n".join(l.split("\n")[:-1])
+                            self._logger.error(spline)
+                            error_str += spline + "\n"
+                        # Throw an exception!
+                        raise EOFError(
+                            error_str + "\n\nMinecraft process finished unexpectedly. There was an error with Malmo.")
 
-                    # wait until Minecraft process has outputed "CLIENT enter state: DORMANT"
-                    lines = []
+                    lines.append(line)
+                    self._log_heuristic("\n".join(line.split("\n")[:-1]))
+
+                    MALMOENVPORTSTR = "***** Start MalmoEnvServer on port "
+                    port_received = MALMOENVPORTSTR in line
+                    if port_received:
+                        self._port = int(line.split(MALMOENVPORTSTR)[-1].strip())
+
+                    my_ready = "Program link log for sodium:chunk_shader_for_translucent: Vertex info" in line
+                    my_ready_2 = "Shader rendertype_entity_translucent_emissive could not find sampler named Sampler2 in the specified shader program" in line
+                    if my_ready or my_ready_2:
+                        time.sleep(30) 
+                        # env = os.environ.copy()
+                        # env['DISPLAY'] = ':'+str(self.xvfb_port)
+                        # subprocess.run(['xdotool', 'key', 'F11'], env=env, check=True) 
+                        # LOG_FILE = Path('/mnt/shared-storage-user/steai_share/luozhihao/test.txt')  
+                        # with LOG_FILE.open('a', encoding='utf-8') as f:
+                        #     f.write('test all set\n')
+                        break
+                    elif "Failure details:" in line or "Aborted" in line or "Killed" in line:
+                        self.minecraft_process.terminate()
+                        self.kill_xvfb_on_display(self.xvfb_port)
+                        if not port:
+                            port = InstanceManager._get_valid_port()
+
+                        self.minecraft_process = self._launch_minecraft(
+                            port,
+                            InstanceManager.headless,
+                            self.minecraft_dir,
+                            working_dir,
+                            replaceable=replaceable,
+                            device=self.device)
+                        self.instance_record.minecraft_pgid = self.minecraft_process.pid
+
+                        database_manager.write_instance_record(self.instance_record)
+
+                        # wait until Minecraft process has outputed "CLIENT enter state: DORMANT"
+                        lines = []
+                        start_time = time.time()
+                    # elif self.timeout_triggered:
+                    #     timer.cancel()
+                    #     self.minecraft_process.terminate()
+                    #     self.kill_xvfb_on_display(self.xvfb_port)
+                    #     if not port:
+                    #         port = InstanceManager._get_valid_port()
+
+                    #     self.minecraft_process = self._launch_minecraft(
+                    #         port,
+                    #         InstanceManager.headless,
+                    #         self.minecraft_dir,
+                    #         working_dir,
+                    #         replaceable=replaceable,
+                    #         device=self.device)
+                    #     self.instance_record.minecraft_pgid = self.minecraft_process.pid
+
+                    #     database_manager.write_instance_record(self.instance_record)
+
+                    #     # wait until Minecraft process has outputed "CLIENT enter state: DORMANT"
+                    #     lines = []
+                    #     start_time = time.time()
+                    #     self.timeout_triggered = False
+                    #     timer = threading.Timer(180.0, self.timeout_restart)
+                    #     timer.start()
+                else:
+                    # 没有输出，检查超时
+                    elapsed = time.time() - start_time
+                    if elapsed > 180:
+                        print("Timeout reached, restarting Minecraft...")
+                        # 重启逻辑
+                        self.minecraft_process.terminate()
+                        self.kill_xvfb_on_display(self.xvfb_port)
+                        if not port:
+                            port = InstanceManager._get_valid_port()
+
+                        self.minecraft_process = self._launch_minecraft(
+                            port,
+                            InstanceManager.headless,
+                            self.minecraft_dir,
+                            working_dir,
+                            replaceable=replaceable,
+                            device=self.device)
+                        self.instance_record.minecraft_pgid = self.minecraft_process.pid
+
+                        database_manager.write_instance_record(self.instance_record)
+
+                        # wait until Minecraft process has outputed "CLIENT enter state: DORMANT"
+                        lines = []
+                        start_time = time.time()
+
 
             if not self.port:
                 raise RuntimeError(
@@ -637,43 +682,6 @@ class MinecraftInstance(object):
     ###########################
     ##### PRIVATE METHODS #####
     ###########################
-    @staticmethod
-    def _list_gpu_indices_from_proc():
-        """
-        根据 /proc/driver/nvidia/gpus 和 nvidia-smi
-        获取可用 GPU 的 index 列表，顺序与 /proc 下的顺序一致。
-        """
-        try:
-            proc_paths = sorted(glob.glob("/proc/driver/nvidia/gpus/*"))
-            if not proc_paths:
-                return []
-
-            smi_out = subprocess.check_output(
-                ["nvidia-smi", "--query-gpu=index,pci.bus_id", "--format=csv,noheader"],
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-            bus_to_idx = {}
-            for line in smi_out.strip().splitlines():
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) != 2:
-                    continue
-                bus_to_idx[parts[1].upper()] = parts[0]
-
-            indices = []
-            for p in proc_paths:
-                pci = os.path.basename(p).upper()
-                # /proc uses shorter domain (e.g., 0000:AB:00.0); nvidia-smi bus_id is 00000000:AB:00.0.
-                bus_part = pci.split(":", 1)[1] if ":" in pci else pci
-                key = f"00000000:{bus_part}"
-                if key in bus_to_idx:
-                    indices.append(bus_to_idx[key])
-                elif pci in bus_to_idx:  # fallback in case nvidia-smi omits the prefix
-                    indices.append(bus_to_idx[pci])
-            return indices
-        except Exception:
-            return []
-
     def _launch_minecraft(self, port, headless, minecraft_dir, working_dir, replaceable=False, device=None):
         """Launch Minecraft listening for malmoenv connections.
         Args:
@@ -691,40 +699,20 @@ class MinecraftInstance(object):
 
         launch_script = os.path.join(os.path.dirname(__file__), launch_script)
 
+
         cmd = [launch_script, '-fatjar', os.path.join(InstanceManager.MINECRAFT_DIR, "build/libs/mcprec-6.13.jar"), '-working_dir', working_dir, '-port', str(self.xvfb_port)]
         if self._seed:
             cmd += ['-seed', ",".join([str(x) for x in self._seed])]
         if self._max_mem:
             cmd += ['-maxMem', self._max_mem]
-
-        # 获取 GPU 列表：设置 CUDA_VISIBLE_DEVICES 并取首个作为 /dev/dri/cardN
-        env = os.environ.copy()
-        cuda_visible = env.get("CUDA_VISIBLE_DEVICES")
-        if not cuda_visible:
-            indices = self._list_gpu_indices_from_proc()
-            if indices:
-                cuda_visible = ",".join(indices)
-                env["CUDA_VISIBLE_DEVICES"] = cuda_visible
-
-        device = None
-        if cuda_visible:
-            first = cuda_visible.split(",")[0].strip()
-            if first.isdigit():
-                # 渲染端口从1开始，渲染端口 = 计算端口 + 1
-                device = f"/dev/dri/card{int(first)+1}"
-        print("*"*20)
-        print(device)
-        print("*"*20)
-        if device is None:
-            try:
-                device = "/dev/dri/card"+str(int(working_dir.split('/')[-2])%8+1)
-            except Exception:
-                device = "/dev/dri/card1"
-
+        
+        try:
+            device = "/dev/dri/card"+str(int(working_dir.split('/')[-2])%8+1)
+        except:
+            device = "/dev/dri/card1"
+        # if self.device is not None:
         cmd += ['-device', device]
-        print("*"*20)
-        print(device)
-        print("*"*20)
+
         cmd_to_print = cmd[:] if not self._seed else cmd[:-2]
         rich.print(f"[bold yellow]INFO: Starting Minecraft process with working_dir: {working_dir}[/bold yellow]")
         rich.print(f"[bold yellow]INFO: Starting Minecraft process with device: {device}[/bold yellow]")
@@ -738,10 +726,9 @@ class MinecraftInstance(object):
                                          stdin=subprocess.DEVNULL,
                                          stdout=subprocess.PIPE,
                                          stderr=subprocess.STDOUT,
-                                         start_new_session=True,
-                                         env=env
+                                         start_new_session=True
                                          )
-
+        
         return minecraft_process
 
     @staticmethod
@@ -779,10 +766,6 @@ class MinecraftInstance(object):
 
             # Wait for the process to start.
             time.sleep(1)
-
-            if self._kill_minecraft_via_malmoenv(self.host, self.port):
-                # Let the minecraft process term on its own terms.
-                time.sleep(2)
 
             database_manager.check_instance(self.instance_record.uuid, force_remove=True)
 

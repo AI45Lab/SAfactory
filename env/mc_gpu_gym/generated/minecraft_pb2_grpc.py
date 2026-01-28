@@ -51,7 +51,7 @@ class MinecraftEnvStub(object):
                 _registered_method=True)
         self.Reset = channel.unary_unary(
                 '/minecraft.MinecraftEnv/Reset',
-                request_serializer=minecraft__pb2.EnvIdReq.SerializeToString,
+                request_serializer=minecraft__pb2.FastResetReq.SerializeToString,
                 response_deserializer=minecraft__pb2.ResetResp.FromString,
                 _registered_method=True)
         self.Step = channel.unary_unary(
@@ -167,7 +167,7 @@ def add_MinecraftEnvServicer_to_server(servicer, server):
             ),
             'Reset': grpc.unary_unary_rpc_method_handler(
                     servicer.Reset,
-                    request_deserializer=minecraft__pb2.EnvIdReq.FromString,
+                    request_deserializer=minecraft__pb2.FastResetReq.FromString,
                     response_serializer=minecraft__pb2.ResetResp.SerializeToString,
             ),
             'Step': grpc.unary_unary_rpc_method_handler(
@@ -302,7 +302,7 @@ class MinecraftEnv(object):
             request,
             target,
             '/minecraft.MinecraftEnv/Reset',
-            minecraft__pb2.EnvIdReq.SerializeToString,
+            minecraft__pb2.FastResetReq.SerializeToString,
             minecraft__pb2.ResetResp.FromString,
             options,
             channel_credentials,
