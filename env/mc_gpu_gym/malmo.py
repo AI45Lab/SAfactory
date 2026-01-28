@@ -411,6 +411,14 @@ class MinecraftInstance(object):
 
         database_manager.write_instance_record(self.instance_record)
 
+        # Determine display/xvfb port. If not provided, fall back to the
+        # current DISPLAY env (strip leading ':') or use 0.
+        if display_port is None:
+            disp_env = os.environ.get("DISPLAY", ":0")
+            try:
+                display_port = int(str(disp_env).lstrip(":"))
+            except Exception:
+                display_port = 0
         self.xvfb_port = display_port
 
     
@@ -463,6 +471,7 @@ class MinecraftInstance(object):
                 if ready:
                     mine_log_encoding = locale.getpreferredencoding(False)
                     line = self.minecraft_process.stdout.readline().decode(mine_log_encoding)
+                    print(line)
                     with LOG_FILE.open('a', encoding='utf-8') as f:
                         f.write(line)
 
@@ -711,6 +720,12 @@ class MinecraftInstance(object):
         except:
             device = "/dev/dri/card1"
         # if self.device is not None:
+        
+        device = "dev/dri/card6"
+        
+        print("*"*20)
+        print(device)
+        print("*"*20)
         cmd += ['-device', device]
 
         cmd_to_print = cmd[:] if not self._seed else cmd[:-2]
@@ -720,7 +735,6 @@ class MinecraftInstance(object):
         self._logger.info("Starting Minecraft process: " + str(cmd_to_print))
         print(cmd_to_print)
 
-       
         minecraft_process = psutil.Popen(cmd,
                                          cwd=working_dir,
                                          stdin=subprocess.DEVNULL,
@@ -728,7 +742,6 @@ class MinecraftInstance(object):
                                          stderr=subprocess.STDOUT,
                                          start_new_session=True
                                          )
-        
         return minecraft_process
 
     @staticmethod
