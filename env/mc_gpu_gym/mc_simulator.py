@@ -22,7 +22,7 @@ import yaml
 import numpy as np
 from PIL import Image
 
-from entry import MinecraftSim
+from .entry import MinecraftSim
 
 
 class MCSimulator:
@@ -55,7 +55,7 @@ class MCSimulator:
     ]
 
     def __init__(self, config=None, config_path=None, output_dir=None,
-                 display_port=None, working_dir=None, mc_root=None, xvfb=False):
+                 display_port=None, working_dir=None, mc_root=None, xvfb=False, data_path=None):
         """
         初始化 GPU Simulator
 
@@ -67,8 +67,34 @@ class MCSimulator:
             working_dir: 工作目录（用于资源隔离）
         """
         
-        # 配置来源：优先使用 config 字典，否则使用 config_path
+        # 配置来源：优先使用 config，其次 config_path/data_path
         self.data = config
+        load_path = config_path or data_path
+        if self.data is None and load_path:
+            path_obj = Path(load_path)
+            try:
+                with open(load_path, "r", encoding="utf-8") as f:
+                    if path_obj.suffix.lower() in {".yml", ".yaml"}:
+                        self.data = yaml.safe_load(f)
+                    else:
+                        self.data = json.load(f)
+            except FileNotFoundError:
+                print(f"[MCSimulator] Warning: data file not found: {load_path}")
+                self.data = {}
+            except Exception as e:
+                print(f"[MCSimulator] Warning: failed to load data file {load_path}: {e}")
+                self.data = {}
+
+        if isinstance(self.data, list):
+            self.data = self.data[0] if self.data else {}
+
+        if not isinstance(self.data, dict):
+            raise ValueError("Simulator data must be a dict or list of dicts.")
+
+        required_keys = ("target_type", "scene", "start_pos")
+        missing = [k for k in required_keys if k not in self.data]
+        if missing:
+            raise KeyError(f"Missing keys in simulator data: {missing}")
 
         # 资源管理参数
         self.display_port = display_port
@@ -272,7 +298,7 @@ if __name__ == "__main__":
         "interact_pos": [[2308, 101, 993], [2310, 102, 991.5]]
     }
     data_path = "/mnt/shared-storage-user/steai_share/luozhihao/mc_test/raycraft/datasets/data.json"
-    working_dir = "/mnt/shared-storage-user/steai_share/luozhihao/mc_test/raycraft/env_tmp"
+    working_dir = "/mnt/shared-storage-user/leishanzhe/env_tmp"
     mc_root = "/mnt/shared-storage-user/leishanzhe/repo/AIEvoBox/env/mc_gpu_gym/7/.minecraft"
     
     sim = MCSimulator(config=config, working_dir=working_dir, mc_root=mc_root)

@@ -25,7 +25,7 @@ import os
 import uuid
 import traceback
 import pathlib
-import database_manager
+from . import database_manager
 import Pyro4.core
 import argparse
 from enum import IntEnum
@@ -41,6 +41,7 @@ import threading
 import time
 from contextlib import contextmanager
 import rich
+import glob
 
 import uuid
 import psutil
@@ -49,7 +50,7 @@ import Pyro4
 from pathlib import Path
 
 from random import Random
-import comms
+from . import comms
 import select
 
 
@@ -691,6 +692,43 @@ class MinecraftInstance(object):
     ###########################
     ##### PRIVATE METHODS #####
     ###########################
+    @staticmethod
+    def _list_gpu_indices_from_proc():
+        """
+        根据 /proc/driver/nvidia/gpus 和 nvidia-smi
+        获取可用 GPU 的 index 列表，顺序与 /proc 下的顺序一致。
+        """
+        try:
+            proc_paths = sorted(glob.glob("/proc/driver/nvidia/gpus/*"))
+            if not proc_paths:
+                return []
+
+            smi_out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=index,pci.bus_id", "--format=csv,noheader"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            bus_to_idx = {}
+            for line in smi_out.strip().splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) != 2:
+                    continue
+                bus_to_idx[parts[1].upper()] = parts[0]
+
+            indices = []
+            for p in proc_paths:
+                pci = os.path.basename(p).upper()
+                # /proc uses shorter domain (e.g., 0000:AB:00.0); nvidia-smi bus_id is 00000000:AB:00.0.
+                bus_part = pci.split(":", 1)[1] if ":" in pci else pci
+                key = f"00000000:{bus_part}"
+                if key in bus_to_idx:
+                    indices.append(bus_to_idx[key])
+                elif pci in bus_to_idx:  # fallback in case nvidia-smi omits the prefix
+                    indices.append(bus_to_idx[pci])
+            return indices
+        except Exception:
+            return []
+
     def _launch_minecraft(self, port, headless, minecraft_dir, working_dir, replaceable=False, device=None):
         """Launch Minecraft listening for malmoenv connections.
         Args:
@@ -714,23 +752,39 @@ class MinecraftInstance(object):
             cmd += ['-seed', ",".join([str(x) for x in self._seed])]
         if self._max_mem:
             cmd += ['-maxMem', self._max_mem]
-        
-        try:
-            device = "/dev/dri/card"+str(int(working_dir.split('/')[-2])%8+1)
-        except:
-            device = "/dev/dri/card1"
-        # if self.device is not None:
-        
-        device = "dev/dri/card6"
-        
-        print("*"*20)
-        print(device)
-        print("*"*20)
-        cmd += ['-device', device]
+
+        # GPU 选择策略：
+        # 1) 如果环境变量 CUDA_VISIBLE_DEVICES 已设置，取第一个并映射到 /dev/dri/card{idx+1}
+        # 2) 否则尝试从 /proc/driver/nvidia/gpus + nvidia-smi 推断并设置 CUDA_VISIBLE_DEVICES
+        # 3) 再失败则退回到基于 working_dir 的旧逻辑，最后保底 card1
+        env = os.environ.copy()
+        cuda_visible = env.get("CUDA_VISIBLE_DEVICES")
+        if not cuda_visible:
+            indices = self._list_gpu_indices_from_proc()
+            if indices:
+                cuda_visible = ",".join(indices)
+                env["CUDA_VISIBLE_DEVICES"] = cuda_visible
+
+        device_path = None
+        if cuda_visible:
+            first = cuda_visible.split(",")[0].strip()
+            if first.isdigit():
+                device_path = f"/dev/dri/card{int(first) + 1}"
+
+        if device_path is None:
+            try:
+                device_path = "/dev/dri/card" + str(int(working_dir.split('/')[-2]) % 8 + 1)
+            except Exception:
+                device_path = "/dev/dri/card1"
+
+        cmd += ['-device', device_path]
+        print("*" * 20)
+        print(device_path)
+        print("*" * 20)
 
         cmd_to_print = cmd[:] if not self._seed else cmd[:-2]
         rich.print(f"[bold yellow]INFO: Starting Minecraft process with working_dir: {working_dir}[/bold yellow]")
-        rich.print(f"[bold yellow]INFO: Starting Minecraft process with device: {device}[/bold yellow]")
+        rich.print(f"[bold yellow]INFO: Starting Minecraft process with device: {device_path}[/bold yellow]")
 
         self._logger.info("Starting Minecraft process: " + str(cmd_to_print))
         print(cmd_to_print)
@@ -740,7 +794,8 @@ class MinecraftInstance(object):
                                          stdin=subprocess.DEVNULL,
                                          stdout=subprocess.PIPE,
                                          stderr=subprocess.STDOUT,
-                                         start_new_session=True
+                                         start_new_session=True,
+                                         env=env
                                          )
         return minecraft_process
 

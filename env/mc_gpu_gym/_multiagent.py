@@ -8,14 +8,14 @@ import json
 import logging
 import os
 import struct
-from malmo import InstanceManager, MinecraftInstance, launch_queue_logger_thread, malmo_version
+from .malmo import InstanceManager, MinecraftInstance, launch_queue_logger_thread, malmo_version
 import uuid
 import coloredlogs
 import gym
 import socket
 import time, collections
 from lxml import etree
-import comms
+from . import comms
 import xmltodict
 from concurrent.futures import ThreadPoolExecutor
 import cv2

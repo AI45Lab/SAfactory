@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 # from env.embodiedgym.embodied_env import EmbodiedAlfredGym
 # from env.androidgym.android_env import AndroidGym
 # from env.search.search_env import SearchEnv
-from env.mcgpugym.mc_gpu_env import MCGPUGym
+from env.mc_gpu_gym.mc_gpu_env import MCGPUGym
 
 from core.types.base import ResetOutput, RenderOutput, StepOutput, dumps_json_bytes
 
