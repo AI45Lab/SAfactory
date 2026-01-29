@@ -2,11 +2,18 @@ from core.data_manager.strategy.base_strategy import StorageStrategy
 from core.data_manager.models import EnvironmentConfig, InteractionSession, InteractionStep
 from core.data_manager.write_buffer import WriteBuffer
 from tortoise import Tortoise
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import uuid
 import json
 import sqlite3
+import copy
+import os
+import re
+import base64
+import logging
 from datetime import datetime
+
+log = logging.getLogger("sqlite_strategy")
 
 class SqliteStrategy(StorageStrategy):
     def __init__(self, db_url: str, enable_buffer: bool = True, buffer_size: int = 100, flush_interval: float = 5.0):
@@ -63,6 +70,9 @@ class SqliteStrategy(StorageStrategy):
             llm_model=llm_model,
             group_id=group_id
         )
+        
+        session.clean_history = []
+        
         if self._write_buffer:
             await self._write_buffer.buffer_create(session)
         else:
@@ -80,9 +90,17 @@ class SqliteStrategy(StorageStrategy):
             is_completed: 是否完成
         """
         session.total_reward = total_reward
-        session.trajectory = trajectory
         session.is_completed = is_completed
         session.end_time = datetime.now()
+        
+        # 优先使用累积的清洗历史
+        if hasattr(session, "clean_history") and session.clean_history:
+            try:
+                # 序列化为 JSON 字符串保存
+                session.trajectory = json.dumps(session.clean_history, ensure_ascii=False)
+            except Exception as e:
+                log.error(f"Failed to serialize clean_history for session {session.session_id}: {e}")
+                session.trajectory = trajectory # 降级回退
         # 使用 buffer 或直接保存
         if self._write_buffer:
             await self._write_buffer.buffer_update(session, {"total_reward", "trajectory", "is_completed", "end_time"})
@@ -96,11 +114,45 @@ class SqliteStrategy(StorageStrategy):
 
         使用分离方案：缓冲时只保存 session_id，不依赖 session 对象
         """
-        if isinstance(prompt, list):
-            # OpenAI messages 格式
-            prompt_str = json.dumps(prompt, ensure_ascii=False)
+        if not hasattr(session, "clean_history") or session.clean_history is None:
+            session.clean_history = []
+            
+        # 1. 提取当前步骤的用户 Prompt (最后一条 User 消息)
+        system_msg = None
+        current_user_msg = None
+        if isinstance(prompt, list) and prompt:
+            # 尝试获取 System Prompt
+            if prompt[0].get("role") == "system":
+                system_msg = prompt[0]
+                
+            # 倒序查找，确保找到的是当前这一步的 Prompt
+            for msg in reversed(prompt):
+                if msg.get("role") == "user":
+                    current_user_msg = msg
+                    break
+                
+        # 维护 clean_history: 插入 System Prompt (如果历史为空且存在 System)
+        if not session.clean_history and system_msg:
+             session.clean_history.append(system_msg)
+        
+        # 2. 处理图片并序列化
+        prompt_str = ""
+        clean_user_msg = None
+        
+        if current_user_msg:
+            # clean_list, _ = self.process_messages([current_user_msg], env_key, step_id)
+            # if clean_list:
+            #     clean_user_msg = clean_list[0]
+            #     prompt_str = json.dumps(clean_user_msg, ensure_ascii=False)
+            #     session.clean_history.append(clean_user_msg)
+            prompt_str = json.dumps([current_user_msg, {"role": "assistant", "content": response}], ensure_ascii=False)
+            session.clean_history.append(current_user_msg)
         else:
-            prompt_str = str(prompt) if prompt else ""
+            # 异常情况或纯 System Prompt 开局，存空的用户消息结构
+            prompt_str = json.dumps({"role": "user", "content": ""}, ensure_ascii=False)
+            
+        # 维护 clean_history: 追加 Assistant Response
+        session.clean_history.append({"role": "assistant", "content": response})
 
         # 创建 Step 实例（使用 session_id 而非 session 对象）
         step = InteractionStep(
@@ -153,6 +205,68 @@ class SqliteStrategy(StorageStrategy):
         conn.row_factory = sqlite3.Row
         
         return conn
+    
+    def process_messages(
+        self,
+        messages: List[Dict[str, Any]], 
+        env_key: str, 
+        step_id: int, 
+        root_dir: str = "saved_images"
+    ) -> Tuple[List[Dict[str, Any]], List[str]]:
+        """
+        处理 OpenAI 消息列表中的图片：
+        1. 提取 Base64 图片
+        2. 保存为本地文件
+        3. 将消息中的 Base64 替换为本地路径标记
+        
+        Returns:
+            processed_messages: 处理后的消息列表 (深拷贝)
+            saved_files: 本次处理保存的文件路径列表
+        """
+        clean_messages = copy.deepcopy(messages)
+        saved_files = []
+        
+        # 确保目录存在
+        save_dir = os.path.join(root_dir, f"{env_key}")
+        
+        image_count = 0
+
+        if isinstance(clean_messages, list):
+            for msg_idx, message in enumerate(clean_messages):
+                content = message.get("content")
+                if isinstance(content, list):
+                    for item_idx, item in enumerate(content):
+                        if item.get("type") == "image_url":
+                            image_url = item.get("image_url", {}).get("url", "")
+                            # 匹配 Data URI Scheme
+                            match = re.match(r"data:image/(\w+);base64,(.+)", image_url)
+                            if match:
+                                try:
+                                    ext = match.group(1)
+                                    b64_str = match.group(2)
+                                    
+                                    # 延迟创建目录，只有真正有图片时才创建
+                                    os.makedirs(save_dir, exist_ok=True)
+                                    
+                                    img_data = base64.b64decode(b64_str)
+                                    
+                                    # 命名规则: step_{id}_msg_{idx}_img_{count}.{ext}
+                                    file_name = f"step_{step_id}_m{msg_idx}_i{image_count}.{ext}"
+                                    file_path = os.path.join(save_dir, file_name)
+                                    
+                                    with open(file_path, "wb") as f:
+                                        f.write(img_data)
+                                    
+                                    # 替换 content
+                                    # 注意：这里替换为特定标记，既方便阅读也方便后续处理
+                                    item["image_url"]["url"] = f"{file_path}"
+                                    
+                                    saved_files.append(file_path)
+                                    image_count += 1
+                                except Exception as e:
+                                    log.warning(f"Failed to save image at step {step_id}: {e}")
+        
+        return clean_messages, saved_files
     
     @property
     def buffer_stats(self) -> Optional[dict]:

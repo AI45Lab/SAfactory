@@ -56,6 +56,7 @@ python -m uvicorn env.app:app --host 0.0.0.0 --port 36663
 |        | --env-root            | 环境配置根目录,与env_config互斥            | env                   | 否       |
 | 运行模式   | --mode                | 运行模式（local/remote）               | local                 | 是       |
 | 数据库    | --db-path             | SQLite 数据库路径                     | sqlite://test_envs.db | 是       |
+|        | --storage-type       | Data 存储方式                    | sqlite                  | 是       |
 |        | --rebuild-table       | 是否丢弃前一次推演任务环境                    | True                  | 否       |
 | 环境池    | --pool-size           | 环境池大小（0 表示使用配置文件值）               | 0                     | 否       |
 | 本地服务   | --local-upstream-port | 本地环境 HTTP 服务端口                   | 36663                 | 否       |

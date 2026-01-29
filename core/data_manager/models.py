@@ -51,6 +51,7 @@ class InteractionSession(Model):
     is_completed = fields.BooleanField(default=False)
     env_cache: Optional[Any] = None 
     reward_count: Optional[Any] = None
+    clean_history: Optional[Any] = None
 
     class Meta:
         table = "interaction_sessions"

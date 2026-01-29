@@ -8,7 +8,7 @@ import copy
 import re
 import base64
 import hashlib
-from typing import List, Dict, Optional, Any, Union
+from typing import List, Dict, Optional, Any, Union, Tuple
 from datetime import datetime
 
 # 复用已有的数据模型 (仅用于接口传参兼容)
@@ -18,7 +18,7 @@ from core.data_manager.strategy.base_strategy import StorageStrategy
 # 引入 Cloud SDK
 from wt_sdk import WTGatewayClient, GatewayConfig, EnvConfigManager
 from wt_sdk.models import LandingRecord, ChatMessage, ContentItem
-from wt_sdk.utils import generate_deterministic_id
+from wt_sdk.utils import generate_deterministic_id, S3Uploader
 
 log = logging.getLogger("cloud_strategy")
 
@@ -138,8 +138,8 @@ class CloudStrategy(StorageStrategy):
             
         session.reward_count += reward
 
-        # 1. 图片处理 (保留本地保存图片的逻辑，替换 Prompt 中的 Base64)
-        clean_prompt, _ = self._process_and_save_images(prompt, env_key, step_id)
+        # 1. 图片处理
+        clean_prompt, _ = self.process_message(prompt, env_key, step_id)
 
         # 2. 构造 LandingRecord 所需数据
         # 转换 Prompt (OpenAI format) -> Messages (SDK format)
@@ -209,6 +209,121 @@ class CloudStrategy(StorageStrategy):
                 
     def get_sync_connection(self):
         pass
+    
+    def process_message(self, messages: List[Dict[str, Any]], env_key: str, step_id: int, root_dir: str = "saved_images") -> Tuple[List[Dict[str, Any]], List[str]]:
+        """
+        处理 OpenAI 消息列表中的图片：
+        1. 提取 Base64 图片
+        2. 保存为本地文件，
+        3. 尝试上传到S3存储中，
+        4. 将消息中的 Base64 替换为 S3 URL （如果失败则退回为本地路径）
+        
+        Returns:
+            processed_messages: 处理后的消息列表 (深拷贝)
+            saved_urls: 本次处理保存的文件路径列表
+        """
+        # 初始化
+        try:
+            uploader = S3Uploader()
+        except Exception as e:
+            log.error(f"[{env_key}] Failed to initialize S3Uploader: {e}")
+            uploader = None
+        
+        test_prefix = f"test/test_s3_util_{int(time.time())}"
+        save_dir = os.path.join(root_dir, f"{env_key}")
+        
+        processed_messages = []
+        saved_urls = []
+        image_count = 0
+        
+        for msg_idx, message in enumerate(messages):
+            content = message.get("content")
+            
+            # 如果 content 不是列表，或者没有 image_url，直接复用原对象引用
+            if not isinstance(content, list) or not any(item.get("type") == "image_url" for item in content):
+                processed_messages.append(message)
+                continue
+            
+            # 如果包含图片，创建 Message 的浅拷贝，避免修改原始对象
+            new_message = message.copy()
+            new_content = []
+            
+            for item_idx, item in enumerate(content):
+                # 如果不是图片，直接复用 item 引用
+                if item.get("type") != "image_url":
+                    new_content.append(item)
+                    continue
+                
+                image_url = item.get("image_url", {}).get("url", "")
+                
+                # 检查是否为 Base64
+                match = re.match(r"data:image/(\w+);base64,(.+)", image_url)
+                if not match:
+                    # 如果已经是 URL，直接保留
+                    new_content.append(item)
+                    continue
+                
+                # --- 开始处理图片 ---
+                ext = match.group(1)
+                b64_str = match.group(2)
+                
+                file_name = f"step_{step_id}_m{msg_idx}_i{image_count}.{ext}"
+                file_path = os.path.join(save_dir, file_name)
+                final_url = None
+                
+                # 创建 item 的浅拷贝，准备修改 url
+                new_item = item.copy()
+                new_item["image_url"] = item["image_url"].copy()
+
+                # A. 尝试保存到本地
+                local_save_success = False
+                try:
+                    # 延迟创建目录
+                    os.makedirs(save_dir, exist_ok=True)
+                    img_data = base64.b64decode(b64_str)
+                    
+                    with open(file_path, "wb") as f:
+                        f.write(img_data)
+                    local_save_success = True
+                    final_url = file_path # 默认值：本地路径
+                    
+                except Exception as e:
+                    log.error(f"[{env_key}][Step {step_id}] Save Local Failed. Msg: {msg_idx}, Item: {item_idx}. Error: {e}")
+                    # 如果本地都保存失败，保留原始 Base64 防止数据丢失，或者标记错误
+                    new_item["image_url"]["url"] = b64_str
+                    new_content.append(new_item)
+                    continue # 跳过后续 S3 逻辑
+
+                # B. 尝试上传到 S3 (仅在本地保存成功后)
+                if local_save_success and uploader:
+                    try:
+                        key = f"{test_prefix}/{file_name}"
+                        # upload_file 可能会失败，我们需要捕获它
+                        s3_url = uploader.upload_file(file_path=file_path, key=key)
+                        
+                        if s3_url:
+                            final_url = s3_url
+                        else:
+                            # 即使没有抛出异常但返回空，也视为失败
+                            log.warning(f"[{env_key}][Step {step_id}] S3 Upload returned empty URL. Using local path.")
+
+                    except Exception as e:
+                        # 4. S3 失败时的降级处理：仅打印日志，不中断，继续使用 final_url (即本地路径)
+                        log.error(f"[{env_key}][Step {step_id}] S3 Upload Error. Key: {key}. Error: {e}")
+                        # 保持 final_url 为本地路径，确保 Base64 被替换
+                
+                # C. 更新 Item 内容
+                new_item["image_url"]["url"] = final_url
+                new_content.append(new_item)
+                
+                saved_urls.append(final_url)
+                image_count += 1
+            
+            # 将重构后的 content 赋值给新消息
+            new_message["content"] = new_content
+            processed_messages.append(new_message)
+        
+        return processed_messages, saved_urls
 
     # --- Helpers ---
 
@@ -232,45 +347,10 @@ class CloudStrategy(StorageStrategy):
                             content_items.append(ContentItem(type="text", text=item.get("text", "")))
                         elif item.get("type") == "image_url":
                              url = item.get("image_url", {}).get("url", "")
-                             content_items.append(ContentItem(type="text", text=f"[IMAGE: {url[:50]}...]"))
+                             content_items.append(ContentItem(type="text", text=url))
             
             out.append(ChatMessage(role=role, content=content_items))
         return out
-
-    def _process_and_save_images(self, prompt_data, env_key, step_i):
-        """
-        深拷贝 prompt，提取其中的 base64 图片保存到本地，
-        返回替换路径后的 prompt。
-        """
-        clean_prompt = copy.deepcopy(prompt_data)
-        
-        save_dir = os.path.join("saved_images", f"{env_key}")
-        os.makedirs(save_dir, exist_ok=True)
-        image_count = 0
-        file_path = None
-
-        if isinstance(clean_prompt, list):
-            for message in clean_prompt:
-                if isinstance(message.get("content"), list):
-                    for item in message["content"]:
-                        if item.get("type") == "image_url":
-                            image_url = item.get("image_url", {}).get("url", "")
-                            match = re.match(r"data:image/(\w+);base64,(.+)", image_url)
-                            if match:
-                                ext = match.group(1)
-                                b64_str = match.group(2)
-                                try:
-                                    img_data = base64.b64decode(b64_str)
-                                    file_name = f"step_{step_i}_img_{image_count}.{ext}"
-                                    file_path = os.path.join(save_dir, file_name)
-                                    with open(file_path, "wb") as f:
-                                        f.write(img_data)
-                                    item["image_url"]["url"] = f"[IMAGE SAVED: {file_path}]"
-                                    image_count += 1
-                                except Exception as e:
-                                    log.warning(f"Failed to save image at step {step_i}: {e}")
-        
-        return clean_prompt, file_path
 
     async def fetch_done_steps_with_context(self, after_id: int = 0, limit: int = 100) -> List[Dict]:
         return []

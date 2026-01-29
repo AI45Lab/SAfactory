@@ -341,13 +341,13 @@ def parse_args():
 
     # YAML
     p.add_argument("--manager-config", type=str, default="./manager/config.yaml", help="Path to unified YAML config")
-    p.add_argument("--mode", choices=["local", "remote"], default="local")
+    p.add_argument("--mode", choices=["local", "remote"], default="remote")
 
     # DB / YAML-aggregator
-    p.add_argument("--env-config", type=str, help="env config which used for specify the input env configs, and it's incompatible with  env-root")
+    p.add_argument("--env-config", type=str, default="/mnt/shared-storage-user/chenxinquan/AIEvoBox/env/androidgym/android_env.yaml", help="env config which used for specify the input env configs, and it's incompatible with  env-root")
     p.add_argument("--env-root", type=str, default="env", help="only works when env-config is not specified")
-    p.add_argument("--storage-type", type=str, default="cloud")
-    p.add_argument("--db-path", type=str, default="sqlite://test_envs.db")
+    p.add_argument("--storage-type", type=str, default="sqlite")
+    p.add_argument("--db-path", type=str, default="sqlite://android_envs.db")
     p.add_argument("--rebuild-table", action="store_true", default=True)
 
     # Pool overrides
@@ -364,12 +364,12 @@ def parse_args():
     # Interactor
     p.add_argument("--max-steps", type=int, default=1000)
     p.add_argument("--message-cut", type=int, default=3)
-    p.add_argument("--env-http-timeout-s", type=float, default=50.0)
+    p.add_argument("--env-http-timeout-s", type=float, default=300.0)
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--http-retries", type=int, default=2)
 
     # LLM
-    p.add_argument("--llm-base-url", type=str, default="http://100.99.177.21:30000/v1")
+    p.add_argument("--llm-base-url", type=str, default="http://100.99.119.134:30000/v1")
     p.add_argument("--llm-api-key", type=str, default="EMPTY")
     p.add_argument("--llm-model", type=str, default="Qwen2.5-VL-72B-Instruct")
     p.add_argument("--llm-temperature", type=float, default=0.3)
