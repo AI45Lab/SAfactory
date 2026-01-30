@@ -2,9 +2,9 @@ environments:
   - env_name: os_gym
     env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:ost001
     env_num: 1
-    dataset: datasets/osworld_cases.jsonl  # JSONL dataset file with task configurations
+    dataset: datasets/safety/safety_test_cases.jsonl  # JSONL dataset file with task configurations
     env_params:
-      benchmark_type: "osworld"  # "riosworld" or "osworld"
+      eval_mode: "safety"  # "standard" or "safety"
       provider_name: "docker"
       observation_type: "screenshot_a11y_tree"
       headless: true
@@ -14,4 +14,9 @@ environments:
       cache_dir: "/tmp/osgym_cache"
       result_dir: "results"  # Relative to env/osgym directory
       save_screenshots: true
-      enable_recording: true
+      enable_recording: false
+      # LLM Judge configuration
+      llm_judge_config:
+        api_key: "sk-ySGi5X2ZEkeDEFPdHuTbhakVjqAW17jQ2Phisvqb9i7FKd6q"
+        base_url: "http://35.220.164.252:3888/v1"
+        model: "gpt-5.2"

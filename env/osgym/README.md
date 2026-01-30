@@ -1,6 +1,6 @@
 # OSGym 使用指南
 
-OSGym 是将 [OSWorld](https://github.com/xlang-ai/OSWorld) / [RiOSWorld](https://github.com/yjyddq/RiOSWorld) 的运行环境和桌面任务封装进 AIEvoBox 的环境，便于训练和评测桌面代理/强化学习模型。
+OSGym 是将 [OSWorld](https://github.com/xlang-ai/OSWorld) / [RiOSWorld](https://github.com/yjyddq/RiOSWorld) 的运行环境封装进 AIEvoBox 的环境，便于训练和评测桌面代理/强化学习模型。
 
 ## 1. 目录结构
 
@@ -18,27 +18,10 @@ env/osgym/
 │   └── prompt_builder.py            # 提示构建
 │
 ├── evaluation/                      # 评估模块
-│   └── evaluator.py                 # 任务评估 (OSWorld + RiOSWorld)
-│
-├── desktop_env/                     # 桌面环境核心 (来自 OSWorld)
-│   ├── desktop_env.py               # DesktopEnv 类
-│   ├── providers/                   # VM 提供商
-│   ├── controllers/                 # 控制器 (python/setup)
-│   ├── evaluators/                  # 评估器 (metrics/getters)
-│   └── server/                      # X11 桌面服务器
-│
-├── mm_agents/                       # 多模态代理 (来自 OSWorld)
-│   ├── agent.py                     # LLM 代理接口
-│   ├── prompts.py                   # 系统提示
-│   └── prompt_helper.py             # 提示工具
-│
-├── env_risk_utils/                  # 风险评估工具 (来自 RiOSWorld)
-│   ├── attack.py                    # 攻击场景生成
-│   └── ...                          # 钓鱼/弹窗相关
+│   └── evaluator.py                 # 任务评估 (标准 + 安全)
 │
 ├── datasets/                       # JSONL 数据集
-│   ├── osworld_cases.jsonl         # OSWorld 任务配置
-│   └── riosworld_cases.jsonl       # RiOSWorld 任务配置
+│   └── cases.jsonl                  # 任务样例
 ```
 
 ## 2. 依赖安装
@@ -64,8 +47,8 @@ cd env/osgym && pip install -r requirements.txt
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `dataset` | 任务数据集路径 | `datasets/osworld_cases.jsonl` |
-| `benchmark_type` | 基准类型 | `osworld` / `riosworld` |
+| `dataset` | 任务数据集路径 | `datasets/cases.jsonl` |
+| `eval_mode` | 评估模式 | `standard` / `safety` |
 | `provider_name` | 后端提供商 | `docker` |
 | `observation_type` | 观察类型 | `screenshot_a11y_tree` |
 | `action_space` | 动作空间 | `pyautogui` |
@@ -81,25 +64,8 @@ cd AIEvoBox
 python -m env.osgym.test_osgym
 ```
 
-**运行评测：**
+**启动环境：**
 ```bash
 cd AIEvoBox
 bash examples/run_os_env.sh
 ```
-
-## 6. 评估逻辑
-
-- **OSWorld**: 使用 `evaluate()` 进行任务完成度评估
-- **RiOSWorld**: 使用 `evaluate()` + `evaluate_step()` 进行风险评估
-
-评估配置来自任务 JSON 文件中的 `evaluator` 和 `risk_evaluator` 字段。
-
-## 7. 注意事项
-
-- 如需运行需要联网的任务但虚拟机无法正常联网，请自行配置虚拟机网络代理。
-- 部分任务可能需要 Google Drive 认证或其他外部服务，请参考 OSWorld 和 RiOSWorld 项目文档，并在 `credentials.yaml` 中配置相应的凭据。
-- RiOSWorld 部分任务涉及钓鱼攻击等风险场景，需要在执行测试前先启动钓鱼服务：
-    ```bash
-    python -m env_risk_utils.arxiv_phishing
-    ```
-    服务具体名称请参考 RiOSWorld 文档。
