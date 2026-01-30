@@ -33,6 +33,7 @@ class CloudStrategy(StorageStrategy):
         self.client: Optional[WTGatewayClient] = None
         self.env_manager: Optional[EnvConfigManager] = None
         self.initialized = False
+        self.start_time = time.perf_counter()
         
         # 内存缓存：仅用于 interactor 运行时保持对象引用，不持久化
         self._env_configs: Dict[str, EnvironmentConfig] = {} 
@@ -72,7 +73,7 @@ class CloudStrategy(StorageStrategy):
         
         # 1. 构造 Config 字典
         config_dict = {
-            "session": self.job_session,
+            "job_session": self.job_session,
             "env_id": env_id,
             "env_name": env_name,
             "env_params": env_params,
@@ -137,6 +138,9 @@ class CloudStrategy(StorageStrategy):
         """
         await self.init()
         
+        if step_id == 1:
+            self.start_time = time.perf_counter()
+        
         if session.reward_count is None:
             session.reward_count = 0.0
             
@@ -172,11 +176,12 @@ class CloudStrategy(StorageStrategy):
 
         # 3. 创建 Record 对象
         current_ts = int(time.time())
+        execution_time = time.perf_counter() - self.start_time
         record = LandingRecord(
             dataset_type="Test", # 可根据需求修改
-            dt=datetime.now().strftime("%Y-%m-%d"),
+            dt=f"{execution_time:.6f}",
             id=record_id,
-            session_id=str(session.env),
+            session_id=str(session.id),
             created_at=current_ts,
             step_id=step_id,
             is_terminal=done,
@@ -192,6 +197,8 @@ class CloudStrategy(StorageStrategy):
             meta_json=json.dumps({
                 "source": "AIEvoBox",
                 "group_id": session.group_id,
+                "job_session": self.job_session,
+                "env_key": env_key
             })
         )
 

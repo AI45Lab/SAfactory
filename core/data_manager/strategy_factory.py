@@ -20,7 +20,7 @@ class StorageFactory:
         
         strategy_cls = cls._registry[storage_type]
         # 实例化策略类，把所有参数传进去
-        kwargs[job_session]=job_session
+        kwargs["job_session"]=job_session
         return strategy_cls(**kwargs)
 
 

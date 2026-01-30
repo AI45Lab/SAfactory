@@ -342,7 +342,7 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     #Task identifier
-    p.add_argument("--job-id", type=str, default="", help="job id is used to identify each task and record in the environmentconfig table as session")
+    p.add_argument("--job-session", type=str, default="6978763b718b94e540a221c3", help="job id is used to identify each task and record in the environmentconfig table as session")
     # YAML
     p.add_argument("--manager-config", type=str, default="./manager/config.yaml", help="Path to unified YAML config")
     p.add_argument("--mode", choices=["local", "remote"], default="remote")
@@ -350,7 +350,7 @@ def parse_args():
     # DB / YAML-aggregator
     p.add_argument("--env-config", type=str, default="/mnt/shared-storage-user/chenxinquan/AIEvoBox/env/androidgym/android_env.yaml", help="env config which used for specify the input env configs, and it's incompatible with  env-root")
     p.add_argument("--env-root", type=str, default="env", help="only works when env-config is not specified")
-    p.add_argument("--storage-type", type=str, default="sqlite")
+    p.add_argument("--storage-type", type=str, default="cloud")
     p.add_argument("--db-path", type=str, default="sqlite://android_envs.db")
     p.add_argument("--rebuild-table", action="store_true", default=True)
 
@@ -373,7 +373,7 @@ def parse_args():
     p.add_argument("--http-retries", type=int, default=2)
 
     # LLM
-    p.add_argument("--llm-base-url", type=str, default="http://100.99.119.134:30000/v1")
+    p.add_argument("--llm-base-url", type=str, default="http://100.99.119.152:30000/v1")
     p.add_argument("--llm-api-key", type=str, default="EMPTY")
     p.add_argument("--llm-model", type=str, default="Qwen2.5-VL-72B-Instruct")
     p.add_argument("--llm-temperature", type=float, default=0.3)
@@ -410,11 +410,11 @@ async def main():
     upstream_log_path = os.path.join(args.log_dir, "upstream.log")
     log.info("main log file: %s", main_log_path)
 
-    job_id=args.job_id
-    if job_id=="":
-       job_id =  uuid.uuid4().hex
+    job_session=args.job_session
+    if job_session=="":
+       job_session =  uuid.uuid4().hex
 
-    data_manager = DataManager(job_id,storage_type=args.storage_type, db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
+    data_manager = DataManager(job_session=job_session, storage_type=args.storage_type, db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
     yaml_config_list = all_env_yaml_load(env_root=args.env_root, env_config=args.env_config)
 
     # 如果指定了 --rl-env-num，覆盖所有环境的 env_num
