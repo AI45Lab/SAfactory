@@ -27,7 +27,7 @@ class CloudStrategy(StorageStrategy):
     将交互数据直接存储到云端数据库 (WTGateway)，环境配置存储到 S3。
     """
 
-    def __init__(self, db_url: str, enable_buffer: bool = False, buffer_size: int = 1, flush_interval: float = 1.0):
+    def __init__(self,job_session: str ,db_url: str, enable_buffer: bool = False, buffer_size: int = 1, flush_interval: float = 1.0):
         self.db_url = db_url
         
         self.client: Optional[WTGatewayClient] = None
@@ -37,6 +37,9 @@ class CloudStrategy(StorageStrategy):
         # 内存缓存：仅用于 interactor 运行时保持对象引用，不持久化
         self._env_configs: Dict[str, EnvironmentConfig] = {} 
         self._sessions: Dict[str, InteractionSession] = {}
+
+        #job session is used for distinguishing each simulation task
+        self.job_session = job_session
 
     async def init(self):
         if self.initialized:
@@ -69,6 +72,7 @@ class CloudStrategy(StorageStrategy):
         
         # 1. 构造 Config 字典
         config_dict = {
+            "session": self.job_session,
             "env_id": env_id,
             "env_name": env_name,
             "env_params": env_params,
@@ -172,7 +176,7 @@ class CloudStrategy(StorageStrategy):
             dataset_type="Test", # 可根据需求修改
             dt=datetime.now().strftime("%Y-%m-%d"),
             id=record_id,
-            session_id=str(session.session_id),
+            session_id=str(session.env),
             created_at=current_ts,
             step_id=step_id,
             is_terminal=done,

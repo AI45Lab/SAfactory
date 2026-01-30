@@ -5,6 +5,9 @@ import asyncio
 import subprocess
 import time
 import sqlite3
+import uuid
+
+import pylab as p
 import requests
 import yaml
 import logging
@@ -338,7 +341,8 @@ def parse_args():
         description="RL env launcher",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-
+    #Task identifier
+    p.add_argument("--job-id", type=str, default="", help="job id is used to identify each task and record in the environmentconfig table as session")
     # YAML
     p.add_argument("--manager-config", type=str, default="./manager/config.yaml", help="Path to unified YAML config")
     p.add_argument("--mode", choices=["local", "remote"], default="remote")
@@ -405,8 +409,12 @@ async def main():
     # Optional: upstream service log file
     upstream_log_path = os.path.join(args.log_dir, "upstream.log")
     log.info("main log file: %s", main_log_path)
-    
-    data_manager = DataManager(storage_type=args.storage_type, db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
+
+    job_id=args.job_id
+    if job_id=="":
+       job_id =  uuid.uuid4().hex
+
+    data_manager = DataManager(job_id,storage_type=args.storage_type, db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
     yaml_config_list = all_env_yaml_load(env_root=args.env_root, env_config=args.env_config)
 
     # 如果指定了 --rl-env-num，覆盖所有环境的 env_num

@@ -16,13 +16,14 @@ from datetime import datetime
 log = logging.getLogger("sqlite_strategy")
 
 class SqliteStrategy(StorageStrategy):
-    def __init__(self, db_url: str, enable_buffer: bool = True, buffer_size: int = 100, flush_interval: float = 5.0):
+    def __init__(self,job_session: str, db_url: str, enable_buffer: bool = True, buffer_size: int = 100, flush_interval: float = 5.0):
         self.db_url = db_url
         self.initialized = False
         self._enable_buffer = enable_buffer
         self._write_buffer: Optional[WriteBuffer] = None
         self._buffer_size = buffer_size
         self._flush_interval = flush_interval
+        self._job_session = job_session
 
     async def init(self):
         """初始化数据库连接和写入缓冲器"""
