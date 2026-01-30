@@ -22,7 +22,7 @@ import yaml
 import numpy as np
 from PIL import Image
 
-from .entry import MinecraftSim
+from entry import MinecraftSim
 
 
 class MCSimulator:

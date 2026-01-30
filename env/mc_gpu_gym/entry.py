@@ -16,7 +16,7 @@ from copy import deepcopy
 from typing import Dict, List, Tuple, Union, Sequence, Mapping, Any, Optional, Literal
 from dataclasses import asdict, dataclass, field, fields
 
-from ._multiagent import MultiAgentEnv
+from _multiagent import MultiAgentEnv
 
 BASIC_RESOLUTION = (640,360)
 

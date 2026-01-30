@@ -25,7 +25,7 @@ import os
 import uuid
 import traceback
 import pathlib
-from . import database_manager
+import database_manager
 import Pyro4.core
 import argparse
 from enum import IntEnum
@@ -50,7 +50,7 @@ import Pyro4
 from pathlib import Path
 
 from random import Random
-from . import comms
+import comms
 import select
 
 
