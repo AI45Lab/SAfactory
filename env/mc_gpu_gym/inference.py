@@ -205,9 +205,11 @@ def test_model(json_file_path, model_path, mc_root, working_dir):
     print(f"\n[Test] All scenes completed! Results saved to: {output_dir.absolute()}")
 
 if __name__ == "__main__":
-    jsonl_file_path = "/mnt/shared-storage-user/steai_share/luozhihao/mc_test/data_test.json"  # 替换为你的 JSONL 文件路径
-    model_path = "/mnt/shared-storage-user/steai_share/wuxiongbin/checkpoints/steai_origin_door"  # 替换为你的 VLLM 模型路径
-    mc_root = "/mnt/shared-storage-user/steai_share/luozhihao/mc_test/raycraft/grpc_raycraft_gpu/7/.minecraft"  # 替换为你的 Minecraft 根目录
-    working_dir = "/mnt/shared-storage-user/steai_share/luozhihao/mc_test/raycraft/grpc_raycraft_gpu/test"  # 替换为你的工作目录
+    base_dir = Path(__file__).resolve().parent
+    # 下面的路径均为示例相对路径，请按需替换
+    jsonl_file_path = base_dir / "data_test.json"  # 示例数据文件（请替换为实际 JSON/JSONL）
+    model_path = base_dir / "checkpoints" / "steai_origin_door"  # 示例模型目录
+    mc_root = base_dir / "7" / ".minecraft"  # Minecraft 根目录
+    working_dir = base_dir.parents[4] / "env_tmp"  # 工作目录
     
-    test_model(jsonl_file_path, model_path, mc_root, working_dir)
+    test_model(str(jsonl_file_path), str(model_path), str(mc_root), str(working_dir))

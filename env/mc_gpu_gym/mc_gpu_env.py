@@ -51,6 +51,10 @@ class MCGPUGym(BaseEnv):
     def _init_simulator(self, env_config: Any, dataset: Any, **kwargs: Any) -> MCSimulator:
         """根据传入配置创建 GPU 模拟器"""
         sim_kwargs: Dict[str, Any] = {}
+        base_dir = Path(__file__).resolve().parent  # env/mc_gpu_gym
+        # parents: [mc_gpu_gym, env, AIEvoBox, repo, leishanzhe, ...]
+        # 仓库根目录应是 AIEvoBox
+        repo_root = Path(__file__).resolve().parents[2]
 
         # 场景/任务数据：优先使用 dataset，其次使用 env_config
         if isinstance(dataset, (dict, list)):
@@ -71,6 +75,12 @@ class MCGPUGym(BaseEnv):
         for key in ("output_dir", "display_port", "working_dir", "mc_root", "data_path", "config_path"):
             if key in kwargs and kwargs[key] is not None:
                 sim_kwargs[key] = kwargs[key]
+
+        # 将相对路径转换为以仓库根目录为基准的绝对路径，避免启动目录不同导致找不到文件
+        for path_key in ("working_dir", "mc_root", "output_dir", "data_path", "config_path"):
+            val = sim_kwargs.get(path_key)
+            if isinstance(val, str) and not Path(val).is_absolute():
+                sim_kwargs[path_key] = str((repo_root / val).resolve())
 
         return MCSimulator(**sim_kwargs)
 

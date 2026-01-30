@@ -13,6 +13,7 @@ RayCraft GPU HTTP Server
 import uuid
 import base64
 import io
+from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Optional
 
@@ -33,11 +34,10 @@ from copy import deepcopy
 # 全局配置
 # ============================================================================
 
-# 默认配置文件路径（与 deepeyes 版本保持一致）
-DEFAULT_CONFIG_PATH = "/mnt/shared-storage-user/steai_share/luozhihao/mc_test/raycraft/configs/kill/base.yaml"
-
-# 默认数据文件路径
-DEFAULT_DATA_PATH = "/mnt/shared-storage-user/steai_share/luozhihao/mc_test/raycraft/datasets/data.json"
+# 默认配置/数据文件路径（相对当前模块目录，便于迁移）
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_CONFIG_PATH = str(BASE_DIR / "config" / "mc_gpu_env.yaml")
+DEFAULT_DATA_PATH = str(BASE_DIR / "config" / "mc_gpu_tasks.yaml")
 
 
 # ============================================================================

@@ -8,14 +8,14 @@ import json
 import logging
 import os
 import struct
-from malmo import InstanceManager, MinecraftInstance, launch_queue_logger_thread, malmo_version
+from .malmo import InstanceManager, MinecraftInstance, launch_queue_logger_thread, malmo_version
 import uuid
 import coloredlogs
 import gym
 import socket
 import time, collections
 from lxml import etree
-import comms
+from . import comms
 import xmltodict
 from concurrent.futures import ThreadPoolExecutor
 import cv2
@@ -163,7 +163,8 @@ class XvfbRecorder:
         if self._ffmpeg is None:
             print("videoooooooooooooooooooooooooooooooo errorrrrrrrrrrrrrrrrrrrrrrrrrrr")
             return
-        print("videoooooooooooooooooooooooooooooooo")
+        video_path = str(self.outfile.resolve())
+        print(f"videoooooooooooooooooooooooooooooooo saved_to={video_path}")
         self._ffmpeg.terminate()
         self._ffmpeg.wait()
         self._ffmpeg = None

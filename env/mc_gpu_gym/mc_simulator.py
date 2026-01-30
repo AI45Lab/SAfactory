@@ -22,7 +22,7 @@ import yaml
 import numpy as np
 from PIL import Image
 
-from entry import MinecraftSim
+from .entry import MinecraftSim
 
 
 class MCSimulator:
@@ -297,9 +297,10 @@ if __name__ == "__main__":
         "interact_list": ["Door", "Button"],
         "interact_pos": [[2308, 101, 993], [2310, 102, 991.5]]
     }
-    data_path = "/mnt/shared-storage-user/steai_share/luozhihao/mc_test/raycraft/datasets/data.json"
-    working_dir = "/mnt/shared-storage-user/leishanzhe/env_tmp"
-    mc_root = "/mnt/shared-storage-user/leishanzhe/repo/AIEvoBox/env/mc_gpu_gym/7/.minecraft"
+    base_dir = Path(__file__).resolve().parent
+    # data_path = base_dir / "config" / "mc_gpu_tasks.yaml"
+    working_dir = (base_dir / "env_tmp").as_posix()
+    mc_root = (base_dir / "7" / ".minecraft").as_posix()
     
     sim = MCSimulator(config=config, working_dir=working_dir, mc_root=mc_root)
     obs, info = sim.reset()

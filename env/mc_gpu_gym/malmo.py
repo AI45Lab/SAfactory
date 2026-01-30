@@ -25,7 +25,7 @@ import os
 import uuid
 import traceback
 import pathlib
-import database_manager
+from . import database_manager
 import Pyro4.core
 import argparse
 from enum import IntEnum
@@ -50,7 +50,7 @@ import Pyro4
 from pathlib import Path
 
 from random import Random
-import comms
+from . import comms
 import select
 
 
@@ -93,7 +93,7 @@ def get_mine_studio_dir():
     获取 MineStudio 的目录。如果环境变量 MINESTUDIO_DIR 存在，则使用该目录；
     否则，在系统临时目录中创建一个 MineStudio 专属子目录。
     """
-    mine_studio_dir = os.getenv("MINESTUDIO_DIR", "/mnt/shared-storage-user/luozhihao/codebase/code/deepeyes/verl/workers/agent/envs/mc/MineStudio")
+    mine_studio_dir = os.getenv("MINESTUDIO_DIR")
     if mine_studio_dir:
         logging.info(f"Detecting MINESTUDIO_DIR: {mine_studio_dir}")
     else:
@@ -506,7 +506,7 @@ class MinecraftInstance(object):
                         # env = os.environ.copy()
                         # env['DISPLAY'] = ':'+str(self.xvfb_port)
                         # subprocess.run(['xdotool', 'key', 'F11'], env=env, check=True) 
-                        # LOG_FILE = Path('/mnt/shared-storage-user/steai_share/luozhihao/test.txt')  
+                        # LOG_FILE = Path('logs/test.txt')
                         # with LOG_FILE.open('a', encoding='utf-8') as f:
                         #     f.write('test all set\n')
                         break
