@@ -367,6 +367,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
             # 按实际需要的数量获取（还差多少就获取多少）
             remaining_groups = need_groups - len(valid_groups)
             fetch_sample_count = remaining_groups * args.n_samples_per_prompt
+            print(f"need sample count: fetch_sample_count: {fetch_sample_count}")
             raw_results = []
 
             while len(raw_results) < fetch_sample_count:

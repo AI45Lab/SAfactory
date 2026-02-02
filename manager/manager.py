@@ -30,7 +30,7 @@ def _detect_mode(cfg: Dict[str, Any]) -> str:
 
 
 class EnvPoolManager:
-    def __init__(self, cfg: dict, conn: sqlite3.Connection) -> None:
+    def __init__(self, cfg: dict, conn: Optional[sqlite3.Connection]) -> None:
         self.cfg = cfg or {}
         self._repo = EnvDataRepository(conn)
 

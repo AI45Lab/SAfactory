@@ -18,7 +18,13 @@ from PIL import Image
 logger = logging.getLogger("osgym.observation_processor")
 
 # Path to intent click target data for induced_text attacks
-INTENT_CLICK_TGT_PATH = Path(__file__).resolve().parent.parent / "env_risk_utils" / "intent_click_tgt_OK.json"
+# Get path from RiOSWorld package's env_risk_utils module
+def _get_intent_click_tgt_path() -> Path:
+    """Get the path to intent_click_tgt_OK.json from RiOSWorld package."""
+    import env_risk_utils
+    return Path(env_risk_utils.__file__).parent / "intent_click_tgt_OK.json"
+
+INTENT_CLICK_TGT_PATH = _get_intent_click_tgt_path()
 
 
 class ObservationProcessor:

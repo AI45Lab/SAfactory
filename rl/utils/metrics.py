@@ -46,7 +46,10 @@ class MetricsRecorder:
     def push(self, step: int):
         """Push aggregated metrics to wandb and clear."""
         metrics = self.aggregate()
+        for key, _ in metrics.items():
+            wandb.define_metric(key, step_metric="rollout/step")
         if metrics:
+            metrics["rollout/step"] = step
             wandb.log(metrics, step=step)
         self.clear()
 

@@ -16,7 +16,7 @@ class EnvDataRepository:
         should guard calls with an asyncio.Lock (done in ActorPool).
     """
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: Optional[sqlite3.Connection]) -> None:
         self._conn = conn
         self._offset: int = 0
 

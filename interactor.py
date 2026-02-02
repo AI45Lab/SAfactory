@@ -259,9 +259,10 @@ class Interactor:
                     await self.data_manager.record_step(
                         session=session,
                         step_id=step_i,
-                        prompt=prompt,
+                        prompt=prompt_raw,
                         response=action,
                         reward=reward,
+                        env_key=env_key,
                         env_state=env_state,
                         done=done,
                         truncated=truncated
@@ -292,9 +293,10 @@ class Interactor:
                 await self.data_manager.record_step(
                     session=session,
                     step_id=step_i,
-                    prompt=prompt,
+                    prompt=prompt_raw,
                     response=action,
                     reward=reward,
+                    env_key=env_key,
                     env_state=env_state,
                     done=done,
                     truncated=truncated

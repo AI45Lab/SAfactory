@@ -4,14 +4,16 @@ from core.data_manager.strategy_factory import StorageFactory
 class DataManager:
     def __init__(
         self,
-        storage_type: str = "sqlite", 
+        job_session: str,
+        storage_type: str = "sqlite",
         **storage_config
     ):
         self.strategy = None
+        self.job_session = job_session
         
         try:
             print(f"Initializing DataManager with strategy: '{storage_type}'")
-            self.strategy = StorageFactory.create(storage_type, **storage_config)
+            self.strategy = StorageFactory.create(job_session,storage_type, **storage_config)
             print(f"DataManager initialized successfully using {self.strategy.__class__.__name__}")
         
         # 异常收口处理：告诉用户类型错误

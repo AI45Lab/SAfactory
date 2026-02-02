@@ -37,6 +37,7 @@ CKPT_ARGS=(
    --save-interval 20
 )
 
+# 实际上这里很多值都没有使用
 ROLLOUT_ARGS=(
    --rollout-function-path rl.slime_generator.generate_rollout
    --rollout-buffer-url ${ROLLOUT_BUFFER_URL}
@@ -92,8 +93,8 @@ WANDB_ARGS=(
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1
-   --sglang-mem-fraction-static 0.9
-   --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
+   --sglang-mem-fraction-static 0.7
+   # --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
    --sglang-log-level error
    --sglang-log-level-http error
 )

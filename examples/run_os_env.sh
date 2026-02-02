@@ -13,7 +13,7 @@ python "$SCRIPT_DIR/base_eval.py" \
   --max-workers 1 \
   --max-steps 10000 \
   --visual-save-path "$PROJECT_ROOT/visualize/os" \
-  --llm-api-key "" \
-  --llm-base-url "" \
+  --llm-api-key "sk-ySGi5X2ZEkeDEFPdHuTbhakVjqAW17jQ2Phisvqb9i7FKd6q" \
+  --llm-base-url "http://35.220.164.252:3888/v1" \
   --llm-model "gpt-5.2" \
   --llm-temperature 0.3

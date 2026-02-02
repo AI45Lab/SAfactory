@@ -100,16 +100,19 @@ async def sync_configs_to_db(data_manager, yaml_configs, dry_run):
             raise ValueError(f"env_num必须是正整数，{env_name}配置错误")
 
         # 为每个序号创建实例
+        import uuid
+        group_id = str(uuid.uuid4())
         for index in range(1, env_num + 1):
             config_key = get_config_key(env_name, env_params, index)
-            
+
             if config_key not in db_config_keys:
                 # 新增实例：自动生成env_id
                 if not dry_run:
                     await EnvironmentConfig.create(
                         env_name=env_name,
                         env_params=env_params,  # env_id自动生成
-                        image=image
+                        image=image,
+                        group_id=group_id
                     )
                 added += 1
                 print(f"新增环境配置实例：{env_name}（序号：{index}/{env_num}，自动生成env_id）")
