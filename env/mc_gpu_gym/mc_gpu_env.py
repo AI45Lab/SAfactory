@@ -52,7 +52,6 @@ class MCGPUGym(BaseEnv):
         """根据传入配置创建 GPU 模拟器"""
         sim_kwargs: Dict[str, Any] = {}
         base_dir = Path(__file__).resolve().parent  # env/mc_gpu_gym
-        # parents: [mc_gpu_gym, env, AIEvoBox, repo, leishanzhe, ...]
         # 仓库根目录应是 AIEvoBox
         repo_root = Path(__file__).resolve().parents[2]
 
