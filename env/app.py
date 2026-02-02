@@ -1,5 +1,6 @@
 import os
 import sys
+
 current_file_path = os.path.abspath(__file__)
 examples_dir = os.path.dirname(current_file_path)
 project_root = os.path.dirname(examples_dir)
@@ -7,44 +8,28 @@ sys.path.append(project_root)
 
 import threading
 import json
-import dataclasses
-import numpy as np
 import ray
 
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, Optional, Tuple, List, Callable, Type
 from openai.types.chat import ChatCompletionMessageParam
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
-# from env.tradinggym.trading_env import TradingGym
-# from env.mc.mc_env import MCGym
-# from env.gitgym.git_env import GitGym
-# from env.dabstep.dabstep_env import DABStepEnv
-# from env.dwgym.dw_env import DiscoveryWorldEnv
-# from env.embodiedgym.embodied_env import EmbodiedAlfredGym
-# from env.androidgym.android_env import AndroidGym
-# from env.search.search_env import SearchEnv
-from env.mc_gpu_gym.mc_gpu_env import MCGPUGym
-
 from core.types.base import ResetOutput, RenderOutput, StepOutput, dumps_json_bytes
 
-# -------------------------------------------------------------------
-# Env registry: map envname -> concrete env class
-# Add more envs here if you have multiple implementations.
-# -------------------------------------------------------------------
-ENV_CLASS_REGISTRY: Dict[str, type] = {
-    # "android_gym": AndroidGym
-    # "mc_gym": MCGym,
-    "mc_gpu_gym": MCGPUGym,
-    # "TradingGym": TradingGym,    # convenience alias
-    # "git_gym": GitGym,
-    # "dab_gym": DABStepEnv,
-    # "dab": DABStepEnv,
-    # "dwgym": DiscoveryWorldEnv,
-    # "emb": EmbodiedAlfredGym
-    # "search": SearchEnv,
-}
+from env.registry import (_import_os_env,_import_search_env,_import_emb_env,_import_gym_env,
+                      _import_android_gym,_import_trading_env,_import_mc_env,_import_mc_gpu_env)
 
+
+ENV_CLASS_REGISTRY: Dict[str, Callable[[], Type]] = {
+    "android_gym": _import_android_gym,
+    "search": _import_search_env,
+    "trading_gym": _import_trading_env,
+    "mc": _import_mc_env,
+    "emb": _import_emb_env,
+    "git_gym": _import_gym_env,
+    "os_gym": _import_os_env,
+}
 
 
 # -------------------------------------------------------------------
@@ -71,9 +56,15 @@ class EnvActor:
         self.id = str(id_)
 
         try:
-            EnvCls = ENV_CLASS_REGISTRY[envname]
+            env_import_func = ENV_CLASS_REGISTRY[envname]
+            EnvCls = env_import_func()
         except KeyError:
             raise ValueError(f"Unknown envname: {envname} (available: {list(ENV_CLASS_REGISTRY.keys())})")
+        except ImportError as e:
+            raise ImportError(
+                f"Failed to import env '{envname}': {e}\n"
+                f"Please install dependencies for {envname} environment first."
+            )
 
         self.env = EnvCls(**(create_kwargs or {}))
 
@@ -115,7 +106,7 @@ class EnvActor:
 # In-process map: (envname, id) -> EnvActor handle
 # This lives only inside the HTTP process; it routes HTTP calls to actors.
 # -------------------------------------------------------------------
-_ENV_ACTORS: Dict[Tuple[str,str], ray.actor.ActorHandle] = {}
+_ENV_ACTORS: Dict[Tuple[str, str], ray.actor.ActorHandle] = {}
 _ENV_LOCK = threading.RLock()
 
 
@@ -157,6 +148,7 @@ class ResetRequest(BaseModel):
         description="Optional seed passed into env.reset(seed=...).",
     )
 
+
 class StepRequest(BaseModel):
     action: str = Field(..., description="Action string passed into env.step(action).")
 
@@ -176,7 +168,7 @@ def on_startup() -> None:
 
 
 @app.get("/envs")
-def list_envs() -> Dict[str, Any]:
+async def list_envs() -> Dict[str, Any]:
     """List all currently tracked env actors."""
     with _ENV_LOCK:
         envs = [{"envname": k[0], "id": k[1]} for k in _ENV_ACTORS.keys()]
@@ -184,7 +176,7 @@ def list_envs() -> Dict[str, Any]:
 
 
 @app.post("/{envname}/{env_id}/reset")
-def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
+async def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
     """
     Reset env identified by (envname, env_id).
 
@@ -192,7 +184,6 @@ def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
     - If an actor already exists, it is closed and replaced.
     - Returns JSON bytes from EnvActor.reset().
     """
-
     _init_ray_if_needed()
 
     # Validate envname early
@@ -205,7 +196,6 @@ def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
 
     # ---- decode env_param (can be JSON object or JSON string) ----
     raw_param = req.env_param
-
     if isinstance(raw_param, str):
         # case 1: directly pass the JSON string from DB (env_param)
         try:
@@ -224,7 +214,6 @@ def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
             detail="env_param must be a JSON object or JSON string.",
         )
 
-
     key = _key(envname, env_id)
 
     # Create new actor and replace old one atomically
@@ -236,102 +225,100 @@ def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
     # Best-effort cleanup of old actor (if any)
     if old_actor is not None:
         try:
-            ray.get(old_actor.close.remote())
+            await old_actor.close.remote()
         except Exception:
             pass
         ray.kill(old_actor, no_restart=True)
+
     # Call reset on the new actor, return JSON bytes directly
-    result_bytes: bytes = ray.get(actor.reset.remote(req.seed))
+    result_bytes: bytes = await actor.reset.remote(req.seed)
     return Response(content=result_bytes, media_type="application/json")
 
 
 @app.post("/{envname}/{env_id}/step")
-def step_env(envname: str, env_id: str, req: StepRequest) -> Response:
+async def step_env(envname: str, env_id: str, req: StepRequest) -> Response:
     """Forward step(action) to the existing actor."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
         actor = _ENV_ACTORS.get(key)
     if actor is None:
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
-    result_bytes: bytes = ray.get(actor.step.remote(req.action))
+    result_bytes: bytes = await actor.step.remote(req.action)
     return Response(content=result_bytes, media_type="application/json")
 
 
 @app.get("/{envname}/{env_id}/render")
-def render_env(envname: str, env_id:str) -> Response:
+async def render_env(envname: str, env_id: str) -> Response:
     """Forward render() to the existing actor."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
         actor = _ENV_ACTORS.get(key)
     if actor is None:
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
-    result_bytes: bytes = ray.get(actor.render.remote())
+    result_bytes: bytes = await actor.render.remote()
     return Response(content=result_bytes, media_type="application/json")
 
 
 @app.get("/{envname}/{env_id}/get_task_prompt")
-def get_task_prompt(envname: str, env_id: str) -> Response:
+async def get_task_prompt(envname: str, env_id: str) -> Response:
     """Forward get_task_prompt() to the existing actor."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
         actor = _ENV_ACTORS.get(key)
     if actor is None:
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
-    result_bytes: bytes = ray.get(actor.get_task_prompt.remote())
+    result_bytes: bytes = await actor.get_task_prompt.remote()
     return Response(content=result_bytes, media_type="application/json")
 
 
 @app.get("/{envname}/{env_id}/is_done")
-def is_done(envname: str, env_id: str) -> Dict[str, Any]:
+async def is_done(envname: str, env_id: str) -> Dict[str, Any]:
     """Check if the env is done."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
         actor = _ENV_ACTORS.get(key)
     if actor is None:
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
-    value: bool = ray.get(actor.is_done.remote())
+    value: bool = await actor.is_done.remote()
     return {"envname": envname, "id": env_id, "done": value}
 
 
 @app.get("/{envname}/{env_id}/health")
-def health(envname: str, env_id: str) -> Dict[str, Any]:
+async def health(envname: str, env_id: str) -> Dict[str, Any]:
     """Health check for this env actor."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
         actor = _ENV_ACTORS.get(key)
     if actor is None:
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
-    value: bool = ray.get(actor.health.remote())
+    value: bool = await actor.health.remote()
     return {"envname": envname, "id": env_id, "healthy": value}
 
 
-@app.get("{envname}/{env_id}/describe")
-def describe(envname: str, env_id: str) -> Dict[str, Any]:
+@app.get("/{envname}/{env_id}/describe")  # 修复原代码路径缺少 '/' 的问题
+async def describe(envname: str, env_id: str) -> Dict[str, Any]:
     """Expose EnvActor.describe()."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
         actor = _ENV_ACTORS.get(key)
-
     if actor is None:
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
-
-    info: dict = ray.get(actor.describe.remote())
+    info: dict = await actor.describe.remote()
     return info
 
 
 @app.delete("/{envname}/{env_id}")
-def close_env(envname: str, env_id: str) -> Dict[str, Any]:
+async def close_env(envname: str, env_id: str) -> Dict[str, Any]:
     """Close and remove the env actor for (envname, env_id)."""
     key = _key(envname, env_id)
     with _ENV_LOCK:
         actor = _ENV_ACTORS.pop(key, None)
     if actor is not None:
         try:
-            ray.get(actor.close.remote())
+            await actor.close.remote()
         except Exception:
             pass
         ray.kill(actor, no_restart=True)
-
     return {"status": "ok", "envname": envname, "id": env_id}
 
 
@@ -342,8 +329,6 @@ if __name__ == "__main__":
     import uvicorn
 
     _init_ray_if_needed()
-
     host = "0.0.0.0"
     port = 36663
-
     uvicorn.run(app, host=host, port=port)
