@@ -22,6 +22,9 @@ def _import_mc_env() -> Type:
     from env.mc.mc_env import  MCGym
     return MCGym
 
+def _import_mc_gpu_env() -> Type:
+    from env.mc_gpu_gym.mc_gpu_env import MCGPUGym
+    return MCGPUGym
 
 def _import_emb_env() -> Type:
     from env.embodiedgym.embodied_env import  EmbodiedAlfredGym

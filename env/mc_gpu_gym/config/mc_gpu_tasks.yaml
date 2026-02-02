@@ -1,0 +1,17 @@
+---
+# GPU 任务示例，与 mc_simulator.py 中的示例参数保持一致
+- id: 1
+  scene: "001"
+  target_type: "Door"
+  target_id_str: "tmeo_ultra:shafazhuanjiao"
+  task_str: "find and open the door"
+  start_pos: [2306, 101, 984]
+  start_rotation: [-59.8, 5.8]
+  goal_obj_pos: [2308, 101, 992]
+  goal_obj_id: "tmeo_ultra:woshimenjijian_2baisezuokai"
+  start_obj_status: "tmeo_ultra:woshimenjijian_2baisezuo"
+  goal_obj_status: "tmeo_ultra:woshimenjijian_2baisezuokai"
+  interact_list: ["Door", "Button"]
+  interact_pos:
+    - [2308, 101, 993]
+    - [2310, 102, 991.5]
