@@ -28,7 +28,8 @@ LLM_PROXY_URL="http://${LLM_PROXY_HOST}:${LLM_PROXY_PORT}"
 export PYTHONBUFFERED=16
 NUM_GPUS=${NUM_GPUS:-8}
 
-source "/root/slime/scripts/models/qwen2.5-7B.sh"
+SLIME_HOME=${SLIME_HOME:-/root/zeocax/repository/slime}
+source "${SLIME_HOME}/scripts/models/qwen2.5-7B.sh"
 CKPT_ARGS=(
    --hf-checkpoint Qwen/Qwen2.5-7B-Instruct
    --ref-load /root/steai-yinzhenyun/Qwen2.5-7B-Instruct_torch_dist
@@ -116,7 +117,7 @@ export SGLANG_LOGGING_CONFIG_PATH=${SGLANG_LOGGING_CONFIG_PATH:-"/root/AIEvoBox/
 
 RUNTIME_ENV_JSON="{\
   \"env_vars\": {\
-    \"PYTHONPATH\": \"/root:${SCRIPT_DIR}:/root/AIEvoBox:/root/Megatron-LM/\",\
+    \"PYTHONPATH\": \"/root:${SCRIPT_DIR}:/root/AIEvoBox:/root/Megatron-LM/:${SLIME_HOME}\",\
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",\
     \"LLM_PROXY_URL\": \"${LLM_PROXY_URL}\",\
     \"ROLLOUT_BUFFER_URL\": \"${ROLLOUT_BUFFER_URL}\",\
@@ -126,7 +127,7 @@ RUNTIME_ENV_JSON="{\
 
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- python3 /root/slime/train_async.py \
+   -- python3 ${SLIME_HOME}/train_async.py \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node 2 \
    --rollout-num-gpus 6 \

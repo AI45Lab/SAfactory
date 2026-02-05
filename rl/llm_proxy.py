@@ -28,7 +28,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
-from transformers import AutoTokenizer
+from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase, ProcessorMixin
 
 # Add AIEvoBox to path
 AIEVOBOX_ROOT = get_env("AIEVOBOX_ROOT")
@@ -72,12 +72,20 @@ from trajectory_mask_builder import TrajectoryMaskBuilder
 
 app = FastAPI(title="LLM Proxy Server", debug=True)
 
+@app.middleware("http")
+async def set_body_size(request: Request, call_next):
+    # VLM requests can include base64 images in the prompt.
+    request._body_size_limit = 1_073_741_824  # 1GB
+    response = await call_next(request)
+    return response
+
 
 class ProxyState:
     """Global state for the proxy server."""
 
     def __init__(self):
         self.tokenizer: Optional[AutoTokenizer] = None
+        self.processor: Optional[Any] = None
         self.trajectory_mask_builder: Optional[TrajectoryMaskBuilder] = None
         self.remote_engine_url: Optional[str] = None  # Base URL without /v1
         self._http_client: Optional[httpx.AsyncClient] = None
@@ -146,7 +154,23 @@ async def init_proxy(request: InitRequest):
             request.tokenizer_path,
             trust_remote_code=True
         )
-        STATE.trajectory_mask_builder = TrajectoryMaskBuilder(tokenizer=STATE.tokenizer)
+        try:
+            # Some text-only checkpoints do not ship a processor.
+            STATE.processor = AutoProcessor.from_pretrained(
+                request.tokenizer_path,
+                trust_remote_code=True,
+            )
+            # If HF returned a tokenizer, discard it.
+            if isinstance(STATE.processor, PreTrainedTokenizerBase) or not isinstance(STATE.processor, ProcessorMixin):
+                STATE.processor = None
+        except Exception as e:
+            STATE.processor = None
+            logger.warning(f"Failed to load processor from {request.tokenizer_path}: {e}")
+
+        STATE.trajectory_mask_builder = TrajectoryMaskBuilder(
+            tokenizer=STATE.tokenizer,
+            processor=STATE.processor,
+        )
 
         # Normalize remote engine URL (remove trailing slash and /v1 if present)
         engine_url = request.remote_engine_url.rstrip("/")
@@ -189,11 +213,13 @@ async def proxy_chat_completions(session_id: str, request: Request):
     top_p = payload.get("top_p", STATE.top_p)
     max_tokens = payload.get("max_tokens")
 
-    # Prepare input_ids using matching logic
-    # This reuses historical tokens and only tokenizes new context
-    input_ids, matched_record, matched_prefix_len, matched_tokens_count = STATE.trajectory_mask_builder.prepare_input_ids(
-        session_id, messages
-    )
+    # Prepare input tokens (with multimodal state like cumulative image_data).
+    prep = STATE.trajectory_mask_builder.prepare_input_tokens(session_id, messages)
+    input_ids = prep["input_tokens"]
+    messages_str = prep["messages_str"]
+    image_data = prep.get("image_data") or []
+    matched_record = prep.get("matched_record")
+    matched_tokens_count = len(matched_record.get("tokens", [])) if matched_record else 0
 
     # Calculate max_new_tokens
     if STATE.max_length is not None:
@@ -236,6 +262,8 @@ async def proxy_chat_completions(session_id: str, request: Request):
         "return_logprob": True,
         "stream": False,
     }
+    if image_data:
+        generate_payload["image_data"] = image_data
 
     # Call /generate endpoint
     http_client = STATE.get_http_client()
@@ -276,10 +304,11 @@ async def proxy_chat_completions(session_id: str, request: Request):
             await asyncio.to_thread(
                 STATE.trajectory_mask_builder.save,
                 session_id,
-                messages,
+                messages_str,
                 input_ids,
                 output_ids,
                 output_logprobs,
+                image_data,
                 finish_reason,
                 matched_record,
                 matched_tokens_count,

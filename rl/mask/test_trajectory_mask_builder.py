@@ -18,6 +18,7 @@ import sys
 # Add paths
 AIEVOBOX_ROOT = os.environ.get("AIEVOBOX_ROOT", "/root/AIEvoBox")
 sys.path.insert(0, AIEVOBOX_ROOT)
+sys.path.insert(0, os.path.join(AIEVOBOX_ROOT, "rl"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from typing import List, Tuple
@@ -85,7 +86,7 @@ def test_single_turn():
     ]
 
     # Step 1: prepare_input_ids
-    input_ids, matched_record, matched_prefix_len = builder.prepare_input_ids(session_id, messages)
+    input_ids, matched_record, matched_prefix_len, _ = builder.prepare_input_ids(session_id, messages)
     print(f"\n[prepare_input_ids]")
     print(f"  input_ids length: {len(input_ids)}")
     print(f"  matched_record: {matched_record}")
@@ -149,7 +150,7 @@ def test_multi_turn():
         {"role": "user", "content": "Hello!"},
     ]
 
-    input_ids1, matched1, _ = builder.prepare_input_ids(session_id, messages1)
+    input_ids1, matched1, _, _ = builder.prepare_input_ids(session_id, messages1)
     print(f"Turn 1: input_ids length = {len(input_ids1)}, matched = {matched1 is not None}")
 
     assistant1 = "Hi! How can I help you?"
@@ -171,7 +172,7 @@ def test_multi_turn():
         {"role": "user", "content": "What is 2+2?"},
     ]
 
-    input_ids2, matched2, matched_len2 = builder.prepare_input_ids(session_id, messages2)
+    input_ids2, matched2, matched_len2, _ = builder.prepare_input_ids(session_id, messages2)
     print(f"Turn 2: input_ids length = {len(input_ids2)}, matched = {matched2 is not None}")
     print(f"Turn 2: matched_prefix_len = {matched_len2}")
 
@@ -222,7 +223,7 @@ def test_think_skip():
         {"role": "user", "content": "What is 2+2?"},
     ]
 
-    input_ids1, matched1, _ = builder.prepare_input_ids(session_id, messages1)
+    input_ids1, matched1, _, _ = builder.prepare_input_ids(session_id, messages1)
 
     # 生成包含 <think> 的回复
     assistant1_with_think = "<think>Let me calculate: 2+2=4</think>The answer is 4."
@@ -246,7 +247,7 @@ def test_think_skip():
         {"role": "user", "content": "What about 3+3?"},
     ]
 
-    input_ids2, matched2, matched_len2 = builder.prepare_input_ids(session_id, messages2)
+    input_ids2, matched2, matched_len2, _ = builder.prepare_input_ids(session_id, messages2)
     print(f"Turn 2: input_ids length = {len(input_ids2)}, matched = {matched2 is not None}")
     print(f"Turn 2: matched_prefix_len = {matched_len2}")
 
@@ -294,7 +295,7 @@ def test_consistency():
                 messages.append({"role": "assistant", "content": f"Answer {i+1}"})
 
         # prepare_input_ids
-        input_ids, matched, _ = builder.prepare_input_ids(session_id, messages)
+        input_ids, matched, _, _ = builder.prepare_input_ids(session_id, messages)
         print(f"  input_ids length: {len(input_ids)}")
 
         # mock generate

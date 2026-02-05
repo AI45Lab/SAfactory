@@ -17,9 +17,18 @@ from utils import get_env, AggType, MetricsRecorder
 import aiohttp
 import requests
 from transformers import AutoTokenizer
+from transformers import AutoProcessor, PreTrainedTokenizerBase, ProcessorMixin
 
 from slime.utils.async_utils import run
 from slime.utils.types import Sample
+
+from utils.multimodal import (
+    extract_image_urls_from_messages,
+    has_image_in_messages,
+    load_pil_images,
+    normalize_messages,
+    split_messages_prompt_and_assistant,
+)
 
 __all__ = ["generate_rollout"]
 
@@ -27,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 # Global variables for evaluation
 TOKENIZER = None
+PROCESSOR = None
 START_ROLLOUT = True
 
 # LLM Proxy URL for getting trajectory masks (constructed from host and port)
@@ -434,15 +444,35 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
     for group_record in results:
         group_results = []
         for record in group_record:
-            oai_messages = record["messages"]
+            oai_messages = normalize_messages(record["messages"])
             session_id = record["extra_info"].get("session_id", "")
 
-            # Convert messages to string
+            # Convert messages to string (query key for llm_proxy trajectory lookup).
+            # For VLM we must use processor-expanded string; otherwise different images can collide.
             messages_str = tokenizer.apply_chat_template(
                 oai_messages,
                 add_generation_prompt=False,
                 tokenize=False
             )
+            global PROCESSOR
+            if PROCESSOR is not None and has_image_in_messages(oai_messages):
+                prompt_text = tokenizer.apply_chat_template(
+                    oai_messages,
+                    add_generation_prompt=False,
+                    tokenize=False,
+                )
+                image_refs = extract_image_urls_from_messages(oai_messages)
+                images = load_pil_images(image_refs) if image_refs else None
+                proc_out = PROCESSOR(
+                    text=prompt_text,
+                    images=images,
+                    padding=True,
+                    return_tensors="pt",
+                )
+                messages_str = tokenizer.decode(
+                    proc_out["input_ids"][0].tolist(),
+                    skip_special_tokens=False,
+                )
 
             # Get tokens + response_mask from LLM Proxy
             tokens, response_mask = query_trajectory(session_id, messages_str)
@@ -453,23 +483,45 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
 
             # 构建 metadata（从 extra_info 复制，已包含 weight_version）
             metadata = dict(record["extra_info"])
-            group_results.append(
-                Sample(
-                    index=record["instance_id"],
-                    prompt=record["uid"],
-                    tokens=token_ids,
-                    response_length=response_length,
-                    reward=record["reward"],
-                    status=(
-                        Sample.Status.COMPLETED
-                        if "finish_reason" not in record["extra_info"]
-                        or record["extra_info"]["finish_reason"] != "length"
-                        else Sample.Status.TRUNCATED
-                    ),
-                    loss_mask=loss_mask,
-                    metadata=metadata,
-                )
+            sample = Sample(
+                index=record["instance_id"],
+                prompt=record["uid"],
+                tokens=token_ids,
+                response_length=response_length,
+                reward=record["reward"],
+                status=(
+                    Sample.Status.COMPLETED
+                    if "finish_reason" not in record["extra_info"]
+                    or record["extra_info"]["finish_reason"] != "length"
+                    else Sample.Status.TRUNCATED
+                ),
+                loss_mask=loss_mask,
+                metadata=metadata,
             )
+
+            # VLM training: attach processed multimodal tensors if there are images in the prompt
+            # (prompt = messages without the final assistant response).
+            prompt_messages, _ = split_messages_prompt_and_assistant(oai_messages)
+            if PROCESSOR is not None and has_image_in_messages(prompt_messages):
+                prompt_text = tokenizer.apply_chat_template(
+                    prompt_messages,
+                    add_generation_prompt=True,
+                    tokenize=False,
+                )
+                image_refs = extract_image_urls_from_messages(prompt_messages)
+                images = load_pil_images(image_refs) if image_refs else None
+                proc_out = PROCESSOR(
+                    text=prompt_text,
+                    images=images,
+                    padding=True,
+                    return_tensors="pt",
+                )
+                mm_train_inputs = {
+                    k: v for k, v in proc_out.items() if k not in ["input_ids", "attention_mask"]
+                } or None
+                sample.multimodal_train_inputs = mm_train_inputs
+
+            group_results.append(sample)
         sample_results.append(group_results)
 
     data_buffer.add_samples(sample_results)
@@ -500,5 +552,14 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
 
     if TOKENIZER is None:
         TOKENIZER = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    global PROCESSOR
+    if PROCESSOR is None:
+        try:
+            proc = AutoProcessor.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+            if isinstance(proc, PreTrainedTokenizerBase) or not isinstance(proc, ProcessorMixin):
+                proc = None
+            PROCESSOR = proc
+        except Exception:
+            PROCESSOR = None
 
     return run(generate_rollout_async(args, rollout_id, data_buffer, evaluation))

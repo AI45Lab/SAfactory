@@ -165,6 +165,8 @@ For each function call, return a json object with function name and arguments wi
         self.step_count += 1
 
         reward, terminated, truncated, extra_info = self._process_action(action or "")
+        if (terminated or truncated) and self.step_count <= 1:
+            reward = 0.0
         # 当前环境不需要向 Agent 返回新的 observation 内容，这里统一为空 dict
         observation: Dict[str, Any] = {}
         info: Dict[str, Any] = {
@@ -294,7 +296,7 @@ For each function call, return a json object with function name and arguments wi
             truncated = False
             self.done = True
 
-            if "<function_call>" in msg or "</function_call>" in msg or "<function_result>" in msg or "</function_result>" in msg:
+            if "<function_call>" in msg or "</function_call>" in msg:
                 reward = 0.0
                 return reward, terminated, truncated, {}
 
