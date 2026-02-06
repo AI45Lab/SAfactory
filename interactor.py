@@ -5,9 +5,10 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Protocol, Tuple
 
-import httpx
+import aiohttp
 from core.llm import LLM, BaseURLProvider
 from core.data_manager.manager import DataManager
+from core.http.http_client import HttpClient
 
 log = logging.getLogger("interactor")
 
@@ -42,21 +43,21 @@ class Interactor:
     """
 
     def __init__(
-        self,
-        pool: ActorPool,
-        base_url_provider: BaseURLProvider,
-        api_key: str,
-        model: str,
-        data_manager: DataManager,
-        temperature: float = 0.3,
-        max_steps: int = 1000,
-        message_cut: int = 3,
-        env_http_timeout_s: float = 30.0,
-        max_workers: Optional[int] = None,
-        http_retries: int = 2,
-        http_retry_backoff_s: float = 0.5,
-        verbose: bool = True,
-        log_actions_preview_chars: int = 120,
+            self,
+            pool: ActorPool,
+            base_url_provider: BaseURLProvider,
+            api_key: str,
+            model: str,
+            data_manager: DataManager,
+            temperature: float = 0.3,
+            max_steps: int = 1000,
+            message_cut: int = 3,
+            env_http_timeout_s: float = 30.0,
+            max_workers: Optional[int] = None,
+            http_retries: int = 2,
+            http_retry_backoff_s: float = 0.5,
+            verbose: bool = True,
+            log_actions_preview_chars: int = 120,
     ):
         self.pool = pool
         self.max_steps = int(max_steps)
@@ -72,18 +73,15 @@ class Interactor:
         self.model = model
         self.data_manager = data_manager
 
-        # 保存 LLM 配置，每个 session 动态创建 LLM 实例
         self.base_url_provider = base_url_provider
         self.api_key = api_key
         self.temperature = float(temperature)
 
-        limits = httpx.Limits(
+        # Initialize the generic HttpClient
+        self.http = HttpClient(
+            timeout_s=env_http_timeout_s,
             max_connections=max(64, pool.pool_size * 8),
             max_keepalive_connections=max(32, pool.pool_size * 4),
-        )
-        self.http = httpx.AsyncClient(
-            timeout=httpx.Timeout(env_http_timeout_s),
-            limits=limits,
             trust_env=True,
         )
 
@@ -141,70 +139,68 @@ class Interactor:
         return await llm.generate(messages=messages)
 
     async def _request_json(
-        self,
-        method: str,
-        url: str,
-        *,
-        json_body: Optional[dict] = None,
-        ctx: str = "",
+            self,
+            method: str,
+            url: str,
+            *,
+            json_body: Optional[dict] = None,
+            ctx: str = "",
     ) -> Any:
         """
-        Request helper with light retry:
-          - retries timeouts / transport errors
-          - retries 5xx
-          - does NOT retry most 4xx
+        Helper method to execute HTTP requests with retry logic.
+        Uses aiohttp and handles status codes/exceptions accordingly.
         """
+        # Ensure client is started before request
+        await self.http.start()
+
         attempts = 1 + self.http_retries
         last_err: Optional[Exception] = None
 
         for i in range(attempts):
-            t0 = time.time()
+            # Use perf_counter for precise duration measurement
+            t0 = time.perf_counter()
             try:
-                r = await self.http.request(method, url, json=json_body)
-                dt = time.time() - t0
+                # Pass parameters directly via kwargs
+                async with await self.http.request(method, url, json=json_body) as r:
+                    dt = time.perf_counter() - t0
 
-                if 500 <= r.status_code <= 599:
-                    raise httpx.HTTPStatusError(
-                        f"upstream 5xx: {r.status_code}",
-                        request=r.request,
-                        response=r,
-                    )
+                    status = r.status
 
-                r.raise_for_status()
-                log.debug("HTTP %s %s (%s) -> %d in %.3fs", method, url, ctx, r.status_code, dt)
-                return r.json()
+                    if 500 <= status <= 599:
+                        r.raise_for_status()
 
-            except (httpx.TimeoutException, httpx.TransportError) as e:
-                dt = time.time() - t0
+                    if status >= 400:
+                        r.raise_for_status()
+
+                    log.debug("HTTP %s %s (%s) -> %d in %.3fs", method, url, ctx, status, dt)
+                    return await r.json()
+
+            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                dt = time.perf_counter() - t0
                 last_err = e
-                log.warning(
-                    "HTTP %s %s (%s) transport/timeout (attempt %d/%d) after %.3fs: %s",
-                    method, url, ctx, i + 1, attempts, dt, e
-                )
 
-            except httpx.HTTPStatusError as e:
-                dt = time.time() - t0
-                resp = getattr(e, "response", None)
-                status = getattr(resp, "status_code", None)
+                status = getattr(e, "status", None)
+                msg = getattr(e, "message", str(e))
+
+                # Extract response text if available for logging
                 body_preview = ""
-                try:
-                    if resp is not None:
-                        body_preview = (resp.text or "")[:200]
-                except Exception:
-                    body_preview = ""
 
                 if status is not None and 500 <= int(status) <= 599:
-                    last_err = e
                     log.warning(
-                        "HTTP %s %s (%s) -> %s (attempt %d/%d) after %.3fs body=%r",
-                        method, url, ctx, status, i + 1, attempts, dt, body_preview
+                        "HTTP %s %s (%s) -> %s (attempt %d/%d) after %.3fs msg=%r",
+                        method, url, ctx, status, i + 1, attempts, dt, msg
                     )
-                else:
+                elif status is not None:
                     log.error(
-                        "HTTP %s %s (%s) -> %s after %.3fs body=%r (not retrying)",
-                        method, url, ctx, status, dt, body_preview
+                        "HTTP %s %s (%s) -> %s after %.3fs msg=%r (not retrying)",
+                        method, url, ctx, status, dt, msg
                     )
                     raise
+                else:
+                    log.warning(
+                        "HTTP %s %s (%s) transport/timeout (attempt %d/%d) after %.3fs: %s",
+                        method, url, ctx, i + 1, attempts, dt, e
+                    )
 
             if i + 1 < attempts:
                 await asyncio.sleep(self.http_retry_backoff_s * (2 ** i))
@@ -323,8 +319,11 @@ class Interactor:
 
     async def run_all_environments(self) -> Dict[str, float]:
         """
-        Run workers until pool is exhausted (acquire() returns None).
+        Run workers until pool is exhausted.
         """
+        # Explicitly start the shared HTTP client
+        await self.http.start()
+
         await self.pool.start()
 
         results: Dict[str, float] = {}
@@ -344,7 +343,8 @@ class Interactor:
                     return
 
                 env_key = f"{actor.env_name}_{actor.env_id}"
-                t0 = time.time()
+                # Use perf_counter for episode duration
+                t0 = time.perf_counter()
 
                 try:
                     log.info("worker=%d acquired env=%s base_url=%s", worker_id, env_key, actor.base_url)
@@ -359,7 +359,7 @@ class Interactor:
                     except Exception as e:
                         log.exception("worker=%d env=%s ERROR in pool.done(): %s", worker_id, env_key, e)
 
-                dt = time.time() - t0
+                dt = time.perf_counter() - t0
                 log.info("worker=%d env=%s reward=%.6f time=%.2fs", worker_id, env_key, reward, dt)
 
                 async with lock:
@@ -386,10 +386,11 @@ class Interactor:
 
     async def aclose(self) -> None:
         try:
-            await self.http.aclose()
+            await self.http.close()
         except Exception:
             log.exception("failed to close http client (ignored)")
         try:
             await self.pool.aclose()
         except Exception:
             log.exception("failed to close pool (ignored)")
+

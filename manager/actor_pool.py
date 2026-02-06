@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import aiohttp
 from typing import Any, Dict, List, Optional, Tuple
-
-import httpx
 
 from .http_client import HttpServiceClient
 from .types import ActorKey, ActorRoute, ClusterRegistry, EnvClusterBinding, PoolEntry
 
+log = logging.getLogger("manager.actor_pool")
 
 class ActorPool:
     """
@@ -35,7 +36,6 @@ class ActorPool:
         self._http_concurrency = int(http_concurrency)
         self._base_image = (base_image or "").strip()
         self._default_seed = int(default_seed)
-        # Per-env limit: how many actors a single RayJob should host.
         self._env_limits: Dict[str, int] = {}
         for k, v in (env_limits or {}).items():
             try:
@@ -46,8 +46,6 @@ class ActorPool:
         self._lock = asyncio.Lock()
         self._pool: Dict[ActorKey, PoolEntry] = {}
         self._actor_routes: Dict[ActorKey, ActorRoute] = {}
-        # Counts of actors assigned to each (env_name, job_name).
-        # NOTE: includes in-flight reservations for stable concurrent scheduling.
         self._job_load: Dict[Tuple[str, str], int] = {}
 
     async def reset(self) -> None:
@@ -116,12 +114,10 @@ class ActorPool:
         env_id = str(env_id)
         key = (env, env_id)
 
-        # Resolve route without holding lock during HTTP
         async with self._lock:
             route = self._actor_routes.get(key)
             binding = registry.env_bindings.get(env)
 
-            # remove immediately from local pool (even if remote close fails)
             old_entry = self._pool.pop(key, None)
             self._actor_routes.pop(key, None)
             if old_entry is not None:
@@ -144,32 +140,34 @@ class ActorPool:
 
         if host:
             delete_url = f"http://{host}:{self._http_port}/{env}/{env_id}"
-
             legacy_post_url = f"http://{host}:{self._http_port}/{env}/{env_id}/close"
 
             try:
-                resp = await self._http.delete(delete_url)
-                if resp.status_code == 404:
-                    # fallback to legacy
-                    resp2 = await self._http.post(legacy_post_url)
-                    if resp2.status_code >= 400:
-                        print(
-                            f"[manager] close failed: {legacy_post_url} "
-                            f"status={resp2.status_code} body={resp2.text}"
+                # Use aiohttp delete with await syntax
+                async with await self._http.delete(delete_url) as resp:
+                    status = resp.status
+
+                    if status == 404:
+                        # Fallback to legacy post method
+                        async with await self._http.post(legacy_post_url) as resp2:
+                            if resp2.status >= 400:
+                                log.error(
+                                    "close failed: %s status=%s body=%s",
+                                    legacy_post_url, resp2.status, await resp2.text()
+                                )
+                    elif status >= 400:
+                        log.error(
+                            "close failed: %s status=%s body=%s",
+                            delete_url, status, await resp.text()
                         )
-                elif resp.status_code >= 400:
-                    print(
-                        f"[manager] close failed: {delete_url} "
-                        f"status={resp.status_code} body={resp.text}"
-                    )
 
             except Exception as e:
-                print(f"[manager] close error: env='{env}', id='{env_id}', err={e}")
+                log.error("close error: env='%s', id='%s', err=%s", env, env_id, e)
         else:
-            print(f"[manager] close skipped: no route/binding for env='{env}' id='{env_id}'")
+            log.warning("close skipped: no route/binding for env='%s' id='%s'", env, env_id)
 
         if not next_row:
-            print("[manager] no more DB rows to refill pool")
+            log.info("no more DB rows to refill pool")
             return
 
         await self._create_actor_for_row(row=next_row, registry=registry, sem=None)
@@ -177,10 +175,10 @@ class ActorPool:
     # ------------------------------------------------------------------ #
 
     async def _create_actor_for_row(
-        self,
-        row: Dict[str, Any],
-        registry: ClusterRegistry,
-        sem: Optional[asyncio.Semaphore],
+            self,
+            row: Dict[str, Any],
+            registry: ClusterRegistry,
+            sem: Optional[asyncio.Semaphore],
     ) -> None:
         env_name = str(row.get("env_name", "")).strip()
         env_id = str(row.get("env_id", "")).strip()
@@ -198,8 +196,6 @@ class ActorPool:
         if not image:
             raise RuntimeError(f"Cannot resolve image for env='{env_name}' id='{env_id}' (no row.image, no base_image)")
 
-        # Choose the best cluster (RayJob) for this env based on current load.
-        # Reserve a slot immediately (under lock) so that concurrent scheduling is stable.
         async with self._lock:
             cluster = self._choose_cluster_and_reserve_locked(env_name=env_name, image=image, registry=registry)
             reserved_key = (env_name, str(cluster.job_name))
@@ -214,29 +210,30 @@ class ActorPool:
             max_attempts = 3
             for attempt in range(1, max_attempts + 1):
                 try:
-                    resp = await self._http.post(url, json=payload)
-                    # Retry on transient status
-                    if resp.status_code in (429, 500, 502, 503, 504):
-                        raise RuntimeError(f"Transient status={resp.status_code} body={resp.text[:200]}")
-                    resp.raise_for_status()
+                    # Use aiohttp post with json parameter
+                    async with await self._http.post(url, json=payload) as resp:
+                        # Retry on transient status codes
+                        if resp.status in (429, 500, 502, 503, 504):
+                            raise RuntimeError(f"Transient status={resp.status} body={(await resp.text())[:200]}")
 
-                    key: ActorKey = (env_name, env_id)
-                    async with self._lock:
-                        self._pool[key] = PoolEntry(
-                            env_name=env_name,
-                            env_id=env_id,
-                            row_id=row.get("id"),
-                            image=image,
-                            job_name=cluster.job_name,
-                            head_ip=cluster.head_ip,
-                            group_id=str(row.get("group_id") or ""),
-                            status="ready",
-                        )
-                        self._actor_routes[key] = (cluster.head_ip, self._http_port)
+                        resp.raise_for_status()
 
-                    return
+                        key: ActorKey = (env_name, env_id)
+                        async with self._lock:
+                            self._pool[key] = PoolEntry(
+                                env_name=env_name,
+                                env_id=env_id,
+                                row_id=row.get("id"),
+                                image=image,
+                                job_name=cluster.job_name,
+                                head_ip=cluster.head_ip,
+                                group_id=str(row.get("group_id") or ""),
+                                status="ready",
+                            )
+                            self._actor_routes[key] = (cluster.head_ip, self._http_port)
+                        return
 
-                except (httpx.TimeoutException, asyncio.TimeoutError) as e:
+                except (asyncio.TimeoutError, aiohttp.ClientError) as e:
                     if attempt == max_attempts:
                         raise RuntimeError(f"Timeout creating actor: {url}, err={e}") from e
                     await asyncio.sleep(min(2.0, 0.5 * attempt))
@@ -250,7 +247,7 @@ class ActorPool:
             try:
                 await _do_post()
             except Exception:
-            # Release reservation on failure
+                # Release reservation on failure
                 async with self._lock:
                     cur = int(self._job_load.get(reserved_key, 0) or 0)
                     if cur <= 1:
