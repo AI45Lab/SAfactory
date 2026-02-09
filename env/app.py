@@ -6,6 +6,7 @@ examples_dir = os.path.dirname(current_file_path)
 project_root = os.path.dirname(examples_dir)
 sys.path.append(project_root)
 
+import logging
 import threading
 import json
 import ray
@@ -17,9 +18,8 @@ from pydantic import BaseModel, Field
 
 from core.types.base import ResetOutput, RenderOutput, StepOutput, dumps_json_bytes
 
-from env.registry import (_import_os_env,_import_search_env,_import_emb_env,_import_gym_env,
-                      _import_android_gym,_import_trading_env,_import_mc_env,_import_mc_gpu_env)
-
+from env.registry import (_import_os_env, _import_search_env, _import_emb_env, _import_gym_env,
+                          _import_android_gym, _import_trading_env, _import_mc_env, _import_mc_gpu_env)
 
 ENV_CLASS_REGISTRY: Dict[str, Callable[[], Type]] = {
     "android_gym": _import_android_gym,
@@ -32,6 +32,9 @@ ENV_CLASS_REGISTRY: Dict[str, Callable[[], Type]] = {
 }
 
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+logger = logging.getLogger("env-service")
+
 # -------------------------------------------------------------------
 # Ray actor: one actor hosts one env instance
 # -------------------------------------------------------------------
@@ -39,28 +42,22 @@ ENV_CLASS_REGISTRY: Dict[str, Callable[[], Type]] = {
 class EnvActor:
     """
     A single actor hosts one env instance.
-
-    The env class is selected by 'envname' using ENV_CLASS_REGISTRY.
-    The env must implement:
-        reset(seed: Optional[int]) -> ResetOutput
-        step(action: str) -> StepOutput
-        render() -> RenderOutput
-        get_task_prompt() -> PromptOutput
-        close() -> dict
-        is_done() -> bool
-        health() -> bool
     """
 
     def __init__(self, envname: str, id_: str, create_kwargs: Optional[Dict[str, Any]] = None):
         self.envname = envname
         self.id = str(id_)
 
+        logger.info(f"Actor Init: {envname}/{id_}")
+
         try:
             env_import_func = ENV_CLASS_REGISTRY[envname]
             EnvCls = env_import_func()
         except KeyError:
+            logger.error(f"Unknown envname: {envname}")
             raise ValueError(f"Unknown envname: {envname} (available: {list(ENV_CLASS_REGISTRY.keys())})")
         except ImportError as e:
+            logger.error(f"Import failed for {envname}: {e}")
             raise ImportError(
                 f"Failed to import env '{envname}': {e}\n"
                 f"Please install dependencies for {envname} environment first."
@@ -85,6 +82,7 @@ class EnvActor:
         return dumps_json_bytes(out)
 
     def close(self) -> dict:
+        logger.info(f"Actor Close: {self.envname}/{self.id}")
         return self.env.close()
 
     def is_done(self) -> bool:
@@ -104,7 +102,6 @@ class EnvActor:
 
 # -------------------------------------------------------------------
 # In-process map: (envname, id) -> EnvActor handle
-# This lives only inside the HTTP process; it routes HTTP calls to actors.
 # -------------------------------------------------------------------
 _ENV_ACTORS: Dict[Tuple[str, str], ray.actor.ActorHandle] = {}
 _ENV_LOCK = threading.RLock()
@@ -120,8 +117,10 @@ def _init_ray_if_needed() -> None:
         return
     address = os.getenv("RAY_ADDRESS")
     if address:
+        logger.info(f"Connecting to Ray cluster at {address}")
         ray.init(address=address)
     else:
+        logger.info("Starting local Ray")
         ray.init()
 
 
@@ -129,19 +128,9 @@ def _init_ray_if_needed() -> None:
 # FastAPI models
 # -------------------------------------------------------------------
 class ResetRequest(BaseModel):
-    """
-    Reset will always create a NEW actor for (envname, env_id) and call env.reset().
-
-    - env_param: env creation parameters, recommended to be a JSON object.
-      For backward compatibility, a JSON string is also accepted
-      (e.g. directly from DB), and will be json.loads() into a dict.
-    """
     env_param: Any = Field(
         ...,
-        description=(
-            "Env creation parameters, either a JSON object or a JSON string "
-            "stored in DB (env_param)."
-        ),
+        description="Env creation parameters, either a JSON object or a JSON string stored in DB (env_param)."
     )
     seed: Optional[int] = Field(
         default=None,
@@ -179,14 +168,9 @@ async def list_envs() -> Dict[str, Any]:
 async def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
     """
     Reset env identified by (envname, env_id).
-
-    - Always creates a new EnvActor.
-    - If an actor already exists, it is closed and replaced.
-    - Returns JSON bytes from EnvActor.reset().
     """
     _init_ray_if_needed()
 
-    # Validate envname early
     if envname not in ENV_CLASS_REGISTRY:
         raise HTTPException(
             status_code=400,
@@ -194,19 +178,17 @@ async def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
                    f"Available: {list(ENV_CLASS_REGISTRY.keys())}",
         )
 
-    # ---- decode env_param (can be JSON object or JSON string) ----
     raw_param = req.env_param
     if isinstance(raw_param, str):
-        # case 1: directly pass the JSON string from DB (env_param)
         try:
             create_kwargs: Dict[str, Any] = json.loads(raw_param)
         except json.JSONDecodeError as e:
+            logger.error(f"JSON decode failed in reset: {e}")
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid env_param JSON string: {e}",
             )
     elif isinstance(raw_param, dict):
-        # case 2 (recommended): send JSON object directly
         create_kwargs = dict(raw_param)
     else:
         raise HTTPException(
@@ -216,13 +198,12 @@ async def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
 
     key = _key(envname, env_id)
 
-    # Create new actor and replace old one atomically
     with _ENV_LOCK:
         old_actor = _ENV_ACTORS.get(key)
         actor = EnvActor.remote(envname, env_id, create_kwargs)
         _ENV_ACTORS[key] = actor
+        logger.info(f"Reset: {envname}/{env_id} (Actor Created)")
 
-    # Best-effort cleanup of old actor (if any)
     if old_actor is not None:
         try:
             await old_actor.close.remote()
@@ -230,7 +211,6 @@ async def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
             pass
         ray.kill(old_actor, no_restart=True)
 
-    # Call reset on the new actor, return JSON bytes directly
     result_bytes: bytes = await actor.reset.remote(req.seed)
     return Response(content=result_bytes, media_type="application/json")
 
@@ -242,6 +222,7 @@ async def step_env(envname: str, env_id: str, req: StepRequest) -> Response:
     with _ENV_LOCK:
         actor = _ENV_ACTORS.get(key)
     if actor is None:
+        logger.warning(f"Step on missing actor: {envname}/{env_id}")
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
     result_bytes: bytes = await actor.step.remote(req.action)
     return Response(content=result_bytes, media_type="application/json")
@@ -295,7 +276,7 @@ async def health(envname: str, env_id: str) -> Dict[str, Any]:
     return {"envname": envname, "id": env_id, "healthy": value}
 
 
-@app.get("/{envname}/{env_id}/describe")  # 修复原代码路径缺少 '/' 的问题
+@app.get("/{envname}/{env_id}/describe")
 async def describe(envname: str, env_id: str) -> Dict[str, Any]:
     """Expose EnvActor.describe()."""
     key = _key(envname, env_id)
@@ -316,19 +297,18 @@ async def close_env(envname: str, env_id: str) -> Dict[str, Any]:
     if actor is not None:
         try:
             await actor.close.remote()
+            logger.info(f"Closed: {envname}/{env_id}")
         except Exception:
             pass
         ray.kill(actor, no_restart=True)
     return {"status": "ok", "envname": envname, "id": env_id}
 
 
-# -------------------------------------------------------------------
-# Local entry point: run this file directly to start the HTTP service
-# -------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
 
     _init_ray_if_needed()
     host = "0.0.0.0"
     port = 36663
+    logger.info(f"Starting server at {host}:{port}")
     uvicorn.run(app, host=host, port=port)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import logging
 from typing import Any, Dict, List, Optional
 
 from .actor_pool import ActorPool
@@ -10,6 +11,8 @@ from .http_client import HttpServiceClient
 from .types import ActorRoute, ClusterRegistry, EnvClusterBinding
 from .repository import EnvDataRepository
 from .clusters.base import ClusterBackend
+
+log = logging.getLogger("manager")
 
 
 def _detect_mode(cfg: Dict[str, Any]) -> str:
@@ -26,7 +29,7 @@ def _detect_mode(cfg: Dict[str, Any]) -> str:
         return "local"
     if top_mode in ("remote", "rayjob", "cluster"):
         return "remote"
-    return "remote" # if no mode set, start up with remote mode
+    return "remote"  # if no mode set, start up with remote mode
 
 
 class EnvPoolManager:
@@ -92,7 +95,7 @@ class EnvPoolManager:
 
             tmp_plan = build_binding_plan(self._repo, base_image=self._base_image)
             if not tmp_plan.env_to_image:
-                print("[manager] No env/image mapping found in DB; nothing to start.")
+                log.warning("No env/image mapping found in DB; nothing to start.")
                 self._registry = ClusterRegistry(clusters_by_image={}, env_bindings={})
                 self._initialized = True
                 return
@@ -118,18 +121,18 @@ class EnvPoolManager:
                 else:
                     jobs = 1
                 env_job_counts[env_name] = max(1, int(jobs))
-            final_plan =type(tmp_plan)(
-                    env_to_image = tmp_plan.env_to_image,
-                    image_to_env = tmp_plan.image_to_env,
-                    images_needed = tmp_plan.images_needed,
-                    env_job_counts = env_job_counts,
+            final_plan = type(tmp_plan)(
+                env_to_image=tmp_plan.env_to_image,
+                image_to_env=tmp_plan.image_to_env,
+                images_needed=tmp_plan.images_needed,
+                env_job_counts=env_job_counts,
             )
 
             self._registry = await self._backend.start(final_plan)
             await self._pool.prewarm(self._registry, rows=prewarm_rows)
 
             self._initialized = True
-            print(f"[manager] started in mode='{self._mode}', pool_size={self._pool_size}")
+            log.info("started in mode='%s', pool_size=%d", self._mode, self._pool_size)
 
     async def close_all(self) -> None:
         async with self._state_lock:
@@ -140,12 +143,12 @@ class EnvPoolManager:
         try:
             await self._http.close()
         except Exception as e:
-            print(f"[manager] http client close failed (ignored): {e}")
+            log.warning("http client close failed (ignored): %s", e)
 
         try:
             await self._backend.close()
         except Exception as e:
-            print(f"[manager] backend close failed (ignored): {e}")
+            log.warning("backend close failed (ignored): %s", e)
 
     @property
     def env_cluster_map(self) -> Dict[str, EnvClusterBinding]:

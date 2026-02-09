@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..binding_plan import BindingPlan
@@ -8,8 +9,9 @@ from ..http_client import HttpServiceClient
 from ..types import ClusterRegistry, EnvClusterBinding, RayClusterInfo
 
 from .base import ClusterBackend
-from .ryajob import RayJobManager
+from .rayjob import RayJobManager
 
+log = logging.getLogger("ray_clusters")
 
 # If you don't provide a default entrypoint, we will try per-env entrypoints only.
 DEFAULT_ENTRYPOINT = "python env/app.py"
@@ -206,7 +208,7 @@ class RemoteRayJobBackend(ClusterBackend):
             if errors:
                 # 注意：多起的那 30% 里有失败不一定是致命的，只要最终能满足 required 就继续
                 for e in errors[:3]:
-                    print(f"[manager] WARN: rayjob create failed (ignored if capacity enough): {e}")
+                    log.warning("rayjob create failed (ignored if capacity enough): %s", e)
 
         # sanity: ensure created >= required per env
         created_counts: Dict[str, int] = {env: 0 for env in required_counts.keys()}
@@ -367,16 +369,17 @@ class RemoteRayJobBackend(ClusterBackend):
                     job_name=job_name,
                     head_ip="",
                 )
-                print(
-                    f"[manager] RayJob created: env='{env_name}', idx={idx}, image='{image}', job_name='{job_name}'"
+                log.info(
+                    "RayJob created: env='%s', idx=%s, image='%s', job_name='%s'",
+                    env_name, idx, image, job_name
                 )
                 return
             except Exception as e:
                 last_err = e
                 sleep_s = min(5.0, 0.5 * (2 ** (attempt - 1)))
-                print(
-                    f"[manager] RayJob create failed (attempt {attempt}/{max_attempts}) "
-                    f"env='{env_name}', idx={idx}, image='{image}': {e}. Retry in {sleep_s}s"
+                log.warning(
+                    "RayJob create failed (attempt %d/%d) env='%s', idx=%s, image='%s': %s. Retry in %.1fs",
+                    attempt, max_attempts, env_name, idx, image, e, sleep_s
                 )
                 if attempt < max_attempts:
                     await asyncio.sleep(sleep_s)
@@ -411,7 +414,7 @@ class RemoteRayJobBackend(ClusterBackend):
                 # Wait ALL clusters
                 missing_cids = [cid for cid, info in self._clusters.items() if not getattr(info, "head_ip", "")]
                 if not missing_cids:
-                    print("[manager] all clusters have head_ip")
+                    log.info("all clusters have head_ip")
                     return
 
                 short_envs = None
@@ -429,7 +432,7 @@ class RemoteRayJobBackend(ClusterBackend):
 
                 short_envs = [env for env, req in req_envs.items() if ready_counts.get(env, 0) < req]
                 if not short_envs:
-                    print(f"[manager] required head_ip satisfied: {ready_counts}")
+                    log.info("required head_ip satisfied: %s", ready_counts)
                     return
 
                 # Only poll clusters belonging to envs that are still short
@@ -450,11 +453,11 @@ class RemoteRayJobBackend(ClusterBackend):
 
             attempt += 1
             if required_counts is None:
-                print(f"[manager] head_ip poll attempt={attempt}, missing={missing_cids}")
+                log.info("head_ip poll attempt=%d, missing=%s", attempt, missing_cids)
             else:
-                print(
-                    f"[manager] head_ip poll attempt={attempt}, short_envs={short_envs}, "
-                    f"missing={missing_cids}, ready={ready_counts}"
+                log.info(
+                    "head_ip poll attempt=%d, short_envs=%s, missing=%s, ready=%s",
+                    attempt, short_envs, missing_cids, ready_counts
                 )
 
             # ---------------------------
@@ -476,12 +479,12 @@ class RemoteRayJobBackend(ClusterBackend):
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 for cid, res in zip(cid_list, results):
                     if isinstance(res, Exception):
-                        print(f"[manager] get_head_ip failed for cluster='{cid}': {res}")
+                        log.warning("get_head_ip failed for cluster='%s': %s", cid, res)
                         continue
                     ip = (res or "").strip()
                     if ip:
                         self._clusters[cid].head_ip = ip
-                        print(f"[manager] head_ip resolved: cluster='{cid}' -> {ip}")
+                        log.info("head_ip resolved: cluster='%s' -> %s", cid, ip)
 
             # ---------------------------
             # Timeout check + sleep
@@ -521,7 +524,7 @@ class RemoteRayJobBackend(ClusterBackend):
                     not_ready.append(info)
 
             if not not_ready:
-                print("[manager] all head HTTP services are ready (snapshot)")
+                log.info("all head HTTP services are ready (snapshot)")
                 return
 
             attempt += 1
@@ -529,9 +532,9 @@ class RemoteRayJobBackend(ClusterBackend):
                 remaining = ", ".join(f"{getattr(i, 'job_name', '')}@{getattr(i, 'head_ip', '')}" for i in not_ready)
                 raise RuntimeError(f"Timeout waiting for head HTTP services: {remaining}")
 
-            print(
-                f"[manager] head HTTP not ready (attempt {attempt}), retry in {self._poll_interval_s}s. "
-                f"not_ready={[getattr(i, 'job_name', '') for i in not_ready]}"
+            log.info(
+                "head HTTP not ready (attempt %d), retry in %.1fs. not_ready=%s",
+                attempt, self._poll_interval_s, [getattr(i, 'job_name', '') for i in not_ready]
             )
             await asyncio.sleep(self._poll_interval_s)
 
@@ -562,15 +565,14 @@ class RemoteRayJobBackend(ClusterBackend):
             try:
                 await asyncio.to_thread(self._rayjob_manager.stop, project, job_name)
             except Exception as e:
-                # stop 可能因为还在启动/状态未就绪失败，继续尝试 delete
-                print(f"[manager] stop rayjob failed (ignored): cluster={cid}, job={job_name}, err={e}")
+                log.warning("stop rayjob failed (ignored): cluster=%s, job=%s, err=%s", cid, job_name, e)
 
             try:
                 await asyncio.to_thread(self._rayjob_manager.delete, project, job_name)
-                print(f"[manager] deleted extra rayjob: cluster={cid}, job={job_name}")
+                log.info("deleted extra rayjob: cluster=%s, job=%s", cid, job_name)
                 return cid
             except Exception as e:
-                print(f"[manager] delete rayjob failed (ignored): cluster={cid}, job={job_name}, err={e}")
+                log.warning("delete rayjob failed (ignored): cluster=%s, job=%s, err=%s", cid, job_name, e)
                 return None
 
         tasks = [asyncio.create_task(_cleanup_one(cid, project, job_name)) for cid, project, job_name in jobs]
@@ -581,4 +583,3 @@ class RemoteRayJobBackend(ClusterBackend):
             if isinstance(r, str) and r:
                 deleted.append(r)
         return deleted
-
