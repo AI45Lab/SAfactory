@@ -109,10 +109,9 @@ Slime 训练框架的客户端接口，提供 `generate_rollout()` 函数。
 构建和管理多轮对话的轨迹 mask。
 
 **核心功能**：
-- `prepare_input_ids()`: 准备输入，复用历史 token
-- `save()`: 记录生成轮次（tokens, response_mask, logprobs）
-- `query_tokens()`: 查询 session 的完整 tokens 和 mask
-- `query_logprobs()`: 查询 logprobs
+- `prepare_generate_input()`: 准备 /generate 输入，复用历史 token，并维护多模态 image_data
+- `add_assistant_message()`: 记录生成轮次（tokens, response_mask, logprobs, image_data）
+- `query_training_info()`: 查询训练所需信息（tokens/mask/logprobs/image_data）
 
 **特性**：
 - 支持 `<think>...</think>` 标签的可选前缀匹配
@@ -256,8 +255,8 @@ cd /root/AIEvoBox/rl
 `TrajectoryMaskBuilder` 维护 token 级的轨迹 mask：
 
 - **response_mask**: 0=上下文 token，1=生成的 token
-- **save()**: 记录每轮对话的完整 token 序列、response_mask 和 logprobs
-- **query_tokens()**: 查询 session 的 tokens 和 response_mask
+- **add_assistant_message()**: 记录每轮对话的完整 token 序列、response_mask、logprobs 和 image_data
+- **query_training_info()**: 查询训练所需信息（tokens/mask/logprobs/image_data）
 - **特性**: 支持 `<think>...</think>` 可选前缀匹配，多轮对话复用历史 token
 
 ## 性能优化

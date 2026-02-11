@@ -8,11 +8,8 @@
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils.multimodal import (
-    encode_image_for_rollout_engine,
-    extract_image_urls_from_messages,
-    load_pil_images,
-)
+from qwen_vl_utils import process_vision_info
+from slime.utils.processing_utils import encode_image_for_rollout_engine
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +40,7 @@ class TrajectoryMaskBuilder:
         #     "tokens": List[int],
         #     "response_mask": List[int],    # 0=context, 1=generated
         #     "logprobs": List[float],
-        #     "image_data": List[str],       # 多模态图片（按出现顺序累计，发给 /generate）
+        #     "image_data": List[str],       # 编码后的图片数据
         # }]
         self.session_data: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -97,101 +94,90 @@ class TrajectoryMaskBuilder:
 
         return end_tokens, end_prompt_str
 
-    def check_if_prefix(
+    def match_prefix_with_mask(
         self,
-        prefix_messages_str: str,
-        target_messages_str: str,
-    ) -> Tuple[bool, int]:
+        prefix_text: str,
+        target_text: str,
+    ) -> Optional[int]:
         """
-        判断 prefix_messages_str 是否是 target_messages_str 的前缀（prefix_messages_str 中的 <think>...</think> 在 target_messages_str 中可被跳过）。
+        判断 prefix_text 是否是 target_text 的前缀（prefix_text 中的 <think>...</think> 在 target_text 中可选）。
 
-        如果匹配成功，返回 (True, target_idx)；否则返回 (False, 0)。
+        如果匹配成功，返回 target_text 中匹配到的前缀长度；否则返回 None。
         """
         prefix_idx = 0
         target_idx = 0
 
-        while prefix_idx < len(prefix_messages_str):
-            if prefix_messages_str[prefix_idx:].startswith("<think>"):
+        while prefix_idx < len(prefix_text):
+            if prefix_text[prefix_idx:].startswith("<think>"):
                 end_tag = "</think>"
                 think_start = prefix_idx
-                close_pos = prefix_messages_str.find(end_tag, prefix_idx + len("<think>"))
+                close_pos = prefix_text.find(end_tag, prefix_idx + len("<think>"))
                 if close_pos == -1:
                     # 没有闭合标签，当作普通字符处理
-                    if prefix_messages_str[prefix_idx] != target_messages_str[target_idx]:
-                        return False, -1
+                    if target_idx >= len(target_text):
+                        return target_idx
+                    if prefix_text[prefix_idx] != target_text[target_idx]:
+                        return None
                     prefix_idx += 1
                     target_idx += 1
                 else:
                     think_end = close_pos + len(end_tag)
-                    think_content = prefix_messages_str[think_start:think_end]
-                    if target_messages_str[target_idx:].startswith(think_content):
+                    think_content = prefix_text[think_start:think_end]
+                    if target_text[target_idx:].startswith(think_content):
                         # target 中存在 <think> 块
                         target_idx += len(think_content)
                         prefix_idx = think_end
                     else:
                         # target 中没有 <think> 块，跳过
                         prefix_idx = think_end
-                        # 对齐 prefix 和 target 的换行符
-                        while prefix_idx < len(prefix_messages_str) and prefix_messages_str[prefix_idx] == '\n':
+                        while prefix_idx < len(prefix_text) and prefix_text[prefix_idx] == '\n':
                             prefix_idx += 1
-                        while target_idx < len(target_messages_str) and target_messages_str[target_idx] == '\n':
-                            target_idx += 1
             else:
-                if prefix_messages_str[prefix_idx] != target_messages_str[target_idx]:
-                    return False, -1
+                if target_idx >= len(target_text):
+                    # target_text 已用完，返回匹配长度
+                    return target_idx
+                if prefix_text[prefix_idx] != target_text[target_idx]:
+                    # 字符不匹配
+                    return None
                 prefix_idx += 1
                 target_idx += 1
 
-        return True, target_idx
-
-    def _find_longest_prefix(
-        self,
-        session_id: str,
-        target_messages_str: str,
-    ) -> Tuple[Optional[Dict[str, Any]], int]:
-        """找到最长前缀匹配的历史记录。
-
-        Returns:
-            (matched_record, matched_target_prefix_len)
-            如果没有找到前缀匹配，返回 (None, 0)
-        """
-        if session_id not in self.session_data:
-            return None, 0
-
-        longest_matched_record = None
-        longest_target_idx = 0
-
-        for record in self.session_data[session_id]:
-            matched, matched_target_idx = self.check_if_prefix(
-                record["messages_str"],
-                target_messages_str
-            )
-            if not matched:
-                continue
-            if matched_target_idx > longest_target_idx:
-                longest_matched_record = record
-                longest_target_idx = matched_target_idx
-
-        return longest_matched_record, longest_target_idx
+        return target_idx
 
     def _find_best_match(
         self,
         session_id: str,
         target_messages_str: str,
-    ) -> Tuple[Optional[Dict[str, Any]], int, int]:
-        """兼容旧接口：基于当前“最长前缀匹配”返回 best match。"""
-        matched_record, matched_target_idx = self._find_longest_prefix(session_id, target_messages_str)
-        if matched_record is None:
-            return None, 0, 0
-        matched_record_prefix_len = len(matched_record.get("messages_str", ""))
-        return matched_record, matched_record_prefix_len, matched_target_idx
+    ) -> Tuple[Optional[Dict[str, Any]], int]:
+        """找到最佳匹配的历史记录。
 
-    def prepare_input_tokens(
+        Returns:
+            (matched_record, matched_prefix_length)
+            如果没有匹配，返回 (None, 0)
+        """
+        if session_id not in self.session_data:
+            return None, 0
+
+        best_record = None
+        best_match_len = 0
+
+        for record in self.session_data[session_id]:
+            matched_len = self.match_prefix_with_mask(
+                record["messages_str"],
+                target_messages_str
+            )
+            if matched_len is not None and matched_len > best_match_len:
+                best_record = record
+                best_match_len = matched_len
+
+        return best_record, best_match_len
+
+    def prepare_generate_input(
         self,
         session_id: str,
         messages: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """准备发送给 /generate 的 input_ids。
+        """准备发送给 /generate 的输入。
 
         通过匹配历史记录，复用已有的 tokens，只 tokenize 新增部分。
 
@@ -201,99 +187,108 @@ class TrajectoryMaskBuilder:
 
         Returns:
             {
-                "input_tokens": List[int],
-                "image_data": List[str],  # 多模态 generate 需要的数据（PNG base64，无 data-uri 前缀；按出现顺序累计）
-                "messages_str": str,  # 用于匹配/保存的字符串（多模态时为 processor 展开后的 tokens decode）
-                "matched_record": Optional[Dict[str, Any]],
-                "matched_target_idx": int,
+                "input_ids": List[int],        # 准备发送的完整 token 序列
+                "messages_str": str,           # 当前 messages 对应的字符串
+                "image_data": List[str],       # 编码后的图片数据（发给 /generate）
+                "matched_record": Optional[Dict],  # 匹配到的历史记录
+                "matched_tokens_count": int,   # 匹配到的 tokens 数量
             }
         """
-        # 维护多模态状态：image_data 需要按“历史累计”发送给 /generate
-        # 对齐 slime/examples/geo3k_vlm_multi_turn：发送 PNG bytes 的 base64 字符串（无 data-uri 前缀）
-        image_refs = extract_image_urls_from_messages(messages)
-        images = load_pil_images(image_refs) if image_refs else []
+        # 提取多模态信息
+        images, videos = process_vision_info(messages)
+        images = images or []  # 确保 images 不为 None
 
-        # 构建当前 messages 的字符串
+        # 构建当前 messages 的字符串（不含 generation_prompt，用于匹配）
         current_messages_str = self.tokenizer.apply_chat_template(
             messages,
-            add_generation_prompt=True,
-            tokenize=False,
+            add_generation_prompt=False,
+            tokenize=False
         )
 
+        # 多模态处理：如果有 processor 且有 images，用 processor 处理
         proc_out = None
-        # multimodal: current_messages_str 使用 processor 展开后的 token 序列 decode 得到（与 save/query 对齐）
         if self.processor is not None and images:
-            proc_out = self.processor(
-                text=current_messages_str,
-                images=images,
-                tokenize=False
-            )
+            proc_out = self.processor(text=current_messages_str, images=images, tokenize=False)
             current_messages_str = self.tokenizer.decode(
                 proc_out["input_ids"][0].tolist(),
                 skip_special_tokens=False,
             )
 
-        matched_record, matched_target_idx = self._find_longest_prefix(
+        # 字符级匹配
+        matched_record, matched_prefix_len = self._find_best_match(
             session_id, current_messages_str
         )
 
+        matched_tokens_count = 0  # 匹配到的 tokens 数量
+
         if matched_record is not None:
             # 找到匹配字符串对应的 token 位置
+            # matched_prefix_len 是字符级别的匹配长度
+            # 我们需要找到对应的 token 边界
+            matched_str = matched_record["messages_str"][:matched_prefix_len]
+
+            # Tokenize 匹配部分，找到对应的 token 数量
+            # 注意：我们不能简单地 tokenize matched_str，因为可能有上下文依赖
+            # 最安全的方式是遍历 tokens 逐个 decode，找到匹配位置
+            for i, token in enumerate(matched_record["tokens"]):
+                decoded = self.tokenizer.decode(matched_record["tokens"][:i+1])
+                if len(decoded) <= matched_prefix_len:
+                    matched_tokens_count = i + 1
+                else:
+                    break
+
             # 复用匹配部分的 tokens
-            input_tokens = list(matched_record["tokens"])
+            input_ids = list(matched_record["tokens"][:matched_tokens_count])
 
             # 计算新增的 context 字符串（使用字符级匹配长度）
-            new_context_str = current_messages_str[matched_target_idx:]
+            new_context_str = current_messages_str[matched_prefix_len:]
+            new_context_str += self.generation_prompt
 
             # Tokenize 新增部分并追加
             if new_context_str:
                 new_context_tokens = self.tokenizer.encode(new_context_str, add_special_tokens=False)
-                input_tokens.extend(new_context_tokens)
+                input_ids.extend(new_context_tokens)
         else:
             # 没有匹配，完整 tokenize
             if proc_out is not None:
-                input_tokens = proc_out["input_ids"][0].tolist()
+                # 使用 processor 的输出，并添加 generation_prompt
+                input_ids = proc_out["input_ids"][0].tolist()
+                input_ids.extend(self.generation_tokens)
             else:
-                input_tokens = self.tokenizer.apply_chat_template(
+                input_ids = self.tokenizer.apply_chat_template(
                     messages,
                     tokenize=True,
                     add_generation_prompt=True
                 )
 
-        # 合并多模态数据：尽量复用 matched_record 的 image_data，只编码新增图片。
+        # 处理 image_data：复用匹配记录的 image_data，只编码新增图片
         image_data: List[str] = []
-        if matched_record is not None and matched_record.get("image_data"):
-            cached = list(matched_record.get("image_data") or [])
-            cached_len = len(cached)
-            if not images:
-                image_data = cached
-            elif len(images) == cached_len:
-                image_data = cached
-            elif len(images) > cached_len:
-                new_images = images[cached_len:]
-                image_data = cached + [encode_image_for_rollout_engine(img) for img in new_images]
+        if matched_record is not None:
+            prev_image_data = list(matched_record.get("image_data") or [])
+            if len(images) > len(prev_image_data):
+                new_images = images[len(prev_image_data):]
+                image_data = prev_image_data + [encode_image_for_rollout_engine(img) for img in new_images]
             else:
-                # 兜底：messages 未包含历史图片（或被裁剪），将本次图片视为增量追加
-                image_data = cached + [encode_image_for_rollout_engine(img) for img in images]
+                image_data = prev_image_data
         else:
             image_data = [encode_image_for_rollout_engine(img) for img in images]
 
         return {
-            "input_tokens": input_tokens,
+            "input_ids": input_ids,
             "messages_str": current_messages_str,
             "image_data": image_data,
             "matched_record": matched_record,
-            "matched_target_idx": matched_target_idx,
+            "matched_tokens_count": matched_tokens_count,
         }
 
     def save(
         self,
         session_id: str,
         messages_str: str,
-        input_tokens: List[int],
-        output_tokens: List[int],
+        input_ids: List[int],
+        output_ids: List[int],
         output_logprobs: List[List],  # [[logprob, token_id, ...], ...]
-        image_data: Optional[List[str]] = None,
+        image_data: List[str],
         finish_reason: Optional[str] = None,
         matched_record: Optional[Dict[str, Any]] = None,
         matched_tokens_count: int = 0,
@@ -303,68 +298,121 @@ class TrajectoryMaskBuilder:
 
         Args:
             session_id: Session ID
-            messages_str: 本次 prepare_input_tokens 生成时用于匹配/保存的 messages_str
-            input_tokens: 发送给 /generate 的 input token IDs（来自 prepare_input_tokens）
-            output_tokens: 本次生成的 token IDs
+            messages_str: 当前 messages 对应的字符串（来自 prepare_generate_input）
+            input_ids: 发送给 /generate 的 input_ids（来自 prepare_generate_input）
+            output_ids: 本次生成的 token IDs
             output_logprobs: 本次生成的 logprobs
-            image_data: 发给 /generate 的 image_data（多模态时按历史累计）
+            image_data: 编码后的图片数据
             finish_reason: 生成结束原因
-            matched_record: 已匹配的历史记录（来自 prepare_input_tokens，可选）
-            matched_tokens_count: 匹配到的 tokens 数量（可选）
+            matched_record: 已匹配的历史记录（来自 prepare_generate_input，避免重复匹配）
+            matched_tokens_count: 匹配到的 tokens 数量（来自 prepare_generate_input）
             assistant_text: generate API 返回的解码文本（已 skip_special_tokens）
         """
         if session_id not in self.session_data:
             self.session_data[session_id] = []
 
-        # 拼接本次完整 token 序列（补上 assistant 消息结束符，便于下一轮前缀复用）
-        input_tokens = list(input_tokens)
-        output_tokens = list(output_tokens)
+        # 如果没有传入 matched_record，重新匹配
+        if matched_record is None:
+            matched_record, _ = self._find_best_match(session_id, messages_str)
 
-        tokens = input_tokens + output_tokens + list(self.end_tokens)
+        # 在匹配的基础上构建 tokens、response_mask、logprobs
+        if matched_record is not None and matched_tokens_count > 0:
+            # 复制匹配记录的数据（只复制匹配部分）
+            prev_response_mask = list(matched_record["response_mask"][:matched_tokens_count])
+            prev_logprobs = list(matched_record["logprobs"][:matched_tokens_count])
+        else:
+            prev_response_mask = []
+            prev_logprobs = []
 
-        # response_mask: 0=context, 1=generated（仅标记真实生成的 output_tokens）
-        response_mask = [0] * len(input_tokens) + [1] * len(output_tokens) + [0] * len(self.end_tokens)
+        # input_ids 已经包含了匹配的 tokens + 新增 context tokens + generation tokens
+        # 计算新增的 context 部分（包括 generation_prompt）
+        new_context_len = len(input_ids) - matched_tokens_count
 
-        # logprobs: context/end 用 0.0 填充；generated 用 output_logprobs 的第 0 项
-        out_lp: List[float] = []
-        for item in output_logprobs or []:
-            try:
-                out_lp.append(float(item[0]))
-            except Exception:
-                out_lp.append(0.0)
-        if len(out_lp) < len(output_tokens):
-            out_lp.extend([0.0] * (len(output_tokens) - len(out_lp)))
-        elif len(out_lp) > len(output_tokens):
-            out_lp = out_lp[: len(output_tokens)]
+        # 构建完整的 tokens 和 mask
+        tokens = list(input_ids)  # input_ids 已经是正确的
+        response_mask = prev_response_mask + [0] * new_context_len
+        logprobs_list = prev_logprobs + [0.0] * new_context_len
 
-        logprobs_list = [0.0] * len(input_tokens) + out_lp + [0.0] * len(self.end_tokens)
+        # 追加 output tokens (mask=1)
+        # Decode output_ids（不 skip special tokens），以便完整包含格式化字符
+        decoded_output = self.tokenizer.decode(output_ids, skip_special_tokens=False)
 
-        full_messages_str = self.tokenizer.decode(tokens, skip_special_tokens=False)
+        # 解析 logprobs
+        parsed_logprobs = []
+        for item in output_logprobs:
+            if isinstance(item, (list, tuple)) and len(item) >= 1:
+                logprob = float(item[0]) if item[0] is not None else 0.0
+                parsed_logprobs.append(logprob)
+            else:
+                parsed_logprobs.append(0.0)
 
+        tokens.extend(output_ids)
+        response_mask.extend([1] * len(output_ids))
+        logprobs_list.extend(parsed_logprobs)
+
+        # 构建 messages_str（通过 append 方式，而不是重新 apply_chat_template）
+        # 直接 append decoded_output，它已经包含了所有格式化字符（如 <|im_end|>\n）
+        full_messages_str = messages_str + self.generation_prompt + decoded_output
+
+        # 保存新记录
         new_record = {
             "messages_str": full_messages_str,
             "tokens": tokens,
             "response_mask": response_mask,
             "logprobs": logprobs_list,
-            "image_data": list(image_data or []),
-            "finish_reason": finish_reason,
-            "assistant_text": assistant_text,
+            "image_data": image_data,
         }
         self.session_data[session_id].append(new_record)
 
-    def query_tokens(self, session_id: str, messages_str: str) -> Tuple[List[int], List[int]]:
-        """查询与 messages_str 匹配的 tokens 和 response_mask。"""
-        matched_record, _, matched_len = self._find_best_match(session_id, messages_str)
+    def get_training_info(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+    ) -> Tuple[List[int], List[int], List[str], str]:
+        """获取训练所需的 tokens、response_mask、image_data 和 messages_str。
+
+        Args:
+            session_id: Session ID
+            messages: 完整的 messages（含 assistant 回复）
+
+        Returns:
+            (tokens, response_mask, image_data, messages_str)
+        """
+        # 提取多模态信息
+        images, videos = process_vision_info(messages)
+        images = images or []  # 确保 images 不为 None
+
+        # 构建 messages_str
+        messages_str = self.tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=False,
+            tokenize=False
+        )
+
+        # 多模态处理：如果有 processor 且有 images，用 processor 处理
+        if self.processor is not None and images:
+            proc_out = self.processor(text=messages_str, images=images, tokenize=False)
+            messages_str = self.tokenizer.decode(
+                proc_out["input_ids"][0].tolist(),
+                skip_special_tokens=False,
+            )
+
+        # 查找匹配的记录
+        matched_record, matched_len = self._find_best_match(session_id, messages_str)
         if matched_record is None:
-            # Debug: 打印是否有数据
             has_data = session_id in self.session_data and len(self.session_data[session_id]) > 0
-            logger.warning(f"query_tokens failed: session={session_id}, has_data={has_data}, matched_len={matched_len}")
-            return [], []
-        return list(matched_record["tokens"]), list(matched_record["response_mask"])
+            logger.warning(f"get_training_info failed: session={session_id}, has_data={has_data}, matched_len={matched_len}")
+            return [], [], [], ""
+        return (
+            list(matched_record["tokens"]),
+            list(matched_record["response_mask"]),
+            list(matched_record.get("image_data") or []),
+            messages_str,
+        )
 
     def query_logprobs(self, session_id: str, messages_str: str) -> List[float]:
         """查询与 messages_str 匹配的 logprobs。"""
-        matched_record, _, _ = self._find_best_match(session_id, messages_str)
+        matched_record, _ = self._find_best_match(session_id, messages_str)
         if matched_record is None:
             return []
         return list(matched_record["logprobs"])

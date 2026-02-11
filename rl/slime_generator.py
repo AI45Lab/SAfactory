@@ -1,9 +1,11 @@
 import asyncio
+import base64
 import json
 import logging
 import os
 import sys
 import time
+from io import BytesIO
 from typing import Any, Dict, List
 import copy
 
@@ -16,19 +18,20 @@ from utils import get_env, AggType, MetricsRecorder
 
 import aiohttp
 import requests
+from PIL import Image
 from transformers import AutoTokenizer
 from transformers import AutoProcessor, PreTrainedTokenizerBase, ProcessorMixin
 
 from slime.utils.async_utils import run
 from slime.utils.types import Sample
 
-from utils.multimodal import (
-    extract_image_urls_from_messages,
-    has_image_in_messages,
-    load_pil_images,
-    normalize_messages,
-    split_messages_prompt_and_assistant,
-)
+
+def decode_base64_to_pil(b64_str: str) -> Image.Image:
+    """Decode a base64 string to PIL Image."""
+    raw = base64.b64decode(b64_str)
+    with BytesIO(raw) as bio:
+        img = Image.open(bio).copy()
+    return img.convert("RGB")
 
 __all__ = ["generate_rollout"]
 
@@ -124,13 +127,13 @@ def write_debug_to_file(
 
 def query_trajectory(
     session_id: str,
-    messages_str: str,
+    messages: List[Dict[str, Any]],
     max_retries: int = 10,
     timeout: int = 60,
-) -> tuple[List[int], List[int]]:
-    """Query tokens and response_mask from LLM Proxy."""
+) -> tuple[List[int], List[int], List[str], str]:
+    """Query tokens, response_mask, image_data and messages_str from LLM Proxy."""
     url = f"{LLM_PROXY_URL}/get_trajectory_mask"
-    payload = {"session_id": session_id, "messages_str": messages_str}
+    payload = {"session_id": session_id, "messages": messages}
 
     last_error = None
     for attempt in range(max_retries):
@@ -147,8 +150,10 @@ def query_trajectory(
 
         tokens = data.get("tokens")
         response_mask = data.get("response_mask")
+        image_data = data.get("image_data") or []
+        messages_str = data.get("messages_str") or ""
         if isinstance(tokens, list) and isinstance(response_mask, list):
-            return [int(t) for t in tokens], [int(m) for m in response_mask]
+            return [int(t) for t in tokens], [int(m) for m in response_mask], image_data, messages_str
 
         raise KeyError("Missing `tokens`/`response_mask` in response")
 
@@ -444,38 +449,11 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
     for group_record in results:
         group_results = []
         for record in group_record:
-            oai_messages = normalize_messages(record["messages"])
+            oai_messages = record["messages"]
             session_id = record["extra_info"].get("session_id", "")
 
-            # Convert messages to string (query key for llm_proxy trajectory lookup).
-            # For VLM we must use processor-expanded string; otherwise different images can collide.
-            messages_str = tokenizer.apply_chat_template(
-                oai_messages,
-                add_generation_prompt=False,
-                tokenize=False
-            )
-            global PROCESSOR
-            if PROCESSOR is not None and has_image_in_messages(oai_messages):
-                prompt_text = tokenizer.apply_chat_template(
-                    oai_messages,
-                    add_generation_prompt=False,
-                    tokenize=False,
-                )
-                image_refs = extract_image_urls_from_messages(oai_messages)
-                images = load_pil_images(image_refs) if image_refs else None
-                proc_out = PROCESSOR(
-                    text=prompt_text,
-                    images=images,
-                    padding=True,
-                    return_tensors="pt",
-                )
-                messages_str = tokenizer.decode(
-                    proc_out["input_ids"][0].tolist(),
-                    skip_special_tokens=False,
-                )
-
-            # Get tokens + response_mask from LLM Proxy
-            tokens, response_mask = query_trajectory(session_id, messages_str)
+            # Get tokens + response_mask + image_data + messages_str from LLM Proxy
+            tokens, response_mask, image_data, messages_str = query_trajectory(session_id, oai_messages)
             token_ids, loss_mask, response_length = build_loss_mask_from_response_mask(tokens, response_mask)
 
             # 写入调试文件
@@ -499,19 +477,11 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
                 metadata=metadata,
             )
 
-            # VLM training: attach processed multimodal tensors if there are images in the prompt
-            # (prompt = messages without the final assistant response).
-            prompt_messages, _ = split_messages_prompt_and_assistant(oai_messages)
-            if PROCESSOR is not None and has_image_in_messages(prompt_messages):
-                prompt_text = tokenizer.apply_chat_template(
-                    prompt_messages,
-                    add_generation_prompt=True,
-                    tokenize=False,
-                )
-                image_refs = extract_image_urls_from_messages(prompt_messages)
-                images = load_pil_images(image_refs) if image_refs else None
+            # VLM training: attach processed multimodal tensors if there are images
+            if PROCESSOR is not None and image_data:
+                images = [decode_base64_to_pil(img_b64) for img_b64 in image_data]
                 proc_out = PROCESSOR(
-                    text=prompt_text,
+                    text=messages_str,
                     images=images,
                     padding=True,
                     return_tensors="pt",

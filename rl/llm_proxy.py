@@ -131,12 +131,12 @@ class InitRequest(BaseModel):
 
 class MaskRequest(BaseModel):
     session_id: str
-    messages_str: str
+    messages: List[Dict[str, Any]]
 
 
 class TokensRequest(BaseModel):
     session_id: str
-    messages_str: str
+    messages: List[Dict[str, Any]]
 
 
 class LogprobsRequest(BaseModel):
@@ -214,12 +214,17 @@ async def proxy_chat_completions(session_id: str, request: Request):
     max_tokens = payload.get("max_tokens")
 
     # Prepare input tokens (with multimodal state like cumulative image_data).
-    prep = STATE.trajectory_mask_builder.prepare_input_tokens(session_id, messages)
-    input_ids = prep["input_tokens"]
+    # Run in thread pool to avoid blocking the event loop (CPU-bound tokenization)
+    prep = await asyncio.to_thread(
+        STATE.trajectory_mask_builder.prepare_generate_input,
+        session_id,
+        messages
+    )
+    input_ids = prep["input_ids"]
     messages_str = prep["messages_str"]
     image_data = prep.get("image_data") or []
     matched_record = prep.get("matched_record")
-    matched_tokens_count = len(matched_record.get("tokens", [])) if matched_record else 0
+    matched_tokens_count = prep.get("matched_tokens_count", 0)
 
     # Calculate max_new_tokens
     if STATE.max_length is not None:
@@ -355,11 +360,16 @@ async def get_trajectory_mask(request: MaskRequest):
         raise HTTPException(status_code=503, detail="Proxy not initialized")
 
     session_id = request.session_id
-    messages_str = request.messages_str
+    messages = request.messages
 
     try:
-        # Use the new token-level query
-        tokens, response_mask = STATE.trajectory_mask_builder.query_tokens(session_id, messages_str)
+        # Use get_training_info to get tokens, response_mask, image_data, messages_str
+        # Run in thread pool to avoid blocking the event loop
+        tokens, response_mask, image_data, messages_str = await asyncio.to_thread(
+            STATE.trajectory_mask_builder.get_training_info,
+            session_id,
+            messages
+        )
 
         # 按 max_length 截断
         if STATE.max_length is not None and len(tokens) > STATE.max_length:
@@ -378,7 +388,7 @@ async def get_trajectory_mask(request: MaskRequest):
         if start is not None:
             mask_ranges.append((start, len(response_mask)))
 
-        return {"mask_ranges": mask_ranges, "tokens": tokens, "response_mask": response_mask}
+        return {"mask_ranges": mask_ranges, "tokens": tokens, "response_mask": response_mask, "image_data": image_data, "messages_str": messages_str}
     except Exception as e:
         logger.error(f"Failed to query mask: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to query mask: {e}")
@@ -393,17 +403,22 @@ async def get_tokens(request: TokensRequest):
         raise HTTPException(status_code=503, detail="Proxy not initialized")
 
     session_id = request.session_id
-    messages_str = request.messages_str
+    messages = request.messages
 
     try:
-        tokens, response_mask = STATE.trajectory_mask_builder.query_tokens(session_id, messages_str)
+        # Run in thread pool to avoid blocking the event loop
+        tokens, response_mask, image_data, messages_str = await asyncio.to_thread(
+            STATE.trajectory_mask_builder.get_training_info,
+            session_id,
+            messages
+        )
 
         # 按 max_length 截断
         if STATE.max_length is not None and len(tokens) > STATE.max_length:
             tokens = tokens[:STATE.max_length]
             response_mask = response_mask[:STATE.max_length]
 
-        return {"tokens": tokens, "response_mask": response_mask}
+        return {"tokens": tokens, "response_mask": response_mask, "image_data": image_data, "messages_str": messages_str}
     except Exception as e:
         logger.error(f"Failed to query tokens: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to query tokens: {e}")
@@ -421,7 +436,12 @@ async def get_logprobs(request: LogprobsRequest):
     messages_str = request.messages_str
 
     try:
-        logprobs = STATE.trajectory_mask_builder.query_logprobs(session_id, messages_str)
+        # Run in thread pool to avoid blocking the event loop
+        logprobs = await asyncio.to_thread(
+            STATE.trajectory_mask_builder.query_logprobs,
+            session_id,
+            messages_str
+        )
         return {"logprobs": logprobs}
     except Exception as e:
         logger.error(f"Failed to query logprobs: {e}")
