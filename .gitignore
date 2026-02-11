@@ -16,6 +16,9 @@ env/mc/MineStudio/MineStudio
 wt-data-gateway
 
 saved_images
+cache
+.cache
+output
 
 # android env
 env/androidgym/icons
@@ -26,6 +29,7 @@ env/androidgym/*.apk
 env/androidgym/*.jsonl
 env/androidgym/db_data
 env/androidgym/run.sh
+env/androidgym/classified_jsonl
 
 # gitgym env
 env/gitgym/generated_code
