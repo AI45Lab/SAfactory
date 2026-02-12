@@ -5,6 +5,40 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 import html as html_escape
 import re
+import os
+import socket
+import threading
+import fcntl
+
+def get_free_port():
+    """Get available port dynamically"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))  # bind to available port
+        s.listen(1)
+        return s.getsockname()[1]  # return port allocated by the system
+
+def get_android_emulator_port(start=5554, stop=5585, step=2, lock_dir="/tmp/android_gym_locks"):
+    """
+    get a port supported by ADB(even number between 5554 and 5584)
+    """
+    if not os.path.exists(lock_dir):
+        os.makedirs(lock_dir, exist_ok=True)
+    for port in range(start, stop, step):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(('127.0.0.1', port)) == 0:
+                continue
+            lock_path = os.path.join(lock_dir, f"port_{port}.lock")
+            try:
+                lock_file = open(lock_path, 'w')
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_file.write(str(os.getpid()))
+                lock_file.flush()
+                return port, lock_file
+            except (IOError, BlockingIOError):
+                lock_file.close()
+                continue
+
+    raise RuntimeError(f"No available Android Emulator ports found in range [{start}, {stop}]. Please close some emulators.")
 
 def _slugify(label: str) -> str:
     s = re.sub(r"\s+", "-", str(label).strip().lower())

@@ -75,33 +75,66 @@ class AndroidGym(BaseEnv):
         self.start_emulator_flag = start_emulator
         self.emulator_name = emulator_name
         self.emulator_cmd_path = emulator_cmd_path
-        self.reverse_port = reverse_port
+        self.reverse_port = get_free_port()
         self.emulator_process = None
         self.proxy_address = proxy_address
         self.apk_list = apk_list
-        
+
+        self.port_lock_file = None
+        if self.start_emulator_flag:
+            try:
+                self.emulator_console_port, self.port_lock_file = get_android_emulator_port()
+                print(f"[Info] Acquired port {self.emulator_console_port} and locked it.")
+            except RuntimeError as e:
+                print(f"[Error] Failed to acquire port: {e}")
+                raise e
+
+            self.device_serial = f"emulator-{self.emulator_console_port}"
+        else:
+            self.emulator_console_port = None
+            self.device_serial = kwargs.get("device_serial", None)
+        print(f"Current Device Serial: {self.device_serial}")
+
+        if self.device_serial:
+            self.temp_dir = os.path.join(temp_dir, self.device_serial)
+            self.screenshot_dir = os.path.join(screenshot_dir, self.device_serial)
+        else:
+            self.temp_dir = temp_dir
+            self.screenshot_dir = screenshot_dir
+
         # 如果需要启动模拟器，在其它初始化之前执行
         if self.start_emulator_flag:
             self._setup_emulator()
-            
+
         if self.use_dynamic == 'Overlay Attack':
             # 设置悬浮窗权限 (针对 com.example.myapplication，或者可以扩展为参数)
             target_pkg = "com.example.myapplication"
             print(f"[Info] Granting SYSTEM_ALERT_WINDOW to {target_pkg}...")
             subprocess.run(
-                [self.adb_path, "shell", "appops", "set", target_pkg, "SYSTEM_ALERT_WINDOW", "allow"],
+                [self.adb_path, "-s", self.device_serial, "shell", "appops", "set", target_pkg, "SYSTEM_ALERT_WINDOW", "allow"],
                 check=False
             )
 
             # 配置反向代理
             print(f"[Info] Setting up reverse proxy on port {self.reverse_port}...")
             # 清理旧的
-            subprocess.run([self.adb_path, "reverse", "--remove", f"tcp:{self.reverse_port}"], check=False)
+            subprocess.run([self.adb_path, "-s", self.device_serial, "reverse", "--remove", f"tcp:{self.reverse_port}"], check=False)
             # 设置新的
             subprocess.run(
-                [self.adb_path, "reverse", f"tcp:{self.reverse_port}", f"tcp:{self.reverse_port}"],
+                [self.adb_path, "-s", self.device_serial, "reverse", f"tcp:{self.reverse_port}", f"tcp:{self.reverse_port}"],
                 check=True
             )
+
+        print(f"[{self.device_serial}] Taking initial screenshot...")
+        retry_count = 10
+        self.screenshot_file = None
+        for i in range(retry_count):
+            try:
+                self.screenshot_file = get_screenshot(adb_path, self.device_serial, screenshot_dir)
+                if self.screenshot_file:
+                    break # 成功
+            except Exception:
+                continue
 
         self.caption_call_method = caption_call_method
         self.caption_model = caption_model
@@ -109,10 +142,6 @@ class AndroidGym(BaseEnv):
         self.device = device
         self.qwen_api_key = qwen_api_key
         self.add_info = add_info
-
-        self.temp_dir = temp_dir
-        self.screenshot_dir = screenshot_dir
-        self.screenshot_file = get_screenshot(adb_path, screenshot_dir)
         self.width, self.height = Image.open(self.screenshot_file).size
         self.file_dir = file_dir
         self.seed = seed
@@ -131,7 +160,7 @@ class AndroidGym(BaseEnv):
         # 常量
         self.popup_component = "com.example.myapplication/.AdbReceiver"
         self.popup_action = "com.example.broadcast.UPDATE_POPUP"
-        self.server_hostport = "http://localhost:8000"
+        self.server_hostport = f"http://localhost:{self.reverse_port}"
 
         # 运行态
         self.output_action_history: List[str] = []
@@ -175,7 +204,7 @@ class AndroidGym(BaseEnv):
             if self.extra['use_page']:
                 page_title = self.extra['page_information']['title']
                 page_fields = self.extra['page_information']['form']
-                self.http_server, self.server_thread = start_server_in_thread(page_title, page_fields) # 启动一个端口为8000的钓鱼网页
+                self.http_server, self.server_thread = start_server_in_thread(page_title, page_fields, port=self.reverse_port) # 启动一个端口为8000的钓鱼网页
                 trigger = build_overlay_trigger(
                     adb_path=self.adb_path,
                     component=self.popup_component,
@@ -196,7 +225,7 @@ class AndroidGym(BaseEnv):
         if self.use_dynamic == 'Popup SMS':
             sms_phone = self.extra['numbers'][0]
             sms_message = self.extra['message']
-            self.http_server, self.server_thread = start_server_in_thread("form",[])
+            self.http_server, self.server_thread = start_server_in_thread("form", [], port=self.reverse_port)
             trigger = build_popup_trigger(
                 adb_path = self.adb_path,
                 phone=sms_phone,
@@ -216,17 +245,16 @@ class AndroidGym(BaseEnv):
             )
             time.sleep(0.5)
             self.open_files()
-            
 
     def reset(self, remote_dir: str = "/sdcard/Download", seed: Optional[int] = None) -> ResetOutput:
         adb = self.adb_path
-        subprocess.run([adb, "shell", "rm", "-rf", remote_dir.rstrip("/") + "/*"], check=False, text=True)
-        home(adb)
+        subprocess.run([adb, "-s", self.device_serial, "shell", "rm", "-rf", remote_dir.rstrip("/") + "/*"], check=False, text=True)
+        home(adb, self.device_serial)
         x1 = int(self.width * 0.5)
         y1 = int(self.height * 0.85)
         x2 = int(self.width * 0.5)
         y2 = int(self.height * 0.15)
-        slide(adb, x1, y1, x2, y2)
+        slide(adb, self.device_serial, x1, y1, x2, y2)
         observation = self._get_observation()
         info = self._get_info()
         system_prompt = SYSTEM_PROMPT
@@ -283,7 +311,7 @@ class AndroidGym(BaseEnv):
 
     def get_task_prompt(self) -> List[ChatCompletionMessageParam]:
         # 环境感知
-        self.screenshot_file = get_screenshot(adb_path=self.adb_path, out_dir=self.screenshot_dir)
+        self.screenshot_file = get_screenshot(adb_path=self.adb_path, device_serial=self.device_serial, out_dir=self.screenshot_dir)
         self.perception_infos = self.get_perception_infos()
         self.keyboard_height_limit = int(0.9 * self.height)
         self.keyboard = self.keyboard_present(self.perception_infos, self.height, 0.9)
@@ -327,7 +355,7 @@ class AndroidGym(BaseEnv):
         return self.messages
     
     def render(self) -> RenderOutput:
-        render_screenshot_path = get_screenshot(adb_path=self.adb_path, out_dir=self.screenshot_dir, base="render_screenshot")
+        render_screenshot_path = get_screenshot(adb_path=self.adb_path, device_serial=self.device_serial, out_dir=self.screenshot_dir, base="render_screenshot")
         with open(render_screenshot_path, 'rb') as f:
             image_data = f.read()
         return RenderOutput(
@@ -376,6 +404,18 @@ class AndroidGym(BaseEnv):
                 print(f"[Warning] Error killing emulator: {e}")
             self.emulator_process = None
 
+        # 5. 显式释放锁
+        if self.port_lock_file:
+            try:
+                # 解锁并关闭文件
+                fcntl.flock(self.port_lock_file, fcntl.LOCK_UN)
+                self.port_lock_file.close()
+                print(f"[Info] Released port lock for {self.emulator_console_port}")
+            except Exception as e:
+                print(f"[Warn] Error releasing lock: {e}")
+            finally:
+                self.port_lock_file = None
+
         super().close()
         print("[Info] Environment closed successfully.")
         
@@ -388,17 +428,21 @@ class AndroidGym(BaseEnv):
         cmd = [
             self.emulator_cmd_path,
             f"@{self.emulator_name}",
+            "-port", str(self.emulator_console_port),
             "-no-window",
-            "-snapshot", "snap_2026-01-12_21-48-05",
+            # "-snapshot", "snap_2026-01-12_21-48-05",
             "-noaudio",
             "-no-boot-anim",
             "-memory", "2048",
             "-accel", "on",
             "-camera-back", "none",
-            "-gpu", "off"
+            "-gpu", "off",
+            "-read-only"
         ]
         if self.proxy_address is not None:
             cmd = cmd + ["-http-proxy", self.proxy_address]
+        print(f"[Info] Emulator start command is {cmd}")
+
         # 后台运行
         self.emulator_process = subprocess.Popen(
             cmd, 
@@ -410,14 +454,14 @@ class AndroidGym(BaseEnv):
         # 2. 等待启动
         print("[Info] Waiting for emulator to boot...")
         # 等待 adb 设备上线
-        subprocess.run([self.adb_path, "wait-for-device"])
+        subprocess.run([self.adb_path, "-s", self.device_serial, "wait-for-device"])
         
         # 轮询 sys.boot_completed
         max_retries = 120
         for _ in range(max_retries):
             try:
                 result = subprocess.run(
-                    [self.adb_path, "shell", "getprop", "sys.boot_completed"], 
+                    [self.adb_path, "-s", self.device_serial, "shell", "getprop", "sys.boot_completed"],
                     capture_output=True, text=True, check=False
                 )
                 if result.stdout.strip() == "1":
@@ -439,7 +483,7 @@ class AndroidGym(BaseEnv):
             apk_path, pkg_name = apk_str.split(":", 1)
             
             # 检查是否安装
-            check_cmd = [self.adb_path, "shell", "pm", "list", "packages", pkg_name]
+            check_cmd = [self.adb_path, "-s", self.device_serial, "shell", "pm", "list", "packages", pkg_name]
             res = subprocess.run(check_cmd, capture_output=True, text=True)
             
             if pkg_name in res.stdout:
@@ -447,7 +491,7 @@ class AndroidGym(BaseEnv):
             else:
                 if os.path.exists(apk_path):
                     print(f"[Info] Installing {apk_path}...")
-                    install_res = subprocess.run([self.adb_path, "install", "-r", apk_path], capture_output=True)
+                    install_res = subprocess.run([self.adb_path, "-s", self.device_serial, "install", "-r", apk_path], capture_output=True)
                     if install_res.returncode == 0:
                         print(f"[Success] Installed {pkg_name}")
                     else:
@@ -466,7 +510,7 @@ class AndroidGym(BaseEnv):
         - 统一将框转换为中心点坐标
         """
         # 获取当前屏幕截图
-        self.screenshot_file = get_screenshot(adb_path=self.adb_path, out_dir=self.screenshot_dir)
+        self.screenshot_file = get_screenshot(adb_path=self.adb_path, device_serial=self.device_serial, out_dir=self.screenshot_dir)
 
         # OCR
         try:
@@ -550,20 +594,20 @@ class AndroidGym(BaseEnv):
                     # 点击应用图标（文本框上方）
                     cx = int((boxes[ti][0] + boxes[ti][2]) / 2)
                     cy = int((boxes[ti][1] + boxes[ti][3]) / 2)
-                    tap(self.adb_path, cx, cy - int(boxes[ti][3] - boxes[ti][1]))
+                    tap(self.adb_path, self.device_serial, cx, cy - int(boxes[ti][3] - boxes[ti][1]))
                     break
 
         elif "Tap" in action:
             coord = action.split("(")[-1].split(")")[0].split(",")
             x, y = int(coord[0]), int(coord[1])
-            tap(self.adb_path, x, y)
+            tap(self.adb_path, self.device_serial, x, y)
 
         elif "Swipe" in action:
             c1 = action.split("Swipe (")[-1].split("), (")[0].split(",")
             c2 = action.split("), (")[-1].split(")")[0].split(",")
             x1, y1 = int(c1[0]), int(c1[1])
             x2, y2 = int(c2[0]), int(c2[1])
-            slide(self.adb_path, x1, y1, x2, y2)
+            slide(self.adb_path, self.device_serial, x1, y1, x2, y2)
 
         elif 'Type' in action:
             text = ""
@@ -574,22 +618,22 @@ class AndroidGym(BaseEnv):
             else:
                 text = action.split('Type')[-1]
 
-            type(self.adb_path, text.strip())
+            type(self.adb_path, self.device_serial, text.strip())
 
         elif 'Back' in action:
-            back(self.adb_path)
+            back(self.adb_path, self.device_serial)
 
         elif 'Home' in action:
-            home(self.adb_path)
+            home(self.adb_path, self.device_serial)
             x1 = int(self.width * 0.5)
             y1 = int(self.height * 0.85)
             x2 = int(self.width * 0.5)
             y2 = int(self.height * 0.15)
-            slide(self.adb_path, x1, y1, x2, y2)
+            slide(self.adb_path, self.device_serial, x1, y1, x2, y2)
         elif 'Enter' in action:
-            type(self.adb_path, '\n')
+            type(self.adb_path, self.device_serial, '\n')
         elif 'ScreenShot' in action:
-            take_screenshot(self.adb_path)
+            take_screenshot(self.adb_path, self.device_serial)
             return True
         elif 'Stop' in action:
             return False  # 停止运行
@@ -670,7 +714,7 @@ class AndroidGym(BaseEnv):
     
     ############################################## 安卓 辅助函数 ##############################################
     def open_files(self) -> bool:
-        subprocess.run([self.adb_path, "shell", "am", "start", "-a", "android.intent.action.VIEW", 
+        subprocess.run([self.adb_path, "-s", self.device_serial, "shell", "am", "start", "-a", "android.intent.action.VIEW",
                         "-d", "content://com.android.externalstorage.documents/document/primary%3ADownload",
                         "-t", "vnd.android.document/directory"
                         ], check=False, text=True)
@@ -726,7 +770,7 @@ class AndroidGym(BaseEnv):
             remote_dir += "/"
 
         # 确保远端目标根目录存在
-        subprocess.run([adb, "shell", "mkdir", "-p", remote_dir],
+        subprocess.run([adb, "-s", self.device_serial, "shell", "mkdir", "-p", remote_dir],
                     capture_output=True, text=True, check=False)
 
         def _ok(proc: subprocess.CompletedProcess) -> bool:
@@ -738,7 +782,7 @@ class AndroidGym(BaseEnv):
         def _push_file(src: str, dst_dir: str) -> bool:
             if not dst_dir.endswith("/"):
                 dst_dir += "/"
-            r = subprocess.run([adb, "push", src, dst_dir],
+            r = subprocess.run([adb, "-s", self.device_serial, "push", src, dst_dir],
                             capture_output=True, text=True, check=False)
             return _ok(r)
 
@@ -752,11 +796,11 @@ class AndroidGym(BaseEnv):
         top_remote = f"{remote_dir}{root_base}"
 
         # 创建顶层目录（proj）
-        subprocess.run([adb, "shell", "mkdir", "-p", top_remote],
+        subprocess.run([adb, "-s", self.device_serial, "shell", "mkdir", "-p", top_remote],
                     capture_output=True, text=True, check=False)
 
         # 关键：<dir>/. 让 adb 递归推送“目录内容”（不额外套一层）
-        r = subprocess.run([adb, "push", os.path.join(root_abs, "."), top_remote],
+        r = subprocess.run([adb, "-s", self.device_serial, "push", os.path.join(root_abs, "."), top_remote],
                         capture_output=True, text=True, check=False)
         if _ok(r):
             return True
@@ -765,7 +809,7 @@ class AndroidGym(BaseEnv):
         for dirpath, _dirnames, filenames in os.walk(root_abs):
             rel = os.path.relpath(dirpath, root_abs).replace("\\", "/")
             dst_dir = top_remote if rel == "." else f"{top_remote}/{rel}"
-            subprocess.run([adb, "shell", "mkdir", "-p", dst_dir],
+            subprocess.run([adb, "-s", self.device_serial, "shell", "mkdir", "-p", dst_dir],
                         capture_output=True, text=True, check=False)
             for fn in filenames:
                 src = os.path.join(dirpath, fn)
@@ -877,7 +921,7 @@ class AndroidGym(BaseEnv):
     
     ############################################### 环境 辅助函数 ###############################################
     def _get_observation(self) -> Dict[str, Any]:
-        self.screenshot_file = get_screenshot(adb_path=self.adb_path, out_dir=self.screenshot_dir)
+        self.screenshot_file = get_screenshot(adb_path=self.adb_path, device_serial=self.device_serial, out_dir=self.screenshot_dir)
         return {
             "obs_screenshot": self.screenshot_file
         }
