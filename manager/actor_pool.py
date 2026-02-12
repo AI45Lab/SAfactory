@@ -301,8 +301,15 @@ class ActorPool:
                 # Non-recoverable errors (e.g. serialization)
                 last_error = e
                 break
-
-        # If we get here, all attempts failed.
+        log.warning("Reset failed 3 times. Sending CLEANUP (DELETE) for %s/%s to %s...", env_name, env_id, cluster.head_ip)
+        delete_url = f"http://{cluster.head_ip}:{self._http_port}/{env_name}/{env_id}"
+        try:
+            # Send a best-effort DELETE request to kill any zombie actor
+            async with await self._http.delete(delete_url) as cleanup_resp:
+                log.info("Cleanup response for %s/%s: status=%s", env_name, env_id, cleanup_resp.status)
+        except Exception as cleanup_err:
+            log.warning("Cleanup failed for %s/%s: %s (ignoring)", env_name, env_id, cleanup_err)
+            pass
         # Cleanup reservation
         async with self._lock:
             cur = int(self._job_load.get(reserved_key, 0) or 0)

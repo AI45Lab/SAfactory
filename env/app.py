@@ -182,46 +182,76 @@ async def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
     raw_param = req.env_param
     if isinstance(raw_param, str):
         try:
-            create_kwargs: Dict[str, Any] = json.loads(raw_param)
+            create_kwargs = json.loads(raw_param)
         except json.JSONDecodeError as e:
             logger.error(f"JSON decode failed in reset: {e}")
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid env_param JSON string: {e}",
-            )
+            raise HTTPException(status_code=400, detail=f"Invalid env_param JSON string: {e}")
     elif isinstance(raw_param, dict):
         create_kwargs = dict(raw_param)
     else:
-        raise HTTPException(
-            status_code=400,
-            detail="env_param must be a JSON object or JSON string.",
-        )
+        raise HTTPException(status_code=400, detail="env_param must be a JSON object or JSON string.")
 
     key = _key(envname, env_id)
 
-    with _ENV_LOCK:
-        old_actor = _ENV_ACTORS.get(key)
-        actor = EnvActor.remote(envname, env_id, create_kwargs)
-        _ENV_ACTORS[key] = actor
-        logger.info(f"Reset: {envname}/{env_id} (Actor Created)")
+    # 1. Fast Path: Optimistic read without lock (Python dict get is atomic)
+    actor = _ENV_ACTORS.get(key)
 
-    if old_actor is not None:
-        try:
-            await old_actor.close.remote()
-        except Exception:
-            pass
-        ray.kill(old_actor, no_restart=True)
+    # 2. Slow Path: Create only if missing
+    if actor is None:
+        with _ENV_LOCK:
+            # 3. Double-Check: Verify again inside lock to handle race conditions
+            actor = _ENV_ACTORS.get(key)
 
-    result_bytes: bytes = await actor.reset.remote(req.seed)
-    return Response(content=result_bytes, media_type="application/json")
+            if actor is None:
+                try:
+                    logger.info(f"Reset: {envname}/{env_id} (Creating new actor)")
+                    actor = EnvActor.remote(envname, env_id, create_kwargs)
+                    _ENV_ACTORS[key] = actor
+                except Exception as e:
+                    # Clean up if creation fails
+                    _ENV_ACTORS.pop(key, None)
+                    if actor is not None:
+                        try:
+                            ray.kill(actor,no_restart=True)
+                        except Exception as e:
+                            pass
+                    logger.error(f"Actor creation failed: {e}")
+                    raise HTTPException(status_code=500, detail=f"Actor creation failed: {e}")
+            else:
+                logger.info(f"Reset: {envname}/{env_id} (Reusing actor created by another thread)")
+    else:
+        logger.info(f"Reset: {envname}/{env_id} (Reusing existing actor)")
+
+    # 4. Execute Reset
+    try:
+        result_bytes: bytes = await actor.reset.remote(req.seed)
+        return Response(content=result_bytes, media_type="application/json")
+
+    except Exception as e:
+        logger.error(f"Reset execution failed for {envname}/{env_id}: {e}")
+
+        with _ENV_LOCK:
+            if _ENV_ACTORS.get(key) == actor:
+                _ENV_ACTORS.pop(key, None)
+                try:
+                    actor.close().remote()
+                except Exception as e:
+                    pass
+                try:
+                    ray.kill(actor, no_restart=True)
+                except Exception:
+                    pass
+
+        raise HTTPException(status_code=500, detail=f"Reset execution failed: {e}")
 
 
 @app.post("/{envname}/{env_id}/step")
 async def step_env(envname: str, env_id: str, req: StepRequest) -> Response:
     """Forward step(action) to the existing actor."""
     key = _key(envname, env_id)
-    with _ENV_LOCK:
-        actor = _ENV_ACTORS.get(key)
+
+    actor = _ENV_ACTORS.get(key)
+
     if actor is None:
         logger.warning(f"Step on missing actor: {envname}/{env_id}")
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
@@ -233,8 +263,8 @@ async def step_env(envname: str, env_id: str, req: StepRequest) -> Response:
 async def render_env(envname: str, env_id: str) -> Response:
     """Forward render() to the existing actor."""
     key = _key(envname, env_id)
-    with _ENV_LOCK:
-        actor = _ENV_ACTORS.get(key)
+    actor = _ENV_ACTORS.get(key)
+
     if actor is None:
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
     result_bytes: bytes = await actor.render.remote()
@@ -245,8 +275,7 @@ async def render_env(envname: str, env_id: str) -> Response:
 async def get_task_prompt(envname: str, env_id: str) -> Response:
     """Forward get_task_prompt() to the existing actor."""
     key = _key(envname, env_id)
-    with _ENV_LOCK:
-        actor = _ENV_ACTORS.get(key)
+    actor = _ENV_ACTORS.get(key)
     if actor is None:
         raise HTTPException(status_code=404, detail=f"Env actor not found: {envname}:{env_id}")
     result_bytes: bytes = await actor.get_task_prompt.remote()
