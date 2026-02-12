@@ -29,6 +29,7 @@ ENV_CLASS_REGISTRY: Dict[str, Callable[[], Type]] = {
     "emb": _import_emb_env,
     "git_gym": _import_gym_env,
     "os_gym": _import_os_env,
+    "mc_gpu": _import_mc_gpu_env,
 }
 
 

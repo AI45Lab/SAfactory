@@ -12,14 +12,12 @@ from core.http.http_client import HttpClient
 
 log = logging.getLogger("interactor")
 
+
+
 @dataclass(slots=True, frozen=True)
 class ActorHandle:
     """
     A lightweight reference to an env actor exposed via HTTP.
-
-    base_url example:
-      - remote: http://<ray-head-ip>:36663
-      - local:  http://127.0.0.1:36663
     """
     base_url: str
     env_name: str
@@ -31,8 +29,11 @@ class ActorPool(Protocol):
     pool_size: int
 
     async def start(self) -> None: ...
+
     async def acquire(self) -> Optional[ActorHandle]: ...
+
     async def done(self, actor: ActorHandle) -> None: ...
+
     async def aclose(self) -> None: ...
 
 
@@ -91,7 +92,7 @@ class Interactor:
         )
 
     def _create_llm_for_session(self, session) -> LLM:
-        """为指定 session 创建 LLM 实例"""
+        """create LLM instance for session"""
         base_url = self.base_url_provider.get_base_url(session)
         return LLM(
             api_key=self.api_key,
@@ -123,19 +124,7 @@ class Interactor:
         return f"{a.base_url.rstrip('/')}/{a.env_name}/{a.env_id}/{suffix.lstrip('/')}"
 
     async def _llm_generate(self, llm: LLM, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        调用 LLM 生成响应。
 
-        Args:
-            llm: LLM 实例
-            messages: 消息列表
-
-        返回:
-            Dict 包含:
-            - "content": str - 生成的内容
-            - "finish_reason": str - 结束原因
-            - "weight_version": Optional[int] - 模型权重版本
-        """
         return await llm.generate(messages=messages)
 
     async def _request_json(
@@ -148,7 +137,6 @@ class Interactor:
     ) -> Any:
         """
         Helper method to execute HTTP requests with retry logic.
-        Uses aiohttp and handles status codes/exceptions accordingly.
         """
         # Ensure client is started before request
         await self.http.start()
@@ -157,7 +145,6 @@ class Interactor:
         last_err: Optional[Exception] = None
 
         for i in range(attempts):
-            # Use perf_counter for precise duration measurement
             t0 = time.perf_counter()
             try:
                 # Pass parameters directly via kwargs
@@ -181,9 +168,6 @@ class Interactor:
 
                 status = getattr(e, "status", None)
                 msg = getattr(e, "message", str(e))
-
-                # Extract response text if available for logging
-                body_preview = ""
 
                 if status is not None and 500 <= int(status) <= 599:
                     log.warning(
@@ -209,6 +193,7 @@ class Interactor:
         raise last_err
 
     async def _run_one_environment(self, a: ActorHandle, worker_id: int) -> float:
+
         total_reward = 0.0
         env_key = f"{a.env_name}_{a.env_id}"
         trajectory = ""
@@ -219,39 +204,48 @@ class Interactor:
             group_id=a.group_id
         )
 
-        # 为此 session 创建 LLM 实例（支持 SessionSuffixBaseURLProvider）
         llm = self._create_llm_for_session(session)
 
         try:
             for step_i in range(1, self.max_steps + 1):
-                prompt_raw = await self._request_json("GET", self._url(a, "get_task_prompt"), ctx=f"{env_key}/prompt")
+                # 1. Get Prompt
+                try:
+                    prompt_raw = await self._request_json("GET", self._url(a, "get_task_prompt"),
+                                                          ctx=f"{env_key}/prompt")
+                except Exception as e:
+                    # exit when get_task_prompt failed
+                    log.error("worker=%d env=%s: get_task_prompt FAILED: %s. Aborting episode.", worker_id, env_key, e)
+                    raise e
+
                 prompt = self._trim_messages(prompt_raw)
                 if not prompt:
                     log.info("worker=%d env=%s: empty prompt -> end episode", worker_id, env_key)
                     break
 
-                llm_result = await self._llm_generate(llm, prompt)
+                # 2. LLM Generate
+                try:
+                    llm_result = await self._llm_generate(llm, prompt)
+                except Exception as e:
+                    log.error("worker=%d env=%s: LLM generation FAILED: %s. Aborting episode.", worker_id, env_key, e)
+                    raise e
+
                 action = llm_result["content"]
                 finish_reason = llm_result.get("finish_reason", "stop")
                 weight_version = llm_result.get("weight_version")
 
-                # 构建 env_state JSON 存储 weight_version
                 env_state = json.dumps({"weight_version": weight_version}) if weight_version is not None else None
 
                 if self.log_actions_preview_chars > 0:
                     preview = action.replace("\n", "\\n")[: self.log_actions_preview_chars]
                     log.debug("worker=%d env=%s step=%d action_preview=%r finish_reason=%s",
-                             worker_id, env_key, step_i, preview, finish_reason)
+                              worker_id, env_key, step_i, preview, finish_reason)
 
-                # 如果 LLM 输出被截断（finish_reason == "length"），直接终止并给 0 奖励
                 if finish_reason == "length":
-                    log.info("worker=%d env=%s step=%d: LLM output truncated (finish_reason=length), terminating with reward=0",
-                            worker_id, env_key, step_i)
+                    log.info("worker=%d env=%s step=%d: LLM output truncated, terminating.", worker_id, env_key, step_i)
                     reward = 0.0
                     terminated = True
                     truncated = True
                     done = True
-                    # 记录被截断的步骤
                     await self.data_manager.record_step(
                         session=session,
                         step_id=step_i,
@@ -266,12 +260,19 @@ class Interactor:
                     trajectory += f"Step {step_i}:\nResponse: {action}\n[TRUNCATED]\n\n"
                     break
 
-                out = await self._request_json(
-                    "POST",
-                    self._url(a, "step"),
-                    json_body={"action": action},
-                    ctx=f"{env_key}/step",
-                )
+                # 3. Environment Step (Critical)
+                try:
+                    out = await self._request_json(
+                        "POST",
+                        self._url(a, "step"),
+                        json_body={"action": action},
+                        ctx=f"{env_key}/step",
+                    )
+                except Exception as e:
+                    # interact loop exit when step failed
+                    log.error("worker=%d env=%s step=%d: STEP REQUEST FAILED: %s. Aborting episode.",
+                              worker_id, env_key, step_i, e)
+                    raise e
 
                 reward = float(out.get("reward", 0.0) or 0.0)
                 total_reward += reward
@@ -280,12 +281,6 @@ class Interactor:
                 truncated = bool(out.get("truncated", False))
                 done = terminated or truncated
 
-                log.debug(
-                    "worker=%d env=%s step=%d reward=%.4f total=%.4f terminated=%s truncated=%s",
-                    worker_id, env_key, step_i, reward, total_reward, terminated, truncated
-                )
-
-                # 记录交互步骤
                 await self.data_manager.record_step(
                     session=session,
                     step_id=step_i,
@@ -301,19 +296,22 @@ class Interactor:
                 trajectory += f"Step {step_i}:\nResponse: {action}\n\n"
 
                 if terminated or truncated:
-                    log.info("worker=%d env=%s done: terminated=%s truncated=%s", worker_id, env_key, terminated, truncated)
+                    log.info("worker=%d env=%s done: terminated=%s truncated=%s", worker_id, env_key, terminated,
+                             truncated)
                     break
 
         except Exception:
+            #for all the error caught, exit for this env
             raise
 
         finally:
+            # store the session status
             await self.data_manager.update_session(
-                    session=session,
-                    trajectory=trajectory,
-                    total_reward=total_reward,
-                    is_completed=True
-                )
+                session=session,
+                trajectory=trajectory,
+                total_reward=total_reward,
+                is_completed=True
+            )
 
         return total_reward
 
@@ -321,9 +319,7 @@ class Interactor:
         """
         Run workers until pool is exhausted.
         """
-        # Explicitly start the shared HTTP client
         await self.http.start()
-
         await self.pool.start()
 
         results: Dict[str, float] = {}
@@ -337,35 +333,43 @@ class Interactor:
 
         async def worker(worker_id: int) -> None:
             while True:
+                # get the env actor for the queue
                 actor = await self.pool.acquire()
+
+                # kill the worker only when the queue length is 0
                 if actor is None:
-                    log.info("worker=%d: no more actors -> exit", worker_id)
+                    log.info("worker=%d: no more actors (pool exhausted) -> exit", worker_id)
                     return
 
                 env_key = f"{actor.env_name}_{actor.env_id}"
-                # Use perf_counter for episode duration
                 t0 = time.perf_counter()
+                reward = float("nan")
 
                 try:
                     log.info("worker=%d acquired env=%s base_url=%s", worker_id, env_key, actor.base_url)
+
                     reward = await self._run_one_environment(actor, worker_id)
+
+                    # just keep the finished reward
+                    async with lock:
+                        results[env_key] = reward
+
                 except Exception as e:
-                    reward = float("nan")
-                    log.exception("worker=%d env=%s ERROR during episode: %s", worker_id, env_key, e)
+                    # 3. warning when one work exit
+                    log.warning("worker=%d env=%s FAILED (Exception): %s. Will recycle actor and continue.",
+                                worker_id, env_key, e)
+
                 finally:
                     try:
                         await self.pool.done(actor)
-                        log.info("worker=%d env=%s returned to pool (close+refill issued)", worker_id, env_key)
                     except Exception as e:
-                        log.exception("worker=%d env=%s ERROR in pool.done(): %s", worker_id, env_key, e)
+                        log.exception("worker=%d env=%s CRITICAL ERROR in pool.done(): %s", worker_id, env_key, e)
 
                 dt = time.perf_counter() - t0
-                log.info("worker=%d env=%s reward=%.6f time=%.2fs", worker_id, env_key, reward, dt)
-
-                async with lock:
-                    results[env_key] = reward
+                log.info("worker=%d env=%s finished (reward=%s) time=%.2fs", worker_id, env_key, reward, dt)
 
         tasks = [asyncio.create_task(worker(i), name=f"worker-{i}") for i in range(worker_count)]
+
         try:
             await asyncio.gather(*tasks)
         except asyncio.CancelledError:
@@ -393,4 +397,3 @@ class Interactor:
             await self.pool.aclose()
         except Exception:
             log.exception("failed to close pool (ignored)")
-
