@@ -6,8 +6,8 @@ import subprocess
 import time
 import sqlite3
 import uuid
+import math
 
-import pylab as p
 import requests
 import yaml
 import logging
@@ -306,24 +306,23 @@ class ManagerActorPool(ActorPool):
 
     async def done(self, actor: ActorHandle) -> None:
         old_key = (str(actor.env_name), str(actor.env_id))
-        log.info("done(): close_and_refill env=%s id=%s", actor.env_name, actor.env_id)
+        log.info("done(): scheduling background close_and_refill for env=%s id=%s", actor.env_name, actor.env_id)
 
+        # Fire and forget the refill process so the worker unblocks immediately
+        asyncio.create_task(self._bg_done(actor, old_key))
+
+    async def _bg_done(self, actor: ActorHandle, old_key: Tuple[str, str]) -> None:
         try:
             await self.mgr.close_and_refill(actor.env_name, actor.env_id)
         except Exception:
             log.exception("close_and_refill failed for %s/%s; enqueuing None", actor.env_name, actor.env_id)
             async with self._lock:
-                # Remove from known so discovery doesn't get stuck on a dead key.
                 self._known.discard(old_key)
                 self._q.put_nowait(None)
             return
 
-        # Fetch the current pool actors without holding our local lock. We'll only
-        # lock around _known / _q updates to avoid serializing network I/O.
         actors = await self.mgr.list_pool_actors()
         async with self._lock:
-            # Only now it's safe to remove the old key from _known; otherwise a concurrent
-            # done() could rediscover the still-present old actor and re-enqueue it.
             self._known.discard(old_key)
             new_actor = self._discover_from_actor_list(actors)
             self._q.put_nowait(new_actor)
@@ -356,6 +355,7 @@ def parse_args():
 
     # Pool overrides
     p.add_argument("--pool-size", type=int, default=0, help="Override pool_size in YAML (0 = keep YAML)")
+    p.add_argument("--multiplier", type=float, default=1.2, help="Buffer multiplier for pool size. Total pre-warmed actors = int(workers * pool_size)")
 
     # Local upstream service (optional)
     p.add_argument("--start-local-upstream", action=argparse.BooleanOptionalAction, default=None)
@@ -369,7 +369,6 @@ def parse_args():
     p.add_argument("--max-steps", type=int, default=1000)
     p.add_argument("--message-cut", type=int, default=3)
     p.add_argument("--env-http-timeout-s", type=float, default=300.0)
-    p.add_argument("--workers", type=int, default=0)
     p.add_argument("--http-retries", type=int, default=2)
 
     # LLM
@@ -438,10 +437,13 @@ async def main():
         _set_nested(cfg, ["database", "sqlite_path"], args.db_path)
 
         # Override pool size if requested
+        original_pool_size = int(cfg.get("pool_size", 1) or 1)
         if int(args.pool_size) > 0:
-            cfg["pool_size"] = int(args.pool_size)
-            log.info("override pool_size=%d", int(args.pool_size))
-
+            original_pool_size = int(args.pool_size)
+        buffer_multiplier = float(args.buffer_multipllier) if args.buffer_multipllier >0.0 else 1.2
+        total_pool_size = math.ceil(original_pool_size * buffer_multiplier)
+        cfg["pool_size"] = total_pool_size
+        log.info("override pool_size=%d (original=%d, multiplier=%.2f)", total_pool_size, original_pool_size, buffer_multiplier)
         # Mode override
         if args.mode in ("local", "remote"):
             cfg["mode"] = args.mode
@@ -471,7 +473,7 @@ async def main():
 
         # 4) start manager + adapter pool
         mgr = EnvPoolManager(cfg, conn)
-        pool = ManagerActorPool(mgr, pool_size=int(cfg.get("pool_size", 1) or 1))
+        pool = ManagerActorPool(mgr, pool_size=total_pool_size)
 
         # 根据参数选择 BaseURLProvider
         if args.rl_use_session_suffix_url:
@@ -491,7 +493,7 @@ async def main():
             max_steps=args.max_steps,
             message_cut=args.message_cut,
             env_http_timeout_s=args.env_http_timeout_s,
-            max_workers=(int(args.workers) if int(args.workers) > 0 else None),
+            max_workers=original_pool_size,
             http_retries=int(args.http_retries),
             verbose=True,
         )
