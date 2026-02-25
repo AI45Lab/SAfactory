@@ -355,7 +355,7 @@ def parse_args():
 
     # Pool overrides
     p.add_argument("--pool-size", type=int, default=0, help="Override pool_size in YAML (0 = keep YAML)")
-    p.add_argument("--multiplier", type=float, default=1.2, help="Buffer multiplier for pool size. Total pre-warmed actors = int(workers * pool_size)")
+    p.add_argument("--multiplier", type=float, default=1.2, help="Buffer multiplier for pool size. Total pre-warmed actors = [multiplier * pool_size]")
 
     # Local upstream service (optional)
     p.add_argument("--start-local-upstream", action=argparse.BooleanOptionalAction, default=None)
