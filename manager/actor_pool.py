@@ -45,9 +45,12 @@ class ActorPool:
                 continue
 
         self._lock = asyncio.Lock()
+        self._fill_sem = asyncio.Semaphore(max(1, self._http_concurrency))
         self._pool: Dict[ActorKey, PoolEntry] = {}
         self._actor_routes: Dict[ActorKey, ActorRoute] = {}
         self._job_load: Dict[Tuple[str, str], int] = {}
+
+
 
     async def reset(self) -> None:
         async with self._lock:
@@ -83,9 +86,7 @@ class ActorPool:
             print("[manager] no active rows, skip prewarm")
             return
 
-        sem = asyncio.Semaphore(self._http_concurrency)
-        # Change: Use _robust_fill_slot instead of _create_actor_for_row
-        tasks = [asyncio.create_task(self._robust_fill_slot(registry, sem, initial_row=row)) for row in rows]
+        tasks = [asyncio.create_task(self._robust_fill_slot(registry, self._fill_sem, initial_row=row)) for row in rows]
         await asyncio.gather(*tasks, return_exceptions=True)
 
         await self.ensure_capacity(registry)
@@ -106,8 +107,7 @@ class ActorPool:
                 log.info("[manager] ensure_capacity: no more DB rows to fill pool")
                 return
 
-            sem = asyncio.Semaphore(self._http_concurrency)
-            tasks = [asyncio.create_task(self._robust_fill_slot(registry, sem, initial_row=row)) for row in rows]
+            tasks = [asyncio.create_task(self._robust_fill_slot(registry, self._fill_sem, initial_row=row)) for row in rows]
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def close_and_refill(self, *, env: str, env_id: str, registry):
@@ -173,7 +173,7 @@ class ActorPool:
             return
 
         # No semaphore needed for single replacement, or create a dummy one
-        await self._robust_fill_slot(registry, sem=None, initial_row=next_row)
+        await self._robust_fill_slot(registry, sem=self._fill_sem, initial_row=next_row)
 
     # ------------------------------------------------------------------ #
 
