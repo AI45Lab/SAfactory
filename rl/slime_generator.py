@@ -481,7 +481,10 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
             if PROCESSOR is not None and image_data:
                 images = [decode_base64_to_pil(img_b64) for img_b64 in image_data]
                 proc_out = PROCESSOR(
-                    text=messages_str,
+                    # NOTE: `messages_str` from LLM proxy may already contain expanded image tokens
+                    # (many "<|image_pad|>" occurrences) which can mismatch `len(images)` and crash
+                    # Qwen3VLProcessor. We only need vision tensors here.
+                    text="",
                     images=images,
                     padding=True,
                     return_tensors="pt",

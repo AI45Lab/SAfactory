@@ -94,6 +94,57 @@ class TrajectoryMaskBuilder:
 
         return end_tokens, end_prompt_str
 
+    def _normalize_messages_for_qwen_vision(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert OpenAI image_url blocks to qwen_vl_utils-compatible image blocks.
+
+        qwen_vl_utils expects image content as:
+          {"type": "image", "image": "<str url/path/dataurl>"}
+        but OpenAI style often uses:
+          {"type": "image_url", "image_url": {"url": "..."}}
+        """
+        normalized: List[Dict[str, Any]] = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                normalized.append(msg)
+                continue
+
+            new_msg = dict(msg)
+            content = msg.get("content")
+            if not isinstance(content, list):
+                normalized.append(new_msg)
+                continue
+
+            new_content: List[Any] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    new_content.append(item)
+                    continue
+
+                image_url_val = item.get("image_url")
+                if item.get("type") == "image_url" or image_url_val is not None:
+                    url_value: Any = None
+                    if isinstance(image_url_val, dict):
+                        url_value = image_url_val.get("url")
+                    elif image_url_val is not None:
+                        url_value = image_url_val
+                    elif "image" in item:
+                        url_value = item.get("image")
+
+                    if isinstance(url_value, str):
+                        converted = dict(item)
+                        converted["type"] = "image"
+                        converted["image"] = url_value
+                        converted.pop("image_url", None)
+                        new_content.append(converted)
+                        continue
+
+                new_content.append(item)
+
+            new_msg["content"] = new_content
+            normalized.append(new_msg)
+
+        return normalized
+
     def match_prefix_with_mask(
         self,
         prefix_text: str,
@@ -194,13 +245,15 @@ class TrajectoryMaskBuilder:
                 "matched_tokens_count": int,   # 匹配到的 tokens 数量
             }
         """
+        normalized_messages = self._normalize_messages_for_qwen_vision(messages)
+
         # 提取多模态信息
-        images, videos = process_vision_info(messages)
+        images, videos = process_vision_info(normalized_messages)
         images = images or []  # 确保 images 不为 None
 
         # 构建当前 messages 的字符串（不含 generation_prompt，用于匹配）
         current_messages_str = self.tokenizer.apply_chat_template(
-            messages,
+            normalized_messages,
             add_generation_prompt=False,
             tokenize=False
         )
@@ -210,7 +263,7 @@ class TrajectoryMaskBuilder:
         if self.processor is not None and images:
             proc_out = self.processor(text=current_messages_str, images=images, tokenize=False)
             current_messages_str = self.tokenizer.decode(
-                proc_out["input_ids"][0].tolist(),
+                proc_out["input_ids"][0],
                 skip_special_tokens=False,
             )
 
@@ -252,11 +305,11 @@ class TrajectoryMaskBuilder:
             # 没有匹配，完整 tokenize
             if proc_out is not None:
                 # 使用 processor 的输出，并添加 generation_prompt
-                input_ids = proc_out["input_ids"][0].tolist()
+                input_ids = proc_out["input_ids"][0]
                 input_ids.extend(self.generation_tokens)
             else:
                 input_ids = self.tokenizer.apply_chat_template(
-                    messages,
+                    normalized_messages,
                     tokenize=True,
                     add_generation_prompt=True
                 )
@@ -378,13 +431,15 @@ class TrajectoryMaskBuilder:
         Returns:
             (tokens, response_mask, image_data, messages_str)
         """
+        normalized_messages = self._normalize_messages_for_qwen_vision(messages)
+
         # 提取多模态信息
-        images, videos = process_vision_info(messages)
+        images, videos = process_vision_info(normalized_messages)
         images = images or []  # 确保 images 不为 None
 
         # 构建 messages_str
         messages_str = self.tokenizer.apply_chat_template(
-            messages,
+            normalized_messages,
             add_generation_prompt=False,
             tokenize=False
         )
@@ -393,7 +448,7 @@ class TrajectoryMaskBuilder:
         if self.processor is not None and images:
             proc_out = self.processor(text=messages_str, images=images, tokenize=False)
             messages_str = self.tokenizer.decode(
-                proc_out["input_ids"][0].tolist(),
+                proc_out["input_ids"][0],
                 skip_special_tokens=False,
             )
 

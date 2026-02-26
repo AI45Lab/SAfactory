@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 # from env.embodiedgym.embodied_env import EmbodiedAlfredGym
 # from env.androidgym.android_env import AndroidGym
 from env.search.search_env import SearchEnv
+from env.geo3k_vl_test.geo3k_vl_test_env import Geo3kVLTestEnv
 
 from core.types.base import ResetOutput, RenderOutput, StepOutput, dumps_json_bytes
 
@@ -40,7 +41,8 @@ ENV_CLASS_REGISTRY: Dict[str, type] = {
     # "dab": DABStepEnv,
     # "dwgym": DiscoveryWorldEnv,
     # "emb": EmbodiedAlfredGym
-    "search": SearchEnv,
+    # "search": SearchEnv,
+    "geo3k_vl_test": Geo3kVLTestEnv,
 }
 
 
