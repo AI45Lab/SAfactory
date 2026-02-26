@@ -26,7 +26,7 @@ class LLM:
         base_url: str,
         model: str,
         temperature: float = 1,
-        llm_proxy: str = "",
+        llm_proxy: Optional[str] = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
         retry_backoff: float = DEFAULT_RETRY_BACKOFF,
         max_retry_delay: float = DEFAULT_MAX_RETRY_DELAY,
@@ -35,7 +35,7 @@ class LLM:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.temperature = temperature
-        self.llm_proxy = llm_proxy
+        self.llm_proxy = llm_proxy if llm_proxy else None
         self.max_retries = int(max_retries)  # -1 表示无限重试
         self.retry_backoff = float(retry_backoff)
         self.max_retry_delay = float(max_retry_delay)

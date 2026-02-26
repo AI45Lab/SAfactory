@@ -376,6 +376,11 @@ async def get_trajectory_mask(request: MaskRequest):
             tokens = tokens[:STATE.max_length]
             response_mask = response_mask[:STATE.max_length]
 
+        # 按 max_length 截断
+        if STATE.max_length is not None and len(tokens) > STATE.max_length:
+            tokens = tokens[:STATE.max_length]
+            response_mask = response_mask[:STATE.max_length]
+
         # Convert response_mask to ranges
         mask_ranges = []
         start = None

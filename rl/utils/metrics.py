@@ -50,7 +50,7 @@ class MetricsRecorder:
             wandb.define_metric(key, step_metric="rollout/step")
         if metrics:
             metrics["rollout/step"] = step
-            wandb.log(metrics)
+            wandb.log(metrics, step=step)
         self.clear()
 
     def clear(self):

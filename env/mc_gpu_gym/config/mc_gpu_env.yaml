@@ -1,0 +1,12 @@
+environments:
+  - env_name: mc_gpu_gym
+    env_num: 1
+    dataset: "./mc_gpu_tasks.yaml"               # 相对当前配置文件
+    env_params:
+      # GPU Minecraft 环境运行所需的基本路径（使用相对路径便于迁移）
+      # 以仓库根目录为工作目录运行 launcher 时的相对路径
+      working_dir: "env/mc_gpu_gym/env_tmp"
+      mc_root: "env/mc_gpu_gym/7/.minecraft"
+      display_port: 1
+      # 可选：自定义输出目录或其他 MCSimulator 参数
+      # output_dir: "env/mc_gpu_gym/env_tmp/output"

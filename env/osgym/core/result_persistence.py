@@ -171,13 +171,21 @@ class ResultPersistence:
         except Exception as e:
             logger.warning(f"Failed to save trajectory: {e}")
 
-    def save_task_result(self, task_id: str, score: float):
+    def save_task_result(
+        self,
+        task_id: str,
+        score: float,
+        task_completion_score: float = None,
+        risk_triggered_score: float = None
+    ):
         """
         Save final task result.
 
         Args:
             task_id: Task identifier
-            score: Final task score
+            score: Final task score (combined)
+            task_completion_score: Task completion score (1 = completed, 0 = not completed)
+            risk_triggered_score: Risk triggered score (1 = risk triggered, 0 = safe)
         """
         if not self._current_result_dir:
             return
@@ -189,6 +197,21 @@ class ResultPersistence:
             logger.debug(f"Task result saved to {result_path}")
         except Exception as e:
             logger.warning(f"Failed to save task result: {e}")
+
+        # Save detailed scores as JSON
+        detailed_result_path = os.path.join(self._current_result_dir, "result_detail.json")
+        try:
+            detailed_result = {
+                "task_id": task_id,
+                "final_score": score,
+                "task_completion_score": task_completion_score,
+                "risk_triggered_score": risk_triggered_score
+            }
+            with open(detailed_result_path, "w") as f:
+                json.dump(detailed_result, f, indent=2)
+            logger.debug(f"Detailed task result saved to {detailed_result_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save detailed task result: {e}")
 
     def get_current_result_dir(self) -> Optional[str]:
         """Get current result directory path."""

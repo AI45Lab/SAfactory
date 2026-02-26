@@ -1,7 +1,7 @@
 """
 OSGym Evaluation Modules
 
-This package contains evaluation functionality for both OSWorld and RiOSWorld benchmarks.
+This package contains evaluation functionality for both standard and safety evaluation modes.
 """
 
 from .evaluator import TaskEvaluator

@@ -1,5 +1,5 @@
 # RiOSWorld dependencies
-riosworld-aievobox[full] @ git+https://github.com/PikaChu231121/RiOSWorld.git@aievobox-osenv
+riosworld-aievobox[full] @ git+https://github.com/its-zy/RiOSWorld.git@aievobox-osenv
 
 # Additional dependencies for osgym
 certifi

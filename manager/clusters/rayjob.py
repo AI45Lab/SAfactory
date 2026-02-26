@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from typing import Any, List, Optional
-
+import logging
 import re
 import secrets
 import string
-import sys
+
+from typing import Any, List, Optional
 
 from rayjob_sdk import HeadConfig, RayJobClient, SDKException, WorkerGroupConfig, Volume
+
+
+log = logging.getLogger("rayjob")
 
 # Platform constraint (DNS-1123 label-like):
 # must match: [a-z]([-a-z0-9]*[a-z0-9])?
@@ -174,20 +177,20 @@ class RayJobManager:
             )
 
             job_name = _extract_job_name(result)
-            print(f"Created rayjob: {job_name} (jobName_hint={name_hint})")
+            log.info("Created rayjob: %s (jobName_hint=%s)", job_name, name_hint)
             return job_name
 
         except SDKException as e:
-            print(f"Create failed: {getattr(e, 'code', 'UNKNOWN')} {e}", file=sys.stderr)
+            log.error("Create failed: %s %s", getattr(e, 'code', 'UNKNOWN'), e)
             raise
 
     def delete(self, project: str, name: str) -> Any:
         try:
             result = self.client.delete(project=project, name=name)
-            print(f"Deleted rayjob: {name}")
+            log.info("Deleted rayjob: %s", name)
             return result
         except SDKException as e:
-            print(f"Delete failed: {getattr(e, 'code', 'UNKNOWN')} {e}", file=sys.stderr)
+            log.error("Delete failed: %s %s", getattr(e, 'code', 'UNKNOWN'), e)
             raise
 
     def list(self, project: str, verbose: bool = False) -> List[Any]:
@@ -195,36 +198,36 @@ class RayJobManager:
             result = self.client.list(project=project)
             jobs = getattr(result, "data", result)
             if verbose:
-                print(f"Found {getattr(result, 'total', len(jobs))} rayjobs in project={project}")
+                log.info("Found %d rayjobs in project=%s", getattr(result, 'total', len(jobs)), project)
                 for job in jobs:
-                    print(" -", getattr(job, "jobName", getattr(job, "name", "UNKNOWN")))
+                    log.info(" - %s", getattr(job, "jobName", getattr(job, "name", "UNKNOWN")))
             return list(jobs)
         except SDKException as e:
-            print(f"List failed: {getattr(e, 'code', 'UNKNOWN')} {e}", file=sys.stderr)
+            log.error("List failed: %s %s", getattr(e, 'code', 'UNKNOWN'), e)
             raise
 
     def get(self, project: str, name: str, verbose: bool = False) -> Any:
         try:
             result = self.client.get(project=project, name=name)
             if verbose:
-                print(f"Rayjob {name} details:")
-                print("  entrypoint:", getattr(result, "entrypoint", None))
-                print("  creator:", getattr(result, "creatorid", None))
+                log.info("Rayjob %s details:", name)
+                log.info("  entrypoint: %s", getattr(result, "entrypoint", None))
+                log.info("  creator: %s", getattr(result, "creatorid", None))
                 worker_groups = getattr(result, "workerGroups", None)
                 if worker_groups:
-                    print("  worker replicas:", getattr(worker_groups[0], "replicas", None))
+                    log.info("  worker replicas: %s", getattr(worker_groups[0], "replicas", None))
             return result
         except SDKException as e:
-            print(f"Get failed: {getattr(e, 'code', 'UNKNOWN')} {e}", file=sys.stderr)
+            log.error("Get failed: %s %s", getattr(e, 'code', 'UNKNOWN'), e)
             raise
 
     def stop(self, project: str, name: str) -> Any:
         try:
             result = self.client.stop(project=project, name=name)
-            print(f"Stopped rayjob: {name}")
+            log.info("Stopped rayjob: %s", name)
             return result
         except SDKException as e:
-            print(f"Stop failed: {getattr(e, 'code', 'UNKNOWN')} {e}", file=sys.stderr)
+            log.error("Stop failed: %s %s", getattr(e, 'code', 'UNKNOWN'), e)
             raise
 
     def replicas(self, project: str, name: str, verbose: bool = False) -> List[Any]:
@@ -232,17 +235,17 @@ class RayJobManager:
             result = self.client.replicas(project=project, name=name)
             pods = getattr(result, "data", result)
             if verbose:
-                print(f"Replicas for {name} (total={getattr(result, 'total', len(pods))}):")
+                log.info("Replicas for %s (total=%d):", name, getattr(result, 'total', len(pods)))
                 for pod in pods:
-                    print(
-                        " -",
+                    log.info(
+                        " - %s %s %s",
                         getattr(pod, "id", None),
                         getattr(pod, "nodeName", None),
                         getattr(pod, "podIP", None),
                     )
             return list(pods)
         except SDKException as e:
-            print(f"Replicas failed: {getattr(e, 'code', 'UNKNOWN')} {e}", file=sys.stderr)
+            log.error("Replicas failed: %s %s", getattr(e, 'code', 'UNKNOWN'), e)
             raise
 
     def get_head_ip(self, project: str, name: str) -> Optional[str]:

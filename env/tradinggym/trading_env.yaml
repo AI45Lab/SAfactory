@@ -29,15 +29,15 @@ environments:
       tweet_filename: "goog_stockmo.csv"
       window_size: 7
 
-  - env_name: trading_gym
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:trad0001
-    env_num: 4
-    dataset: ""
-    env_params:
-      data_dir: "/app/test/trading"
-      price_filename: "ABNB.csv"
-      tweet_filename: "abnb_stockmo.csv"
-      window_size: 7
+  # - env_name: trading_gym
+  #   env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:trad0001
+  #   env_num: 4
+  #   dataset: ""
+  #   env_params:
+  #     data_dir: "/app/test/trading"
+  #     price_filename: "ABNB.csv"
+  #     tweet_filename: "abnb_stockmo.csv"
+  #     window_size: 7
 
   - env_name: trading_gym
     env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:trad0001
