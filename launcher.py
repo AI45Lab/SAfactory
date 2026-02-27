@@ -440,7 +440,7 @@ async def main():
         original_pool_size = int(cfg.get("pool_size", 1) or 1)
         if int(args.pool_size) > 0:
             original_pool_size = int(args.pool_size)
-        buffer_multiplier = float(args.buffer_multipllier) if args.buffer_multipllier >0.0 else 1.2
+        buffer_multiplier = float(args.multiplier) if args.multiplier >0.0 else 1.2
         total_pool_size = math.ceil(original_pool_size * buffer_multiplier)
         cfg["pool_size"] = total_pool_size
         log.info("override pool_size=%d (original=%d, multiplier=%.2f)", total_pool_size, original_pool_size, buffer_multiplier)
