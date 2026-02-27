@@ -2,6 +2,7 @@
 # 这些参数不放在环境配置中，而是由环境自行加载
 
 top_k: 3
-search_api_url: "http://100.99.119.121:8000/retrieve"
-search_timeout: 60.0
-judge_url: "http://100.99.119.121:8080/judge"
+search_api_url: "http://100.99.119.181:8000/retrieve"
+search_timeout: -1
+judge_url: "http://100.99.119.181:8080/judge"
+judge_timeout: -1

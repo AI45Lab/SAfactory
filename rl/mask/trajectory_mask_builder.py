@@ -8,6 +8,9 @@
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+from qwen_vl_utils import process_vision_info
+from slime.utils.processing_utils import encode_image_for_rollout_engine
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,8 +29,9 @@ class TrajectoryMaskBuilder:
     - token 级追加：在匹配的基础上追加新的 tokens
     """
 
-    def __init__(self, tokenizer) -> None:
+    def __init__(self, tokenizer, processor: Any = None) -> None:
         self.tokenizer = tokenizer
+        self.processor = processor
         self.generation_tokens, self.generation_prompt = self._init_generation_tokens_and_prompt()
         self.end_tokens, self.end_prompt_str = self._init_end_tokens_and_prompt()
 
@@ -36,6 +40,7 @@ class TrajectoryMaskBuilder:
         #     "tokens": List[int],
         #     "response_mask": List[int],    # 0=context, 1=generated
         #     "logprobs": List[float],
+        #     "image_data": List[str],       # 编码后的图片数据
         # }]
         self.session_data: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -88,6 +93,57 @@ class TrajectoryMaskBuilder:
         end_tokens = self.tokenizer.encode(end_prompt_str, add_special_tokens=False)
 
         return end_tokens, end_prompt_str
+
+    def _normalize_messages_for_qwen_vision(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert OpenAI image_url blocks to qwen_vl_utils-compatible image blocks.
+
+        qwen_vl_utils expects image content as:
+          {"type": "image", "image": "<str url/path/dataurl>"}
+        but OpenAI style often uses:
+          {"type": "image_url", "image_url": {"url": "..."}}
+        """
+        normalized: List[Dict[str, Any]] = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                normalized.append(msg)
+                continue
+
+            new_msg = dict(msg)
+            content = msg.get("content")
+            if not isinstance(content, list):
+                normalized.append(new_msg)
+                continue
+
+            new_content: List[Any] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    new_content.append(item)
+                    continue
+
+                image_url_val = item.get("image_url")
+                if item.get("type") == "image_url" or image_url_val is not None:
+                    url_value: Any = None
+                    if isinstance(image_url_val, dict):
+                        url_value = image_url_val.get("url")
+                    elif image_url_val is not None:
+                        url_value = image_url_val
+                    elif "image" in item:
+                        url_value = item.get("image")
+
+                    if isinstance(url_value, str):
+                        converted = dict(item)
+                        converted["type"] = "image"
+                        converted["image"] = url_value
+                        converted.pop("image_url", None)
+                        new_content.append(converted)
+                        continue
+
+                new_content.append(item)
+
+            new_msg["content"] = new_content
+            normalized.append(new_msg)
+
+        return normalized
 
     def match_prefix_with_mask(
         self,
@@ -167,12 +223,12 @@ class TrajectoryMaskBuilder:
 
         return best_record, best_match_len
 
-    def prepare_input_ids(
+    def prepare_generate_input(
         self,
         session_id: str,
         messages: List[Dict[str, Any]],
-    ) -> Tuple[List[int], Optional[Dict[str, Any]], int, int]:
-        """准备发送给 /generate 的 input_ids。
+    ) -> Dict[str, Any]:
+        """准备发送给 /generate 的输入。
 
         通过匹配历史记录，复用已有的 tokens，只 tokenize 新增部分。
 
@@ -181,18 +237,35 @@ class TrajectoryMaskBuilder:
             messages: 输入的 messages（不含本次 assistant 回复）
 
         Returns:
-            (input_ids, matched_record, matched_prefix_len, matched_tokens_count)
-            - input_ids: 准备发送的完整 token 序列
-            - matched_record: 匹配到的历史记录（用于 save 时复用）
-            - matched_prefix_len: 匹配到的字符前缀长度
-            - matched_tokens_count: 匹配到的 tokens 数量
+            {
+                "input_ids": List[int],        # 准备发送的完整 token 序列
+                "messages_str": str,           # 当前 messages 对应的字符串
+                "image_data": List[str],       # 编码后的图片数据（发给 /generate）
+                "matched_record": Optional[Dict],  # 匹配到的历史记录
+                "matched_tokens_count": int,   # 匹配到的 tokens 数量
+            }
         """
-        # 构建当前 messages 的字符串
+        normalized_messages = self._normalize_messages_for_qwen_vision(messages)
+
+        # 提取多模态信息
+        images, videos = process_vision_info(normalized_messages)
+        images = images or []  # 确保 images 不为 None
+
+        # 构建当前 messages 的字符串（不含 generation_prompt，用于匹配）
         current_messages_str = self.tokenizer.apply_chat_template(
-            messages,
+            normalized_messages,
             add_generation_prompt=False,
             tokenize=False
         )
+
+        # 多模态处理：如果有 processor 且有 images，用 processor 处理
+        proc_out = None
+        if self.processor is not None and images:
+            proc_out = self.processor(text=current_messages_str, images=images, tokenize=False)
+            current_messages_str = self.tokenizer.decode(
+                proc_out["input_ids"][0],
+                skip_special_tokens=False,
+            )
 
         # 字符级匹配
         matched_record, matched_prefix_len = self._find_best_match(
@@ -230,21 +303,45 @@ class TrajectoryMaskBuilder:
                 input_ids.extend(new_context_tokens)
         else:
             # 没有匹配，完整 tokenize
-            input_ids = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=True,
-                add_generation_prompt=True
-            )
+            if proc_out is not None:
+                # 使用 processor 的输出，并添加 generation_prompt
+                input_ids = proc_out["input_ids"][0]
+                input_ids.extend(self.generation_tokens)
+            else:
+                input_ids = self.tokenizer.apply_chat_template(
+                    normalized_messages,
+                    tokenize=True,
+                    add_generation_prompt=True
+                )
 
-        return input_ids, matched_record, matched_prefix_len, matched_tokens_count
+        # 处理 image_data：复用匹配记录的 image_data，只编码新增图片
+        image_data: List[str] = []
+        if matched_record is not None:
+            prev_image_data = list(matched_record.get("image_data") or [])
+            if len(images) > len(prev_image_data):
+                new_images = images[len(prev_image_data):]
+                image_data = prev_image_data + [encode_image_for_rollout_engine(img) for img in new_images]
+            else:
+                image_data = prev_image_data
+        else:
+            image_data = [encode_image_for_rollout_engine(img) for img in images]
+
+        return {
+            "input_ids": input_ids,
+            "messages_str": current_messages_str,
+            "image_data": image_data,
+            "matched_record": matched_record,
+            "matched_tokens_count": matched_tokens_count,
+        }
 
     def save(
         self,
         session_id: str,
-        messages: List[Dict[str, Any]],
+        messages_str: str,
         input_ids: List[int],
         output_ids: List[int],
         output_logprobs: List[List],  # [[logprob, token_id, ...], ...]
+        image_data: List[str],
         finish_reason: Optional[str] = None,
         matched_record: Optional[Dict[str, Any]] = None,
         matched_tokens_count: int = 0,
@@ -254,28 +351,22 @@ class TrajectoryMaskBuilder:
 
         Args:
             session_id: Session ID
-            messages: 输入的 messages（不含本次 assistant 回复）
-            input_ids: 发送给 /generate 的 input_ids（来自 prepare_input_ids）
+            messages_str: 当前 messages 对应的字符串（来自 prepare_generate_input）
+            input_ids: 发送给 /generate 的 input_ids（来自 prepare_generate_input）
             output_ids: 本次生成的 token IDs
             output_logprobs: 本次生成的 logprobs
+            image_data: 编码后的图片数据
             finish_reason: 生成结束原因
-            matched_record: 已匹配的历史记录（来自 prepare_input_ids，避免重复匹配）
-            matched_tokens_count: 匹配到的 tokens 数量（来自 prepare_input_ids）
+            matched_record: 已匹配的历史记录（来自 prepare_generate_input，避免重复匹配）
+            matched_tokens_count: 匹配到的 tokens 数量（来自 prepare_generate_input）
             assistant_text: generate API 返回的解码文本（已 skip_special_tokens）
         """
         if session_id not in self.session_data:
             self.session_data[session_id] = []
 
-        # 构建当前 messages 的字符串（不含 assistant 回复）
-        current_messages_str = self.tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=False,
-            tokenize=False
-        )
-
         # 如果没有传入 matched_record，重新匹配
         if matched_record is None:
-            matched_record, _ = self._find_best_match(session_id, current_messages_str)
+            matched_record, _ = self._find_best_match(session_id, messages_str)
 
         # 在匹配的基础上构建 tokens、response_mask、logprobs
         if matched_record is not None and matched_tokens_count > 0:
@@ -314,7 +405,7 @@ class TrajectoryMaskBuilder:
 
         # 构建 messages_str（通过 append 方式，而不是重新 apply_chat_template）
         # 直接 append decoded_output，它已经包含了所有格式化字符（如 <|im_end|>\n）
-        full_messages_str = current_messages_str + self.generation_prompt + decoded_output
+        full_messages_str = messages_str + self.generation_prompt + decoded_output
 
         # 保存新记录
         new_record = {
@@ -322,18 +413,57 @@ class TrajectoryMaskBuilder:
             "tokens": tokens,
             "response_mask": response_mask,
             "logprobs": logprobs_list,
+            "image_data": image_data,
         }
         self.session_data[session_id].append(new_record)
 
-    def query_tokens(self, session_id: str, messages_str: str) -> Tuple[List[int], List[int]]:
-        """查询与 messages_str 匹配的 tokens 和 response_mask。"""
+    def get_training_info(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+    ) -> Tuple[List[int], List[int], List[str], str]:
+        """获取训练所需的 tokens、response_mask、image_data 和 messages_str。
+
+        Args:
+            session_id: Session ID
+            messages: 完整的 messages（含 assistant 回复）
+
+        Returns:
+            (tokens, response_mask, image_data, messages_str)
+        """
+        normalized_messages = self._normalize_messages_for_qwen_vision(messages)
+
+        # 提取多模态信息
+        images, videos = process_vision_info(normalized_messages)
+        images = images or []  # 确保 images 不为 None
+
+        # 构建 messages_str
+        messages_str = self.tokenizer.apply_chat_template(
+            normalized_messages,
+            add_generation_prompt=False,
+            tokenize=False
+        )
+
+        # 多模态处理：如果有 processor 且有 images，用 processor 处理
+        if self.processor is not None and images:
+            proc_out = self.processor(text=messages_str, images=images, tokenize=False)
+            messages_str = self.tokenizer.decode(
+                proc_out["input_ids"][0],
+                skip_special_tokens=False,
+            )
+
+        # 查找匹配的记录
         matched_record, matched_len = self._find_best_match(session_id, messages_str)
         if matched_record is None:
-            # Debug: 打印是否有数据
             has_data = session_id in self.session_data and len(self.session_data[session_id]) > 0
-            logger.warning(f"query_tokens failed: session={session_id}, has_data={has_data}, matched_len={matched_len}")
-            return [], []
-        return list(matched_record["tokens"]), list(matched_record["response_mask"])
+            logger.warning(f"get_training_info failed: session={session_id}, has_data={has_data}, matched_len={matched_len}")
+            return [], [], [], ""
+        return (
+            list(matched_record["tokens"]),
+            list(matched_record["response_mask"]),
+            list(matched_record.get("image_data") or []),
+            messages_str,
+        )
 
     def query_logprobs(self, session_id: str, messages_str: str) -> List[float]:
         """查询与 messages_str 匹配的 logprobs。"""

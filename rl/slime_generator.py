@@ -1,9 +1,11 @@
 import asyncio
+import base64
 import json
 import logging
 import os
 import sys
 import time
+from io import BytesIO
 from typing import Any, Dict, List
 import copy
 
@@ -16,10 +18,20 @@ from utils import get_env, AggType, MetricsRecorder
 
 import aiohttp
 import requests
+from PIL import Image
 from transformers import AutoTokenizer
+from transformers import AutoProcessor, PreTrainedTokenizerBase, ProcessorMixin
 
 from slime.utils.async_utils import run
 from slime.utils.types import Sample
+
+
+def decode_base64_to_pil(b64_str: str) -> Image.Image:
+    """Decode a base64 string to PIL Image."""
+    raw = base64.b64decode(b64_str)
+    with BytesIO(raw) as bio:
+        img = Image.open(bio).copy()
+    return img.convert("RGB")
 
 __all__ = ["generate_rollout"]
 
@@ -27,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Global variables for evaluation
 TOKENIZER = None
+PROCESSOR = None
 START_ROLLOUT = True
 
 # LLM Proxy URL for getting trajectory masks (constructed from host and port)
@@ -114,13 +127,13 @@ def write_debug_to_file(
 
 def query_trajectory(
     session_id: str,
-    messages_str: str,
+    messages: List[Dict[str, Any]],
     max_retries: int = 10,
     timeout: int = 60,
-) -> tuple[List[int], List[int]]:
-    """Query tokens and response_mask from LLM Proxy."""
+) -> tuple[List[int], List[int], List[str], str]:
+    """Query tokens, response_mask, image_data and messages_str from LLM Proxy."""
     url = f"{LLM_PROXY_URL}/get_trajectory_mask"
-    payload = {"session_id": session_id, "messages_str": messages_str}
+    payload = {"session_id": session_id, "messages": messages}
 
     last_error = None
     for attempt in range(max_retries):
@@ -137,8 +150,10 @@ def query_trajectory(
 
         tokens = data.get("tokens")
         response_mask = data.get("response_mask")
+        image_data = data.get("image_data") or []
+        messages_str = data.get("messages_str") or ""
         if isinstance(tokens, list) and isinstance(response_mask, list):
-            return [int(t) for t in tokens], [int(m) for m in response_mask]
+            return [int(t) for t in tokens], [int(m) for m in response_mask], image_data, messages_str
 
         raise KeyError("Missing `tokens`/`response_mask` in response")
 
@@ -437,15 +452,8 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
             oai_messages = record["messages"]
             session_id = record["extra_info"].get("session_id", "")
 
-            # Convert messages to string
-            messages_str = tokenizer.apply_chat_template(
-                oai_messages,
-                add_generation_prompt=False,
-                tokenize=False
-            )
-
-            # Get tokens + response_mask from LLM Proxy
-            tokens, response_mask = query_trajectory(session_id, messages_str)
+            # Get tokens + response_mask + image_data + messages_str from LLM Proxy
+            tokens, response_mask, image_data, messages_str = query_trajectory(session_id, oai_messages)
             token_ids, loss_mask, response_length = build_loss_mask_from_response_mask(tokens, response_mask)
 
             # 写入调试文件
@@ -453,23 +461,40 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
 
             # 构建 metadata（从 extra_info 复制，已包含 weight_version）
             metadata = dict(record["extra_info"])
-            group_results.append(
-                Sample(
-                    index=record["instance_id"],
-                    prompt=record["uid"],
-                    tokens=token_ids,
-                    response_length=response_length,
-                    reward=record["reward"],
-                    status=(
-                        Sample.Status.COMPLETED
-                        if "finish_reason" not in record["extra_info"]
-                        or record["extra_info"]["finish_reason"] != "length"
-                        else Sample.Status.TRUNCATED
-                    ),
-                    loss_mask=loss_mask,
-                    metadata=metadata,
-                )
+            sample = Sample(
+                index=record["instance_id"],
+                prompt=record["uid"],
+                tokens=token_ids,
+                response_length=response_length,
+                reward=record["reward"],
+                status=(
+                    Sample.Status.COMPLETED
+                    if "finish_reason" not in record["extra_info"]
+                    or record["extra_info"]["finish_reason"] != "length"
+                    else Sample.Status.TRUNCATED
+                ),
+                loss_mask=loss_mask,
+                metadata=metadata,
             )
+
+            # VLM training: attach processed multimodal tensors if there are images
+            if PROCESSOR is not None and image_data:
+                images = [decode_base64_to_pil(img_b64) for img_b64 in image_data]
+                proc_out = PROCESSOR(
+                    # NOTE: `messages_str` from LLM proxy may already contain expanded image tokens
+                    # (many "<|image_pad|>" occurrences) which can mismatch `len(images)` and crash
+                    # Qwen3VLProcessor. We only need vision tensors here.
+                    text="",
+                    images=images,
+                    padding=True,
+                    return_tensors="pt",
+                )
+                mm_train_inputs = {
+                    k: v for k, v in proc_out.items() if k not in ["input_ids", "attention_mask"]
+                } or None
+                sample.multimodal_train_inputs = mm_train_inputs
+
+            group_results.append(sample)
         sample_results.append(group_results)
 
     data_buffer.add_samples(sample_results)
@@ -500,5 +525,14 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
 
     if TOKENIZER is None:
         TOKENIZER = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    global PROCESSOR
+    if PROCESSOR is None:
+        try:
+            proc = AutoProcessor.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+            if isinstance(proc, PreTrainedTokenizerBase) or not isinstance(proc, ProcessorMixin):
+                proc = None
+            PROCESSOR = proc
+        except Exception:
+            PROCESSOR = None
 
     return run(generate_rollout_async(args, rollout_id, data_buffer, evaluation))

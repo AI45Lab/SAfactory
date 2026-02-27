@@ -1,5 +1,0 @@
-environments:
-  - env_name: search
-    env_num: 1
-    dataset: /mnt/shared-storage-user/evobox-share/hf-hub/datasets--PeterJinGo--nq_hotpotqa_train/snapshots/b7d80abfee334a7a91cb377544f09180d58b34f6/train_20k.parquet
-    # 运行时参数（top_k, search_api_url, judge 等）从 search_env_runtime.yaml 加载

@@ -28,7 +28,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
-from transformers import AutoTokenizer
+from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase, ProcessorMixin
 
 # Add AIEvoBox to path
 AIEVOBOX_ROOT = get_env("AIEVOBOX_ROOT")
@@ -72,12 +72,20 @@ from trajectory_mask_builder import TrajectoryMaskBuilder
 
 app = FastAPI(title="LLM Proxy Server", debug=True)
 
+@app.middleware("http")
+async def set_body_size(request: Request, call_next):
+    # VLM requests can include base64 images in the prompt.
+    request._body_size_limit = 1_073_741_824  # 1GB
+    response = await call_next(request)
+    return response
+
 
 class ProxyState:
     """Global state for the proxy server."""
 
     def __init__(self):
         self.tokenizer: Optional[AutoTokenizer] = None
+        self.processor: Optional[Any] = None
         self.trajectory_mask_builder: Optional[TrajectoryMaskBuilder] = None
         self.remote_engine_url: Optional[str] = None  # Base URL without /v1
         self._http_client: Optional[httpx.AsyncClient] = None
@@ -123,12 +131,12 @@ class InitRequest(BaseModel):
 
 class MaskRequest(BaseModel):
     session_id: str
-    messages_str: str
+    messages: List[Dict[str, Any]]
 
 
 class TokensRequest(BaseModel):
     session_id: str
-    messages_str: str
+    messages: List[Dict[str, Any]]
 
 
 class LogprobsRequest(BaseModel):
@@ -146,7 +154,23 @@ async def init_proxy(request: InitRequest):
             request.tokenizer_path,
             trust_remote_code=True
         )
-        STATE.trajectory_mask_builder = TrajectoryMaskBuilder(tokenizer=STATE.tokenizer)
+        try:
+            # Some text-only checkpoints do not ship a processor.
+            STATE.processor = AutoProcessor.from_pretrained(
+                request.tokenizer_path,
+                trust_remote_code=True,
+            )
+            # If HF returned a tokenizer, discard it.
+            if isinstance(STATE.processor, PreTrainedTokenizerBase) or not isinstance(STATE.processor, ProcessorMixin):
+                STATE.processor = None
+        except Exception as e:
+            STATE.processor = None
+            logger.warning(f"Failed to load processor from {request.tokenizer_path}: {e}")
+
+        STATE.trajectory_mask_builder = TrajectoryMaskBuilder(
+            tokenizer=STATE.tokenizer,
+            processor=STATE.processor,
+        )
 
         # Normalize remote engine URL (remove trailing slash and /v1 if present)
         engine_url = request.remote_engine_url.rstrip("/")
@@ -189,11 +213,18 @@ async def proxy_chat_completions(session_id: str, request: Request):
     top_p = payload.get("top_p", STATE.top_p)
     max_tokens = payload.get("max_tokens")
 
-    # Prepare input_ids using matching logic
-    # This reuses historical tokens and only tokenizes new context
-    input_ids, matched_record, matched_prefix_len, matched_tokens_count = STATE.trajectory_mask_builder.prepare_input_ids(
-        session_id, messages
+    # Prepare input tokens (with multimodal state like cumulative image_data).
+    # Run in thread pool to avoid blocking the event loop (CPU-bound tokenization)
+    prep = await asyncio.to_thread(
+        STATE.trajectory_mask_builder.prepare_generate_input,
+        session_id,
+        messages
     )
+    input_ids = prep["input_ids"]
+    messages_str = prep["messages_str"]
+    image_data = prep.get("image_data") or []
+    matched_record = prep.get("matched_record")
+    matched_tokens_count = prep.get("matched_tokens_count", 0)
 
     # Calculate max_new_tokens
     if STATE.max_length is not None:
@@ -236,6 +267,8 @@ async def proxy_chat_completions(session_id: str, request: Request):
         "return_logprob": True,
         "stream": False,
     }
+    if image_data:
+        generate_payload["image_data"] = image_data
 
     # Call /generate endpoint
     http_client = STATE.get_http_client()
@@ -276,10 +309,11 @@ async def proxy_chat_completions(session_id: str, request: Request):
             await asyncio.to_thread(
                 STATE.trajectory_mask_builder.save,
                 session_id,
-                messages,
+                messages_str,
                 input_ids,
                 output_ids,
                 output_logprobs,
+                image_data,
                 finish_reason,
                 matched_record,
                 matched_tokens_count,
@@ -326,11 +360,21 @@ async def get_trajectory_mask(request: MaskRequest):
         raise HTTPException(status_code=503, detail="Proxy not initialized")
 
     session_id = request.session_id
-    messages_str = request.messages_str
+    messages = request.messages
 
     try:
-        # Use the new token-level query
-        tokens, response_mask = STATE.trajectory_mask_builder.query_tokens(session_id, messages_str)
+        # Use get_training_info to get tokens, response_mask, image_data, messages_str
+        # Run in thread pool to avoid blocking the event loop
+        tokens, response_mask, image_data, messages_str = await asyncio.to_thread(
+            STATE.trajectory_mask_builder.get_training_info,
+            session_id,
+            messages
+        )
+
+        # 按 max_length 截断
+        if STATE.max_length is not None and len(tokens) > STATE.max_length:
+            tokens = tokens[:STATE.max_length]
+            response_mask = response_mask[:STATE.max_length]
 
         # 按 max_length 截断
         if STATE.max_length is not None and len(tokens) > STATE.max_length:
@@ -349,7 +393,7 @@ async def get_trajectory_mask(request: MaskRequest):
         if start is not None:
             mask_ranges.append((start, len(response_mask)))
 
-        return {"mask_ranges": mask_ranges, "tokens": tokens, "response_mask": response_mask}
+        return {"mask_ranges": mask_ranges, "tokens": tokens, "response_mask": response_mask, "image_data": image_data, "messages_str": messages_str}
     except Exception as e:
         logger.error(f"Failed to query mask: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to query mask: {e}")
@@ -364,17 +408,22 @@ async def get_tokens(request: TokensRequest):
         raise HTTPException(status_code=503, detail="Proxy not initialized")
 
     session_id = request.session_id
-    messages_str = request.messages_str
+    messages = request.messages
 
     try:
-        tokens, response_mask = STATE.trajectory_mask_builder.query_tokens(session_id, messages_str)
+        # Run in thread pool to avoid blocking the event loop
+        tokens, response_mask, image_data, messages_str = await asyncio.to_thread(
+            STATE.trajectory_mask_builder.get_training_info,
+            session_id,
+            messages
+        )
 
         # 按 max_length 截断
         if STATE.max_length is not None and len(tokens) > STATE.max_length:
             tokens = tokens[:STATE.max_length]
             response_mask = response_mask[:STATE.max_length]
 
-        return {"tokens": tokens, "response_mask": response_mask}
+        return {"tokens": tokens, "response_mask": response_mask, "image_data": image_data, "messages_str": messages_str}
     except Exception as e:
         logger.error(f"Failed to query tokens: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to query tokens: {e}")
@@ -392,7 +441,12 @@ async def get_logprobs(request: LogprobsRequest):
     messages_str = request.messages_str
 
     try:
-        logprobs = STATE.trajectory_mask_builder.query_logprobs(session_id, messages_str)
+        # Run in thread pool to avoid blocking the event loop
+        logprobs = await asyncio.to_thread(
+            STATE.trajectory_mask_builder.query_logprobs,
+            session_id,
+            messages_str
+        )
         return {"logprobs": logprobs}
     except Exception as e:
         logger.error(f"Failed to query logprobs: {e}")
