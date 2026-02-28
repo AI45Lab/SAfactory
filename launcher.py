@@ -344,12 +344,12 @@ def parse_args():
     p.add_argument("--job-session", type=str, default="6978763b718b94e540a221c3", help="job id is used to identify each task and record in the environmentconfig table as session")
     # YAML
     p.add_argument("--manager-config", type=str, default="./manager/config.yaml", help="Path to unified YAML config")
-    p.add_argument("--mode", choices=["local", "remote"], default="remote")
+    p.add_argument("--mode", choices=["local", "remote"], default="local")
 
     # DB / YAML-aggregator
-    p.add_argument("--env-config", type=str, default="/mnt/shared-storage-user/chenxinquan/AIEvoBox/env/androidgym/android_env.yaml", help="env config which used for specify the input env configs, and it's incompatible with  env-root")
+    p.add_argument("--env-config", type=str, default=None, help="env config which used for specify the input env configs, and it's incompatible with  env-root")
     p.add_argument("--env-root", type=str, default="env", help="only works when env-config is not specified")
-    p.add_argument("--storage-type", type=str, default="cloud")
+    p.add_argument("--storage-type", type=str, default="sqlite")
     p.add_argument("--db-path", type=str, default="sqlite://android_envs.db")
     p.add_argument("--rebuild-table", action="store_true", default=True)
 

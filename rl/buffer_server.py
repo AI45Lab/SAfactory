@@ -270,12 +270,12 @@ async def get_rollout_data(request: Request):
     )
 
 
-async def init_data_manager(db_url: str, restart_training: bool = False):
+async def init_data_manager(job_session: str, db_url: str, restart_training: bool = False):
     """Initialize the DataManager for querying the database."""
     global data_manager, last_served_id
-    data_manager = DataManager(db_url=db_url)
+    data_manager = DataManager(job_session=job_session, db_url=db_url)
     await data_manager.init()
-    logger.info(f"DataManager initialized with DB: {db_url}")
+    logger.info(f"DataManager initialized with DB: {db_url}, job_session: {job_session}")
 
     # Initialize cursor based on restart_training flag
     if restart_training:
@@ -296,6 +296,9 @@ def start_aievobox_process(data: dict):
         pending_items_by_instance.clear()
         logger.info("restart_training=True, cleared pending items")
 
+    # Keep a single job_session for both reader and writer process.
+    job_session = str(data.get("job_session") or uuid.uuid4().hex)
+
     # Database path
     db_url = os.environ.get("AIEVOBOX_DB_URL", f"sqlite:///{AIEVOBOX_ROOT}/rl/rl.db")
 
@@ -303,7 +306,9 @@ def start_aievobox_process(data: dict):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(init_data_manager(db_url, restart_training=restart_training))
+        loop.run_until_complete(
+            init_data_manager(job_session=job_session, db_url=db_url, restart_training=restart_training)
+        )
     finally:
         loop.close()
 
@@ -340,6 +345,7 @@ def start_aievobox_process(data: dict):
         "--max-steps", str(max_steps),
         "--message-cut", str(message_cut),
         "--pool-size", str(pool_size),
+        "--job-session", job_session,
         "--rl-use-session-suffix-url",
         "--rl-env-num", str(group_size),
     ]
