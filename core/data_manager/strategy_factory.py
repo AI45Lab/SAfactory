@@ -13,7 +13,7 @@ class StorageFactory:
         cls._registry[name] = strategy_cls
 
     @classmethod
-    def create(cls, job_session: str,storage_type: str, **kwargs) -> StorageStrategy:
+    def create(cls, job_session: str, storage_type: str, **kwargs) -> StorageStrategy:
         #根据类型创建实例，kwargs 是透传的配置参数
         if storage_type not in cls._registry:
             raise ValueError(f"Unknown storage type: {storage_type}. Available: {list(cls._registry.keys())}")

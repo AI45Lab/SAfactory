@@ -4,50 +4,67 @@ import logging
 import os
 import time
 import uuid
-import copy
 import re
 import base64
-import hashlib
-from typing import List, Dict, Optional, Any, Union, Tuple
-from datetime import datetime
+from typing import List, Dict, Optional, Any
+from datetime import datetime, date
 
-# 复用已有的数据模型 (仅用于接口传参兼容)
-from core.data_manager.models import EnvironmentConfig, InteractionSession, InteractionStep
-from core.data_manager.strategy.base_strategy import StorageStrategy
+from core.data_manager.strategy.base_strategy import StorageStrategy, SessionContext
 
-# 引入 Cloud SDK
+# Cloud SDK imports
 from wt_sdk import WTGatewayClient, GatewayConfig, EnvConfigManager
 from wt_sdk.models import LandingRecord, ChatMessage, ContentItem
 from wt_sdk.utils import generate_deterministic_id, S3Uploader
 
 log = logging.getLogger("cloud_strategy")
 
+# Retry configuration
+MAX_UPLOAD_RETRIES = 3
+RETRY_BACKOFF_BASE = 1.0
+
 class CloudStrategy(StorageStrategy):
     """
-    将交互数据直接存储到云端数据库 (WTGateway)，环境配置存储到 S3。
+    Cloud storage strategy:
+    - Table 1 (S3): Environment configs stored via EnvConfigManager
+    - Table 2 (LandingTable): Session steps with full conversation history
+
+    Image handling:
+    - Extract base64 images from messages
+    - Upload binary to S3 with retry logic
+    - On failure: store locally as fallback
+    - Store S3 URLs (or local paths) in messages JSON
     """
 
-    def __init__(self,job_session: str ,db_url: str, enable_buffer: bool = False, buffer_size: int = 1, flush_interval: float = 1.0):
+    def __init__(
+        self,
+        job_session: str,
+        db_url: str,
+        enable_buffer: bool = False,
+        buffer_size: int = 1,
+        flush_interval: float = 1.0
+    ):
         self.db_url = db_url
-        
+        self.job_session = job_session
+        self.initialized = False
+
         self.client: Optional[WTGatewayClient] = None
         self.env_manager: Optional[EnvConfigManager] = None
-        self.initialized = False
-        self.start_time = time.perf_counter()
-        
-        # 内存缓存：仅用于 interactor 运行时保持对象引用，不持久化
-        self._env_configs: Dict[str, EnvironmentConfig] = {} 
-        self._sessions: Dict[str, InteractionSession] = {}
+        self.s3_uploader: Optional[S3Uploader] = None
 
-        #job session is used for distinguishing each simulation task
-        self.job_session = job_session
+        # In-memory caches
+        self._env_configs: Dict[str, Dict] = {}
+        self._sessions: Dict[str, SessionContext] = {}
+
+        # Local fallback directory for failed uploads
+        self._local_fallback_dir = "saved_images"
 
     async def init(self):
+        """Initialize cloud clients"""
         if self.initialized:
             return
 
         # TODO After the test passed, it was modified to the production configuration.
-        # 1. 初始化 WTGatewayClient
+        # 1. Initialize WTGatewayClient
         config = GatewayConfig() 
         config.tables.landing_table = "landing_test"
 
@@ -58,296 +75,338 @@ class CloudStrategy(StorageStrategy):
             log.error(f"Failed to initialize WTGatewayClient: {e}")
             raise
 
-        # 2. 初始化 EnvConfigManager (S3)
+        # 2. Initialize EnvConfigManager (S3)
         try:
-            # 这里使用默认配置或从环境变量读取 AWS key
             self.env_manager = EnvConfigManager() 
         except Exception as e:
             log.error(f"Failed to initialize EnvConfigManager: {e}")
             raise
+        
+        # 3. Initialize S3Uploader
+        try:
+            self.s3_uploader = S3Uploader()
+        except Exception as e:
+            log.warning(f"Failed to initialize S3Uploader: {e}")
+            self.s3_uploader = None
 
         self.initialized = True
 
-    async def add_environment_config(self, env_name: str, env_params: dict, image: str, group_id: str):
+    async def add_environment(
+        self,
+        job_id: str,
+        env_name: str,
+        env_params: Dict,
+        image: str = "",
+        group_id: str = ""
+    ) -> str:
+        """Register environment config to S3"""
+        await self.init()
+        
         env_id = str(uuid.uuid4())
         
-        # 1. 构造 Config 字典
         config_dict = {
-            "job_session": self.job_session,
+            "job_session": job_id,
             "env_id": env_id,
             "env_name": env_name,
             "env_params": env_params,
             "image": image,
-            "created_at": int(time.time()),
             "group_id": group_id,
+            "created_at": int(time.time()),
         }
         
-        # 2. 上传到 S3 (同步方法，建议 wrap 一下防止阻塞 loop，虽然 boto3 也是阻塞的)
         try:
             await asyncio.to_thread(self.env_manager.save_config, config_dict)
             log.info(f"Environment config saved to S3: {env_id}")
         except Exception as e:
             log.error(f"Failed to save env config to S3: {e}")
             
-        config_obj = EnvironmentConfig(
+        # Cache locally
+        self._env_configs[env_id] = config_dict
+
+        return env_id
+
+    async def get_all_environments(self, job_id: Optional[str] = None) -> List[Dict]:
+        """Get all environments from cache"""
+        if job_id:
+            return [c for c in self._env_configs.values() if c.get("job_id") == job_id]
+        return list(self._env_configs.values())
+
+    async def create_session(
+        self,
+        env_id: str,
+        env_name: str,
+        llm_model: str,
+        group_id: str = "",
+        job_id: str = ""
+    ) -> SessionContext:
+        """Create session context (in-memory only)"""
+        session = SessionContext(
+            session_id=env_id,
+            env_id=env_id,
             env_name=env_name,
-            env_id=env_id,
-            env_params=env_params,
-            image=image,
-            group_id=group_id
-        )
-        self._env_configs[env_id] = config_obj
-
-    async def get_all_environments(self):
-        pass
-
-    async def create_session(self, env_id: str, llm_model: str, group_id: str = "") -> InteractionSession:
-        """
-        仅在内存创建 Session 对象，不进行云端交互
-        """
-        # 尝试关联环境配置
-        env_config = self._env_configs.get(env_id)
-        
-        session = InteractionSession(
-            env_id=env_id,
             llm_model=llm_model,
-            group_id=group_id
+            group_id=group_id,
+            job_id=job_id or self.job_session,
+            total_reward=0.0,
+            start_time=time.perf_counter(),
+            message_history=[]
         )
-        session.env_cache = env_config 
-        
+
         self._sessions[session.session_id] = session
+        log.debug("Created cloud session: %s", session.session_id)
         return session
 
-
-    async def update_session(self, session: InteractionSession, trajectory: str, total_reward: float, is_completed: bool = True) -> InteractionSession:
+    async def record_step(
+        self,
+        session: SessionContext,
+        step_id: int,
+        messages: List[Dict],
+        response: str,
+        step_reward: float,
+        env_state: Optional[str] = None,
+        terminated: bool = False,
+        truncated: bool = False,
+    ):
         """
-        仅更新内存对象，云端无 Session 表
-        """
-        session.total_reward = total_reward
-        session.trajectory = trajectory
-        session.is_completed = is_completed
-        session.end_time = datetime.now()
-        
-        # 更新缓存
-        self._sessions[session.session_id] = session
-        return session
-
-    async def record_step(self, session: InteractionSession, step_id: int, prompt: list, response: str, reward: float, env_key: str, env_state: Optional[str] = None, done: bool = False, truncated: bool = False):
-        """
-        处理单步数据并立即发送到云端 Landing Table
+        Record step to cloud LandingTable.
+        Images are extracted, uploaded to S3 (with retry), and URLs stored.
         """
         await self.init()
         
-        if step_id == 1:
-            self.start_time = time.perf_counter()
-        
-        if session.reward_count is None:
-            session.reward_count = 0.0
-            
-        session.reward_count += reward
+        session.total_reward += step_reward
 
-        # 1. 图片处理
-        clean_prompt, _ = self.process_message(prompt, env_key, step_id)
+        env_key = f"{session.env_name}_{session.env_id}"
 
-        # 2. 构造 LandingRecord 所需数据
-        # 转换 Prompt (OpenAI format) -> Messages (SDK format)
-        messages = self._convert_to_chat_messages(clean_prompt)
+        # Optimization: session.message_history already holds previously processed
+        # messages with S3 URLs substituted for base64.  Reuse that prefix and only
+        # process images in the *new* messages appended since the last step, avoiding
+        # redundant re-uploads of the same images on every cumulative call.
+        prev_count = len(session.message_history)
+        if prev_count > 0 and len(messages) >= prev_count:
+            new_messages = messages[prev_count:]
+            new_processed, image_urls = await self._process_images(
+                new_messages, env_key, step_id
+            )
+            full_messages = list(session.message_history) + list(new_processed)
+        else:
+            # First step or unexpected message count — process everything normally.
+            full_messages, image_urls = await self._process_images(
+                messages, env_key, step_id
+            )
+
+        # full_messages.append({"role": "assistant", "content": response})
+        session.message_history = full_messages
         
-        # 构造 Response Message
+        # Convert to SDK format
+        chat_messages = self._convert_to_chat_messages(full_messages)
         response_msg = ChatMessage(
             role="assistant",
             content=[ContentItem(type="text", text=response)]
         )
-
-        # 获取环境名称
-        if hasattr(session, 'env_cache') and session.env_cache:
-            env_name = session.env_cache.env_name
-        else:
-            env_name = env_key.split('_')[0]
         
-        # 生成确定性 ID
-        record_id = generate_deterministic_id(
-            {
-                "env_name": env_name,
-                "messages": messages,
-                "response_msg": response_msg,
-            }
-        )
-
-        # 3. 创建 Record 对象
-        current_ts = int(time.time())
-        execution_time = time.perf_counter() - self.start_time
+        # Generate deterministic record ID
+        record_id = generate_deterministic_id({
+            "session_id": session.session_id,
+            "step_id": step_id,
+            "env_name": session.env_name
+        })
+        
+        # Create LandingRecord
         record = LandingRecord(
-            dataset_type="Test", # 可根据需求修改
-            dt=f"{execution_time:.6f}",
+            dataset_type="Test",
+            dt=date.today().isoformat(),
             id=record_id,
-            session_id=str(session.id),
-            created_at=current_ts,
+            session_id=session.session_id,
+            created_at=int(time.time()),
             step_id=step_id,
-            is_terminal=done,
-            step_reward=reward, # 假设传入的是单步奖励
-            reward=session.reward_count,      # 此处根据业务定义，可能有累积奖励需求，这里暂存单步
-            messages=messages,  # 包含完整的历史 Prompt
+            is_terminal=terminated,
+            step_reward=step_reward,
+            reward=session.total_reward,
+            messages=chat_messages,
             response=response_msg,
             ground_truth_answer=None,
             reference_answer=None,
             agent_model=session.llm_model,
-            env_name=env_name,
-            is_session_completed=done or truncated,
+            env_name=session.env_name,
+            is_session_completed=terminated or truncated,
             meta_json=json.dumps({
-                "source": "AIEvoBox",
+                "source": "AIEvoBox-cloud-test",
                 "group_id": session.group_id,
-                "job_session": self.job_session,
-                "env_key": env_key
+                "job_id": session.job_id,
+                "env_key": env_key,
+                "image_urls": image_urls
             })
         )
-
-        # 4. 直接上传 (无缓冲)
+        
+        # Upload to cloud
         try:
-            # 使用 to_thread 避免阻塞事件循环
             await asyncio.to_thread(self.client.ingest_landing, record)
-            log.debug(f"Step {step_id} ingested to cloud: {record_id}")
+            log.debug("Step %d recorded to cloud: %s", step_id, record_id)
         except Exception as e:
-            log.error(f"Failed to ingest step {step_id} to cloud: {e}")
+            log.error("Failed to ingest step %d: %s", step_id, e)
+            raise
 
-    async def close(self):
-        if self.client:
-            if hasattr(self.client, 'close'):
-                self.client.close()
-        if self.env_manager:
-            if hasattr(self.env_manager, 'close'):
-                self.env_manager.close()
+    async def close(self) -> None:
+        """Clean up cloud clients"""
+        if self.client and hasattr(self.client, 'close'):
+            self.client.close()
+
+        if self.env_manager and hasattr(self.env_manager, 'close'):
+            self.env_manager.close()
+
+        self.initialized = False
+        log.info("Cloud strategy closed")
                 
-    def get_sync_connection(self):
-        pass
+    def get_sync_connection(self) -> None:
+        """Not applicable for cloud storage"""
+        return None
     
-    def process_message(self, messages: List[Dict[str, Any]], env_key: str, step_id: int, root_dir: str = "saved_images") -> Tuple[List[Dict[str, Any]], List[str]]:
+    async def _process_images(
+        self,
+        messages: List[Dict],
+        env_key: str,
+        step_id: int
+    ) -> tuple[List[Dict], List[str]]:
         """
-        处理 OpenAI 消息列表中的图片：
-        1. 提取 Base64 图片
-        2. 保存为本地文件，
-        3. 尝试上传到S3存储中，
-        4. 将消息中的 Base64 替换为 S3 URL （如果失败则退回为本地路径）
-        
-        Returns:
-            processed_messages: 处理后的消息列表 (深拷贝)
-            saved_urls: 本次处理保存的文件路径列表
+        Process images in messages:
+        1. Extract base64 images
+        2. Upload to S3 with retry
+        3. On failure: save locally as fallback
+        4. Replace base64 with URL/path in messages
         """
-        # 初始化
-        try:
-            uploader = S3Uploader()
-        except Exception as e:
-            log.error(f"[{env_key}] Failed to initialize S3Uploader: {e}")
-            uploader = None
-        
-        test_prefix = f"test/test_s3_util_{int(time.time())}"
-        save_dir = os.path.join(root_dir, f"{env_key}")
-        
         processed_messages = []
-        saved_urls = []
+        uploaded_urls = []
         image_count = 0
-        
+
         for msg_idx, message in enumerate(messages):
             content = message.get("content")
-            
-            # 如果 content 不是列表，或者没有 image_url，直接复用原对象引用
-            if not isinstance(content, list) or not any(item.get("type") == "image_url" for item in content):
+
+            # Skip non-list content or content without images
+            if not isinstance(content, list):
                 processed_messages.append(message)
                 continue
-            
-            # 如果包含图片，创建 Message 的浅拷贝，避免修改原始对象
+
+            has_images = any(item.get("type") == "image_url" for item in content)
+            if not has_images:
+                processed_messages.append(message)
+                continue
+
+            # Process images in content
             new_message = message.copy()
             new_content = []
-            
+
             for item_idx, item in enumerate(content):
-                # 如果不是图片，直接复用 item 引用
                 if item.get("type") != "image_url":
                     new_content.append(item)
                     continue
-                
+
                 image_url = item.get("image_url", {}).get("url", "")
-                
-                # 检查是否为 Base64
+
+                # Check if base64
                 match = re.match(r"data:image/(\w+);base64,(.+)", image_url)
                 if not match:
-                    # 如果已经是 URL，直接保留
                     new_content.append(item)
                     continue
-                
-                # --- 开始处理图片 ---
+
+                # Extract image data
                 ext = match.group(1)
                 b64_str = match.group(2)
-                
                 file_name = f"step_{step_id}_m{msg_idx}_i{image_count}.{ext}"
-                file_path = os.path.join(save_dir, file_name)
-                final_url = None
-                
-                # 创建 item 的浅拷贝，准备修改 url
+
+                # Upload with retry
+                final_url = await self._upload_image_with_retry(
+                    b64_str, env_key, file_name, ext
+                )
+
+                # Update item
                 new_item = item.copy()
                 new_item["image_url"] = item["image_url"].copy()
-
-                # A. 尝试保存到本地
-                local_save_success = False
-                try:
-                    # 延迟创建目录
-                    os.makedirs(save_dir, exist_ok=True)
-                    img_data = base64.b64decode(b64_str)
-                    
-                    with open(file_path, "wb") as f:
-                        f.write(img_data)
-                    local_save_success = True
-                    final_url = file_path # 默认值：本地路径
-                    
-                except Exception as e:
-                    log.error(f"[{env_key}][Step {step_id}] Save Local Failed. Msg: {msg_idx}, Item: {item_idx}. Error: {e}")
-                    # 如果本地都保存失败，保留原始 Base64 防止数据丢失，或者标记错误
-                    new_item["image_url"]["url"] = b64_str
-                    new_content.append(new_item)
-                    continue # 跳过后续 S3 逻辑
-
-                # B. 尝试上传到 S3 (仅在本地保存成功后)
-                if local_save_success and uploader:
-                    try:
-                        key = f"{test_prefix}/{file_name}"
-                        # upload_file 可能会失败，我们需要捕获它
-                        s3_url = uploader.upload_file(file_path=file_path, key=key)
-                        
-                        if s3_url:
-                            final_url = s3_url
-                        else:
-                            # 即使没有抛出异常但返回空，也视为失败
-                            log.warning(f"[{env_key}][Step {step_id}] S3 Upload returned empty URL. Using local path.")
-
-                    except Exception as e:
-                        # 4. S3 失败时的降级处理：仅打印日志，不中断，继续使用 final_url (即本地路径)
-                        log.error(f"[{env_key}][Step {step_id}] S3 Upload Error. Key: {key}. Error: {e}")
-                        # 保持 final_url 为本地路径，确保 Base64 被替换
-                
-                # C. 更新 Item 内容
                 new_item["image_url"]["url"] = final_url
+
                 new_content.append(new_item)
-                
-                saved_urls.append(final_url)
+                uploaded_urls.append(final_url)
                 image_count += 1
-            
-            # 将重构后的 content 赋值给新消息
+
             new_message["content"] = new_content
             processed_messages.append(new_message)
-        
-        return processed_messages, saved_urls
+
+        return processed_messages, uploaded_urls
+    
+    async def _upload_image_with_retry(
+        self,
+        b64_str: str,
+        env_key: str,
+        file_name: str,
+        ext: str
+    ) -> str:
+        """
+        Upload image to S3 with retry logic.
+        Falls back to local storage on failure.
+        """
+        # Decode base64
+        try:
+            img_data = base64.b64decode(b64_str)
+        except Exception as e:
+            log.error("Failed to decode base64: %s", e)
+            return f"data:image/{ext};base64,{b64_str[:50]}..."  # Keep partial for debugging
+
+        # Create local fallback path
+        local_dir = os.path.join(self._local_fallback_dir, env_key)
+        local_path = os.path.join(local_dir, file_name)
+
+        # Try S3 upload with retry
+        if self.s3_uploader:
+            s3_key = f"aievobox/{self.job_session}/{env_key}/{file_name}"
+
+            for attempt in range(MAX_UPLOAD_RETRIES):
+                try:
+                    # Save to temp file first
+                    os.makedirs(local_dir, exist_ok=True)
+                    with open(local_path, "wb") as f:
+                        f.write(img_data)
+
+                    # Upload to S3
+                    s3_url = await asyncio.to_thread(
+                        self.s3_uploader.upload_file,
+                        file_path=local_path,
+                        key=s3_key
+                    )
+
+                    if s3_url:
+                        log.debug("Uploaded image to S3: %s", s3_url)
+                        return s3_url
+
+                except Exception as e:
+                    wait_time = RETRY_BACKOFF_BASE * (2 ** attempt)
+                    log.warning(
+                        "S3 upload failed (attempt %d/%d): %s. Retrying in %.1fs",
+                        attempt + 1, MAX_UPLOAD_RETRIES, e, wait_time
+                    )
+                    await asyncio.sleep(wait_time)
+
+            log.error("S3 upload failed after %d retries. Using local fallback.", MAX_UPLOAD_RETRIES)
+
+        # Fallback to local storage
+        try:
+            os.makedirs(local_dir, exist_ok=True)
+            with open(local_path, "wb") as f:
+                f.write(img_data)
+            log.info("Image saved locally: %s", local_path)
+            return local_path
+        except Exception as e:
+            log.error("Local save also failed: %s", e)
+            return f"[IMAGE_SAVE_FAILED:{file_name}]"
 
     # --- Helpers ---
 
-    def _convert_to_chat_messages(self, prompt: List[Dict[str, Any]]) -> List[ChatMessage]:
-        """将 OpenAI 格式的 messages 转换为 SDK 的 ChatMessage 对象"""
-        out = []
-        if not prompt:
-            return out
-            
-        for msg in prompt:
+    def _convert_to_chat_messages(self, messages: List[Dict]) -> List[ChatMessage]:
+        """Convert OpenAI format messages to SDK ChatMessage format"""
+        result = []
+
+        for msg in messages:
             role = msg.get("role", "user")
             content_raw = msg.get("content", "")
-            
+
             content_items = []
             if isinstance(content_raw, str):
                 content_items.append(ContentItem(type="text", text=content_raw))
@@ -355,16 +414,15 @@ class CloudStrategy(StorageStrategy):
                 for item in content_raw:
                     if isinstance(item, dict):
                         if item.get("type") == "text":
-                            content_items.append(ContentItem(type="text", text=item.get("text", "")))
+                            content_items.append(
+                                ContentItem(type="text", text=item.get("text", ""))
+                            )
                         elif item.get("type") == "image_url":
-                             url = item.get("image_url", {}).get("url", "")
-                             content_items.append(ContentItem(type="text", text=url))
-            
-            out.append(ChatMessage(role=role, content=content_items))
-        return out
+                            url = item.get("image_url", {}).get("url", "")
+                            content_items.append(
+                                ContentItem(type="image_url", text=url)
+                            )
 
-    async def fetch_done_steps_with_context(self, after_id: int = 0, limit: int = 100) -> List[Dict]:
-        return []
+            result.append(ChatMessage(role=role, content=content_items))
 
-    async def get_max_step_id(self) -> int:
-        return 0
+        return result
