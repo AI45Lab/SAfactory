@@ -404,29 +404,11 @@ class CloudStrategy(StorageStrategy):
         after_id: int = 0,
         limit: int = 100
     ) -> List[Dict]:
-        """
-        Fetch completed steps for training data collection.
-        Uses cursor-based pagination.
-        """
-        await self.init()
-        
-        filter_conditions = [
-            f"job_id = {job_id}",
-            "is_terminal = true",
-        ]
-        query = " AND ".join(filter_conditions)
-        steps = list(self.client.search(
-            "",
-            dataset_type="TEST",
-            where_sql=query,
-            limit=limit,
-            table="landing_test"
-        ))
-        
-        return steps
+        """Waiting for API support"""
+        pass
         
     async def get_max_step_id(self) -> int:
-        """Get maximum primary key for pagination"""
+        """Waiting for API support"""
         pass
 
     # --- Helpers ---
