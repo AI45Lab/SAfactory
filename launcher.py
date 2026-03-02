@@ -359,7 +359,7 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     #Task identifier
-    p.add_argument("--job-id", type=str, default="6978763b718b94e540a221c3", help="job id is used to identify each task and record in the environmentconfig table as session")
+    p.add_argument("--job-id", type=str, default="", help="job id is used to identify each task and record in the environmentconfig table as session")
     # YAML
     p.add_argument("--manager-config", type=str, default="./manager/config.yaml", help="Path to unified YAML config")
     p.add_argument("--mode", choices=["local", "remote"], default="remote")
