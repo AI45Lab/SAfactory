@@ -359,7 +359,7 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     #Task identifier
-    p.add_argument("--job-id", type=str, default="", help="job id is used to identify each task and record in the environmentconfig table as session")
+    p.add_argument("--job-id", type=str, default="6978763b718b94e540a221c3", help="job id is used to identify each task and record in the environmentconfig table as session")
     # YAML
     p.add_argument("--manager-config", type=str, default="./manager/config.yaml", help="Path to unified YAML config")
     p.add_argument("--mode", choices=["local", "remote"], default="remote")
@@ -367,7 +367,7 @@ def parse_args():
     # DB / YAML-aggregator
     p.add_argument("--env-config", type=str, default="/mnt/shared-storage-user/chenxinquan/AIEvoBox/env/androidgym/android_env.yaml", help="env config which used for specify the input env configs, and it's incompatible with  env-root")
     p.add_argument("--env-root", type=str, default="env", help="only works when env-config is not specified")
-    p.add_argument("--storage-type", type=str, default="cloud")
+    p.add_argument("--storage-type", type=str, default="sqlite")
     p.add_argument("--db-path", type=str, default="sqlite://android_envs_test.db")
     p.add_argument("--rebuild-table", action=argparse.BooleanOptionalAction, default=False,
                    help="Delete and recreate the SQLite DB file before loading configs (SQLite only)")
@@ -391,7 +391,7 @@ def parse_args():
     p.add_argument("--http-retries", type=int, default=2)
 
     # LLM
-    p.add_argument("--llm-base-url", type=str, default="http://100.99.119.214:30000/v1")
+    p.add_argument("--llm-base-url", type=str, default="http://100.99.119.227:30000/v1")
     p.add_argument("--llm-api-key", type=str, default="EMPTY")
     p.add_argument("--llm-model", type=str, default="Qwen2.5-VL-72B-Instruct")
     p.add_argument("--llm-temperature", type=float, default=0.3)

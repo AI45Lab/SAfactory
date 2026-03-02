@@ -238,7 +238,7 @@ class SqliteStrategy(StorageStrategy):
 
     async def fetch_done_steps_with_context(
         self,
-        job_id: str,
+        job_id: str = "6978763b718b94e540a221c3",
         after_id: int = 0,
         limit: int = 100
     ) -> List[Dict]:
