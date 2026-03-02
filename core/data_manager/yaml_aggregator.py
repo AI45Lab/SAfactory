@@ -119,7 +119,7 @@ async def _sync_sqlite(data_manager, yaml_configs: List[Dict]) -> sqlite3.Connec
     - Soft-deletes (is_deleted=True) any active env no longer present in the YAML.
     - Creates new records for newly added envs.
     """
-    job_id = data_manager.job_session
+    job_id = data_manager.job_id
 
     def _params_key(env_params) -> str:
         return json.dumps(env_params or {}, sort_keys=True)
@@ -217,7 +217,7 @@ async def _sync_cloud(data_manager, yaml_configs: List[Dict]) -> Any:
     # Remove all existing configs before re-uploading
     data_manager.strategy.env_manager.clean_all_configs()
 
-    job_id = data_manager.job_session
+    job_id = data_manager.job_id
 
     for cfg in yaml_configs:
         env_name = cfg["env_name"].strip()

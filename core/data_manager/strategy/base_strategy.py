@@ -20,7 +20,7 @@ class SessionContext:
     total_reward: float = 0.0
     start_time: float = 0.0
     message_history: List[Dict] = field(default_factory=list)
-    is_completed: bool = False
+    is_session_completed: bool = False
 
 
 class StorageStrategy(ABC):
@@ -34,7 +34,7 @@ class StorageStrategy(ABC):
     Key design principles:
     - session_id equals env_id for compatibility
     - Each step record contains full conversation history up to that point
-    - Last record of a session contains total_reward and is_completed=True
+    - Last record of a session contains total_reward and is_session_completed=True
     """
     
     @abstractmethod
@@ -147,6 +147,6 @@ class StorageStrategy(ABC):
         """Legacy method for backward compatibility"""
         pass
 
-    async def update_session(self, session, trajectory, total_reward, is_completed):
+    async def update_session(self, session, trajectory, total_reward, is_session_completed):
         """Legacy method for backward compatibility"""
         pass

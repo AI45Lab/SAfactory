@@ -23,14 +23,14 @@ class SqliteStrategy(StorageStrategy):
     """
     def __init__(
         self,
-        job_session: str,
+        job_id: str,
         db_url: str,
         enable_buffer: bool = True,
         buffer_size: int = 100,
         flush_interval: float = 5.0
     ):
         self.db_url = db_url
-        self.job_session = job_session
+        self.job_id = job_id
         self.initialized = False
 
         self._enable_buffer = enable_buffer
@@ -138,7 +138,7 @@ class SqliteStrategy(StorageStrategy):
             env_name=env_name,
             llm_model=llm_model,
             group_id=group_id,
-            job_id=job_id or self.job_session,
+            job_id=job_id or self.job_id,
             total_reward=0.0,
             start_time=time.perf_counter(),
             message_history=[]
@@ -186,11 +186,11 @@ class SqliteStrategy(StorageStrategy):
             messages=json.dumps(full_messages, ensure_ascii=False),
             response=response,
             step_reward=step_reward,
-            total_reward=session.total_reward,
+            reward=session.total_reward,
             env_state=env_state,
-            terminated=terminated,
-            truncated=truncated,
-            is_completed=False,
+            is_terminal=terminated,
+            is_truncated=truncated,
+            is_session_completed=terminated or truncated,
         )
 
         # Use buffer or direct save
@@ -238,6 +238,7 @@ class SqliteStrategy(StorageStrategy):
 
     async def fetch_done_steps_with_context(
         self,
+        job_id: str,
         after_id: int = 0,
         limit: int = 100
     ) -> List[Dict]:
@@ -248,7 +249,8 @@ class SqliteStrategy(StorageStrategy):
         await self.init()
 
         steps = await SessionStep.filter(
-            terminated=True,
+            job_id=job_id,
+            is_terminal=True,
             id__gt=after_id
         ).order_by("id").limit(limit)
 
@@ -263,12 +265,12 @@ class SqliteStrategy(StorageStrategy):
                 "response": s.response,
                 "reward": s.step_reward,
                 "step_reward": s.step_reward,
-                "total_reward": s.total_reward,
+                "total_reward": s.reward,
                 "session_id": s.session_id,
                 "session_end_time": s.created_at.isoformat() if s.created_at else None,
                 "group_id": s.group_id,
-                "truncated": s.truncated,
-                "is_session_completed": s.is_completed,
+                "truncated": s.is_truncated,
+                "is_session_completed": s.is_session_completed,
             }
             for s in steps
         ]

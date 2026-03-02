@@ -359,7 +359,7 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     #Task identifier
-    p.add_argument("--job-session", type=str, default="6978763b718b94e540a221c3", help="job id is used to identify each task and record in the environmentconfig table as session")
+    p.add_argument("--job-id", type=str, default="", help="job id is used to identify each task and record in the environmentconfig table as session")
     # YAML
     p.add_argument("--manager-config", type=str, default="./manager/config.yaml", help="Path to unified YAML config")
     p.add_argument("--mode", choices=["local", "remote"], default="remote")
@@ -431,15 +431,15 @@ async def main():
     upstream_log_path = os.path.join(args.log_dir, "upstream.log")
     log.info("main log file: %s", main_log_path)
 
-    job_session=args.job_session
-    if job_session=="":
-       job_session =  uuid.uuid4().hex
+    job_id=args.job_id
+    if job_id=="":
+       job_id =  uuid.uuid4().hex
 
     # Rebuild the DB file if requested (SQLite only)
     if args.rebuild_table and args.storage_type == "sqlite":
         _rebuild_sqlite_db(args.db_path)
 
-    data_manager = DataManager(job_session=job_session, storage_type=args.storage_type, db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
+    data_manager = DataManager(job_id=job_id, storage_type=args.storage_type, db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
     yaml_config_list = all_env_yaml_load(env_root=args.env_root, env_config=args.env_config)
 
     # 如果指定了 --rl-env-num，覆盖所有环境的 env_num

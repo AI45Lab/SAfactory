@@ -28,6 +28,7 @@ class JobEnvironment(Model):
         null=True,
         description="Group ID for RL GRPO aggregation"
     )
+    finished = fields.BooleanField(default=False, description="Has it been completed?")
     is_deleted = fields.BooleanField(default=False, description="Soft-delete flag")
     created_at = fields.DatetimeField(auto_now_add=True)
 
@@ -69,13 +70,13 @@ class SessionStep(Model):
 
     # Rewards
     step_reward = fields.FloatField(default=0.0, description="Reward for this step")
-    total_reward = fields.FloatField(default=0.0, description="Cumulative reward up to this step")
+    reward = fields.FloatField(default=0.0, description="Cumulative reward up to this step")
 
     # State tracking
     env_state = fields.TextField(null=True, description="JSON: Environment state")
-    terminated = fields.BooleanField(default=False, description="Whether this step is terminal")
-    truncated = fields.BooleanField(default=False, description="Whether episode was truncated")
-    is_completed = fields.BooleanField(default=False, description="Whether the session is completed (final record)")
+    is_terminal = fields.BooleanField(default=False, description="Whether this step is terminal")
+    is_truncated = fields.BooleanField(default=False, description="Whether this step is truncated")
+    is_session_completed = fields.BooleanField(default=False, description="Whether the session is completed (final record)")
 
     # Timestamps
     created_at = fields.DatetimeField(auto_now_add=True)

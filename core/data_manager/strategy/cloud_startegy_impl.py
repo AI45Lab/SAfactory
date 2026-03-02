@@ -37,14 +37,14 @@ class CloudStrategy(StorageStrategy):
 
     def __init__(
         self,
-        job_session: str,
+        job_id: str,
         db_url: str,
         enable_buffer: bool = False,
         buffer_size: int = 1,
         flush_interval: float = 1.0
     ):
         self.db_url = db_url
-        self.job_session = job_session
+        self.job_id = job_id
         self.initialized = False
 
         self.client: Optional[WTGatewayClient] = None
@@ -105,7 +105,7 @@ class CloudStrategy(StorageStrategy):
         env_id = str(uuid.uuid4())
         
         config_dict = {
-            "job_session": job_id,
+            "job_id": job_id,
             "env_id": env_id,
             "env_name": env_name,
             "env_params": env_params,
@@ -146,7 +146,7 @@ class CloudStrategy(StorageStrategy):
             env_name=env_name,
             llm_model=llm_model,
             group_id=group_id,
-            job_id=job_id or self.job_session,
+            job_id=job_id or self.job_id,
             total_reward=0.0,
             start_time=time.perf_counter(),
             message_history=[]
@@ -217,9 +217,10 @@ class CloudStrategy(StorageStrategy):
             dt=date.today().isoformat(),
             id=record_id,
             session_id=session.session_id,
-            created_at=int(time.time()),
             step_id=step_id,
-            is_terminal=terminated,
+            env_id=session.env_id,
+            job_id=session.job_id,
+            created_at=int(time.time()),
             step_reward=step_reward,
             reward=session.total_reward,
             messages=chat_messages,
@@ -228,13 +229,13 @@ class CloudStrategy(StorageStrategy):
             reference_answer=None,
             agent_model=session.llm_model,
             env_name=session.env_name,
+            is_terminal=terminated,
+            is_truncated=truncated,
             is_session_completed=terminated or truncated,
             meta_json=json.dumps({
-                "source": "AIEvoBox-cloud-test",
+                "source": "AIEvoBox",
                 "group_id": session.group_id,
-                "job_id": session.job_id,
-                "env_key": env_key,
-                "image_urls": image_urls
+                "env_state": env_state
             })
         )
         
@@ -356,7 +357,7 @@ class CloudStrategy(StorageStrategy):
 
         # Try S3 upload with retry
         if self.s3_uploader:
-            s3_key = f"aievobox/{self.job_session}/{env_key}/{file_name}"
+            s3_key = f"aievobox/{self.job_id}/{env_key}/{file_name}"
 
             for attempt in range(MAX_UPLOAD_RETRIES):
                 try:
@@ -396,6 +397,37 @@ class CloudStrategy(StorageStrategy):
         except Exception as e:
             log.error("Local save also failed: %s", e)
             return f"[IMAGE_SAVE_FAILED:{file_name}]"
+        
+    async def fetch_done_steps_with_context(
+        self,
+        job_id: str,
+        after_id: int = 0,
+        limit: int = 100
+    ) -> List[Dict]:
+        """
+        Fetch completed steps for training data collection.
+        Uses cursor-based pagination.
+        """
+        await self.init()
+        
+        filter_conditions = [
+            f"job_id = {job_id}",
+            "is_terminal = true",
+        ]
+        query = " AND ".join(filter_conditions)
+        steps = list(self.client.search(
+            "",
+            dataset_type="TEST",
+            where_sql=query,
+            limit=limit,
+            table="landing_test"
+        ))
+        
+        return steps
+        
+    async def get_max_step_id(self) -> int:
+        """Get maximum primary key for pagination"""
+        pass
 
     # --- Helpers ---
 

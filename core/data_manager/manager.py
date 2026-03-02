@@ -10,17 +10,17 @@ class DataManager:
 
     def __init__(
         self,
-        job_session: str,
+        job_id: str,
         storage_type: str = "sqlite",
         **storage_config
     ):
-        self.job_session = job_session
+        self.job_id = job_id
         self.storage_type = storage_type
         self.strategy: Optional[StorageStrategy] = None
 
         try:
             print(f"Initializing DataManager with strategy: '{storage_type}'")
-            self.strategy = StorageFactory.create(job_session, storage_type, **storage_config)
+            self.strategy = StorageFactory.create(job_id, storage_type, **storage_config)
             print(f"DataManager initialized successfully using {self.strategy.__class__.__name__}")
 
         except ValueError as e:
@@ -58,13 +58,13 @@ class DataManager:
             env_params: User-defined parameters
             image: Environment image
             group_id: Group ID for RL GRPO aggregation
-            job_id: Job session identifier (defaults to manager's job_session)
+            job_id: Job session identifier (defaults to manager's job_id)
 
         Returns:
             env_id: Generated environment UUID
         """
         return await self.strategy.add_environment(
-            job_id=job_id or self.job_session,
+            job_id=job_id or self.job_id,
             env_name=env_name,
             env_params=env_params,
             image=image,
@@ -92,7 +92,7 @@ class DataManager:
             env_name=env_name,
             llm_model=llm_model,
             group_id=group_id,
-            job_id=job_id or self.job_session
+            job_id=job_id or self.job_id
         )
 
     async def record_step(
