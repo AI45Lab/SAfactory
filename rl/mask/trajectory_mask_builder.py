@@ -421,15 +421,17 @@ class TrajectoryMaskBuilder:
         self,
         session_id: str,
         messages: List[Dict[str, Any]],
-    ) -> Tuple[List[int], List[int], List[str], str]:
-        """获取训练所需的 tokens、response_mask、image_data 和 messages_str。
+    ) -> Tuple[List[int], List[int], List[str], str, Optional[Dict]]:
+        """获取训练所需的 tokens、response_mask、image_data、messages_str 和 mm_train_inputs。
 
         Args:
             session_id: Session ID
             messages: 完整的 messages（含 assistant 回复）
 
         Returns:
-            (tokens, response_mask, image_data, messages_str)
+            (tokens, response_mask, image_data, messages_str, mm_train_inputs)
+            mm_train_inputs: processor 输出的视觉张量（pixel_values, image_grid_thw 等），
+                             无图片时为 None。
         """
         normalized_messages = self._normalize_messages_for_qwen_vision(messages)
 
@@ -445,24 +447,30 @@ class TrajectoryMaskBuilder:
         )
 
         # 多模态处理：如果有 processor 且有 images，用 processor 处理
+        mm_train_inputs = None
         if self.processor is not None and images:
-            proc_out = self.processor(text=messages_str, images=images, tokenize=False)
+            proc_out = self.processor(text=messages_str, images=images, return_tensors="pt")
             messages_str = self.tokenizer.decode(
-                proc_out["input_ids"][0],
+                proc_out["input_ids"][0].tolist(),
                 skip_special_tokens=False,
             )
+            mm_train_inputs = {
+                k: v for k, v in proc_out.items()
+                if k not in ("input_ids", "attention_mask")
+            } or None
 
         # 查找匹配的记录
         matched_record, matched_len = self._find_best_match(session_id, messages_str)
         if matched_record is None:
             has_data = session_id in self.session_data and len(self.session_data[session_id]) > 0
             logger.warning(f"get_training_info failed: session={session_id}, has_data={has_data}, matched_len={matched_len}")
-            return [], [], [], ""
+            return [], [], [], "", None
         return (
             list(matched_record["tokens"]),
             list(matched_record["response_mask"]),
             list(matched_record.get("image_data") or []),
             messages_str,
+            mm_train_inputs,
         )
 
     def query_logprobs(self, session_id: str, messages_str: str) -> List[float]:

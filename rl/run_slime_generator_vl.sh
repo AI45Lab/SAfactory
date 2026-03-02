@@ -96,14 +96,14 @@ OPTIMIZER_ARGS=(
    --adam-beta2 0.98
 )
 
-# WANDB_ARGS=(
-#     --use-wandb
-#     --wandb-project slime
-#     --wandb-team aievobox
-#     --wandb-group slime
-#     --wandb-dir /root/wandb_logs
-#     # --wandb-always-use-train-step
-# )
+WANDB_ARGS=(
+    --use-wandb
+    --wandb-project slime
+    --wandb-team aievobox
+    --wandb-group slime
+    --wandb-dir /root/wandb_logs
+    # --wandb-always-use-train-step
+)
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1

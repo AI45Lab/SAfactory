@@ -18,7 +18,6 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
 from utils import get_env
-import llm_proxy
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -63,7 +62,6 @@ app = FastAPI(title="Rollout Buffer Server", debug=True)
 
 # Track subprocesses
 aievobox_process: Optional[subprocess.Popen] = None
-llm_proxy_process: Optional[subprocess.Popen] = None
 
 # DataManager for querying the database
 data_manager: Optional[DataManager] = None
@@ -284,8 +282,12 @@ async def init_data_manager(job_session: str, db_url: str, restart_training: boo
 
 
 def start_aievobox_process(data: dict):
-    """Start AIEvoBox launcher.py as a subprocess."""
-    global aievobox_process, llm_proxy_process, group_size, last_served_id, pending_items_by_instance, data_manager
+    """Start AIEvoBox launcher.py as a subprocess.
+
+    NOTE: LLM Proxy is now hosted in-process by slime_generator.
+    It must already be running before this function is called.
+    """
+    global aievobox_process, group_size, last_served_id, pending_items_by_instance, data_manager
 
     # Set group size (num_repeat_per_sample)
     group_size = int(data.get("num_repeat_per_sample", 16))
@@ -311,19 +313,6 @@ def start_aievobox_process(data: dict):
         )
     finally:
         loop.close()
-
-    # Start LLM Proxy if not running
-    if llm_proxy_process is None or llm_proxy_process.poll() is not None:
-        llm_proxy_process = llm_proxy.start()
-        time.sleep(2)  # Wait for proxy to start
-
-    # Initialize LLM Proxy with tokenizer and remote engine URL
-    tokenizer_path = data.get("tokenizer_path", "")
-    remote_engine_url = data.get("remote_engine_url", "")
-    max_length_str = os.environ.get("LLM_MAX_LENGTH")
-    max_length = int(max_length_str) if max_length_str else None
-    if tokenizer_path and remote_engine_url:
-        llm_proxy.init(tokenizer_path, remote_engine_url, max_length=max_length)
 
     # Build launcher.py command line arguments
     aievobox_root = os.environ.get("AIEVOBOX_ROOT", "/root/AIEvoBox")

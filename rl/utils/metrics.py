@@ -18,6 +18,7 @@ class MetricsRecorder:
     def __init__(self):
         self._data: Dict[str, List[float]] = {}
         self._agg_types: Dict[str, AggType] = {}
+        self._defined_metrics: set = set()
 
     def record(self, tag: str, value: float, agg: AggType = AggType.MEAN):
         """Record a value for a tag with specified aggregation type."""
@@ -46,11 +47,14 @@ class MetricsRecorder:
     def push(self, step: int):
         """Push aggregated metrics to wandb and clear."""
         metrics = self.aggregate()
-        for key, _ in metrics.items():
-            wandb.define_metric(key, step_metric="rollout/step")
-        if metrics:
-            metrics["rollout/step"] = step
-            wandb.log(metrics, step=step)
+        if wandb.run is not None:
+            for key in metrics:
+                if key not in self._defined_metrics:
+                    wandb.define_metric(key, step_metric="rollout/step")
+                    self._defined_metrics.add(key)
+            if metrics:
+                metrics["rollout/step"] = step
+                wandb.log(metrics)
         self.clear()
 
     def clear(self):
