@@ -1,7 +1,7 @@
 from typing import Dict, Type
 from core.data_manager.strategy.base_strategy import StorageStrategy
-from core.data_manager.strategy.sqlite_startegy_impl import SqliteStrategy
-from core.data_manager.strategy.cloud_startegy_impl import CloudStrategy
+from core.data_manager.strategy.sqlite_strategy_impl import SqliteStrategy
+from core.data_manager.strategy.cloud_strategy_impl import CloudStrategy
 
 class StorageFactory:
     # 注册:存储 "类型字符串" -> "策略类" 的映射
