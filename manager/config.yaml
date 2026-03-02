@@ -46,7 +46,7 @@ cluster:
           containerPath: "/mnt/shared-storage-user/evobox-share"
       limit: 1
     android_gym:
-      quotagroup: "evobox_proxy"
+      quotagroup: "evobox_cpu_task"
       entrypoint: "bash /mnt/shared-storage-user/chenxinquan/AIEvoBox/env/androidgym/run.sh"
       volumes:
         - fsType: "mount.brainpp.cn/gpfs"

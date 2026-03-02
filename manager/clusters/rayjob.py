@@ -166,7 +166,6 @@ class RayJobManager:
                 image=image,
                 entrypoint=entrypoint,
                 quotagroup=quotagroup,
-                privateMachine="yes",
                 description=description,
                 rayVersion=ray_version,
                 headConfg=head_config,
