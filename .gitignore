@@ -5,7 +5,7 @@ env/data
 .vscode/
 visualize
 gif_generate.py
-visual_db.ipynb
+*.ipynb
 *.db
 *.db-shm
 *.db-wal

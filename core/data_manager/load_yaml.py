@@ -145,7 +145,7 @@ def load_yaml_configs(yaml_path: str) -> List[Dict]:
                 "env_name": env_name,
                 "env_num": env_num,
                 "env_params": current_params,
-                "task_idx": i + 1,
+                "task_idx": 1,
                 "env_image": env.get("env_image", "")
             }
             configs.append(config)

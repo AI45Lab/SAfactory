@@ -1,79 +1,86 @@
 from tortoise import Model, fields
-from datetime import datetime
-from typing import Optional, Any
+from typing import Optional, Any, List, Dict
 import uuid
 
-class EnvironmentConfig(Model):
-    """环境配置模型，关联注册的环境名称"""
-    id = fields.IntField(pk=True, autoincrement=True) # 内部自增ID
+
+class JobEnvironment(Model):
+    """
+    Table 1: Job-Environment Mapping
+    Stores: job_id and env_id as primary identifiers
+    Stores: env_name, env_params, image, group_id, created_at
+    """
+    id = fields.IntField(pk=True, autoincrement=True)
+    job_id = fields.CharField(
+        max_length=64,
+        description="Job session identifier"
+    )
     env_id = fields.CharField(
         max_length=36,
-        default=lambda: str(uuid.uuid4()),  # 自动生成UUID
+        default=lambda: str(uuid.uuid4()),
         unique=True,
-        description="环境唯一标识UUID"
+        description="Environment unique identifier (UUID)"
     )
+    env_name = fields.CharField(max_length=100, description="Environment name")
+    env_params = fields.JSONField(default=dict, description="User-defined parameters")
+    image = fields.CharField(max_length=100, null=True, description="Environment image")
     group_id = fields.CharField(
         max_length=150,
         null=True,
-        description="分组ID，同一原始样本的多个实例共享相同的group_id（用于RL场景的GRPO聚合）"
+        description="Group ID for RL GRPO aggregation"
     )
-    finished = fields.BooleanField(default=False, description="是否已完成")
-    env_name = fields.CharField(max_length=100, description="环境名称（需与注册的环境名称一致）")
-    env_params = fields.JSONField(description="用户自定义参数")
-    image = fields.CharField(max_length=100, description="环境镜像")
+    finished = fields.BooleanField(default=False, description="Has it been completed?")
+    is_deleted = fields.BooleanField(default=False, description="Soft-delete flag")
     created_at = fields.DatetimeField(auto_now_add=True)
 
     class Meta:
-        table = "environment_configs"
-        unique_together = ("env_name", "env_id")  # 确保环境名称+ID唯一
-
-class InteractionSession(Model):
+        table = "job_environments"
+        unique_together = ("job_id", "env_id")
+        
+        
+class SessionStep(Model):
+    """
+    Table 2: Session-Step Mapping
+    Stores full conversation history per step
+    Includes: env_name, llm_model, group_id, job_id, messages (JSON), response, step_reward, total_reward, terminated, is_session_completed
+    """
     id = fields.IntField(pk=True, autoincrement=True)
     session_id = fields.CharField(
-        max_length=36, 
-        default=lambda: str(uuid.uuid4()),  # 自动生成UUID
-        unique=True, 
-        description="会话唯一标识UUID"
+        max_length=36,
+        description="Session identifier (equals env_id for compatibility)"
     )
-    # 通过env_id关联EnvironmentConfig
-    env = fields.ForeignKeyField(
-        "models.EnvironmentConfig",
-        related_name="sessions",
-        on_delete=fields.CASCADE,
-        to_field="env_id"  # 明确关联EnvironmentConfig的env_id字段（UUID）
+    step_id = fields.IntField(description="Step number within session")
+    
+    # Environment reference
+    env_name = fields.CharField(max_length=100, description="Environment name")
+
+    # LLM info
+    llm_model = fields.CharField(max_length=150, description="LLM model name")
+
+    # Session metadata
+    group_id = fields.CharField(max_length=150, null=True)
+    job_id = fields.CharField(max_length=64, null=True)
+
+    # Conversation history (full messages up to this step)
+    messages = fields.TextField(
+        description="JSON: Full conversation history including system, user, assistant messages"
     )
-    group_id = fields.CharField(max_length=150)
-    llm_model = fields.CharField(max_length=150)
-    start_time = fields.DatetimeField(auto_now_add=True)
-    end_time = fields.DatetimeField(null=True)
-    total_reward = fields.FloatField(default=0.0)
-    trajectory = fields.TextField(default="")
-    is_completed = fields.BooleanField(default=False)
-    env_cache: Optional[Any] = None 
-    reward_count: Optional[Any] = None
-    clean_history: Optional[Any] = None
+
+    # Current step data
+    response = fields.TextField(description="LLM action/response for this step")
+
+    # Rewards
+    step_reward = fields.FloatField(default=0.0, description="Reward for this step")
+    reward = fields.FloatField(default=0.0, description="Cumulative reward up to this step")
+
+    # State tracking
+    env_state = fields.TextField(null=True, description="JSON: Environment state")
+    is_terminal = fields.BooleanField(default=False, description="Whether this step is terminal")
+    is_truncated = fields.BooleanField(default=False, description="Whether this step is truncated")
+    is_session_completed = fields.BooleanField(default=False, description="Whether the session is completed (final record)")
+
+    # Timestamps
+    created_at = fields.DatetimeField(auto_now_add=True)
 
     class Meta:
-        table = "interaction_sessions"
-
-class InteractionStep(Model):
-    id = fields.IntField(pk=True, autoincrement=True)
-    # 通过session_id关联InteractionSession（外键关联UUID字段）
-    session = fields.ForeignKeyField(
-        "models.InteractionSession",
-        related_name="steps",
-        on_delete=fields.CASCADE,
-        to_field="session_id"  # 明确关联InteractionSession的session_id字段（UUID）
-    )
-    step_id = fields.IntField()
-    timestamp = fields.DatetimeField(auto_now_add=True)
-    prompt = fields.TextField()
-    response = fields.TextField()
-    reward = fields.FloatField()
-    env_state = fields.TextField(null=True)
-    done = fields.BooleanField(default=False)
-    truncated = fields.BooleanField(default=False)
-
-    class Meta:
-        table = "interaction_steps"
-        unique_together = ("session", "step_id")
+        table = "session_steps"
+        unique_together = ("session_id", "step_id", "created_at")

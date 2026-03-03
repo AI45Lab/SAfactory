@@ -3,11 +3,11 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Dict, List, Optional, Protocol
 
 import aiohttp
 from core.llm import LLM, BaseURLProvider
-from core.data_manager.manager import DataManager
+from core.data_manager.manager import DataManager, SessionContext
 from core.http.http_client import HttpClient
 
 log = logging.getLogger("interactor")
@@ -91,7 +91,7 @@ class Interactor:
             model, float(temperature), self.max_steps, self.message_cut, float(env_http_timeout_s), self.http_retries
         )
 
-    def _create_llm_for_session(self, session) -> LLM:
+    def _create_llm_for_session(self, session: SessionContext) -> LLM:
         """create LLM instance for session"""
         base_url = self.base_url_provider.get_base_url(session)
         return LLM(
@@ -124,7 +124,6 @@ class Interactor:
         return f"{a.base_url.rstrip('/')}/{a.env_name}/{a.env_id}/{suffix.lstrip('/')}"
 
     async def _llm_generate(self, llm: LLM, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
-
         return await llm.generate(messages=messages)
 
     async def _request_json(
@@ -194,12 +193,11 @@ class Interactor:
 
     async def _run_one_environment(self, a: ActorHandle, worker_id: int) -> float:
 
-        total_reward = 0.0
         env_key = f"{a.env_name}_{a.env_id}"
-        trajectory = ""
 
         session = await self.data_manager.create_session(
             env_id=a.env_id,
+            env_name=a.env_name,
             llm_model=self.model,
             group_id=a.group_id
         )
@@ -249,15 +247,13 @@ class Interactor:
                     await self.data_manager.record_step(
                         session=session,
                         step_id=step_i,
-                        prompt=prompt_raw,
+                        messages=prompt_raw,
                         response=action,
-                        reward=reward,
-                        env_key=env_key,
+                        step_reward=reward,
                         env_state=env_state,
-                        done=done,
+                        terminated=terminated,
                         truncated=truncated
                     )
-                    trajectory += f"Step {step_i}:\nResponse: {action}\n[TRUNCATED]\n\n"
                     break
 
                 # 3. Environment Step (Critical)
@@ -275,25 +271,19 @@ class Interactor:
                     raise e
 
                 reward = float(out.get("reward", 0.0) or 0.0)
-                total_reward += reward
-
                 terminated = bool(out.get("terminated", False))
                 truncated = bool(out.get("truncated", False))
-                done = terminated or truncated
 
                 await self.data_manager.record_step(
                     session=session,
                     step_id=step_i,
-                    prompt=prompt_raw,
+                    messages=prompt_raw,
                     response=action,
-                    reward=reward,
-                    env_key=env_key,
+                    step_reward=reward,
                     env_state=env_state,
-                    done=done,
+                    terminated=terminated,
                     truncated=truncated
                 )
-
-                trajectory += f"Step {step_i}:\nResponse: {action}\n\n"
 
                 if terminated or truncated:
                     log.info("worker=%d env=%s done: terminated=%s truncated=%s", worker_id, env_key, terminated,
@@ -304,16 +294,7 @@ class Interactor:
             #for all the error caught, exit for this env
             raise
 
-        finally:
-            # store the session status
-            await self.data_manager.update_session(
-                session=session,
-                trajectory=trajectory,
-                total_reward=total_reward,
-                is_completed=True
-            )
-
-        return total_reward
+        return session.total_reward
 
     async def run_all_environments(self) -> Dict[str, float]:
         """

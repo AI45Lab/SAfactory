@@ -47,7 +47,11 @@ cluster:
       limit: 1
     android_gym:
       quotagroup: "evobox_cpu_task"
-      entrypoint: "python env/app.py"
+      entrypoint: "bash /mnt/shared-storage-user/chenxinquan/AIEvoBox/env/androidgym/run.sh"
+      volumes:
+        - fsType: "mount.brainpp.cn/gpfs"
+          endpoint: "gpfs://gpfs1/chenxinquan"
+          containerPath: "/mnt/shared-storage-user/chenxinquan"
       limit: 1
 
 rayjob:

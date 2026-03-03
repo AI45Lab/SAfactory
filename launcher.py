@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import subprocess
 import time
-import sqlite3
 import uuid
 import math
 
@@ -29,10 +28,23 @@ log = logging.getLogger("launcher")
 # -------------------------
 # Logging setup
 # -------------------------
-class HideLLMRequestsOnConsole(logging.Filter):
+class ConsoleFilter(logging.Filter):
+    """
+    Gate on the console (stdout) handler.
+
+    Rules (applied in order):
+    1. INFO/DEBUG from core.llm.* are always suppressed.
+    2. DEBUG records are suppressed unless the logger name is in *debug_loggers*.
+    3. Everything else passes through.
+    """
+    def __init__(self, debug_loggers: Optional[List[str]] = None):
+        super().__init__()
+        self._debug_loggers: Set[str] = set(debug_loggers or [])
+
     def filter(self, record: logging.LogRecord) -> bool:
-        # Hide INFO/DEBUG from core.llm.* on console
         if record.name.startswith("core.llm") and record.levelno < logging.WARNING:
+            return False
+        if record.levelno < logging.INFO and record.name not in self._debug_loggers:
             return False
         return True
 
@@ -45,6 +57,7 @@ def _setup_logging(
     file_level: str = "DEBUG",
     max_bytes: int = 50 * 1024 * 1024,
     backup_count: int = 5,
+    debug_loggers: Optional[List[str]] = None,
 ) -> str:
     os.makedirs(log_dir, exist_ok=True)
 
@@ -63,10 +76,12 @@ def _setup_logging(
 
     # Console handler
     ch = logging.StreamHandler(stream=sys.stdout)
-    ch.setLevel(getattr(logging, console_level.upper(), logging.INFO))
+    # When debug_loggers are specified, lower the handler level so DEBUG records
+    # reach the filter; ConsoleFilter then allowlists only the named loggers.
+    ch_level = logging.DEBUG if debug_loggers else getattr(logging, console_level.upper(), logging.INFO)
+    ch.setLevel(ch_level)
     ch.setFormatter(fmt)
-
-    ch.addFilter(HideLLMRequestsOnConsole())
+    ch.addFilter(ConsoleFilter(debug_loggers))
 
     # File handler (keeps everything)
     fh = RotatingFileHandler(
@@ -101,14 +116,16 @@ def _setup_logging(
 # -------------------------
 # Utils
 # -------------------------
-def drop_table(db_path: str, table: str) -> None:
-    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.execute(f"DROP TABLE IF EXISTS {table}")
-        conn.commit()
-    finally:
-        conn.close()
+def _rebuild_sqlite_db(db_url: str) -> None:
+    """Delete the SQLite file so Tortoise recreates all tables from scratch."""
+    if not db_url.startswith("sqlite://"):
+        return
+    file_path = db_url[len("sqlite://"):].split("?")[0]
+    if file_path and os.path.exists(file_path):
+        os.remove(file_path)
+        log.info("Removed existing SQLite DB for rebuild: %s", file_path)
+    else:
+        log.info("No existing SQLite DB found to remove (path=%s)", file_path)
 
 
 def start_local_upstream_service(
@@ -341,7 +358,7 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     #Task identifier
-    p.add_argument("--job-session", type=str, default="6978763b718b94e540a221c3", help="job id is used to identify each task and record in the environmentconfig table as session")
+    p.add_argument("--job-id", type=str, default="", help="job id is used to identify each task and record in the environmentconfig table as session")
     # YAML
     p.add_argument("--manager-config", type=str, default="./manager/config.yaml", help="Path to unified YAML config")
     p.add_argument("--mode", choices=["local", "remote"], default="remote")
@@ -349,9 +366,10 @@ def parse_args():
     # DB / YAML-aggregator
     p.add_argument("--env-config", type=str, default="/mnt/shared-storage-user/chenxinquan/AIEvoBox/env/androidgym/android_env.yaml", help="env config which used for specify the input env configs, and it's incompatible with  env-root")
     p.add_argument("--env-root", type=str, default="env", help="only works when env-config is not specified")
-    p.add_argument("--storage-type", type=str, default="cloud")
-    p.add_argument("--db-path", type=str, default="sqlite://android_envs.db")
-    p.add_argument("--rebuild-table", action="store_true", default=True)
+    p.add_argument("--storage-type", type=str, default="sqlite")
+    p.add_argument("--db-path", type=str, default="sqlite://android_envs_test.db")
+    p.add_argument("--rebuild-table", action=argparse.BooleanOptionalAction, default=False,
+                   help="Delete and recreate the SQLite DB file before loading configs (SQLite only)")
 
     # Pool overrides
     p.add_argument("--pool-size", type=int, default=0, help="Override pool_size in YAML (0 = keep YAML)")
@@ -372,7 +390,7 @@ def parse_args():
     p.add_argument("--http-retries", type=int, default=2)
 
     # LLM
-    p.add_argument("--llm-base-url", type=str, default="http://100.99.119.152:30000/v1")
+    p.add_argument("--llm-base-url", type=str, default="http://100.99.119.227:30000/v1")
     p.add_argument("--llm-api-key", type=str, default="EMPTY")
     p.add_argument("--llm-model", type=str, default="Qwen2.5-VL-72B-Instruct")
     p.add_argument("--llm-temperature", type=float, default=0.3)
@@ -388,6 +406,8 @@ def parse_args():
     p.add_argument("--file-log-level", type=str, default="DEBUG", help="File log level")
     p.add_argument("--log-max-bytes", type=int, default=50 * 1024 * 1024, help="Rotate log after this size")
     p.add_argument("--log-backup-count", type=int, default=5, help="How many rotated logs to keep")
+    p.add_argument("--debug-log", action="store_true", default=False,
+                   help="Enable DEBUG-level console logging for the storage layer")
 
     return p.parse_args()
 
@@ -403,17 +423,22 @@ async def main():
         file_level=args.file_log_level,
         max_bytes=args.log_max_bytes,
         backup_count=args.log_backup_count,
+        debug_loggers=["sqlite_strategy", "yaml_aggregator"] if args.debug_log else None,
     )
 
     # Optional: upstream service log file
     upstream_log_path = os.path.join(args.log_dir, "upstream.log")
     log.info("main log file: %s", main_log_path)
 
-    job_session=args.job_session
-    if job_session=="":
-       job_session =  uuid.uuid4().hex
+    job_id=args.job_id
+    if job_id=="":
+       job_id =  uuid.uuid4().hex
 
-    data_manager = DataManager(job_session=job_session, storage_type=args.storage_type, db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
+    # Rebuild the DB file if requested (SQLite only)
+    if args.rebuild_table and args.storage_type == "sqlite":
+        _rebuild_sqlite_db(args.db_path)
+
+    data_manager = DataManager(job_id=job_id, storage_type=args.storage_type, db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
     yaml_config_list = all_env_yaml_load(env_root=args.env_root, env_config=args.env_config)
 
     # 如果指定了 --rl-env-num，覆盖所有环境的 env_num
