@@ -25,12 +25,6 @@ def iter_child_yaml_files(env_root: Path):
     if not env_root.is_dir():
         raise ValueError(f"env root {env_root} is not a directory")
 
-    # First, include yaml files directly under env_root.
-    for p in sorted(env_root.iterdir()):
-        if p.is_file() and p.suffix.lower() in (".yaml", ".yml"):
-            yield p
-
-    # Then, include yaml files under one-level child directories.
     for subdir in sorted(env_root.iterdir()):
         if not subdir.is_dir():
             continue
