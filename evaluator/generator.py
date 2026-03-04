@@ -81,7 +81,7 @@ class ReportGenerator:
 
     def calculation_metrics(self, env_name: str) -> Tuple[dict, Optional[list]]:
         """计算指定环境的评估指标，返回 (metrics_dict, selected_messages_or_None)。"""
-        query = f"meta_json LIKE '%{env_name}%' AND is_terminal = true"
+        query = f"meta_json LIKE '%{env_name}%' AND terminated = true"
         records = self.get_records(query, cache_key=env_name)
 
         if records.empty:

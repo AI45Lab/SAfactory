@@ -271,7 +271,7 @@ async def get_rollout_data(request: Request):
 async def init_data_manager(job_session: str, db_url: str, restart_training: bool = False):
     """Initialize the DataManager for querying the database."""
     global data_manager, last_served_id
-    data_manager = DataManager(job_session=job_session, db_url=db_url)
+    data_manager = DataManager(job_id=job_session, storage_type="sqlite", db_url=db_url)
     await data_manager.init()
     logger.info(f"DataManager initialized with DB: {db_url}, job_session: {job_session}")
 
@@ -323,6 +323,7 @@ def start_aievobox_process(data: dict):
     llm_model = get_env("RL_MODEL") or "default"
     llm_temperature = float(get_env("LLM_TEMPERATURE") or 1.0)
     pool_size = int(get_env("AIEVOBOX_POOL_SIZE") or 16)
+    rl_epoch = int(get_env("RL_EPOCH") or 1)
 
     cmd = [
         "python3", launcher_script,
@@ -334,9 +335,11 @@ def start_aievobox_process(data: dict):
         "--max-steps", str(max_steps),
         "--message-cut", str(message_cut),
         "--pool-size", str(pool_size),
-        "--job-session", job_session,
+        "--job-id", job_session,
+        "--no-rebuild-table",
         "--rl-use-session-suffix-url",
-        "--rl-env-num", str(group_size),
+        "--rl-group-size", str(group_size),
+        "--rl-epoch", str(rl_epoch),
     ]
 
     logger.info(f"Starting launcher.py: {' '.join(cmd)}")
