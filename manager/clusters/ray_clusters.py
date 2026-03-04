@@ -17,6 +17,50 @@ log = logging.getLogger("ray_clusters")
 DEFAULT_ENTRYPOINT = "python env/app.py"
 
 
+def _normalize_head_env(raw: Any) -> Dict[str, str]:
+    """Normalize HeadConfig.headEnv from YAML into Dict[str, str]."""
+    if raw is None:
+        return {}
+
+    if isinstance(raw, dict):
+        out: Dict[str, str] = {}
+        for k, v in raw.items():
+            if v is None:
+                continue
+            out[str(k)] = str(v)
+        return out
+
+    # Compatibility: allow list style [{name: "...", value: "..."}]
+    if isinstance(raw, list):
+        out: Dict[str, str] = {}
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            value = item.get("value")
+            if name is None or value is None:
+                continue
+            out[str(name)] = str(value)
+        return out
+
+    raise TypeError(f"Unsupported headEnv config type: {type(raw)!r}")
+
+
+def _normalize_optional_bool(raw: Any, *, field_name: str) -> bool:
+    """Normalize YAML value into bool with clear error on invalid strings."""
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        v = raw.strip().lower()
+        if v in {"1", "true", "yes", "y", "on"}:
+            return True
+        if v in {"0", "false", "no", "n", "off"}:
+            return False
+    raise TypeError(f"Unsupported {field_name} config value: {raw!r}")
+
+
 def build_rayjob_config(cluster_cfg: Dict[str, Any], env_name: str) -> Tuple[Optional[Any], List[Any]]:
     """
     Build rayjob_sdk.HeadConfig and a list of rayjob_sdk.Volume objects.
@@ -28,24 +72,16 @@ def build_rayjob_config(cluster_cfg: Dict[str, Any], env_name: str) -> Tuple[Opt
     env_cfg = dict(env_types.get(str(env_name), {}) or {})
 
     # Expected shape:
-    #   cluster.env_types.<env>.resources.head: {cpu, gpu, memory}
+    #   cluster.env_types.<env>.resources.head:
+    #     {
+    #       cpu, gpu|nvidia.com/gpu, memory,
+    #       privileged, headEnv, ...
+    #     }
     head_res = dict(((env_cfg.get("resources") or {}).get("head") or {}) or {})
     raw_volumes = env_cfg.get("volumes")
 
     if not head_res and not raw_volumes:
         return None, []
-
-    resources: Dict[str, str] = {}
-    if "cpu" in head_res and head_res.get("cpu") is not None:
-        resources["cpu"] = str(head_res.get("cpu"))
-    if "memory" in head_res and head_res.get("memory") is not None:
-        resources["memory"] = str(head_res.get("memory"))
-
-    gpu = head_res.get("gpu")
-    if gpu is None:
-        gpu = head_res.get("nvidia.com/gpu")
-    if gpu is not None:
-        resources["nvidia.com/gpu"] = str(gpu)
 
     from rayjob_sdk import HeadConfig, Volume
 
@@ -56,8 +92,47 @@ def build_rayjob_config(cluster_cfg: Dict[str, Any], env_name: str) -> Tuple[Opt
                 sdk_volumes.append(Volume(**vol_data))
 
     kwargs: Dict[str, Any] = {}
+    resources: Dict[str, str] = {}
+
+    # Preferred explicit nested style: resources.head.resources: { ... }
+    nested_resources = head_res.get("resources")
+    if isinstance(nested_resources, dict):
+        for k, v in nested_resources.items():
+            if v is not None:
+                resources[str(k)] = str(v)
+
+    # Legacy shorthand style: resources.head.cpu / memory / gpu
+    if head_res.get("cpu") is not None:
+        resources["cpu"] = str(head_res.get("cpu"))
+    if head_res.get("memory") is not None:
+        resources["memory"] = str(head_res.get("memory"))
+
+    gpu = head_res.get("nvidia.com/gpu")
+    if gpu is None:
+        gpu = head_res.get("gpu")
+    if gpu is not None:
+        resources["nvidia.com/gpu"] = str(gpu)
+
+    # Pass through all additional non-HeadConfig fields as resource keys
+    # so config values under `resources.head` are effective.
+    reserved = {"cpu", "memory", "gpu", "nvidia.com/gpu", "privileged", "headEnv", "head_env", "resources"}
+    for k, v in head_res.items():
+        key = str(k)
+        if key in reserved or v is None:
+            continue
+        resources[key] = str(v)
+
     if resources:
         kwargs["resources"] = resources
+
+    if "privileged" in head_res and head_res.get("privileged") is not None:
+        kwargs["privileged"] = _normalize_optional_bool(head_res.get("privileged"), field_name="privileged")
+
+    # Support both `headEnv` and `head_env` in config.
+    if "headEnv" in head_res:
+        kwargs["headEnv"] = _normalize_head_env(head_res.get("headEnv"))
+    elif "head_env" in head_res:
+        kwargs["headEnv"] = _normalize_head_env(head_res.get("head_env"))
 
     if raw_volumes:
         kwargs["volumes"] = raw_volumes
