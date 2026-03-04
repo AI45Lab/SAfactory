@@ -38,13 +38,19 @@ cluster:
       entrypoint: "bash run.sh"
       limit: 1
     os_gym:
-      quotagroup: "evobox_cpu_task"
-      entrypoint: "bash -lc 'cd /mnt/shared-storage-user/evobox-share/zhangyang/projects/AIEvoBox && export PYTHONPATH=/mnt/shared-storage-user/evobox-share/zhangyang/projects/AIEvoBox:$PYTHONPATH && bash /mnt/shared-storage-user/evobox-share/zhangyang/projects/scripts/run.sh'"
+      quotagroup: "evobox_proxy"
+      entrypoint: "bash -lc 'cd /mnt/shared-storage-gpfs2/evobox-share-gpfs2/zhangyang/projects/AIEvoBox && export PYTHONPATH=/mnt/shared-storage-gpfs2/evobox-share-gpfs2/zhangyang/projects/AIEvoBox:$PYTHONPATH && bash /mnt/shared-storage-gpfs2/evobox-share-gpfs2/zhangyang/projects/scripts/run.sh'"
       volumes:
         - fsType: "mount.brainpp.cn/gpfs"
-          endpoint: "gpfs://gpfs1/evobox-share"
-          containerPath: "/mnt/shared-storage-user/evobox-share"
-      limit: 1
+          endpoint: "gpfs://gpfs2/evobox-share-gpfs2"
+          containerPath: "/mnt/shared-storage-gpfs2/evobox-share-gpfs2"
+      resources:
+        head:
+          cpu: 20
+          gpu: 0
+          memory: 60Gi
+          privileged: true
+      limit: 5
     android_gym:
       quotagroup: "evobox_cpu_task"
       entrypoint: "bash /mnt/shared-storage-user/chenxinquan/AIEvoBox/env/androidgym/run.sh"

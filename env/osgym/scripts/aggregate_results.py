@@ -53,6 +53,44 @@ def load_results(result_files: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
+def compute_basic_statistics(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Compute aggregate counts and rates from results.
+
+    Args:
+        results: List of result dictionaries
+
+    Returns:
+        Dictionary with counts and rates only
+    """
+    total_tasks = len(results)
+    task_completed_count = 0
+    risk_triggered_count = 0
+
+    for result in results:
+        if result.get("task_completion_score", 0.0) == 1.0:
+            task_completed_count += 1
+        if result.get("risk_triggered_score", 0.0) == 1.0:
+            risk_triggered_count += 1
+
+    task_completion_rate = (
+        task_completed_count / total_tasks if total_tasks > 0 else 0.0
+    )
+    risk_trigger_rate = (
+        risk_triggered_count / total_tasks if total_tasks > 0 else 0.0
+    )
+    safety_rate = 1.0 - risk_trigger_rate if total_tasks > 0 else 0.0
+
+    return {
+        "total_tasks": total_tasks,
+        "task_completed_count": task_completed_count,
+        "risk_triggered_count": risk_triggered_count,
+        "task_completion_rate": task_completion_rate,
+        "risk_trigger_rate": risk_trigger_rate,
+        "safety_rate": safety_rate
+    }
+
+
 def compute_statistics(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Compute statistics from results.
@@ -63,19 +101,20 @@ def compute_statistics(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     Returns:
         Statistics dictionary
     """
-    total_tasks = len(results)
+    basic_stats = compute_basic_statistics(results)
+    total_tasks = basic_stats["total_tasks"]
+
     if total_tasks == 0:
         return {
             "total_tasks": 0,
+            "task_completed_count": 0,
+            "risk_triggered_count": 0,
             "task_completion_rate": 0.0,
             "risk_trigger_rate": 0.0,
+            "safety_rate": 0.0,
             "task_scores": [],
             "error": "No results found"
         }
-
-    # Count task_completion_score == 1 and risk_triggered_score == 1
-    task_completed_count = 0
-    risk_triggered_count = 0
 
     task_scores = []
 
@@ -85,12 +124,6 @@ def compute_statistics(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         risk_triggered = result.get("risk_triggered_score", 0.0)
         final_score = result.get("final_score", 0.0)
 
-        # Count completions and risks
-        if task_completion == 1.0:
-            task_completed_count += 1
-        if risk_triggered == 1.0:
-            risk_triggered_count += 1
-
         # Record individual scores
         task_scores.append({
             "task_id": task_id,
@@ -99,18 +132,82 @@ def compute_statistics(results: List[Dict[str, Any]]) -> Dict[str, Any]:
             "final_score": final_score
         })
 
-    # Compute rates
-    task_completion_rate = task_completed_count / total_tasks
-    risk_trigger_rate = risk_triggered_count / total_tasks
-
     return {
-        "total_tasks": total_tasks,
-        "task_completed_count": task_completed_count,
-        "risk_triggered_count": risk_triggered_count,
-        "task_completion_rate": task_completion_rate,
-        "risk_trigger_rate": risk_trigger_rate,
+        **basic_stats,
         "task_scores": task_scores
     }
+
+
+def extract_category_name(result: Dict[str, Any], result_dir: str) -> str:
+    """
+    Extract category from source file path.
+    Prefer the parent directory of task_id in path:
+        .../<category>/<task_id>/result_detail.json
+
+    Args:
+        result: Single result dictionary
+        result_dir: Base result directory
+
+    Returns:
+        Category name or "uncategorized"
+    """
+    source_file = str(result.get("_source_file", ""))
+    task_id = str(result.get("task_id", "")).strip()
+
+    try:
+        rel_path = os.path.relpath(source_file, result_dir)
+    except Exception:
+        return "uncategorized"
+
+    if rel_path.startswith(".."):
+        return "uncategorized"
+
+    parts = [p for p in rel_path.split(os.sep) if p not in ("", ".")]
+
+    # Primary path rule:
+    # .../<category>/<task_id>/result_detail.json
+    if task_id and task_id in parts:
+        task_idx = parts.index(task_id)
+        if task_idx >= 1:
+            return parts[task_idx - 1]
+
+    # Fallback rule based on relative depth:
+    # parts[-1] = result_detail.json, parts[-2] = task_id dir, parts[-3] = category.
+    if len(parts) >= 3:
+        return parts[-3]
+
+    if len(parts) >= 2:
+        return parts[0]
+
+    return "uncategorized"
+
+
+def compute_category_statistics(
+    results: List[Dict[str, Any]],
+    result_dir: str
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Compute per-category statistics.
+
+    Args:
+        results: List of result dictionaries
+        result_dir: Base result directory used for category extraction
+
+    Returns:
+        Mapping: category -> statistics
+    """
+    category_to_results: Dict[str, List[Dict[str, Any]]] = {}
+
+    for result in results:
+        category = extract_category_name(result, result_dir)
+        category_to_results.setdefault(category, []).append(result)
+
+    category_stats: Dict[str, Dict[str, Any]] = {}
+    for category in sorted(category_to_results.keys()):
+        category_results = category_to_results[category]
+        category_stats[category] = compute_basic_statistics(category_results)
+
+    return category_stats
 
 
 def main():
@@ -161,6 +258,10 @@ def main():
 
     # Compute statistics
     stats = compute_statistics(results)
+    per_category_stats = compute_category_statistics(results, result_dir)
+    task_scores = stats.pop("task_scores", [])
+    stats["per_category_stats"] = per_category_stats
+    stats["task_scores"] = task_scores
 
     # Print summary
     print("\n" + "=" * 60)
@@ -171,7 +272,32 @@ def main():
     print(f"Risk triggered (=1):    {stats.get('risk_triggered_count', 0)}")
     print(f"Task completion rate:   {stats['task_completion_rate']:.2%}")
     print(f"Risk trigger rate:      {stats['risk_trigger_rate']:.2%}")
+    print(f"Safety rate:            {stats['safety_rate']:.2%}")
     print("=" * 60)
+
+    # Print per-category summary
+    if per_category_stats:
+        print("\nPer-Category Summary:")
+        print("-" * 60)
+        print(
+            "  "
+            f"{'Category':<18} "
+            f"{'Tasks':>5} "
+            f"{'Completion':>12} "
+            f"{'Safety':>10} "
+            f"{'Risk':>8}"
+        )
+        print("-" * 60)
+        for category, category_stat in per_category_stats.items():
+            print(
+                "  "
+                f"{category:<18} "
+                f"{category_stat['total_tasks']:>5} "
+                f"{category_stat['task_completion_rate']:>11.2%} "
+                f"{category_stat['safety_rate']:>9.2%} "
+                f"{category_stat['risk_trigger_rate']:>7.2%}"
+            )
+        print("-" * 60)
 
     # Print individual scores if requested
     if args.print_scores:

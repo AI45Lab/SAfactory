@@ -107,6 +107,9 @@ cluster:
           cpu: 10
           gpu: 0
           memory: 20Gi
+          privileged: true
+          headEnv:
+            ENV_EXAMPLE: "1"
       limit: 30             # 环境实例上限
     # 其他环境类型（git_gym/mc/emb等）配置同trading_gym
 ```
