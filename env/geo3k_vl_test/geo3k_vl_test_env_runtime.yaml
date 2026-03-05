@@ -1,0 +1,5 @@
+# Runtime options for Geo3kVLTestEnv.
+max_turns: 3
+max_images: 1
+echo_images_on_feedback: false
+

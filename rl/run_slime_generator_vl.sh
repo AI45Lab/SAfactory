@@ -26,15 +26,17 @@ ROLLOUT_BUFFER_URL="http://${BUFFER_SERVER_HOST}:${BUFFER_SERVER_PORT}"
 LLM_PROXY_URL="http://${LLM_PROXY_HOST}:${LLM_PROXY_PORT}"
 
 export PYTHONBUFFERED=16
-NUM_GPUS=${NUM_GPUS:-7}
+NUM_GPUS=${NUM_GPUS:-8}
 
 SLIME_HOME=${SLIME_HOME:-/root/slime}
-source "${SLIME_HOME}/scripts/models/qwen2.5-7B.sh"
+HF_CKPT_DIR="/mnt/shared-storage-user/evobox-share/hf-hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots/89644892e4d85e24eaac8bacfd4f463576704203"
+SAVE_DIR="/mnt/shared-storage-user/evobox-share/yinzhenyun/slime/checkpoints/Qwen3-VL-2B-Instruct_megatron"
+MODEL_ARGS_ROTARY_BASE=5000000 source "${SLIME_HOME}/scripts/models/qwen3-1.7B.sh"
+
 CKPT_ARGS=(
-   --hf-checkpoint Qwen/Qwen2.5-7B-Instruct
-   --ref-load /mnt/shared-storage-user/steai-share/yinzhenyun/Qwen2.5-7B-Instruct_torch_dist
-   --load /mnt/shared-storage-user/steai-share/yinzhenyun/slime/checkpoints/Qwen2.5-7B-Instruct_slime
-   --save /mnt/shared-storage-user/steai-share/yinzhenyun/slime/checkpoints/Qwen2.5-7B-Instruct_slime
+   --hf-checkpoint ${HF_CKPT_DIR}
+   --load ${HF_CKPT_DIR}
+   --save ${SAVE_DIR}
    --save-interval 20
 )
 
@@ -52,7 +54,9 @@ ROLLOUT_ARGS=(
    --loss-mask-type qwen
 )
 
-PERF_ARGS=(
+MEGATRON_ARGS=(
+   --train-backend megatron
+   --megatron-to-hf-mode bridge
    --tensor-model-parallel-size 1
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
@@ -61,8 +65,17 @@ PERF_ARGS=(
    --recompute-granularity full
    --recompute-method uniform
    --recompute-num-layers 1
+   --attention-dropout 0.0
+   --hidden-dropout 0.0
+   --accumulate-allreduce-grads-in-fp32
+   --attention-softmax-in-fp32
+   --attention-backend flash
+)
+
+TRAIN_ARGS=(
    --use-dynamic-batch-size
    --max-tokens-per-gpu 5000
+   --calculate-per-token-loss
 )
 
 GRPO_ARGS=(
@@ -93,29 +106,21 @@ WANDB_ARGS=(
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1
    --sglang-mem-fraction-static 0.7
+   --sglang-attention-backend fa3
    # --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
    --sglang-log-level error
    --sglang-log-level-http error
 )
 
-MISC_ARGS=(
-   --attention-dropout 0.0
-   --hidden-dropout 0.0
-   --accumulate-allreduce-grads-in-fp32
-   --attention-softmax-in-fp32
-   --attention-backend flash
-   --calculate-per-token-loss
-)
-
 # Start Ray
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 7 --disable-usage-stats
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats
 
 export SGLANG_LOGGING_CONFIG_PATH=${SGLANG_LOGGING_CONFIG_PATH:-"/root/AIEvoBox/rl/sglang_logging.json"}
 
 RUNTIME_ENV_JSON="{\
   \"env_vars\": {\
-    \"PYTHONPATH\": \"/root:${SCRIPT_DIR}:/root/AIEvoBox:/root/Megatron-LM/:${SLIME_HOME}\",\
+    \"PYTHONPATH\": \"${SLIME_HOME}:${SCRIPT_DIR}:/root/AIEvoBox:/root/Megatron-LM\",\
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",\
     \"LLM_PROXY_URL\": \"${LLM_PROXY_URL}\",\
     \"ROLLOUT_BUFFER_URL\": \"${ROLLOUT_BUFFER_URL}\",\
@@ -128,13 +133,13 @@ ray job submit --address="http://127.0.0.1:8265" \
    -- python3 ${SLIME_HOME}/train_async.py \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node 1 \
-   --rollout-num-gpus 6 \
+   --rollout-num-gpus 7 \
    ${MODEL_ARGS[@]} \
+   ${MEGATRON_ARGS[@]} \
    ${CKPT_ARGS[@]} \
     ${ROLLOUT_ARGS[@]} \
     ${OPTIMIZER_ARGS[@]} \
     ${GRPO_ARGS[@]} \
     ${WANDB_ARGS[@]} \
-    ${PERF_ARGS[@]} \
-    ${SGLANG_ARGS[@]} \
-    ${MISC_ARGS[@]}
+    ${TRAIN_ARGS[@]} \
+    ${SGLANG_ARGS[@]}

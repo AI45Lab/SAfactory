@@ -6,6 +6,8 @@ import logging
 from collections import defaultdict
 from typing import List, Dict, Any, Optional, Union
 
+from tortoise.transactions import in_transaction
+
 from .load_yaml import load_yaml_configs
 from core.data_manager.models import JobEnvironment
 
@@ -137,6 +139,7 @@ async def _sync_sqlite(data_manager, yaml_configs: List[Dict]) -> sqlite3.Connec
 
     added = updated = soft_deleted = 0
     matched_env_ids: set = set()
+    pending_records: list = []
 
     for cfg in yaml_configs:
         env_name = cfg["env_name"].strip()
@@ -169,29 +172,29 @@ async def _sync_sqlite(data_manager, yaml_configs: List[Dict]) -> sqlite3.Connec
                 if changed:
                     await env.save()
                     updated += 1
-                    log.debug(
-                        "Updated env: %s (env_id=%s, group_id=%s)",
-                        env_name, env.env_id, group_id,
-                    )
-                else:
-                    log.debug(
-                        "Env unchanged: %s (instance %d/%d)", env_name, i + 1, env_num
-                    )
             else:
-                # New instance — create it
-                env_id = await data_manager.add_environment(
+                # Collect for bulk insert
+                new_env_id = str(uuid.uuid4())
+                pending_records.append(JobEnvironment(
+                    job_id=job_id,
+                    env_id=new_env_id,
                     env_name=env_name,
                     env_params=env_params,
                     image=image,
                     group_id=group_id,
-                    job_id=job_id,
-                )
-                matched_env_ids.add(env_id)
+                ))
+                matched_env_ids.add(new_env_id)
                 added += 1
-                log.info(
-                    "Added env: %s (instance %d/%d, group_id=%s)",
-                    env_name, i + 1, env_num, group_id,
-                )
+
+    # Bulk insert all new records in a single transaction
+    if pending_records:
+        BATCH = 4000
+        total = len(pending_records)
+        async with in_transaction():
+            for i in range(0, total, BATCH):
+                await JobEnvironment.bulk_create(pending_records[i:i + BATCH])
+                log.info("Bulk insert progress: %d/%d", min(i + BATCH, total), total)
+        log.info("Bulk insert done: %d env records", total)
 
     # Soft-delete any active envs that are no longer in the YAML
     for env in existing_envs:
@@ -199,9 +202,6 @@ async def _sync_sqlite(data_manager, yaml_configs: List[Dict]) -> sqlite3.Connec
             env.is_deleted = True
             await env.save()
             soft_deleted += 1
-            log.info(
-                "Soft-deleted env: %s (env_id=%s)", env.env_name, env.env_id
-            )
 
     log.info(
         "Sync complete: added=%d updated=%d soft_deleted=%d kept=%d",

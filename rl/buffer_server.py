@@ -18,7 +18,6 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
 from utils import get_env
-import llm_proxy
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -63,7 +62,6 @@ app = FastAPI(title="Rollout Buffer Server", debug=True)
 
 # Track subprocesses
 aievobox_process: Optional[subprocess.Popen] = None
-llm_proxy_process: Optional[subprocess.Popen] = None
 
 # DataManager for querying the database
 data_manager: Optional[DataManager] = None
@@ -270,12 +268,12 @@ async def get_rollout_data(request: Request):
     )
 
 
-async def init_data_manager(db_url: str, restart_training: bool = False):
+async def init_data_manager(job_session: str, db_url: str, restart_training: bool = False):
     """Initialize the DataManager for querying the database."""
     global data_manager, last_served_id
-    data_manager = DataManager(db_url=db_url)
+    data_manager = DataManager(job_id=job_session, storage_type="sqlite", db_url=db_url)
     await data_manager.init()
-    logger.info(f"DataManager initialized with DB: {db_url}")
+    logger.info(f"DataManager initialized with DB: {db_url}, job_session: {job_session}")
 
     # Initialize cursor based on restart_training flag
     if restart_training:
@@ -284,8 +282,12 @@ async def init_data_manager(db_url: str, restart_training: bool = False):
 
 
 def start_aievobox_process(data: dict):
-    """Start AIEvoBox launcher.py as a subprocess."""
-    global aievobox_process, llm_proxy_process, group_size, last_served_id, pending_items_by_instance, data_manager
+    """Start AIEvoBox launcher.py as a subprocess.
+
+    NOTE: LLM Proxy is now hosted in-process by slime_generator.
+    It must already be running before this function is called.
+    """
+    global aievobox_process, group_size, last_served_id, pending_items_by_instance, data_manager
 
     # Set group size (num_repeat_per_sample)
     group_size = int(data.get("num_repeat_per_sample", 16))
@@ -296,6 +298,9 @@ def start_aievobox_process(data: dict):
         pending_items_by_instance.clear()
         logger.info("restart_training=True, cleared pending items")
 
+    # Keep a single job_session for both reader and writer process.
+    job_session = str(data.get("job_session") or uuid.uuid4().hex)
+
     # Database path
     db_url = os.environ.get("AIEVOBOX_DB_URL", f"sqlite:///{AIEVOBOX_ROOT}/rl/rl.db")
 
@@ -303,45 +308,39 @@ def start_aievobox_process(data: dict):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(init_data_manager(db_url, restart_training=restart_training))
+        loop.run_until_complete(
+            init_data_manager(job_session=job_session, db_url=db_url, restart_training=restart_training)
+        )
     finally:
         loop.close()
-
-    # Start LLM Proxy if not running
-    if llm_proxy_process is None or llm_proxy_process.poll() is not None:
-        llm_proxy_process = llm_proxy.start()
-        time.sleep(2)  # Wait for proxy to start
-
-    # Initialize LLM Proxy with tokenizer and remote engine URL
-    tokenizer_path = data.get("tokenizer_path", "")
-    remote_engine_url = data.get("remote_engine_url", "")
-    max_length_str = os.environ.get("LLM_MAX_LENGTH")
-    max_length = int(max_length_str) if max_length_str else None
-    if tokenizer_path and remote_engine_url:
-        llm_proxy.init(tokenizer_path, remote_engine_url, max_length=max_length)
 
     # Build launcher.py command line arguments
     aievobox_root = os.environ.get("AIEVOBOX_ROOT", "/root/AIEvoBox")
     launcher_script = os.path.join(aievobox_root, "launcher.py")
     env_root = get_env("AIEVOBOX_ENV_ROOT")
+    env_config = os.environ.get("AIEVOBOX_ENV_CONFIG")
     max_steps = int(get_env("AIEVOBOX_MAX_STEPS") or 10)
     message_cut = int(get_env("AIEVOBOX_MESSAGE_CUT") or 0)
     llm_model = get_env("RL_MODEL") or "default"
     llm_temperature = float(get_env("LLM_TEMPERATURE") or 1.0)
     pool_size = int(get_env("AIEVOBOX_POOL_SIZE") or 16)
+    rl_epoch = int(get_env("RL_EPOCH") or 1)
 
     cmd = [
         "python3", launcher_script,
         "--db-path", db_url,
-        "--env-root", env_root,
+        *(["--env-config", env_config] if env_config else ["--env-root", env_root]),
         "--llm-base-url", llm_proxy_url,
         "--llm-model", llm_model,
         "--llm-temperature", str(llm_temperature),
         "--max-steps", str(max_steps),
         "--message-cut", str(message_cut),
         "--pool-size", str(pool_size),
+        "--job-id", job_session,
+        "--no-rebuild-table",
         "--rl-use-session-suffix-url",
-        "--rl-env-num", str(group_size),
+        "--rl-group-size", str(group_size),
+        "--rl-epoch", str(rl_epoch),
     ]
 
     logger.info(f"Starting launcher.py: {' '.join(cmd)}")

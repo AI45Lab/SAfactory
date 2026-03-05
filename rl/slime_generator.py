@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from typing import Any, Dict, List
 import copy
@@ -12,27 +13,35 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
+_MASK_DIR = os.path.join(_SCRIPT_DIR, "mask")
+if _MASK_DIR not in sys.path:
+    sys.path.insert(0, _MASK_DIR)
+
 from utils import get_env, AggType, MetricsRecorder
 
 import aiohttp
 import requests
+import uvicorn
 from transformers import AutoTokenizer
+from transformers import AutoProcessor, PreTrainedTokenizerBase, ProcessorMixin
 
 from slime.utils.async_utils import run
 from slime.utils.types import Sample
+
+import llm_proxy as _llm_proxy_module
+from trajectory_mask_builder import TrajectoryMaskBuilder
 
 __all__ = ["generate_rollout"]
 
 logger = logging.getLogger(__name__)
 
-# Global variables for evaluation
+# Global variables
 TOKENIZER = None
+TRAJECTORY_MASK_BUILDER = None
 START_ROLLOUT = True
+_LLM_PROXY_STARTED = False
 
-# LLM Proxy URL for getting trajectory masks (constructed from host and port)
-_llm_proxy_host = get_env("LLM_PROXY_HOST")
-_llm_proxy_port = get_env("LLM_PROXY_PORT")
-LLM_PROXY_URL = f"http://{_llm_proxy_host}:{_llm_proxy_port}"
+_llm_proxy_port = int(get_env("LLM_PROXY_PORT"))
 
 
 def decode_tokens_with_mask_debug(tokenizer, token_ids, loss_mask):
@@ -112,37 +121,76 @@ def write_debug_to_file(
             "metadata": record["extra_info"],
         }, ensure_ascii=False) + "\n")
 
-def query_trajectory(
-    session_id: str,
-    messages_str: str,
-    max_retries: int = 10,
-    timeout: int = 60,
-) -> tuple[List[int], List[int]]:
-    """Query tokens and response_mask from LLM Proxy."""
-    url = f"{LLM_PROXY_URL}/get_trajectory_mask"
-    payload = {"session_id": session_id, "messages_str": messages_str}
+def _init_llm_proxy_server(args):
+    """Initialize tokenizer, processor, TrajectoryMaskBuilder, and start the
+    llm_proxy HTTP server in a background daemon thread.
 
-    last_error = None
-    for attempt in range(max_retries):
+    This is called once (idempotent).  The HTTP server is needed so that
+    AIEvoBox environments can hit ``/v1/{session_id}/chat/completions``.
+    Training data is read directly from TRAJECTORY_MASK_BUILDER in memory.
+    """
+    global TOKENIZER, TRAJECTORY_MASK_BUILDER, _LLM_PROXY_STARTED
+
+    if _LLM_PROXY_STARTED:
+        return
+
+    # 1. Tokenizer
+    if TOKENIZER is None:
+        TOKENIZER = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+
+    # 2. Processor (optional, VLM only)
+    processor = None
+    try:
+        proc = AutoProcessor.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+        if isinstance(proc, PreTrainedTokenizerBase) or not isinstance(proc, ProcessorMixin):
+            proc = None
+        processor = proc
+    except Exception:
+        processor = None
+
+    # 3. TrajectoryMaskBuilder
+    TRAJECTORY_MASK_BUILDER = TrajectoryMaskBuilder(TOKENIZER, processor)
+
+    # 4. Wire into llm_proxy module STATE (shared in-process)
+    state = _llm_proxy_module.STATE
+    state.tokenizer = TOKENIZER
+    state.processor = processor
+    state.trajectory_mask_builder = TRAJECTORY_MASK_BUILDER
+
+    remote_engine_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+    state.remote_engine_url = remote_engine_url
+    max_length_str = os.environ.get("LLM_MAX_LENGTH")
+    state.max_length = int(max_length_str) if max_length_str else None
+    state.temperature = float(os.environ.get("LLM_TEMPERATURE", "1.0"))
+    state.top_p = float(os.environ.get("LLM_TOP_P", "1.0"))
+
+    # 5. Start uvicorn in a daemon thread
+    def _run_server():
+        uvicorn.run(
+            _llm_proxy_module.app,
+            host="0.0.0.0",
+            port=_llm_proxy_port,
+            timeout_keep_alive=5,
+            log_level="warning",
+        )
+
+    server_thread = threading.Thread(target=_run_server, daemon=True)
+    server_thread.start()
+
+    # 6. Wait until the server is ready
+    for _ in range(30):
         try:
-            resp = requests.post(url, json=payload, timeout=timeout)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            last_error = e
-            delay = min(2 ** attempt, 30)
-            logger.warning(f"[query_trajectory] attempt {attempt+1}/{max_retries} failed: {e}, retry in {delay}s")
-            time.sleep(delay)
-            continue
+            r = requests.get(f"http://127.0.0.1:{_llm_proxy_port}/health", timeout=2)
+            if r.status_code == 200:
+                break
+        except Exception:
+            pass
+        time.sleep(1)
+    else:
+        raise RuntimeError("LLM proxy HTTP server failed to start within 30 s")
 
-        tokens = data.get("tokens")
-        response_mask = data.get("response_mask")
-        if isinstance(tokens, list) and isinstance(response_mask, list):
-            return [int(t) for t in tokens], [int(m) for m in response_mask]
-
-        raise KeyError("Missing `tokens`/`response_mask` in response")
-
-    raise RuntimeError(f"[query_trajectory] All {max_retries} retries exhausted. Last error: {last_error}")
+    logger.info(f"LLM proxy server started in-process on port {_llm_proxy_port}")
+    _LLM_PROXY_STARTED = True
 
 
 def build_loss_mask_from_response_mask(
@@ -250,7 +298,6 @@ def start_rollout(api_base_url: str, args, metadata):
         "remote_engine_url": f"http://{args.sglang_router_ip}:{args.sglang_router_port}",
         "remote_buffer_url": args.rollout_buffer_url,
         "task_type": args.rollout_task_type,
-        "input_file": args.prompt_data,
         "num_repeat_per_sample": int(args.n_samples_per_prompt),
         "max_tokens": int(args.rollout_max_response_len),
         "sampling_params": {
@@ -437,15 +484,15 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
             oai_messages = record["messages"]
             session_id = record["extra_info"].get("session_id", "")
 
-            # Convert messages to string
-            messages_str = tokenizer.apply_chat_template(
-                oai_messages,
-                add_generation_prompt=False,
-                tokenize=False
+            # Get tokens + response_mask + mm_train_inputs directly from in-process TrajectoryMaskBuilder
+            max_length = _llm_proxy_module.STATE.max_length
+            tokens, response_mask, _image_data, _messages_str, mm_train_inputs = (
+                TRAJECTORY_MASK_BUILDER.get_training_info(session_id, oai_messages)
             )
+            if max_length is not None and len(tokens) > max_length:
+                tokens = tokens[:max_length]
+                response_mask = response_mask[:max_length]
 
-            # Get tokens + response_mask from LLM Proxy
-            tokens, response_mask = query_trajectory(session_id, messages_str)
             token_ids, loss_mask, response_length = build_loss_mask_from_response_mask(tokens, response_mask)
 
             # 写入调试文件
@@ -453,23 +500,27 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
 
             # 构建 metadata（从 extra_info 复制，已包含 weight_version）
             metadata = dict(record["extra_info"])
-            group_results.append(
-                Sample(
-                    index=record["instance_id"],
-                    prompt=record["uid"],
-                    tokens=token_ids,
-                    response_length=response_length,
-                    reward=record["reward"],
-                    status=(
-                        Sample.Status.COMPLETED
-                        if "finish_reason" not in record["extra_info"]
-                        or record["extra_info"]["finish_reason"] != "length"
-                        else Sample.Status.TRUNCATED
-                    ),
-                    loss_mask=loss_mask,
-                    metadata=metadata,
-                )
+            sample = Sample(
+                index=record["instance_id"],
+                prompt=record["uid"],
+                tokens=token_ids,
+                response_length=response_length,
+                reward=record["reward"],
+                status=(
+                    Sample.Status.COMPLETED
+                    if "finish_reason" not in record["extra_info"]
+                    or record["extra_info"]["finish_reason"] != "length"
+                    else Sample.Status.TRUNCATED
+                ),
+                loss_mask=loss_mask,
+                metadata=metadata,
             )
+
+            # VLM training: mm_train_inputs already computed by TrajectoryMaskBuilder
+            if mm_train_inputs is not None:
+                sample.multimodal_train_inputs = mm_train_inputs
+
+            group_results.append(sample)
         sample_results.append(group_results)
 
     data_buffer.add_samples(sample_results)
@@ -490,15 +541,18 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
 
 def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
     """Generate rollout for both training and evaluation."""
-    global START_ROLLOUT, TOKENIZER
+    global START_ROLLOUT
+
+    # Initialize tokenizer + processor + llm_proxy HTTP server (once).
+    # Must happen BEFORE start_rollout, because buffer_server will launch
+    # AIEvoBox environments that immediately connect to the HTTP server.
+    _init_llm_proxy_server(args)
+
     if START_ROLLOUT:
         metadata = data_buffer.get_metadata()
         start_inform = start_rollout(args.rollout_buffer_url, args, metadata)
         print(f"start rollout with payload: {start_inform}")
         print(f"start rollout id: {rollout_id}")
         START_ROLLOUT = False
-
-    if TOKENIZER is None:
-        TOKENIZER = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
 
     return run(generate_rollout_async(args, rollout_id, data_buffer, evaluation))

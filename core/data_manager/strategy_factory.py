@@ -1,7 +1,7 @@
 from typing import Dict, Type
 from core.data_manager.strategy.base_strategy import StorageStrategy
 from core.data_manager.strategy.sqlite_strategy_impl import SqliteStrategy
-from core.data_manager.strategy.cloud_strategy_impl import CloudStrategy
+# from core.data_manager.strategy.cloud_strategy_impl import CloudStrategy
 
 class StorageFactory:
     # 注册:存储 "类型字符串" -> "策略类" 的映射
@@ -25,6 +25,6 @@ class StorageFactory:
 
 
 StorageFactory.register("sqlite", SqliteStrategy)
-StorageFactory.register("cloud", CloudStrategy)
+# StorageFactory.register("cloud", CloudStrategy)
 # 未来想加 Kafka，只需要写好 KafkaStrategy 后在这里加一行：
 # StorageFactory.register("kafka", KafkaStrategy)

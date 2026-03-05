@@ -361,13 +361,13 @@ def parse_args():
     p.add_argument("--job-id", type=str, default="", help="job id is used to identify each task and record in the environmentconfig table as session")
     # YAML
     p.add_argument("--manager-config", type=str, default="./manager/config.yaml", help="Path to unified YAML config")
-    p.add_argument("--mode", choices=["local", "remote"], default="remote")
+    p.add_argument("--mode", choices=["local", "remote"], default="local")
 
     # DB / YAML-aggregator
-    p.add_argument("--env-config", type=str, default="/mnt/shared-storage-user/chenxinquan/AIEvoBox/env/androidgym/android_env.yaml", help="env config which used for specify the input env configs, and it's incompatible with  env-root")
+    p.add_argument("--env-config", type=str, default=None, help="env config which used for specify the input env configs, and it's incompatible with  env-root")
     p.add_argument("--env-root", type=str, default="env", help="only works when env-config is not specified")
     p.add_argument("--storage-type", type=str, default="sqlite")
-    p.add_argument("--db-path", type=str, default="sqlite://android_envs_test.db")
+    p.add_argument("--db-path", type=str, default="sqlite://android_envs.db")
     p.add_argument("--rebuild-table", action=argparse.BooleanOptionalAction, default=False,
                    help="Delete and recreate the SQLite DB file before loading configs (SQLite only)")
 
@@ -396,8 +396,10 @@ def parse_args():
     p.add_argument("--llm-temperature", type=float, default=0.3)
     p.add_argument("--rl-use-session-suffix-url", action="store_true", default=False,
                    help="Use SessionSuffixBaseURLProvider (for LLM Proxy with session routing)")
-    p.add_argument("--rl-env-num", type=int, default=0,
+    p.add_argument("--rl-group-size", type=int, default=0,
                    help="Override env_num for all environments (0 = keep YAML config, used for num_repeat_per_sample)")
+    p.add_argument("--rl-epoch", type=int, default=1,
+                   help="Number of epochs: duplicates all env configs N times with distinct group_ids")
 
     # Logging
     p.add_argument("--log-dir", type=str, default="logs", help="Directory to store log files")
@@ -441,11 +443,22 @@ async def main():
     data_manager = DataManager(job_id=job_id, storage_type=args.storage_type, db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
     yaml_config_list = all_env_yaml_load(env_root=args.env_root, env_config=args.env_config)
 
-    # 如果指定了 --rl-env-num，覆盖所有环境的 env_num
-    if args.rl_env_num > 0:
+    # 如果指定了 --rl-group-size，覆盖所有环境的 env_num
+    if args.rl_group_size > 0:
         for cfg in yaml_config_list:
-            cfg["env_num"] = args.rl_env_num
-        log.info("Override env_num=%d for all %d environments", args.rl_env_num, len(yaml_config_list))
+            cfg["env_num"] = args.rl_group_size
+        log.info("Override env_num=%d for all %d environments", args.rl_group_size, len(yaml_config_list))
+
+    # 如果 --rl-epoch > 1，复制配置 N 次，每次用不同 task_idx 产生不同 group_id
+    if args.rl_epoch > 1:
+        base_configs = list(yaml_config_list)
+        num_tasks = len(base_configs)
+        for epoch_idx in range(1, args.rl_epoch):
+            for cfg in base_configs:
+                epoch_cfg = dict(cfg)
+                epoch_cfg["task_idx"] = cfg.get("task_idx", 1) + epoch_idx * num_tasks
+                yaml_config_list.append(epoch_cfg)
+        log.info("rl_epoch=%d: expanded %d configs to %d configs", args.rl_epoch, num_tasks, len(yaml_config_list))
 
     conn = await sync_configs_to_db(data_manager, yaml_config_list, args.storage_type)
 

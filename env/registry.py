@@ -37,3 +37,7 @@ def _import_dab_env() -> Type:
 def _import_gym_env() -> Type:
     from env.gitgym.git_env import GitGym
     return GitGym
+
+def _import_geo3k_vl_test_env() -> Type:
+    from env.geo3k_vl_test.geo3k_vl_test_env import Geo3kVLTestEnv
+    return Geo3kVLTestEnv

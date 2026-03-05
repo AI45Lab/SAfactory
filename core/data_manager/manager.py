@@ -138,7 +138,7 @@ class DataManager:
     ) -> List[Dict]:
         """Fetch completed steps for training data collection"""
         if hasattr(self.strategy, 'fetch_done_steps_with_context'):
-            return await self.strategy.fetch_done_steps_with_context(after_id, limit)
+            return await self.strategy.fetch_done_steps_with_context(self.job_id, after_id, limit)
         return []
 
     async def get_max_step_id(self) -> int:
