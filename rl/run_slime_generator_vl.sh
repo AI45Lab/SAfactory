@@ -30,7 +30,9 @@ NUM_GPUS=${NUM_GPUS:-8}
 
 SLIME_HOME=${SLIME_HOME:-/root/slime}
 HF_CKPT_DIR="/mnt/shared-storage-user/evobox-share/hf-hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots/89644892e4d85e24eaac8bacfd4f463576704203"
-SAVE_DIR="/root/evobox-yinzhenyun/slime/checkpoints/Qwen3-VL-2B-Instruct_megatron"
+SAVE_DIR="/mnt/shared-storage-user/evobox-share/yinzhenyun/slime/checkpoints/Qwen3-VL-2B-Instruct_megatron"
+MODEL_ARGS_ROTARY_BASE=5000000 source "${SLIME_HOME}/scripts/models/qwen3-1.7B.sh"
+
 CKPT_ARGS=(
    --hf-checkpoint ${HF_CKPT_DIR}
    --load ${HF_CKPT_DIR}

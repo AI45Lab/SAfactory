@@ -32,9 +32,9 @@ SLIME_HOME=${SLIME_HOME:-/root/slime}
 source "${SLIME_HOME}/scripts/models/qwen2.5-7B.sh"
 CKPT_ARGS=(
    --hf-checkpoint Qwen/Qwen2.5-7B-Instruct
-   --ref-load /root/steai-yinzhenyun/Qwen2.5-7B-Instruct_torch_dist
-   --load /root/evobox-yinzhenyun/slime/checkpoints/Qwen2.5-7B-Instruct_slime
-   --save /root/evobox-yinzhenyun/slime/checkpoints/Qwen2.5-7B-Instruct_slime
+   --ref-load /mnt/shared-storage-user/steai-share/yinzhenyun/Qwen2.5-7B-Instruct_torch_dist
+   --load /mnt/shared-storage-user/steai-share/yinzhenyun/slime/checkpoints/Qwen2.5-7B-Instruct_slime
+   --save /mnt/shared-storage-user/steai-share/yinzhenyun/slime/checkpoints/Qwen2.5-7B-Instruct_slime
    --save-interval 20
 )
 

@@ -318,6 +318,7 @@ def start_aievobox_process(data: dict):
     aievobox_root = os.environ.get("AIEVOBOX_ROOT", "/root/AIEvoBox")
     launcher_script = os.path.join(aievobox_root, "launcher.py")
     env_root = get_env("AIEVOBOX_ENV_ROOT")
+    env_config = os.environ.get("AIEVOBOX_ENV_CONFIG")
     max_steps = int(get_env("AIEVOBOX_MAX_STEPS") or 10)
     message_cut = int(get_env("AIEVOBOX_MESSAGE_CUT") or 0)
     llm_model = get_env("RL_MODEL") or "default"
@@ -328,7 +329,7 @@ def start_aievobox_process(data: dict):
     cmd = [
         "python3", launcher_script,
         "--db-path", db_url,
-        "--env-root", env_root,
+        *(["--env-config", env_config] if env_config else ["--env-root", env_root]),
         "--llm-base-url", llm_proxy_url,
         "--llm-model", llm_model,
         "--llm-temperature", str(llm_temperature),
