@@ -298,7 +298,6 @@ def start_rollout(api_base_url: str, args, metadata):
         "remote_engine_url": f"http://{args.sglang_router_ip}:{args.sglang_router_port}",
         "remote_buffer_url": args.rollout_buffer_url,
         "task_type": args.rollout_task_type,
-        "input_file": args.prompt_data,
         "num_repeat_per_sample": int(args.n_samples_per_prompt),
         "max_tokens": int(args.rollout_max_response_len),
         "sampling_params": {

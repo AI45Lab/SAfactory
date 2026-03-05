@@ -31,7 +31,6 @@ NUM_GPUS=${NUM_GPUS:-8}
 SLIME_HOME=${SLIME_HOME:-/root/slime}
 HF_CKPT_DIR="/mnt/shared-storage-user/evobox-share/hf-hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots/89644892e4d85e24eaac8bacfd4f463576704203"
 SAVE_DIR="/root/evobox-yinzhenyun/slime/checkpoints/Qwen3-VL-2B-Instruct_megatron"
-MODEL_ARGS_ROTARY_BASE=5000000 source "${SLIME_HOME}/scripts/models/qwen3-1.7B.sh"
 CKPT_ARGS=(
    --hf-checkpoint ${HF_CKPT_DIR}
    --load ${HF_CKPT_DIR}
@@ -43,15 +42,12 @@ CKPT_ARGS=(
 ROLLOUT_ARGS=(
    --rollout-function-path rl.slime_generator.generate_rollout
    --rollout-buffer-url ${ROLLOUT_BUFFER_URL}
-   --prompt-data ${SCRIPT_DIR}/dummy.jsonl
-   --input-key prompt
    --disable-rollout-global-dataset
-   --rollout-shuffle
    --num-rollout 300
    --rollout-batch-size ${SLIME_ROLLOUT_BATCH_SIZE}
    --n-samples-per-prompt ${SLIME_N_SAMPLES_PER_PROMPT}
    --rollout-max-response-len 64
-   --rollout-temperature 1.0
+   --rollout-temperature ${LLM_TEMPERATURE}
    --global-batch-size ${SLIME_GLOBAL_BATCH_SIZE}
    --loss-mask-type qwen
 )

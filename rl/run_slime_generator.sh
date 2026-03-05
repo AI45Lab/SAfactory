@@ -42,14 +42,12 @@ CKPT_ARGS=(
 ROLLOUT_ARGS=(
    --rollout-function-path rl.slime_generator.generate_rollout
    --rollout-buffer-url ${ROLLOUT_BUFFER_URL}
-   --prompt-data ${SCRIPT_DIR}/dummy.jsonl
-   --input-key prompt
-   --rollout-shuffle
+   --disable-rollout-global-dataset
    --num-rollout 300
    --rollout-batch-size ${SLIME_ROLLOUT_BATCH_SIZE}
    --n-samples-per-prompt ${SLIME_N_SAMPLES_PER_PROMPT}
    --rollout-max-response-len 64
-   --rollout-temperature 1.0
+   --rollout-temperature ${LLM_TEMPERATURE}
    --global-batch-size ${SLIME_GLOBAL_BATCH_SIZE}
    --loss-mask-type qwen
 )
