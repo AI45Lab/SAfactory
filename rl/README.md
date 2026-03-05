@@ -10,13 +10,14 @@ cp .env.example .env
 ```
 
 ### 2. 启动 Slime 训练（终端 1）
-启动slime训练必须按照slime官方教程安装：
-
+启动训练前必须按照官方教程安装好slime
 
 方式1: install from scratch的[sh脚本](https://github.com/THUDM/slime/blob/main/build_conda.sh)
 
 方式2: 使用slime官方[docker](https://github.com/THUDM/slime/blob/main/docs/en/get_started/quick_start.md#pull-and-start-docker-container)
 
+
+启动训练进程：
 ```bash
 cd /root/AIEvoBox/rl
 
@@ -35,7 +36,10 @@ cd /root/AIEvoBox/rl
 ./run_buffer_server.sh
 ```
 
-训练启动后，Buffer Server 会自动拉起 AIEvoBox Runner。注意终端1合终端2可以运行在不同的机器上，只要能够通信即可。
+启动后，Buffer Server 会自动拉起 AIEvoBox Runner，开始rollout 数据。
+
+
+### 注意终端1和终端2可以运行在不同的机器上，只要能够通信即可。
 
 ## 关键配置说明
 
