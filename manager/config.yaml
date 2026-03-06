@@ -73,8 +73,8 @@ cluster:
 rayjob:
   domain: "https://h.pjlab.org.cn"
   tenant: "ailab"
-  access_key: "13a1d4481c01b1a323376928fdbbc76b"
-  secret_key: "debf6de4af83fea790160ce0a0c08b1d"
+  access_key: "0190c46827d4f2cd6632607bc1c2a0ca"
+  secret_key: "8cf77e57dd77c977f4a59d43a507ebd1"
   token: ""
   verify: false                        # Whether to verify TLS certificates (set true in production)
   quotagroup: "evobox_cpu_task"        # Default quotagroup for all envs
