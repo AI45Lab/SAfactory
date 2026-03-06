@@ -59,12 +59,22 @@ cluster:
           endpoint: "gpfs://gpfs1/chenxinquan"
           containerPath: "/mnt/shared-storage-user/chenxinquan"
       limit: 1
+    qa_gym:
+      quotagroup: "evobox_proxy"
+      entrypoint: >-
+        bash -lc 'source /opt/openrt-venv/bin/activate &&
+        python env/app.py'
+      limit: 16
+      volumes:
+        - fsType: "mount.brainpp.cn/gpfs"
+          endpoint: "gpfs://gpfs1/evobox-share"
+          containerPath: "/mnt/shared-storage-user/evobox-share"
 
 rayjob:
   domain: "https://h.pjlab.org.cn"
   tenant: "ailab"
-  access_key: "0190c46827d4f2cd6632607bc1c2a0ca"
-  secret_key: "8cf77e57dd77c977f4a59d43a507ebd1"
+  access_key: "13a1d4481c01b1a323376928fdbbc76b"
+  secret_key: "debf6de4af83fea790160ce0a0c08b1d"
   token: ""
   verify: false                        # Whether to verify TLS certificates (set true in production)
   quotagroup: "evobox_cpu_task"        # Default quotagroup for all envs
