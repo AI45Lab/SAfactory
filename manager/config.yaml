@@ -59,6 +59,16 @@ cluster:
           endpoint: "gpfs://gpfs1/chenxinquan"
           containerPath: "/mnt/shared-storage-user/chenxinquan"
       limit: 1
+    qa_gym:
+      quotagroup: "evobox_proxy"
+      entrypoint: >-
+        bash -lc 'source /opt/openrt-venv/bin/activate &&
+        python env/app.py'
+      limit: 16
+      volumes:
+        - fsType: "mount.brainpp.cn/gpfs"
+          endpoint: "gpfs://gpfs1/evobox-share"
+          containerPath: "/mnt/shared-storage-user/evobox-share"
 
 rayjob:
   domain: "https://h.pjlab.org.cn"
