@@ -427,7 +427,54 @@ class AndroidGym(BaseEnv):
 
         super().close()
         print("[Info] Environment closed successfully.")
-        
+
+    # ---------- 连接模拟器，设置重试机制 ----------
+    def _adb_connect_with_retry(self, max_retries: int, retry_interval: float, timeout: float):
+        """
+        带重试和超时的ADB连接逻辑
+        :param max_retries: 最大重试次数
+        :param retry_interval: 重试间隔（秒）
+        :param timeout: 总超时时间（秒）
+        """
+        start_time = time.time()
+        retry_count = 0
+
+        while retry_count < max_retries and (time.time() - start_time) < timeout:
+            retry_count += 1
+            try:
+                print(f"[Info] Attempt {retry_count}/{max_retries} to connect ADB to {self.device_serial}...")
+                # 执行adb connect命令
+                result = subprocess.run(
+                    [self.adb_path, "connect", self.device_serial],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=5  # 单次命令超时（避免卡住）
+                )
+                # 检查连接成功的标识（不同环境可能返回"connected to xxx"或"already connected"）
+                if "connected" in result.stdout.lower() or "already connected" in result.stdout.lower():
+                    print(f"✅ [Info] ADB connected successfully to {self.device_serial}!")
+                    return
+                else:
+                    print(f"[Warning] ADB connect returned unexpected output: {result.stdout}")
+
+            except subprocess.CalledProcessError as e:
+                print(f"[Warning] ADB connect failed (attempt {retry_count}): {e.stderr or e.stdout}")
+            except subprocess.TimeoutExpired:
+                print(f"[Warning] ADB connect timed out (attempt {retry_count})")
+            except Exception as e:
+                print(f"[Warning] Unexpected error in ADB connect (attempt {retry_count}): {str(e)}")
+
+            # 重试前等待
+            time.sleep(retry_interval)
+
+        # 所有重试失败，抛出超时异常
+        raise TimeoutError(
+            f"❌ Failed to connect ADB to {self.device_serial} after {retry_count} retries "
+            f"(total time: {time.time() - start_time:.1f}s). "
+            f"Check if redroid container is running properly and port {self.emulator_console_port} is open."
+        )
+
     # ---------- 模拟器启动与配置逻辑 ----------
     def _setup_emulator(self):
         print(f"[{self.emulator_name}] Starting setup sequence...")
@@ -440,17 +487,26 @@ class AndroidGym(BaseEnv):
                 "nerdctl", "run", "-td",
                 "--privileged",
                 "-p", f"{self.emulator_console_port}:5555",
-                "--name", f"redroid_{self.emulator_name}",
+                "--name", f"redroid_{self.emulator_name}_{self.emulator_console_port}",
                 "redroid/redroid:10.0.0-latest",
                 "androidboot.redroid_gpu_mode=guest",
             ]
-            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-            container_id = result.stdout.strip()
-            print(f"[Info] Redroid container started: {container_id}")
-            self.container_id = container_id
+
+            try:
+                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+                container_id = result.stdout.strip()
+                print(f"[Info] Redroid container started: {container_id}")
+                self.container_id = container_id
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Failed to start redroid container! Error: {e.stderr}")
+                raise  # 容器启动失败直接抛出异常，无需继续
+
             # adb connect
-            cmd = [self.adb_path, "connect", self.device_serial]
-            subprocess.run(cmd, check=True)
+            self._adb_connect_with_retry(
+                max_retries=60,       # 最大重试次数
+                retry_interval=5,     # 每次重试间隔（秒）
+                timeout=300            # 总超时时间（秒）
+            )
         else:
             cmd = [
                 self.emulator_cmd_path,
