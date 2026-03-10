@@ -18,14 +18,18 @@ log = logging.getLogger("yaml_aggregator")
 _insert_tasks: Set[asyncio.Task] = set()
 
 
-async def _do_bulk_insert(pending_records: list, batch_size: int = 4000) -> None:
-    """Background coroutine: bulk-insert pending JobEnvironment records into SQLite."""
+async def _do_bulk_insert(pending_records: list, batch_size: int = 500) -> None:
+    """Background coroutine: bulk-insert pending JobEnvironment records into SQLite.
+
+    Each batch is committed in its own transaction so records become visible to
+    EnvPoolManager incrementally, rather than only after the entire insert completes.
+    """
     total = len(pending_records)
     try:
-        async with in_transaction():
-            for i in range(0, total, batch_size):
+        for i in range(0, total, batch_size):
+            async with in_transaction():
                 await JobEnvironment.bulk_create(pending_records[i:i + batch_size])
-                log.info("Bulk insert progress: %d/%d", min(i + batch_size, total), total)
+            log.info("Bulk insert progress: %d/%d", min(i + batch_size, total), total)
         log.info("Bulk insert done: %d env records", total)
     except Exception:
         log.exception("Background bulk insert failed for %d records", total)
