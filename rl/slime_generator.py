@@ -377,16 +377,22 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
     # 根据weight_version过滤已完成的数据
     off_by_n = int(get_env("RL_OFF_BY_N"))
     filter_by_weight_version(data_buffer, current_version=rollout_id, off_by_n=off_by_n)
-    data_number_to_fetch = (args.rollout_batch_size - data_buffer.get_buffer_length()) * args.n_samples_per_prompt
-    print(f"INFO: buffer length: {data_buffer.get_buffer_length()}, data_number_to_fetch: {data_number_to_fetch}")
-    if data_number_to_fetch <= 0:
+    buffer_length = data_buffer.get_buffer_length()
+    needed_groups = max(0, args.rollout_batch_size - buffer_length)
+    data_number_to_fetch = needed_groups * args.n_samples_per_prompt
+    print(f"INFO: buffer length: {buffer_length}, data_number_to_fetch: {data_number_to_fetch}")
+    if needed_groups <= 0:
         print(
             f"❕buffer length: {data_buffer.get_buffer_length()}, buffer has enough data, return {args.rollout_batch_size} prompts"
         )
         final_return_results = data_buffer.get_samples(args.rollout_batch_size)
-        # Record used metrics
         for group in final_return_results:
             for sample in group:
+                if sample.reward is None:
+                    raise RuntimeError(
+                        "Encountered reward=None after rollout assembly. "
+                        "The rollout buffer is likely underfilled."
+                    )
                 metrics.record("used/reward", float(sample.reward), AggType.MEAN)
                 metrics.record("used/response_length", float(sample.response_length), AggType.MEAN)
                 meta = getattr(sample, "metadata", {}) or {}
@@ -399,20 +405,18 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
     retry_times = 0
     all_meta_info = []
 
-    # 需要的 group 数量
-    need_groups = data_number_to_fetch // args.n_samples_per_prompt
-    valid_groups = []
-
     if args.fetch_trajectory_retry_times == -1:
         print(
             f"⚠️  [get_rollout_data] Fetch trajectory retry times set to -1, will retry indefinitely until sufficient data is collected"
         )
 
-    # 持续获取数据，直到有足够的符合版本要求的 groups
-    while len(valid_groups) < need_groups and (args.fetch_trajectory_retry_times == -1 or retry_times < args.fetch_trajectory_retry_times):
+    # 持续获取数据，直到 buffer 中有足够的可训练 groups
+    while data_buffer.get_buffer_length() < args.rollout_batch_size and (
+        args.fetch_trajectory_retry_times == -1 or retry_times < args.fetch_trajectory_retry_times
+    ):
+        retry_times += 1
         try:
-            # 按实际需要的数量获取（还差多少就获取多少）
-            remaining_groups = need_groups - len(valid_groups)
+            remaining_groups = args.rollout_batch_size - data_buffer.get_buffer_length()
             fetch_sample_count = remaining_groups * args.n_samples_per_prompt
             print(f"need sample count: fetch_sample_count: {fetch_sample_count}")
             raw_results = []
@@ -437,6 +441,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
             grouped_results = group_by_instance_id(raw_results)
 
             # 按 group 过滤：group 中所有 sample 都必须符合版本要求
+            valid_groups = []
             for group in grouped_results:
                 rewards = [record.get("reward") for record in group]
                 if len(set(rewards)) == 1:
@@ -455,18 +460,69 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
                         f"current_version={rollout_id}, off_by_n={off_by_n}"
                     )
 
-            print(f"✅ Valid groups collected: {len(valid_groups)}/{need_groups}")
+            print(f"✅ Valid groups collected this round: {len(valid_groups)}")
 
-            # 如果已经有足够的 valid groups，退出循环
-            if len(valid_groups) >= need_groups:
-                break
+            sample_results = []
+            for group_record in valid_groups:
+                group_results = []
+                drop_group = False
+                for record in group_record:
+                    oai_messages = record["messages"]
+                    session_id = record["extra_info"].get("session_id", "")
+
+                    max_length = _llm_proxy_module.STATE.max_length
+                    tokens, response_mask, _image_data, _messages_str, mm_train_inputs = (
+                        TRAJECTORY_MASK_BUILDER.get_training_info(session_id, oai_messages)
+                    )
+                    if not tokens and not response_mask and _messages_str == "":
+                        logger.warning(
+                            "Drop rollout group due to unmatched trajectory: instance_id=%s session_id=%s group_id=%s",
+                            record.get("instance_id"),
+                            session_id,
+                            record["extra_info"].get("group_id", ""),
+                        )
+                        drop_group = True
+                        break
+                    if max_length is not None and len(tokens) > max_length:
+                        tokens = tokens[:max_length]
+                        response_mask = response_mask[:max_length]
+
+                    token_ids, loss_mask, response_length = build_loss_mask_from_response_mask(tokens, response_mask)
+                    write_debug_to_file(tokenizer, rollout_id, record, oai_messages, token_ids, loss_mask, response_length)
+
+                    metadata = dict(record["extra_info"])
+                    sample = Sample(
+                        index=record["instance_id"],
+                        prompt=record["uid"],
+                        tokens=token_ids,
+                        response_length=response_length,
+                        reward=record["reward"],
+                        status=(
+                            Sample.Status.COMPLETED
+                            if "finish_reason" not in record["extra_info"]
+                            or record["extra_info"]["finish_reason"] != "length"
+                            else Sample.Status.TRUNCATED
+                        ),
+                        loss_mask=loss_mask,
+                        metadata=metadata,
+                    )
+
+                    if mm_train_inputs is not None:
+                        sample.multimodal_train_inputs = mm_train_inputs
+
+                    group_results.append(sample)
+
+                if drop_group:
+                    continue
+                sample_results.append(group_results)
+            data_buffer.add_samples(sample_results)
+            print(
+                "✅ Trainable groups added this round: "
+                f"{len(sample_results)}, buffer length: {data_buffer.get_buffer_length()}/{args.rollout_batch_size}"
+            )
 
         except Exception as err:
             print(f"[get_rollout_data] Failed to get rollout data: {err}, retry times: {retry_times}")
-            retry_times += 1
-
-    # 使用所有符合版本要求的 valid_groups
-    results = valid_groups
 
     if len(all_meta_info) > 0 and "finished_groups" in all_meta_info[0]:
         finished_groups_instance_id_list = []
@@ -475,72 +531,21 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
 
         data_buffer.update_metadata({str(rollout_id): finished_groups_instance_id_list})
 
-    print("finally get rollout data with length: ", len(results))
-    sample_results = []
+    print("finally buffered trainable group count: ", data_buffer.get_buffer_length())
+    if data_buffer.get_buffer_length() < args.rollout_batch_size:
+        raise RuntimeError(
+            "Insufficient trainable rollout groups after filtering and trajectory matching: "
+            f"buffer_length={data_buffer.get_buffer_length()}, required={args.rollout_batch_size}"
+        )
 
-    for group_record in results:
-        group_results = []
-        drop_group = False
-        for record in group_record:
-            oai_messages = record["messages"]
-            session_id = record["extra_info"].get("session_id", "")
-
-            # Get tokens + response_mask + mm_train_inputs directly from in-process TrajectoryMaskBuilder
-            max_length = _llm_proxy_module.STATE.max_length
-            tokens, response_mask, _image_data, _messages_str, mm_train_inputs = (
-                TRAJECTORY_MASK_BUILDER.get_training_info(session_id, oai_messages)
-            )
-            if not tokens and not response_mask and _messages_str == "":
-                logger.warning(
-                    "Drop rollout group due to unmatched trajectory: instance_id=%s session_id=%s group_id=%s",
-                    record.get("instance_id"),
-                    session_id,
-                    record["extra_info"].get("group_id", ""),
-                )
-                drop_group = True
-                break
-            if max_length is not None and len(tokens) > max_length:
-                tokens = tokens[:max_length]
-                response_mask = response_mask[:max_length]
-
-            token_ids, loss_mask, response_length = build_loss_mask_from_response_mask(tokens, response_mask)
-
-            # 写入调试文件
-            write_debug_to_file(tokenizer, rollout_id, record, oai_messages, token_ids, loss_mask, response_length)
-
-            # 构建 metadata（从 extra_info 复制，已包含 weight_version）
-            metadata = dict(record["extra_info"])
-            sample = Sample(
-                index=record["instance_id"],
-                prompt=record["uid"],
-                tokens=token_ids,
-                response_length=response_length,
-                reward=record["reward"],
-                status=(
-                    Sample.Status.COMPLETED
-                    if "finish_reason" not in record["extra_info"]
-                    or record["extra_info"]["finish_reason"] != "length"
-                    else Sample.Status.TRUNCATED
-                ),
-                loss_mask=loss_mask,
-                metadata=metadata,
-            )
-
-            # VLM training: mm_train_inputs already computed by TrajectoryMaskBuilder
-            if mm_train_inputs is not None:
-                sample.multimodal_train_inputs = mm_train_inputs
-
-            group_results.append(sample)
-        if drop_group:
-            continue
-        sample_results.append(group_results)
-
-    data_buffer.add_samples(sample_results)
     final_return_results = data_buffer.get_samples(args.rollout_batch_size)
-
-    # Record used metrics
     for group in final_return_results:
         for sample in group:
+            if sample.reward is None:
+                raise RuntimeError(
+                    "Encountered reward=None after rollout assembly. "
+                    "The rollout buffer is likely underfilled."
+                )
             metrics.record("used/reward", float(sample.reward), AggType.MEAN)
             metrics.record("used/response_length", float(sample.response_length), AggType.MEAN)
             meta = getattr(sample, "metadata", {}) or {}
