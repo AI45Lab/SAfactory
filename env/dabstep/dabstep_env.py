@@ -16,7 +16,7 @@ DABStepEnv: 环境 = runner（完整体）
 - 每步可调用 render() 取一张"过程图"存盘
 """
 
-import os, re, io, sys, json, glob, time, textwrap, logging
+import os, re, io, sys, json, glob, time, textwrap, logging, shutil
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 
@@ -82,9 +82,15 @@ def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
 
 def _try_import_official():
     try:
-        from dabstep_benchmark.utils import evaluate as official_evaluate  # type: ignore
+        # 如果用户 pip install 了，这里就能直接搜到
+        from dabstep_benchmark.utils import evaluate as official_evaluate
         return True, official_evaluate
-    except Exception:
+    except ImportError:
+        # 如果搜不到，说明没装，在这里打印一行温馨提示
+        print("[DABStepEnv] 提示：未检测到官方评测库。如需评分功能，请运行: pip install -e ./path/to/dabstep_dist (或对应的 Git 地址)")
+        return False, None
+    except Exception as e:
+        print(f"[DABStepEnv] 导入评测库时发生意外错误: {e}")
         return False, None
     
 def _set_mono_font(self) -> None:
@@ -250,8 +256,8 @@ class DABStepEnv(BaseEnv):
     """
     完整版 DABStep 环境（包含 runner 能力）
     """
-    def __init__(self, data_dir: str, context_dir: str = "pack/context",
-             tasks_dir: str = "pack/tasks",
+    def __init__(self, data_dir: str, context_dir: str = "context",
+             tasks_dir: str = "tasks",
              artifacts_dir: str = "env/dabstep/artifacts",
              split: str = "default", max_steps: int = 10, timeout: int = 60,
              limit: int = 0, only_task_id: str = "", env_id: str = "",
@@ -259,7 +265,6 @@ class DABStepEnv(BaseEnv):
              env_name: str = "dabstepgym", **kwargs):
         super().__init__(env_id=env_id, env_name=env_name)
 
-        # 基础路径
         self._data_root   = Path(data_dir).resolve()
         self._context_rel = Path(context_dir)
         self._tasks_rel   = Path(tasks_dir)
@@ -267,10 +272,7 @@ class DABStepEnv(BaseEnv):
 
         self._art_root.mkdir(parents=True, exist_ok=True)
         self._logger = _make_logger(self._art_root / "env_bootstrap.log")
-
-        bench_root = self._data_root
-        if str(bench_root) not in sys.path:
-            sys.path.insert(0, str(bench_root))
+        self._ensure_data_ready()
 
         # 运行参数
         self.split        = str(split).strip().lower()
@@ -345,6 +347,7 @@ class DABStepEnv(BaseEnv):
         self.obs_scratchpad_last_n = 3
         self._seen_code_sigs: set[str] = set()
         self._seen_out_sigs: set[str] = set()
+        self._last_out_sig: str = ""
 
         self.error_tips_enabled = True
         self._err_sig_counts: dict[str, int] = {}
@@ -364,19 +367,9 @@ class DABStepEnv(BaseEnv):
 
         # 任务加载
         self._load_tasks()
+        self._has_official, self._official_eval = _try_import_official()
 
-        try:
-            pack_path = (Path(os.getenv("DABSTEP_PACK_DIR")) if os.getenv("DABSTEP_PACK_DIR") else (Path(data_dir) / "pack")).resolve()
-            if pack_path.exists():
-                p = str(pack_path)
-                if p not in sys.path:
-                    sys.path.insert(0, p)
-        except Exception:
-            pass
-
-        self._logger.info("DABStepEnv initialized. split=%s, limit=%s, only_task_id=%s",
-                          self.split, self.limit, self.only_task_id)
-        
+        self._logger.info(f"DABStepEnv已成功唤醒！当前数据目录: {self._data_root} | split={self.split} | limit={self.limit}")
         
     # --- bind module-level helpers as methods on this class ---
     _set_mono_font = _set_mono_font
@@ -392,26 +385,70 @@ class DABStepEnv(BaseEnv):
     _tint = staticmethod(_tint)
     _trace_to_rows = _trace_to_rows
 
-    # ---------- path utils ----------
-    def _pack_root(self) -> Path:
-        env_pack = os.getenv("DABSTEP_PACK_DIR")
-        if env_pack:
-            return Path(env_pack).resolve()
-        p1 = self._data_root / "pack"
-        return p1 if p1.exists() else self._data_root
+    def _ensure_data_ready(self):
+        context_path = self._data_root / self._context_rel
+        tasks_path = self._data_root / self._tasks_rel
+        context_ok = context_path.exists() and any(context_path.iterdir())
+        tasks_ok = tasks_path.exists() and any(tasks_path.glob("*.jsonl"))
+
+        if context_ok and tasks_ok:
+            return
+
+        self._logger.info("[自动装载] 检测到本地数据集缺失，正在下载...")
+        try:
+            # 1. 下载 context 文件（csv/json）
+            if not context_ok:
+                from huggingface_hub import snapshot_download
+                tmp_dir = self._data_root.parent / f"tmp_download_{_now_tag()}"
+                snapshot_download(
+                    repo_id="adyen/DABstep",
+                    repo_type="dataset",
+                    local_dir=tmp_dir,
+                    allow_patterns=["data/context/**"],  # 只下 context，跳过 submissions
+                    ignore_patterns=[".git*"],
+                    local_dir_use_symlinks=False, 
+                )
+                source_inner = tmp_dir / "data" / "context"
+                if not source_inner.exists():
+                    raise RuntimeError(f"下载后未找到 data/context/，实际内容: {list(tmp_dir.rglob('*'))[:10]}")
+                context_path.mkdir(parents=True, exist_ok=True)
+                for item in source_inner.iterdir():
+                    dest = context_path / item.name
+                    if dest.exists():
+                        dest.unlink() if dest.is_file() else shutil.rmtree(dest)
+                    shutil.move(str(item), str(dest))
+                shutil.rmtree(tmp_dir)
+                self._logger.info(f"[自动装载] context 文件已就绪: {context_path}")
+
+            # 2. 下载 tasks（通过 datasets API 导出为 jsonl）
+            if not tasks_ok:
+                from datasets import load_dataset
+                import json as _json
+                tasks_path.mkdir(parents=True, exist_ok=True)
+                for split in ["default", "dev"]:
+                    out_file = tasks_path / f"{split}_tasks.jsonl"
+                    self._logger.info(f"[自动装载] 正在导出 tasks split={split}...")
+                    ds = load_dataset("adyen/DABstep", name="tasks", split=split)
+                    with open(out_file, "w", encoding="utf-8") as f:
+                        for row in ds:
+                            f.write(_json.dumps(row, ensure_ascii=False) + "\n")
+                    self._logger.info(f"[自动装载] {split}_tasks.jsonl: {len(ds)} 条")
+
+            self._logger.info("[自动装载] 数据已全部就绪。")
+
+        except Exception as e:
+            self._logger.error(f"[自动装载] 失败: {e}")
+            raise RuntimeError(
+                f"无法自动获取数据。请手动执行:\n"
+                f"  pip install datasets huggingface_hub\n"
+                f"  并将 context/ 和 tasks/ 放到 {self._data_root}"
+            ) from e
 
     def _context_path(self) -> Path:
-        p = self._data_root / self._context_rel
-        if p.exists():
-            return p
-        p2 = self._pack_root() / "context"
-        return p2 if p2.exists() else p
+        return self._data_root / self._context_rel
 
     def _tasks_path(self) -> Path:
-        p = (self._data_root / self._tasks_rel / f"{self.split}_tasks.jsonl").resolve()
-        if p.exists():
-            return p
-        return (self._pack_root() / "tasks" / f"{self.split}_tasks.jsonl").resolve()
+        return self._data_root / self._tasks_rel / f"{self.split}_tasks.jsonl"
 
     # ---------- data loading ----------
     def _load_tasks(self) -> None:
@@ -419,7 +456,7 @@ class DABStepEnv(BaseEnv):
         if not tf.exists():
             raise FileNotFoundError(
                 f"Tasks file not found: {tf}\n"
-                f"请把 {self.split}_tasks.jsonl 放到 {self._tasks_rel}/ 或 pack/tasks/ 下。"
+                f"请把 {self.split}_tasks.jsonl 放到数据目录的 {self._tasks_rel}/ 子目录下。"
             )
         rows = _read_jsonl(tf)
         
@@ -475,7 +512,7 @@ class DABStepEnv(BaseEnv):
         ctx_dir = str(self._context_path())
         art_dir = str(self._artifact_dir)
         exec_locals = {
-            "data_dir": str(self._pack_root()),
+            "data_dir": str(self._data_root),
             "context_dir": ctx_dir,
             "artifact_dir": art_dir,
         }
@@ -628,7 +665,7 @@ class DABStepEnv(BaseEnv):
 
     def _debug_paths(self):
         try:
-            self._logger.info("pack_root=%s", str(self._pack_root()))
+            self._logger.info("data_root=%s", str(self._data_root))
             self._logger.info("context_path=%s", str(self._context_path()))
             self._logger.info("tasks_path=%s", str(self._tasks_path()))
             self._logger.info("artifacts_root=%s", str(self._art_root))
@@ -642,7 +679,7 @@ class DABStepEnv(BaseEnv):
         self._task        = self._next_task()
         self._task_id     = str(self._task.get("task_id", self._task_idx))
         self._question    = str(self._task.get("question", "") or "")
-        self._answer_format = str(self._task.get("answer_format", "") or "")
+        self._answer_format = str(self._task.get("guidelines", "") or self._task.get("answer_format", "") or "")
 
         # 状态清理
         self._agent_answer = ""
@@ -653,6 +690,7 @@ class DABStepEnv(BaseEnv):
         self.done         = False
         self._seen_code_sigs.clear()
         self._seen_out_sigs.clear()
+        self._last_out_sig = ""
         
         # 清空对话历史
         self._conversation_history = []
@@ -685,6 +723,7 @@ class DABStepEnv(BaseEnv):
             "metrics": {},
             "trace": [],
             "agent_answer": "",
+            "question": self._question,
         }
 
         return ResetOutput(observation=obs, info=info)
@@ -753,49 +792,7 @@ class DABStepEnv(BaseEnv):
             return self._conversation_history
         
         # ===== 后续调用：返回包含完整历史的格式化消息 =====
-        else:
-            sys_text = (
-                "You are continuing a data analysis task. "
-                "Below is the FULL conversation history. "
-                "Read it carefully and continue from where we left off."
-            )
-            
-            # 构造包含完整对话历史的大字符串
-            history_text = ""
-            history_text += "="*80 + "\n"
-            history_text += "COMPLETE CONVERSATION HISTORY\n"
-            history_text += "="*80 + "\n\n"
-            
-            # 显示问题
-            history_text += f"**Original Question:** {self._question}\n"
-            history_text += f"**Data location:** {ctx}\n"
-            history_text += f"**Available files:** {', '.join(files)}\n\n"
-            
-            # 显示所有对话轮次（跳过前2条system/user）
-            turn_num = 0
-            for i in range(2, len(self._conversation_history)):
-                msg = self._conversation_history[i]
-                role = msg["role"]
-                content = msg["content"]
-                
-                if role == "assistant":
-                    turn_num += 1
-                    history_text += f"\n{'='*80}\n"
-                    history_text += f"TURN {turn_num} - YOUR PREVIOUS RESPONSE\n"
-                    history_text += f"{'='*80}\n"
-                    history_text += content + "\n"
-                
-                elif role == "user":
-                    history_text += f"\n{'='*80}\n"
-                    history_text += f"TURN {turn_num} - EXECUTION FEEDBACK\n"
-                    history_text += f"{'='*80}\n"
-                    history_text += content + "\n"
-            
-            history_text += "\n" + "="*80 + "\n"
-            history_text += "NOW CONTINUE - Provide your next THOUGHT and CODE\n"
-            history_text += "REMEMBER: Use print() to show results!\n"
-            history_text += "="*80 + "\n"
-            
+        else:            
             return self._conversation_history
 
     def step(self, action: str) -> StepOutput:
@@ -815,6 +812,7 @@ class DABStepEnv(BaseEnv):
         self._conversation_history.append({"role": "assistant", "content": msg})
 
         stdout, error = "", ""
+        code = None
         final = self._extract_final(msg)
 
         if final:
@@ -879,7 +877,7 @@ class DABStepEnv(BaseEnv):
         # 未终止：构造包含上下文的反馈
         if not terminated and not truncated:
             recent_trace = self._trace[-self.obs_scratchpad_last_n:] if len(self._trace) > 0 else []
-            scratchpad = self._build_scratchpad(recent_trace, budget=4000)
+            #scratchpad = self._build_scratchpad(recent_trace, budget=4000)
             
             hints: List[str] = []
             is_duplicate_output = False
@@ -1045,10 +1043,10 @@ class DABStepEnv(BaseEnv):
             info=info,
         )
 
-
     # ---------- (dev) 单题评分 ----------
     def _score_current_task(self, pred: str) -> Dict[str, Any]:
-        has_official, official_eval = _try_import_official()
+        has_official = self._has_official
+        official_eval = self._official_eval
 
         gt = {
             "task_id": str(self._task_id),

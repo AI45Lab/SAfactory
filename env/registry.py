@@ -34,6 +34,10 @@ def _import_dab_env() -> Type:
     from env.dabstep.dabstep_env import  DABStepEnv
     return DABStepEnv
 
+def _import_dw_env():
+    from env.dwgym.dw_env import DiscoveryWorldEnv
+    return DiscoveryWorldEnv
+
 def _import_gym_env() -> Type:
     from env.gitgym.git_env import GitGym
     return GitGym

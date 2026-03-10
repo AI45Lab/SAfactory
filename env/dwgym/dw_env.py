@@ -332,19 +332,20 @@ class DiscoveryWorldEnv(BaseEnv):
                 action_narration=action_narration
             )
             
-            user_content: List[MessageContent] = [
-                TextContent(type="text", text=observation_text)
-            ]
-            
             frame_base64 = None
+            user_content = [{"type": "text", "text": observation_text}]
+
             if self.use_vision:
                 frame_base64 = self._get_current_frame()
                 if frame_base64:
-                    user_content.append(self._create_image_content(frame_base64))
+                    user_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{frame_base64}"}
+                    })
                     if self.capture_frames:
                         self.frame_history.append(frame_base64)
-            
-            user_message = OpenAIMessage(role="user", content=user_content)
+
+            user_message = {"role": "user", "content": user_content}
             self._add_to_conversation_history(user_message)
             
             scorecard = self.api.getTaskScorecard()
