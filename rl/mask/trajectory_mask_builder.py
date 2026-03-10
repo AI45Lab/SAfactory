@@ -5,7 +5,11 @@
 2. 追加：在匹配到的记录基础上，追加新的 context tokens 和 output tokens
 """
 
+import json
 import logging
+import os
+import time
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 
 from qwen_vl_utils import process_vision_info
@@ -209,10 +213,19 @@ class TrajectoryMaskBuilder:
         if session_id not in self.session_data:
             return None, 0
 
+        if target_messages_str:
+            target_messages_str = unicodedata.normalize("NFC", target_messages_str)
         best_record = None
         best_match_len = 0
 
         for record in self.session_data[session_id]:
+            normalized_record_messages_str = (
+                unicodedata.normalize("NFC", record["messages_str"])
+                if record["messages_str"]
+                else record["messages_str"]
+            )
+            if normalized_record_messages_str != record["messages_str"]:
+                record["messages_str"] = normalized_record_messages_str
             matched_len = self.match_prefix_with_mask(
                 record["messages_str"],
                 target_messages_str
@@ -222,6 +235,38 @@ class TrajectoryMaskBuilder:
                 best_match_len = matched_len
 
         return best_record, best_match_len
+
+    def _write_no_match_debug_file(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        normalized_messages: List[Dict[str, Any]],
+        target_messages_str: str,
+    ) -> str:
+        debug_root = os.environ.get("AIEVOBOX_ROOT", os.getcwd())
+        debug_dir = os.path.join(debug_root, "logs", "trajectory_match_miss")
+        os.makedirs(debug_dir, exist_ok=True)
+
+        session_name = session_id or "empty_session"
+        debug_file = os.path.join(
+            debug_dir,
+            f"{session_name}_{time.time_ns()}.json",
+        )
+
+        payload = {
+            "session_id": session_id,
+            "messages": messages,
+            "normalized_messages": normalized_messages,
+            "target_messages_str": target_messages_str,
+            "target_messages_str_len": len(target_messages_str),
+            "session_records": self.session_data.get(session_id, []),
+            "session_records_count": len(self.session_data.get(session_id, [])),
+        }
+
+        with open(debug_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+        return debug_file
 
     def prepare_generate_input(
         self,
@@ -266,6 +311,8 @@ class TrajectoryMaskBuilder:
                 proc_out["input_ids"][0],
                 skip_special_tokens=False,
             )
+        if current_messages_str:
+            current_messages_str = unicodedata.normalize("NFC", current_messages_str)
 
         # 字符级匹配
         matched_record, matched_prefix_len = self._find_best_match(
@@ -285,6 +332,8 @@ class TrajectoryMaskBuilder:
             # 最安全的方式是遍历 tokens 逐个 decode，找到匹配位置
             for i, token in enumerate(matched_record["tokens"]):
                 decoded = self.tokenizer.decode(matched_record["tokens"][:i+1])
+                if decoded:
+                    decoded = unicodedata.normalize("NFC", decoded)
                 if len(decoded) <= matched_prefix_len:
                     matched_tokens_count = i + 1
                 else:
@@ -366,7 +415,10 @@ class TrajectoryMaskBuilder:
 
         # 如果没有传入 matched_record，重新匹配
         if matched_record is None:
-            matched_record, _ = self._find_best_match(session_id, messages_str)
+            matched_record, _ = self._find_best_match(
+                session_id,
+                unicodedata.normalize("NFC", messages_str) if messages_str else messages_str,
+            )
 
         # 在匹配的基础上构建 tokens、response_mask、logprobs
         if matched_record is not None and matched_tokens_count > 0:
@@ -406,6 +458,8 @@ class TrajectoryMaskBuilder:
         # 构建 messages_str（通过 append 方式，而不是重新 apply_chat_template）
         # 直接 append decoded_output，它已经包含了所有格式化字符（如 <|im_end|>\n）
         full_messages_str = messages_str + self.generation_prompt + decoded_output
+        if full_messages_str:
+            full_messages_str = unicodedata.normalize("NFC", full_messages_str)
 
         # 保存新记录
         new_record = {
@@ -458,12 +512,26 @@ class TrajectoryMaskBuilder:
                 k: v for k, v in proc_out.items()
                 if k not in ("input_ids", "attention_mask")
             } or None
+        if messages_str:
+            messages_str = unicodedata.normalize("NFC", messages_str)
 
         # 查找匹配的记录
         matched_record, matched_len = self._find_best_match(session_id, messages_str)
         if matched_record is None:
             has_data = session_id in self.session_data and len(self.session_data[session_id]) > 0
-            logger.warning(f"get_training_info failed: session={session_id}, has_data={has_data}, matched_len={matched_len}")
+            debug_file = self._write_no_match_debug_file(
+                session_id=session_id,
+                messages=messages,
+                normalized_messages=normalized_messages,
+                target_messages_str=messages_str,
+            )
+            logger.warning(
+                "get_training_info failed: session=%s, has_data=%s, matched_len=%s, debug_file=%s",
+                session_id,
+                has_data,
+                matched_len,
+                debug_file,
+            )
             return [], [], [], "", None
         return (
             list(matched_record["tokens"]),
@@ -475,7 +543,10 @@ class TrajectoryMaskBuilder:
 
     def query_logprobs(self, session_id: str, messages_str: str) -> List[float]:
         """查询与 messages_str 匹配的 logprobs。"""
-        matched_record, _ = self._find_best_match(session_id, messages_str)
+        matched_record, _ = self._find_best_match(
+            session_id,
+            unicodedata.normalize("NFC", messages_str) if messages_str else messages_str,
+        )
         if matched_record is None:
             return []
         return list(matched_record["logprobs"])

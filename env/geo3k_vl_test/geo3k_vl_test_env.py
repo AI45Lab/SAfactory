@@ -13,6 +13,7 @@ from openai.types.chat import ChatCompletionMessageParam
 from core.env.base_env import BaseEnv
 from core.env.env_register import register_env
 from core.types.base import RenderOutput, ResetOutput, StepOutput
+from env.geo3k_vl_test.math_utils import extract_answer as extract_boxed_answer
 from env.geo3k_vl_test.math_utils import grade_answer_verl
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ class Geo3kVLTestEnv(BaseEnv):
         self.step_count: int = 0
         self.total_tool_calls: int = 0
         self.final_answer: Optional[str] = None
+        self.latest_boxed_answer: Optional[str] = None
         self.last_tool_score: Optional[float] = None
         self.messages: List[ChatCompletionMessageParam] = []
         self.tool_calls: List[Dict[str, Any]] = []
@@ -82,18 +84,10 @@ class Geo3kVLTestEnv(BaseEnv):
         self.step_count = 0
         self.total_tool_calls = 0
         self.final_answer = None
+        self.latest_boxed_answer = None
         self.last_tool_score = None
         self.tool_calls = []
         self.done = False
-
-        system_text = (
-            "You are solving a geometry problem with optional tool feedback.\n"
-            "If you want to verify a candidate answer, call the tool using:\n"
-            "<tool_call>\n"
-            '{"name":"calc_score","arguments":{"answer":"<your_answer>"}}\n'
-            "</tool_call>\n"
-            "When you are ready, output your final answer in the format: Answer: \\boxed{...}"
-        )
 
         user_content: List[Dict[str, Any]] = [
             {"type": "text", "text": self.question},
@@ -104,7 +98,6 @@ class Geo3kVLTestEnv(BaseEnv):
                 user_content.append({"type": "image_url", "image_url": {"url": image_url}})
 
         self.messages = [
-            {"role": "system", "content": system_text},  # type: ignore[typeddict-item]
             {"role": "user", "content": user_content},  # type: ignore[typeddict-item]
         ]
 
@@ -124,8 +117,18 @@ class Geo3kVLTestEnv(BaseEnv):
 
         # Hard turn cap at env level.
         if not (terminated or truncated) and self.step_count >= self.max_turns:
+            if self.latest_boxed_answer:
+                reward = self._score_answer(self.latest_boxed_answer)
+                reward_source = "latest_boxed_answer"
+            else:
+                reward = 0.0
+                reward_source = "missing_boxed_answer"
+            self.final_answer = self.latest_boxed_answer
             terminated = True
             self.done = True
+            extra_info = dict(extra_info)
+            extra_info["final_score"] = reward
+            extra_info["reward_source"] = reward_source
 
         info = {
             "question": self.question,
@@ -191,15 +194,25 @@ class Geo3kVLTestEnv(BaseEnv):
         msg = (assistant_msg or "").strip()
         self.messages.append({"role": "assistant", "content": msg})  # type: ignore[typeddict-item]
         msg_wo_think = re.sub(r"<think>.*?</think>", "", msg, flags=re.DOTALL).strip()
+        boxed_answer = extract_boxed_answer(msg_wo_think)
+        if boxed_answer is not None:
+            boxed_answer = boxed_answer.strip()
+            if boxed_answer:
+                self.latest_boxed_answer = boxed_answer
 
         tool_call = self._extract_tool_call(msg_wo_think)
         if tool_call is not None:
             return self._handle_tool_call(tool_call)
 
-        self.final_answer = msg_wo_think
-        score = self._score_answer(msg_wo_think)
+        self.final_answer = self.latest_boxed_answer or msg_wo_think
+        if self.latest_boxed_answer:
+            score = self._score_answer(self.latest_boxed_answer)
+            reward_source = "latest_boxed_answer"
+        else:
+            score = 0.0
+            reward_source = "missing_boxed_answer"
         self.done = True
-        return score, True, False, {"final_score": score}
+        return score, True, False, {"final_score": score, "reward_source": reward_source}
 
     def _handle_tool_call(self, tool_call: Dict[str, Any]) -> Tuple[float, bool, bool, Dict[str, Any]]:
         name = str(tool_call.get("name", "")).strip()
@@ -232,11 +245,6 @@ class Geo3kVLTestEnv(BaseEnv):
         self.tool_calls.append(tool_record)
 
         self._append_tool_feedback(self._build_tool_feedback(score, parsed_answer))
-
-        # If we reached max turns, end and use the last tool score as reward.
-        if self.step_count >= self.max_turns:
-            self.done = True
-            return score, True, False, {"tool_executed": True, "tool_score": score}
 
         return 0.0, False, False, {"tool_executed": True, "tool_score": score}
 
@@ -287,14 +295,30 @@ class Geo3kVLTestEnv(BaseEnv):
         return 0.0
 
     def _build_tool_feedback(self, score: float, parsed_answer: str) -> str:
+        turn_idx = self.step_count - 1  # zero-based
+        last_warning_turn = None
+        if self.max_turns is not None:
+            if self.max_turns >= 2:
+                last_warning_turn = self.max_turns - 2
+            else:
+                last_warning_turn = self.max_turns - 1
+        is_final_turn = last_warning_turn is not None and turn_idx >= last_warning_turn
+
         if score == 1.0:
             return (
                 f"calc_score result: {score}. Parsed answer '{parsed_answer}' matches the reference. "
-                "You can now provide your final answer in \\boxed{}."
+                "You can now stop reasoning and provide the final solution in \\boxed{}."
+            )
+        if is_final_turn:
+            return (
+                f"calc_score result: {score}. Parsed answer '{parsed_answer}' does not match the reference. "
+                "Your answer is wrong. You may need to reason in a different way. Don't repeat your answer unless necessary. "
+                "Since you only have one chance to answer, don't call tool again. "
+                "You should provide your final answer in the form Answer: \\boxed{$Answer} where $Answer is your final answer to this problem."
             )
         return (
             f"calc_score result: {score}. Parsed answer '{parsed_answer}' does not match the reference. "
-            "Reason again and try a different candidate answer."
+            "Your answer is wrong. You may need to reason in a different way. Don't repeat your answer unless necessary."
         )
 
     @staticmethod

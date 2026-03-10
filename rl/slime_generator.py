@@ -480,6 +480,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
 
     for group_record in results:
         group_results = []
+        drop_group = False
         for record in group_record:
             oai_messages = record["messages"]
             session_id = record["extra_info"].get("session_id", "")
@@ -489,6 +490,15 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
             tokens, response_mask, _image_data, _messages_str, mm_train_inputs = (
                 TRAJECTORY_MASK_BUILDER.get_training_info(session_id, oai_messages)
             )
+            if not tokens and not response_mask and _messages_str == "":
+                logger.warning(
+                    "Drop rollout group due to unmatched trajectory: instance_id=%s session_id=%s group_id=%s",
+                    record.get("instance_id"),
+                    session_id,
+                    record["extra_info"].get("group_id", ""),
+                )
+                drop_group = True
+                break
             if max_length is not None and len(tokens) > max_length:
                 tokens = tokens[:max_length]
                 response_mask = response_mask[:max_length]
@@ -521,6 +531,8 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
                 sample.multimodal_train_inputs = mm_train_inputs
 
             group_results.append(sample)
+        if drop_group:
+            continue
         sample_results.append(group_results)
 
     data_buffer.add_samples(sample_results)
