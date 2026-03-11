@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional, Set, Tuple, List
 
 from core.llm import StaticBaseURLProvider, SessionSuffixBaseURLProvider
 from core.data_manager.manager import DataManager
-from core.data_manager.yaml_aggregator import all_env_yaml_load, sync_configs_to_db
+from core.data_manager.yaml_aggregator import all_env_yaml_load, sync_configs_to_db, wait_for_pending_inserts
 
 from interactor import Interactor, ActorHandle, ActorPool
 from manager import EnvPoolManager
@@ -559,7 +559,12 @@ async def main():
             await stop_process(local_proc)
             
         await asyncio.sleep(0.5)
-        
+
+        try:
+            await wait_for_pending_inserts()
+        except Exception:
+            log.exception("wait_for_pending_inserts failed (ignored)")
+
         try:
             log.info("Closing data manager...")
             await data_manager.close()
