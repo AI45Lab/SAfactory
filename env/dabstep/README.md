@@ -2,43 +2,79 @@
 
 DABStep benchmark 的 Gymnasium 环境封装，支持自动数据下载、多进程分片、逐步渲染。
 
+> 本文档假设你已完成 AIEvoBox 的安装，当前工作目录为 `AIEvoBox/`。
+
 ---
 
 ## 快速开始
 
-### 1. 前置依赖
+### 第一步：安装官方评测库（可选）
+
 ```bash
-# 1. 克隆 AIEvoBox 仓库
-git clone https://gitee.pjlab.org.cn/L2/safeai/kilab/AIEvoBox.git
-
-# 2. 安装依赖
-cd AIEvoBox
-pip install -r requirements.txt
-
-# 3. 安装官方评测库（可选，不安装会回退到近似评分）
 pip install git+https://huggingface.co/spaces/adyen/DABstep.git@main
-
-# 4. 进入 dabstep 目录
-cd env/dabstep
 ```
 
-数据会在首次初始化时**自动从 HuggingFace 下载**，无需手动准备。
+> 不安装时会自动回退到近似评分，本地调试不影响使用。
 
 ---
 
-## 数据说明
+### 第二步：配置环境参数
 
-数据来源：[adyen/DABstep](https://huggingface.co/datasets/adyen/DABstep)，CC-BY-4.0 协议。
+编辑 `env/dabstep/dabstep_config.yaml`：
 
-本项目**不包含任何数据文件**，初始化时自动下载到 `data_dir` 指定目录：
+```yaml
+env_params:
+  data_dir: "env/dabstep/data"            # 数据存储路径
+  artifacts_dir: "env/dabstep/artifacts"  # 产物输出路径
+  split: "dev"                            # 建议先用 "dev"（10 题，有答案，可本地评分）
+  limit: 1                                # 快速冒烟：只跑 1 题；改为 0 跑完整 shard
+  shard_index: 0
+  num_shards: 8
+  max_steps: 10
+  timeout: 60
+```
+
+**数据会在首次运行时自动从 HuggingFace 下载**，无需手动准备。下载后的目录结构：
 
 ```
-<data_dir>/
-├── context/          # CSV/JSON 数据文件（via snapshot_download）
+env/dabstep/data/
+├── context/          # CSV/JSON 背景数据
 └── tasks/
-    ├── default_tasks.jsonl   # 450 个任务（无答案，用于提交 leaderboard）
-    └── dev_tasks.jsonl       # 10 个任务（有答案，用于本地评分）
+    ├── default_tasks.jsonl   # 450 题（无答案，用于提交 leaderboard）
+    └── dev_tasks.jsonl       # 10 题（有答案，用于本地评分）
 ```
+
+---
+
+### 第三步：运行参考
+
+```bash
+python launcher.py \
+  --mode local \
+  --manager-config manager/config.yaml \
+  --env-config env/dabstep/dabstep_config.yaml \
+  --llm-base-url <your-base-url> \
+  --llm-api-key  <your-api-key> \
+  --llm-model    <model-name> \
+  --pool-size 1
+```
+
+---
+
+### 第四步：查看结果
+
+每道题运行完毕后，产物写入 `env/dabstep/artifacts/`：
+
+```
+artifacts/
+└── dabstep_20260309_193140_<task_id>/
+    ├── env.log             # 完整运行日志
+    ├── trace.jsonl         # 每步 thought / code / output 记录
+    ├── dev_metrics.json    # 评分结果（仅 split=dev 时生成）
+    └── render_step_*.png   # 可视化截图（调用 render() 时生成）
+```
+
+用 `dev` split 时，打开 `dev_metrics.json` 即可查看本地得分。
 
 ---
 
@@ -46,44 +82,14 @@ cd env/dabstep
 
 | split | 任务数 | 有答案 | 用途 |
 |-------|--------|--------|------|
-| `default` | 450 | 否 | 正式评测，提交 leaderboard |
-| `dev` | 10 | 是 | 本地调试与评分 |
+| `dev` | 10 | ✅ | 本地调试与评分 |
+| `default` | 450 | ❌ | 正式评测，提交 leaderboard |
 
 ---
 
-## YAML 配置说明
+## 扩展：多分片并行
 
-```yaml
-env_params:
-  data_dir: "env/dabstep/data"            # 数据存储路径（相对于进程工作目录）
-  artifacts_dir: "env/dabstep/artifacts"  # 产物输出路径
-  split: "default"                        # "default" 或 "dev"
-  limit: 0                                # 0 = 不限制，跑完该 shard 的全部任务
-  shard_index: 0                          # 当前分片索引（从 0 开始）
-  num_shards: 8                           # 总分片数
-  max_steps: 10                           # 每题最大交互步数
-  timeout: 60                             # 代码执行超时（秒）
-```
-
-### `limit` 的行为
-
-- `limit: 1`：每个 shard 只取 1 个任务，**会反复跑同一题**，仅用于快速冒烟测试。
-- `limit: 0`：跑完该 shard 分到的所有任务后停止（推荐）。
-
-### 分片任务分布示例
-
-`dev` split（10 个任务）按 `num_shards: 8` 分片：
-
-| shard_index | 任务数 |
-|-------------|--------|
-| 0, 1 | 2 个 |
-| 2 ~ 7 | 1 个 |
-
-`default` split（450 个任务）按 `num_shards: 8` 分片：每个 shard 约 **56 个任务**。
-
----
-
-## 多分片并行配置示例
+确认单 shard 跑通后，将 `split` 改为 `default`，并在配置中展开多个 shard：
 
 ```yaml
 environments:
@@ -93,7 +99,7 @@ environments:
       data_dir: "env/dabstep/data"
       artifacts_dir: "env/dabstep/artifacts"
       split: "default"
-      limit: 0
+      limit: 0          # 0 = 跑完该 shard 所有任务
       shard_index: 0
       num_shards: 8
 
@@ -106,31 +112,17 @@ environments:
       limit: 0
       shard_index: 1
       num_shards: 8
-  # ... shard 2~7 同理
+  # shard 2~7 同理
 ```
+
+`default` split 按 8 分片后每个 shard 约 **56 题**；`dev` split 的分布：
+
+| shard_index | 任务数 |
+|-------------|--------|
+| 0, 1 | 2 题 |
+| 2 ~ 7 | 1 题 |
 
 ---
-
-## 产物目录结构
-
-每题运行后在 `artifacts_dir` 下生成独立子目录：
-
-```
-artifacts/
-└── dabstep_20260309_193140_<task_id>/
-    ├── env.log           # 完整运行日志
-    ├── trace.jsonl       # 每步 thought/code/output 记录
-    ├── dev_metrics.json  # 评分结果（仅 split=dev）
-    └── render_step_*.png # 可视化图（调用 render() 时生成）
-```
-
----
-
-## 注意事项
-
-- `data_dir` 和 `artifacts_dir` 均为**相对于进程工作目录**的路径，Ray worker 启动目录决定实际存储位置。
-- `dev` split 答案字段为 `answer`，`default` split 答案为空（不公开）。
-- 任务字段名为 `guidelines`（非 `answer_format`），环境内部已做兼容处理。
 
 ## 相关链接
 
@@ -139,4 +131,4 @@ artifacts/
 
 ## 许可证
 
-本适配器遵循 AIEvoBox 的许可证。DABStep 数据集基于 CC-BY-4.0 协议，请参考其官方文档。
+本适配器遵循 AIEvoBox 的许可证。DABStep 数据集基于 CC-BY-4.0 协议。
