@@ -215,12 +215,22 @@ async def _sync_sqlite(data_manager, yaml_configs: List[Dict]) -> sqlite3.Connec
                 matched_env_ids.add(new_env_id)
                 added += 1
 
-    # Schedule bulk insert as a non-blocking background task
+    # Commit the first batch synchronously so EnvPoolManager's initial DB query
+    # (build_binding_plan) always finds data. The rest goes to a background task.
     if pending_records:
-        task = asyncio.create_task(_do_bulk_insert(pending_records))
-        _insert_tasks.add(task)
-        task.add_done_callback(_insert_tasks.discard)
-        log.info("Scheduled background bulk insert: %d env records", len(pending_records))
+        BATCH = 500
+        async with in_transaction():
+            await JobEnvironment.bulk_create(pending_records[:BATCH])
+        log.info(
+            "Initial sync insert: %d/%d env records committed",
+            min(BATCH, len(pending_records)), len(pending_records),
+        )
+        remaining = pending_records[BATCH:]
+        if remaining:
+            task = asyncio.create_task(_do_bulk_insert(remaining, batch_size=BATCH))
+            _insert_tasks.add(task)
+            task.add_done_callback(_insert_tasks.discard)
+            log.info("Scheduled background bulk insert: %d remaining env records", len(remaining))
 
     # Soft-delete any active envs that are no longer in the YAML
     for env in existing_envs:
