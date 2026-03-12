@@ -1,10 +1,11 @@
 from pathlib import Path
+import asyncio
 import sqlite3
 import json
 import uuid
 import logging
 from collections import defaultdict
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, Set
 
 from tortoise.transactions import in_transaction
 
@@ -12,6 +13,34 @@ from .load_yaml import load_yaml_configs
 from core.data_manager.models import JobEnvironment
 
 log = logging.getLogger("yaml_aggregator")
+
+# Module-level set to keep background insert tasks alive until they complete
+_insert_tasks: Set[asyncio.Task] = set()
+
+
+async def _do_bulk_insert(pending_records: list, batch_size: int = 500) -> None:
+    """Background coroutine: bulk-insert pending JobEnvironment records into SQLite.
+
+    Each batch is committed in its own transaction so records become visible to
+    EnvPoolManager incrementally, rather than only after the entire insert completes.
+    """
+    total = len(pending_records)
+    try:
+        for i in range(0, total, batch_size):
+            async with in_transaction():
+                await JobEnvironment.bulk_create(pending_records[i:i + batch_size])
+            log.info("Bulk insert progress: %d/%d", min(i + batch_size, total), total)
+        log.info("Bulk insert done: %d env records", total)
+    except Exception:
+        log.exception("Background bulk insert failed for %d records", total)
+
+
+async def wait_for_pending_inserts() -> None:
+    """Wait for all background env-config insert tasks to complete."""
+    if _insert_tasks:
+        log.info("Waiting for %d pending insert task(s)...", len(_insert_tasks))
+        await asyncio.gather(*_insert_tasks, return_exceptions=True)
+        log.info("All pending insert tasks completed.")
 
 
 def iter_child_yaml_files(env_root: Path):
@@ -186,15 +215,22 @@ async def _sync_sqlite(data_manager, yaml_configs: List[Dict]) -> sqlite3.Connec
                 matched_env_ids.add(new_env_id)
                 added += 1
 
-    # Bulk insert all new records in a single transaction
+    # Commit the first batch synchronously so EnvPoolManager's initial DB query
+    # (build_binding_plan) always finds data. The rest goes to a background task.
     if pending_records:
-        BATCH = 4000
-        total = len(pending_records)
+        BATCH = 500
         async with in_transaction():
-            for i in range(0, total, BATCH):
-                await JobEnvironment.bulk_create(pending_records[i:i + BATCH])
-                log.info("Bulk insert progress: %d/%d", min(i + BATCH, total), total)
-        log.info("Bulk insert done: %d env records", total)
+            await JobEnvironment.bulk_create(pending_records[:BATCH])
+        log.info(
+            "Initial sync insert: %d/%d env records committed",
+            min(BATCH, len(pending_records)), len(pending_records),
+        )
+        remaining = pending_records[BATCH:]
+        if remaining:
+            task = asyncio.create_task(_do_bulk_insert(remaining, batch_size=BATCH))
+            _insert_tasks.add(task)
+            task.add_done_callback(_insert_tasks.discard)
+            log.info("Scheduled background bulk insert: %d remaining env records", len(remaining))
 
     # Soft-delete any active envs that are no longer in the YAML
     for env in existing_envs:
