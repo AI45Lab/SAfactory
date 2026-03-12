@@ -37,18 +37,18 @@ try:
     )
 except ImportError as e:
     print("=" * 70)
-    print("ERROR: DiscoveryWorld 导入失败!")
+    print("ERROR: DiscoveryWorld import failed!")
     print("=" * 70)
-    print("请检查:")
-    print(f"  1. 项目根目录: {_project_root}")
-    print(f"  2. dwgym 目录: {_current_dir}")
-    print(f"  3. DiscoveryWorld 路径: {os.path.join(_current_dir, 'discoveryworld', 'discoveryworld')}")
+    print("Please check:")
+    print(f"  1. Project root directory: {_project_root}")
+    print(f"  2. dwgym directory: {_current_dir}")
+    print(f"  3. DiscoveryWorld path: {os.path.join(_current_dir, 'discoveryworld', 'discoveryworld')}")
     print()
-    print("当前 sys.path 前 5 项:")
+    print("First 5 entries of current sys.path:")
     for i, p in enumerate(sys.path[:5], 1):
         print(f"  {i}. {p}")
     print("=" * 70)
-    print(f"错误详情: {str(e)}")
+    print(f"Error details: {str(e)}")
     print("=" * 70)
     raise e
 
@@ -83,7 +83,7 @@ class DiscoveryWorldEnv(BaseEnv):
         self.max_history_length = max_history_length
         self.max_recent_actions = max_recent_actions  
         
-        # 验证配置
+        # validate configuration
         if self.scenario_name not in SCENARIO_NAMES:
             raise ValueError(
                 f"Unknown scenario: {self.scenario_name}.\n"
@@ -101,7 +101,7 @@ class DiscoveryWorldEnv(BaseEnv):
                 f"Valid options: {valid_difficulties}"
             )
         
-        # 环境状态
+        # environment state
         self.api: Optional[DiscoveryWorldAPI] = None
         self.step_count = 0
         self.last_observation_dict = None
@@ -110,17 +110,17 @@ class DiscoveryWorldEnv(BaseEnv):
         self.last_agent_response = None
         self._last_normalized_score = 0.0
         
-        # 对话历史
+        # conversation history
         self.conversation_history: List[ChatCompletionMessageParam] = []
         self.recent_actions: List[Dict[str, Any]] = []
     
-        # 视频帧历史
+        # video frame history
         if self.capture_frames:
             self.frame_history: List[str] = []
         else:
             self.frame_history = None
         
-        # 定义动作和观察空间
+        # define actions & observation spaces
         self.action_space = gym.spaces.Text(max_length=2000)
         self.observation_space = gym.spaces.Text(max_length=100000)
         
@@ -271,7 +271,7 @@ class DiscoveryWorldEnv(BaseEnv):
             assistant_message = {"role": "assistant", "content": action}
             self._add_to_conversation_history(assistant_message)
             
-            # 兼容性处理：方向动作
+            # Compatibility handling: direction actions
             if action_dict.get("action") in ["MOVE_DIRECTION", "ROTATE_DIRECTION"]:
                 arg1 = action_dict.get("arg1")
                 if isinstance(arg1, str) and arg1.lower() in ["north", "south", "east", "west"]:
@@ -323,7 +323,7 @@ class DiscoveryWorldEnv(BaseEnv):
             
             self.recent_actions.append(action_summary)
             
-            # 只保留最近的 N 步
+            # Keep only the most recent N steps
             if len(self.recent_actions) > self.max_recent_actions:
                 self.recent_actions.pop(0)
             
@@ -409,7 +409,7 @@ class DiscoveryWorldEnv(BaseEnv):
             import traceback
             error_details = traceback.format_exc()
             print(f"\n{'='*70}")
-            print("AttributeError 详细信息:")
+            print("AttributeError details:")
             print(f"{'='*70}")
             print(error_details)
             print(f"{'='*70}\n")
@@ -430,14 +430,14 @@ class DiscoveryWorldEnv(BaseEnv):
         return self.conversation_history
     
     def render(self) -> RenderOutput:
-        """生成组合帧：视觉 + 文本信息"""
+        """Generate a combined frame: visual + text information."""
         if self.api is None or self.last_observation_dict is None:
             return RenderOutput(
                 step=self.step_count,
                 text_content="Environment not initialized. Call reset() first."
             )
         
-        # 如果没有视觉，返回纯文本
+        # return plain text if vision is disabled
         if not self.use_vision:
             return self._render_text_fallback()
         
@@ -445,7 +445,7 @@ class DiscoveryWorldEnv(BaseEnv):
             from PIL import Image, ImageDraw, ImageFont
             from io import BytesIO
             
-            # 获取视觉帧
+            # get visual frame
             frame_base64 = self._get_current_frame()
             if not frame_base64:
                 return self._render_text_fallback()
@@ -453,22 +453,22 @@ class DiscoveryWorldEnv(BaseEnv):
             frame_data = base64.b64decode(frame_base64)
             visual_img = Image.open(BytesIO(frame_data))
             
-            # 生成文本信息
+            # generate text info
             text_content = self._generate_render_text_compact()
             
-            # 加载字体
+            # load font
             font = self._load_font()
             
-            # 渲染文本为图片
+            # render text as image
             text_img = self._render_text_to_image(text_content, visual_img.width, font)
             
-            # 拼接
+            # concatenate
             combined_height = visual_img.height + text_img.height
             combined_img = Image.new('RGB', (visual_img.width, combined_height), color='white')
             combined_img.paste(visual_img, (0, 0))
             combined_img.paste(text_img, (0, visual_img.height))
             
-            # 转换为字节数据
+            # convert to bytes
             buffer = BytesIO()
             combined_img.save(buffer, format='PNG')
             image_bytes = buffer.getvalue()
@@ -490,7 +490,7 @@ class DiscoveryWorldEnv(BaseEnv):
             return self._render_text_fallback()
 
     def _render_text_fallback(self) -> RenderOutput:
-        """降级方案：纯文本（当 PIL 不可用或没有视觉时）"""
+        """Fallback: plain text (when PIL is unavailable or vision is disabled)."""
         render_parts = []
         ui = self.last_observation_dict.get("ui", {})
         
@@ -610,11 +610,11 @@ class DiscoveryWorldEnv(BaseEnv):
         )
 
     def _generate_render_text_compact(self) -> str:
-        """生成详细文本（用于组合帧）"""
+        """Generate detailed text (for combined frame)."""
         lines = []
         ui = self.last_observation_dict.get("ui", {})
         
-        # 获取进度信息
+        # get progress info
         scorecard = self.api.getTaskScorecard()
         if isinstance(scorecard, list) and scorecard:
             scorecard = scorecard[0] if isinstance(scorecard[0], dict) else {}
@@ -628,19 +628,19 @@ class DiscoveryWorldEnv(BaseEnv):
         lines.append(f"STEP {self.step_count}/{self.max_steps} | Score: {score}/{max_score} ({score_normalized:.2f})")
         lines.append("=" * 80)
         
-        # 任务描述（自动换行，不截断）
+        # task description (auto-wrapped, no truncated)
         task_progress = ui.get("taskProgress", [])
         if task_progress:
             lines.append("TASK:")
             first_task = task_progress[0] if task_progress else {}
             if isinstance(first_task, dict):
                 task_desc = first_task.get("description", "No description")
-                # 自动换行，每行100字符
+                # Auto-wrap at 100 characters per line
                 wrapped_lines = self._wrap_text(task_desc, width=100, indent="  ")
                 lines.extend(wrapped_lines)
             lines.append("")
         
-        # 最近历史
+        # recent history
         if self.recent_actions:
             lines.append("RECENT HISTORY:")
             for action_info in self.recent_actions[-3:]:
@@ -652,7 +652,7 @@ class DiscoveryWorldEnv(BaseEnv):
                     lines.extend(wrapped[1:])
             lines.append("")
         
-        # 当前位置和库存
+        # current location & inventory
         agent_loc = ui.get("agentLocation", {})
         if agent_loc and isinstance(agent_loc, dict):
             if 'location' in agent_loc:
@@ -681,7 +681,7 @@ class DiscoveryWorldEnv(BaseEnv):
             lines.append("INVENTORY: (empty)")
         lines.append("")
         
-        # Agent 思考（自动换行）
+        # Agent reasoning (auto-wrapped)
         if self.last_agent_response:
             lines.append("AGENT REASONING:")
             response_lines = self.last_agent_response.strip().split('\n')
@@ -693,7 +693,7 @@ class DiscoveryWorldEnv(BaseEnv):
                 if line and not line.startswith('```'):
                     thinking_lines.append(line)
             
-            # 显示前3行思考，自动换行
+            # show first 3 lines of reasoning, auto-wrapped
             for line in thinking_lines[:3]:
                 wrapped = self._wrap_text(line, width=100, indent="  ")
                 lines.extend(wrapped)
@@ -702,7 +702,7 @@ class DiscoveryWorldEnv(BaseEnv):
                 lines.append(f"  ... ({len(thinking_lines)-3} more lines)")
             lines.append("")
         
-        # 最后动作（详细）
+        # last action(detailed)
         if self.last_action_dict and self.last_action_result:
             action_name = self.last_action_dict.get("action", "UNKNOWN")
             arg1 = self.last_action_dict.get("arg1")
@@ -719,7 +719,7 @@ class DiscoveryWorldEnv(BaseEnv):
             
             ui_msg = ui.get("lastActionMessage", "")
             if ui_msg:
-                # 换行显示结果消息
+                # display result message with wrapping
                 lines.append("  Result:")
                 wrapped = self._wrap_text(ui_msg, width=95, indent="    ")
                 lines.extend(wrapped)
@@ -739,19 +739,19 @@ class DiscoveryWorldEnv(BaseEnv):
             if len(test_line) <= width:
                 current_line = test_line
             else:
-                # 当前行已满，开始新行
+                # current line is full, start a new line
                 if current_line.strip():
                     lines.append(current_line)
                 current_line = indent + word
         
-        # 添加最后一行
+        # append the last line
         if current_line.strip():
             lines.append(current_line)
         
         return lines if lines else [indent]
 
     def _load_font(self, size: int = 14):
-        """加载字体"""
+        """load font"""
         from PIL import ImageFont
         
         font_paths = [
@@ -770,11 +770,11 @@ class DiscoveryWorldEnv(BaseEnv):
         return ImageFont.load_default()
 
     def _render_text_to_image(self, text: str, width: int, font):
-        """文本转图片"""
+        """render text to image"""
         from PIL import Image, ImageDraw
         
         lines = text.split('\n')
-        line_height = 16  # 稍微紧凑一点
+        line_height = 16  # slightly compact
         padding = 12
         height = len(lines) * line_height + padding * 2
         
@@ -784,7 +784,7 @@ class DiscoveryWorldEnv(BaseEnv):
         
         y = padding
         for line in lines:
-            # 颜色编码
+            # color coding
             if line.startswith("STEP") or line.startswith("TASK:"):
                 color = '#0066cc'  
             elif line.startswith("LOCATION") or line.startswith("INVENTORY"):
@@ -863,22 +863,22 @@ class DiscoveryWorldEnv(BaseEnv):
         )
     
     def _summarize_action_result(self, action_dict: Dict[str, Any], action_result: Dict[str, Any]) -> str:
-        """生成简短的动作结果摘要（用于历史显示）"""
+        """Generate a short summary of the action result (for history display)"""
         action_name = action_dict.get("action", "UNKNOWN")
         success = action_result.get("success", True)
         
-        # 获取结果消息
+        # get result message
         ui = self.last_observation_dict.get("ui", {})
         last_msg = ui.get("lastActionMessage", "")
         
-        # 根据动作类型生成摘要
+        # generate summary based on action type
         if action_name == "MOVE_DIRECTION":
             direction = action_dict.get('arg1', 'unknown')
             return f"Moved {direction} {'success' if success else 'fail'}"
         
         elif action_name == "PICKUP":
             if success and last_msg:
-                # 提取物品名称
+                # extract item name
                 if "picked up" in last_msg.lower():
                     return last_msg[:50] + "..." if len(last_msg) > 50 else last_msg
             return f"Pickup {'success' if success else 'fail'}"
@@ -890,7 +890,7 @@ class DiscoveryWorldEnv(BaseEnv):
         
         elif action_name == "USE":
             if last_msg:                
-                # 通用情况
+                # general case
                 if len(last_msg) > 80:
                     return f"{last_msg[:80]}..."
                 return last_msg
@@ -906,13 +906,13 @@ class DiscoveryWorldEnv(BaseEnv):
             return f"Talked to agent {'success' if success else 'fail'}"
         
         else:
-            # 通用格式
+            # general format
             return f"{action_name} {'success' if success else 'fail'}"
     
     def _generate_action_narration(self, 
                                    action_dict: Dict[str, Any],
                                    action_result: Dict[str, Any]) -> str:
-        """生成人类可读的动作解说。"""
+        """Generate a human-readable narration of the action."""
         if not self.narrate_actions:
             return json.dumps(action_result)
         
@@ -969,7 +969,7 @@ class DiscoveryWorldEnv(BaseEnv):
                 for error in errors:
                     error_str = str(error)
                     
-                    # 处理"Could not find object"错误
+                    # handle "Could not find object" error
                     if "Could not find object with UUID" in error_str:
                         import re
                         uuid_match = re.search(r"UUID '(\d+)'", error_str)
@@ -979,7 +979,7 @@ class DiscoveryWorldEnv(BaseEnv):
                             uuid = uuid_match.group(1)
                             arg = arg_match.group(1)
                             
-                            # 给出更明确的提示
+                            # provide a clearer hint
                             cleaned_errors.append(
                                 f"{arg}: Object [{uuid}] is not accessible. "
                                 f"Only objects in 'Accessible Objects' list can be used. "
@@ -987,7 +987,7 @@ class DiscoveryWorldEnv(BaseEnv):
                             )
                             continue
                     
-                    # 其他错误保持原样
+                    # keep other errors as-is
                     cleaned_errors.append(error_str)
                 
                 narration_parts.append(f"Errors: {', '.join(cleaned_errors)}")
@@ -1092,7 +1092,7 @@ The JSON MUST be on the last line and properly formatted."""
         obs_parts = []
         ui = observation_dict.get("ui", {})
         
-        # 步数计数器
+        # step counter
         obs_parts.append("=" * 70)
         obs_parts.append(f"STEP {self.step_count}/{self.max_steps}")
         obs_parts.append("=" * 70)
@@ -1101,12 +1101,12 @@ The JSON MUST be on the last line and properly formatted."""
         if self.recent_actions and len(self.recent_actions) > 0:
             obs_parts.append("RECENT HISTORY")
             obs_parts.append("-" * 70)
-            # 显示所有保存的历史（最多 max_recent_actions 步）
+            # show all saved histroy（up to max_recent_actions steps）
             for action_info in self.recent_actions:
                 obs_parts.append(f"  Step {action_info['step']}: {action_info['result_summary']}")
             obs_parts.append("")
         
-        # 任务描述（直接使用 API 提供的）
+        # task description
         task_progress = ui.get("taskProgress", [])
         if task_progress:
             obs_parts.append("TASK")
@@ -1115,7 +1115,7 @@ The JSON MUST be on the last line and properly formatted."""
             if isinstance(first_task, dict):
                 obs_parts.append(first_task.get("description", "No description"))
                 
-                #  如果 API 提供了进度描述，显示它
+                #  if API provides a progress description, display it
                 if "taskProgressDescription" in first_task:
                     obs_parts.append(f"\nProgress: {first_task['taskProgressDescription']}")
                 
@@ -1127,14 +1127,14 @@ The JSON MUST be on the last line and properly formatted."""
             obs_parts.append(f"Status: {status}")
             obs_parts.append("")
         
-        # 动作解说
+        # action narration
         if action_narration:
             obs_parts.append("LAST ACTION")
             obs_parts.append("-" * 70)
             obs_parts.append(action_narration)
             obs_parts.append("")
         
-        # 对话模式警告
+        # dialog mode warning
         if self.api and self.api.isAgentInDialog(agentIdx=0):
             obs_parts.append("!" * 70)
             obs_parts.append("DIALOG MODE - YOU MUST CHOOSE A RESPONSE!")
@@ -1146,7 +1146,7 @@ The JSON MUST be on the last line and properly formatted."""
             obs_parts.append("!" * 70)
             obs_parts.append("")
         
-        # 当前状态
+        # current state
         obs_parts.append("CURRENT STATE")
         obs_parts.append("-" * 70)
         
@@ -1179,7 +1179,7 @@ The JSON MUST be on the last line and properly formatted."""
             obs_parts.append(f"Location: [Raw data] {str(agent_loc)[:100]}")
             obs_parts.append("")
         
-        # 库存
+        # inventory
         inventory = ui.get("inventoryObjects", [])
         if inventory:
             obs_parts.append("Inventory:")
@@ -1192,7 +1192,7 @@ The JSON MUST be on the last line and properly formatted."""
             obs_parts.append("Inventory: (empty)")
             obs_parts.append("")
         
-        # 可交互对象
+        # interactable objects
         accessible = ui.get("accessibleEnvironmentObjects", [])
         
         if accessible:
@@ -1215,7 +1215,7 @@ The JSON MUST be on the last line and properly formatted."""
                         obs_parts.append(formatted)
                 obs_parts.append("")
         
-        # 附近对象
+        # nearby objetcs
         nearby = ui.get("nearbyObjects", {})
         
         if isinstance(nearby, dict):
@@ -1240,7 +1240,7 @@ The JSON MUST be on the last line and properly formatted."""
                         obs_parts.append(formatted)
                 obs_parts.append("")
         
-        # 附近的 Agent
+        # nearby Agent
         nearby_agents_dict = ui.get("nearbyAgents", {})
         
         if isinstance(nearby_agents_dict, dict):

@@ -9,7 +9,6 @@ DABStep benchmark 的 Gymnasium 环境封装，支持自动数据下载、多进
 ## 快速开始
 
 ### 第一步：安装官方评测库（可选）
-
 ```bash
 pip install git+https://huggingface.co/spaces/adyen/DABstep.git@main
 ```
@@ -21,21 +20,22 @@ pip install git+https://huggingface.co/spaces/adyen/DABstep.git@main
 ### 第二步：配置环境参数
 
 编辑 `env/dabstep/dabstep_config.yaml`：
-
 ```yaml
-env_params:
-  data_dir: "env/dabstep/data"            # 数据存储路径
-  artifacts_dir: "env/dabstep/artifacts"  # 产物输出路径
-  split: "dev"                            # 建议先用 "dev"（10 题，有答案，可本地评分）
-  limit: 1                                # 快速冒烟：只跑 1 题；改为 0 跑完整 shard
-  shard_index: 0
-  num_shards: 8
-  max_steps: 10
-  timeout: 60
+environments:
+  - env_name: dabstepgym
+    env_num: 1
+    env_params:
+      data_dir: "env/dabstep/data"
+      artifacts_dir: "env/dabstep/artifacts"
+      split: "dev"
+      limit: 1
+      shard_index: 0
+      num_shards: 8
+      max_steps: 10
+      timeout: 60
 ```
 
 **数据会在首次运行时自动从 HuggingFace 下载**，无需手动准备。下载后的目录结构：
-
 ```
 env/dabstep/data/
 ├── context/          # CSV/JSON 背景数据
@@ -46,8 +46,7 @@ env/dabstep/data/
 
 ---
 
-### 第三步：运行参考
-
+### 第三步：运行
 ```bash
 python launcher.py \
   --mode local \
@@ -64,7 +63,6 @@ python launcher.py \
 ### 第四步：查看结果
 
 每道题运行完毕后，产物写入 `env/dabstep/artifacts/`：
-
 ```
 artifacts/
 └── dabstep_20260309_193140_<task_id>/
@@ -90,7 +88,6 @@ artifacts/
 ## 扩展：多分片并行
 
 确认单 shard 跑通后，将 `split` 改为 `default`，并在配置中展开多个 shard：
-
 ```yaml
 environments:
   - env_name: dabstepgym
@@ -99,7 +96,7 @@ environments:
       data_dir: "env/dabstep/data"
       artifacts_dir: "env/dabstep/artifacts"
       split: "default"
-      limit: 0          # 0 = 跑完该 shard 所有任务
+      limit: 0
       shard_index: 0
       num_shards: 8
 
@@ -121,6 +118,20 @@ environments:
 |-------------|--------|
 | 0, 1 | 2 题 |
 | 2 ~ 7 | 1 题 |
+
+---
+
+## Docker 部署（环境tag待补充）
+
+- 构建镜像
+```bash
+docker build -f env/dabstep/Dockerfile -t dabstep:latest .
+```
+
+- 直接拉取镜像
+```bash
+docker pull registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/dabstep:<tag>
+```
 
 ---
 
