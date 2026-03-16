@@ -121,7 +121,7 @@ class PromptBuilder:
                 # Multimodal message format
                 user_content = [
                     {"type": "text", "text": user_text},
-                    {"type": "image_url", "image_url": {"url": screenshot_url}}
+                    {"type": "image_url", "image_url": {"url": screenshot_url, "detail": "high"}}
                 ]
                 return user_content
 
