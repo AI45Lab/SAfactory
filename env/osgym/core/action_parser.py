@@ -5,8 +5,116 @@ Parses agent response strings into executable action commands.
 Handles special commands (WAIT, DONE, FAIL) and code block extraction.
 """
 
+import ast
 import re
 from typing import List, Tuple, Optional
+
+
+class _PyAutoGuiCoordinateNormalizer(ast.NodeTransformer):
+    """Convert normalized pyautogui coordinates into absolute pixel positions."""
+
+    TARGET_FUNCTIONS = {
+        "click",
+        "doubleClick",
+        "dragTo",
+        "leftClick",
+        "middleClick",
+        "mouseDown",
+        "mouseUp",
+        "moveTo",
+        "rightClick",
+        "tripleClick",
+    }
+
+    def __init__(self, screen_width: int, screen_height: int):
+        self.screen_width = screen_width
+        self.screen_height = screen_height
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        self.generic_visit(node)
+
+        if not self._is_supported_pyautogui_call(node):
+            return node
+
+        self._normalize_positional_coordinates(node)
+        self._normalize_keyword_coordinates(node)
+        return node
+
+    @classmethod
+    def _is_supported_pyautogui_call(cls, node: ast.Call) -> bool:
+        func = node.func
+        return (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "pyautogui"
+            and func.attr in cls.TARGET_FUNCTIONS
+        )
+
+    def _normalize_positional_coordinates(self, node: ast.Call) -> None:
+        if len(node.args) < 2:
+            return
+
+        x_node = node.args[0]
+        y_node = node.args[1]
+        x_val = self._numeric_literal(x_node)
+        y_val = self._numeric_literal(y_node)
+
+        if not self._should_normalize(x_node, y_node, x_val, y_val):
+            return
+
+        node.args[0] = ast.Constant(value=self._scale_coordinate(x_val, self.screen_width))
+        node.args[1] = ast.Constant(value=self._scale_coordinate(y_val, self.screen_height))
+
+    def _normalize_keyword_coordinates(self, node: ast.Call) -> None:
+        x_kw = next((kw for kw in node.keywords if kw.arg == "x"), None)
+        y_kw = next((kw for kw in node.keywords if kw.arg == "y"), None)
+        if x_kw is None or y_kw is None:
+            return
+
+        x_val = self._numeric_literal(x_kw.value)
+        y_val = self._numeric_literal(y_kw.value)
+
+        if not self._should_normalize(x_kw.value, y_kw.value, x_val, y_val):
+            return
+
+        x_kw.value = ast.Constant(value=self._scale_coordinate(x_val, self.screen_width))
+        y_kw.value = ast.Constant(value=self._scale_coordinate(y_val, self.screen_height))
+
+    @staticmethod
+    def _numeric_literal(node: ast.AST) -> Optional[float]:
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+            return float(node.value)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            inner = _PyAutoGuiCoordinateNormalizer._numeric_literal(node.operand)
+            if inner is not None:
+                return -inner
+        return None
+
+    @staticmethod
+    def _is_float_literal(node: ast.AST) -> bool:
+        return isinstance(node, ast.Constant) and isinstance(node.value, float)
+
+    @classmethod
+    def _should_normalize(
+        cls,
+        x_node: ast.AST,
+        y_node: ast.AST,
+        x_val: Optional[float],
+        y_val: Optional[float],
+    ) -> bool:
+        if x_val is None or y_val is None:
+            return False
+        if not (0.0 <= x_val <= 1.0 and 0.0 <= y_val <= 1.0):
+            return False
+        # Only treat decimal literals as normalized coordinates. Integer 0/1 can be valid pixels.
+        return cls._is_float_literal(x_node) or cls._is_float_literal(y_node)
+
+    @staticmethod
+    def _scale_coordinate(value: float, size: int) -> int:
+        if size <= 1:
+            return 0
+        scaled = int(round(value * (size - 1)))
+        return min(max(scaled, 0), size - 1)
 
 
 class ActionParser:
@@ -21,8 +129,13 @@ class ActionParser:
 
     SPECIAL_COMMANDS = {"WAIT", "DONE", "FAIL"}
 
-    @staticmethod
-    def parse_actions(action_str: str) -> List[str]:
+    def __init__(self, screen_width: int = 1920, screen_height: int = 1080):
+        if screen_width <= 0 or screen_height <= 0:
+            raise ValueError("screen_width and screen_height must be positive integers")
+        self.screen_width = screen_width
+        self.screen_height = screen_height
+
+    def parse_actions(self, action_str: str) -> List[str]:
         """
         Parse action string into list of executable commands.
 
@@ -85,7 +198,28 @@ class ActionParser:
             if triple_match:
                 commands.append(triple_match.group(1).upper())
 
-        return [cmd for cmd in commands if cmd]
+        return [self._normalize_pyautogui_coordinates(cmd) for cmd in commands if cmd]
+
+    def _normalize_pyautogui_coordinates(self, command: str) -> str:
+        """
+        Convert normalized pyautogui coordinates such as click(0.5, 0.25)
+        into absolute pixel coordinates for the configured screen size.
+        """
+        try:
+            tree = ast.parse(command)
+        except SyntaxError:
+            return command
+
+        normalizer = _PyAutoGuiCoordinateNormalizer(
+            screen_width=self.screen_width,
+            screen_height=self.screen_height,
+        )
+        normalized_tree = normalizer.visit(tree)
+        ast.fix_missing_locations(normalized_tree)
+        try:
+            return ast.unparse(normalized_tree)
+        except Exception:
+            return command
 
     @staticmethod
     def strip_special_command(actions: List[str]) -> Tuple[List[str], Optional[str]]:

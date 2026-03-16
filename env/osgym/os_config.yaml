@@ -1,6 +1,6 @@
 environments:
   - env_name: os_gym
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/lite-osenv:v1.5
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/lite-osenv:v1.6
     env_num: 1
     dataset: datasets/safety/riosworld_cases.jsonl  # JSONL dataset file with task configurations
     env_params:
@@ -14,6 +14,8 @@ environments:
       cache_dir: "/tmp/osgym_cache"
       result_dir: "results"  # Relative to env/osgym directory
       save_screenshots: true
+      sleep_after_execution: 2.0
+      max_steps: 15
       enable_recording: false
       # LLM Judge configuration
       llm_judge_config:
