@@ -264,3 +264,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# dabstep env
+env/dabstep/agent_core/
+
+# dw env
+env/dwgym/discoveryworld/
+video/
