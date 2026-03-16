@@ -94,6 +94,7 @@ class OSGym(BaseEnv):
         result_dir: str = None,
         save_screenshots: bool = True,
         enable_recording: bool = False,
+        host_ip: str = None,
         **kwargs
     ):
         # Extract llm_judge_config from kwargs before passing to BaseEnv
@@ -125,7 +126,7 @@ class OSGym(BaseEnv):
         self.post_reset_wait = post_reset_wait
         self.max_steps = max_steps
         self.enable_recording = enable_recording
-
+        self.host_ip = host_ip
         # Load credentials for tasks that need authentication
         self._load_credentials()
 
@@ -301,17 +302,31 @@ class OSGym(BaseEnv):
         logger.info(f"Using VM path: {vm_path}")
         logger.info(f"Using cache dir: {self.cache_dir}")
 
-        return DesktopEnv(
-            provider_name=self.provider_name,
-            path_to_vm=vm_path,
-            action_space=self.action_space_type,
-            screen_size=self.screen_size,
-            headless=self.headless,
-            require_a11y_tree=self.observation_type in ["a11y_tree", "screenshot_a11y_tree", "som"],
-            require_terminal=False,
-            os_type="Ubuntu",
-            cache_dir=self.cache_dir
-        )
+        if self.provider_name == "containerd":
+            return DesktopEnv(
+                provider_name=self.provider_name,
+                path_to_vm=vm_path,
+                action_space=self.action_space_type,
+                screen_size=self.screen_size,
+                headless=self.headless,
+                require_a11y_tree=self.observation_type in ["a11y_tree", "screenshot_a11y_tree", "som"],
+                require_terminal=False,
+                os_type="Ubuntu",
+                cache_dir=self.cache_dir,
+                host_ip=self.host_ip
+            )
+        else:
+            return DesktopEnv(
+                provider_name=self.provider_name,
+                path_to_vm=vm_path,
+                action_space=self.action_space_type,
+                screen_size=self.screen_size,
+                headless=self.headless,
+                require_a11y_tree=self.observation_type in ["a11y_tree", "screenshot_a11y_tree", "som"],
+                require_terminal=False,
+                os_type="Ubuntu",
+                cache_dir=self.cache_dir
+            )
 
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None) -> ResetOutput:
         """Reset environment for the single task from dataset."""
