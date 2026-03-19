@@ -18,9 +18,11 @@ export AIEVOBOX_POOL_SIZE=256
 # -------------------------------------------
 export RL_GROUP_SIZE=8
 export RL_EPOCH=10
-export RL_API_KEY=openai_api_key
-export RL_MODEL=model
 export RL_OFF_BY_N=0
+
+# no use, will be removed
+export RL_MODEL=model
+export RL_API_KEY=openai_api_key
 
 
 # -------------------------------------------
