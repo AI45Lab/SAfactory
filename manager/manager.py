@@ -61,6 +61,8 @@ class EnvPoolManager:
         self._http_port: int = int(http_cfg.get("port", self.cfg.get("server", {}).get("port", 36663)))
         self._http_timeout_s: float = float(http_cfg.get("timeout_s", 10.0))
         self._http_concurrency: int = int(http_cfg.get("concurrency", 64))
+        startup_default = min(self._http_concurrency, 16)
+        self._startup_concurrency: int = int(http_cfg.get("startup_concurrency", startup_default) or startup_default)
 
         self._default_seed: int = int(self.cfg.get("seed", 123))
 
@@ -77,6 +79,7 @@ class EnvPoolManager:
             pool_size=self._pool_size,
             http_port=self._http_port,
             http_concurrency=self._http_concurrency,
+            startup_concurrency=self._startup_concurrency,
             base_image=self._base_image,
             default_seed=self._default_seed,
             env_limits=self._env_limits,
@@ -132,7 +135,13 @@ class EnvPoolManager:
             await self._pool.prewarm(self._registry, rows=prewarm_rows)
 
             self._initialized = True
-            log.info("started in mode='%s', pool_size=%d", self._mode, self._pool_size)
+            log.info(
+                "started in mode='%s', pool_size=%d, startup_concurrency=%d, http_concurrency=%d",
+                self._mode,
+                self._pool_size,
+                self._startup_concurrency,
+                self._http_concurrency,
+            )
 
     async def close_all(self) -> None:
         async with self._state_lock:

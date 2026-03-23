@@ -25,6 +25,7 @@ class ActorPool:
             pool_size: int,
             http_port: int,
             http_concurrency: int,
+            startup_concurrency: Optional[int] = None,
             base_image: str,
             default_seed: int = 123,
             env_limits: Optional[Dict[str, int]] = None,
@@ -35,6 +36,9 @@ class ActorPool:
         self._pool_size = int(pool_size)
         self._http_port = int(http_port)
         self._http_concurrency = int(http_concurrency)
+        if startup_concurrency is None:
+            startup_concurrency = min(self._http_concurrency, 16)
+        self._startup_concurrency = max(1, int(startup_concurrency))
         self._base_image = (base_image or "").strip()
         self._default_seed = int(default_seed)
         self._env_limits: Dict[str, int] = {}
@@ -45,7 +49,9 @@ class ActorPool:
                 continue
 
         self._lock = asyncio.Lock()
-        self._fill_sem = asyncio.Semaphore(max(1, self._http_concurrency))
+        # Limit how many cold-start/reset attempts can run concurrently.
+        # This is intentionally separate from the broader HTTP concurrency.
+        self._fill_sem = asyncio.Semaphore(self._startup_concurrency)
         self._pool: Dict[ActorKey, PoolEntry] = {}
         self._actor_routes: Dict[ActorKey, ActorRoute] = {}
         self._job_load: Dict[Tuple[str, str], int] = {}
@@ -85,6 +91,14 @@ class ActorPool:
         if not rows:
             print("[manager] no active rows, skip prewarm")
             return
+
+        log.info(
+            "prewarm start: target_pool_size=%d initial_rows=%d startup_concurrency=%d http_concurrency=%d",
+            self._pool_size,
+            len(rows),
+            self._startup_concurrency,
+            self._http_concurrency,
+        )
 
         tasks = [asyncio.create_task(self._robust_fill_slot(registry, self._fill_sem, initial_row=row)) for row in rows]
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -255,10 +269,30 @@ class ActorPool:
                 raise RuntimeError(f"Reservation failed: {e}")
 
         url = f"http://{cluster.head_ip}:{self._http_port}/{env_name}/{env_id}/reset"
+        delete_url = f"http://{cluster.head_ip}:{self._http_port}/{env_name}/{env_id}"
         payload = {
             "env_param": row.get("env_params"),
             "seed": row.get("seed", self._default_seed),
         }
+
+        async def cleanup_remote_actor(stage: str) -> None:
+            try:
+                async with await self._http.delete(delete_url) as cleanup_resp:
+                    log.info(
+                        "Cleanup response for %s/%s during %s: status=%s",
+                        env_name,
+                        env_id,
+                        stage,
+                        cleanup_resp.status,
+                    )
+            except Exception as cleanup_err:
+                log.warning(
+                    "Cleanup failed for %s/%s during %s: %s (ignoring)",
+                    env_name,
+                    env_id,
+                    stage,
+                    cleanup_err,
+                )
 
         # --- RETRY LOGIC (Requirement: retry twice if reset encounters any error) ---
         max_reset_attempts = 3  # 1 initial + 2 retries
@@ -295,21 +329,22 @@ class ActorPool:
                 log.warning("Reset attempt %d/%d failed for %s/%s: %s", attempt, max_reset_attempts, env_name, env_id,
                             e)
 
+                await cleanup_remote_actor(f"attempt_{attempt}")
+
                 if attempt < max_reset_attempts:
                     await asyncio.sleep(1.0)  # wait a bit before retry
             except Exception as e:
                 # Non-recoverable errors (e.g. serialization)
                 last_error = e
                 break
-        log.warning("Reset failed 3 times. Sending CLEANUP (DELETE) for %s/%s to %s...", env_name, env_id, cluster.head_ip)
-        delete_url = f"http://{cluster.head_ip}:{self._http_port}/{env_name}/{env_id}"
-        try:
-            # Send a best-effort DELETE request to kill any zombie actor
-            async with await self._http.delete(delete_url) as cleanup_resp:
-                log.info("Cleanup response for %s/%s: status=%s", env_name, env_id, cleanup_resp.status)
-        except Exception as cleanup_err:
-            log.warning("Cleanup failed for %s/%s: %s (ignoring)", env_name, env_id, cleanup_err)
-            pass
+
+        if not isinstance(last_error, (asyncio.TimeoutError, aiohttp.ClientError, RuntimeError)):
+            log.warning("Reset failed for %s/%s. Sending CLEANUP (DELETE) to %s...", env_name, env_id, cluster.head_ip)
+            await cleanup_remote_actor("final_failure")
+        else:
+            log.warning("Reset failed %d times for %s/%s. Cleanup was attempted after each failed attempt.",
+                        max_reset_attempts, env_name, env_id)
+
         # Cleanup reservation
         async with self._lock:
             cur = int(self._job_load.get(reserved_key, 0) or 0)
