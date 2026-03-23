@@ -23,7 +23,7 @@ ROLLOUT_BUFFER_URL="http://${BUFFER_SERVER_HOST}:${BUFFER_SERVER_PORT}"
 LLM_PROXY_URL="http://${LLM_PROXY_HOST}:${LLM_PROXY_PORT}"
 
 export PYTHONBUFFERED=16
-NUM_GPUS=${NUM_GPUS:-8}
+NUM_GPUS=${NUM_GPUS:-6}
 
 SLIME_HOME=${SLIME_HOME:-/root/slime}
 HF_CKPT_DIR="/root/.cache/huggingface/hub/models--Qwen--Qwen3-VL-4B-Instruct/snapshots/ebb281ec70b05090aa6165b016eac8ec08e71b17"
@@ -54,7 +54,7 @@ ROLLOUT_ARGS=(
 MEGATRON_ARGS=(
    --train-backend megatron
    --megatron-to-hf-mode bridge
-   --tensor-model-parallel-size 1
+   --tensor-model-parallel-size 2
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
    --expert-model-parallel-size 1
@@ -111,7 +111,7 @@ SGLANG_ARGS=(
 
 # Start Ray
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats
 
 export SGLANG_LOGGING_CONFIG_PATH=${SGLANG_LOGGING_CONFIG_PATH:-"/root/AIEvoBox/rl/sglang_logging.json"}
 
@@ -128,9 +128,9 @@ RUNTIME_ENV_JSON="{\
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 ${SLIME_HOME}/train_async.py \
-   --actor-num-nodes 1 \
+   --actor-num-nodes 2 \
    --actor-num-gpus-per-node 1 \
-   --rollout-num-gpus 7 \
+   --rollout-num-gpus 4 \
    ${MODEL_ARGS[@]} \
    ${MEGATRON_ARGS[@]} \
    ${CKPT_ARGS[@]} \

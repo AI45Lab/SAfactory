@@ -3,9 +3,10 @@ import copy
 import io
 import json
 import logging
+import os
 import re
 import shutil
-import tempfile
+import time
 import uuid
 from math import ceil, floor
 from pathlib import Path
@@ -32,6 +33,19 @@ from env.deepeyes.reward import JudgeClient, RewardResult, compute_reward
 logger = logging.getLogger(__name__)
 
 TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+SLOW_PARQUET_READ_MS = 3000
+SLOW_IMAGE_LOAD_MS = 3000
+
+
+def _elapsed_ms(start_time: float) -> int:
+    return int((time.perf_counter() - start_time) * 1000)
+
+
+def _short_source_repr(source: Any, *, max_len: int = 160) -> str:
+    text = str(source)
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3] + "..."
 
 
 @register_env("deepeyes_env")
@@ -54,7 +68,16 @@ class DeepEyesEnv(BaseEnv):
         env_id: str = "",
         env_name: str = "",
     ) -> None:
+        init_start = time.perf_counter()
         super().__init__(env_id=env_id, env_name=env_name, dataset=dataset)
+        dataset_ref = dataset.get("__dataset_ref__") if isinstance(dataset, dict) else None
+        logger.info(
+            "DeepEyes Init Start: env=%s/%s config_path=%s dataset_ref_kind=%s",
+            env_name,
+            env_id,
+            config_path,
+            dataset_ref.get("kind") if isinstance(dataset_ref, dict) else None,
+        )
 
         if config_path is None:
             config_path = str(Path(__file__).with_name("deepeyes_env_runtime.yaml"))
@@ -68,12 +91,23 @@ class DeepEyesEnv(BaseEnv):
         self.max_turns: int = int(runtime_cfg.get("max_turns", 5))
         self.allow_rotate_tool: bool = bool(runtime_cfg.get("allow_rotate_tool", True))
         self.http_timeout_s: float = float(runtime_cfg.get("http_timeout_s", 30.0))
-        self.cleanup_temp_dir_on_close: bool = bool(runtime_cfg.get("cleanup_temp_dir_on_close", True))
+        self.cleanup_temp_dir_on_close: bool = bool(runtime_cfg.get("cleanup_temp_dir_on_close", False))
+        config_dir = Path(config_path).expanduser().resolve().parent
+        default_crop_root = (
+            Path(os.environ.get("AIEVOBOX_ROOT", str(Path(__file__).resolve().parents[2]))).expanduser()
+            / "runtime"
+            / "deepeyes_crops"
+        )
         crop_root = str(runtime_cfg.get("crop_root", "")).strip()
         if crop_root:
-            self.crop_root = Path(crop_root).expanduser()
+            configured_crop_root = Path(crop_root).expanduser()
+            self.crop_root = (
+                configured_crop_root
+                if configured_crop_root.is_absolute()
+                else (config_dir / configured_crop_root)
+            )
         else:
-            self.crop_root = Path(tempfile.gettempdir()) / "aievobox_deepeyes_crops"
+            self.crop_root = default_crop_root
         self.crop_root.mkdir(parents=True, exist_ok=True)
 
         judge_base_url = str(runtime_cfg.get("judge_base_url", "")).strip() or None
@@ -87,7 +121,17 @@ class DeepEyesEnv(BaseEnv):
             api_key=judge_api_key,
         )
 
+        dataset_row_start = time.perf_counter()
         self.dataset_row = self._resolve_dataset_row(dataset or {})
+        logger.info(
+            "DeepEyes Dataset Row Done: env=%s/%s dataset_path=%s row_group=%s row_in_group=%s elapsed_ms=%s",
+            env_name,
+            env_id,
+            dataset_ref.get("path") if isinstance(dataset_ref, dict) else None,
+            dataset_ref.get("row_group") if isinstance(dataset_ref, dict) else None,
+            dataset_ref.get("row_in_group") if isinstance(dataset_ref, dict) else None,
+            _elapsed_ms(dataset_row_start),
+        )
         self.data_source: str = str(self.dataset_row.get("data_source", "vl_agent")).strip() or "vl_agent"
         self.extra_info: Dict[str, Any] = self._normalize_mapping(self.dataset_row.get("extra_info"))
         self.question: str = self._resolve_question(self.dataset_row)
@@ -109,35 +153,93 @@ class DeepEyesEnv(BaseEnv):
 
         self.action_space = gym.spaces.Text(max_length=12000)
         self.observation_space = gym.spaces.Dict({})
+        logger.info(
+            "DeepEyes Init Done: env=%s/%s data_source=%s image_count=%s total_ms=%s",
+            env_name,
+            env_id,
+            self.data_source,
+            len(self.image_sources),
+            _elapsed_ms(init_start),
+        )
 
     def reset(self, seed: Optional[int] = None) -> ResetOutput:
-        del seed
-        self.step_count = 0
-        self.total_tool_calls = 0
-        self.final_answer = None
-        self.last_reward_result = None
-        self.tool_calls = []
-        self.done = False
+        reset_start = time.perf_counter()
+        logger.info(
+            "DeepEyes Reset Start: env=%s/%s seed=%s image_count=%s",
+            self.env_name,
+            self.env_id,
+            seed,
+            len(self.image_sources),
+        )
+        try:
+            del seed
+            self.step_count = 0
+            self.total_tool_calls = 0
+            self.final_answer = None
+            self.last_reward_result = None
+            self.tool_calls = []
+            self.done = False
 
-        self._cleanup_temp_dir()
-        self._crop_session_dir = self.crop_root / f"{self.env_id or 'deepeyes'}-{uuid.uuid4().hex}"
-        self._crop_session_dir.mkdir(parents=True, exist_ok=True)
+            self._cleanup_temp_dir()
+            self._crop_session_dir = self.crop_root / f"{self.env_id or 'deepeyes'}-{uuid.uuid4().hex}"
+            self._crop_session_dir.mkdir(parents=True, exist_ok=True)
 
-        self.message_image_sources = self._materialize_message_image_sources(self.image_sources)
-        self.original_images = self._load_images(self.image_sources)
-        self.messages = self._build_initial_messages()
+            materialize_start = time.perf_counter()
+            self.message_image_sources = self._materialize_message_image_sources(self.image_sources)
+            logger.info(
+                "DeepEyes Reset MaterializeImages Done: env=%s/%s message_image_count=%s elapsed_ms=%s",
+                self.env_name,
+                self.env_id,
+                len(self.message_image_sources),
+                _elapsed_ms(materialize_start),
+            )
 
-        info = {
-            "question": self.question,
-            "ground_truth": self.ground_truth,
-            "data_source": self.data_source,
-            "image_count": len(self.image_sources),
-            "loaded_image_count": len(self.original_images),
-            "step": self.step_count,
-            "max_turns": self.max_turns,
-            "total_tool_calls": self.total_tool_calls,
-        }
-        return ResetOutput(observation={}, info=info)
+            load_images_start = time.perf_counter()
+            self.original_images = self._load_images(self.image_sources)
+            logger.info(
+                "DeepEyes Reset LoadImages Done: env=%s/%s loaded_image_count=%s elapsed_ms=%s",
+                self.env_name,
+                self.env_id,
+                len(self.original_images),
+                _elapsed_ms(load_images_start),
+            )
+
+            build_messages_start = time.perf_counter()
+            self.messages = self._build_initial_messages()
+            logger.info(
+                "DeepEyes Reset BuildMessages Done: env=%s/%s message_count=%s elapsed_ms=%s",
+                self.env_name,
+                self.env_id,
+                len(self.messages),
+                _elapsed_ms(build_messages_start),
+            )
+
+            info = {
+                "question": self.question,
+                "ground_truth": self.ground_truth,
+                "data_source": self.data_source,
+                "image_count": len(self.image_sources),
+                "loaded_image_count": len(self.original_images),
+                "step": self.step_count,
+                "max_turns": self.max_turns,
+                "total_tool_calls": self.total_tool_calls,
+            }
+            logger.info(
+                "DeepEyes Reset Done: env=%s/%s loaded_image_count=%s total_ms=%s",
+                self.env_name,
+                self.env_id,
+                len(self.original_images),
+                _elapsed_ms(reset_start),
+            )
+            return ResetOutput(observation={}, info=info)
+        except Exception:
+            logger.exception(
+                "DeepEyes Reset Failed: env=%s/%s total_ms=%s",
+                self.env_name,
+                self.env_id,
+                _elapsed_ms(reset_start),
+            )
+            raise
 
     def step(self, action: str) -> StepOutput:
         self.step_count += 1
@@ -450,12 +552,31 @@ class DeepEyesEnv(BaseEnv):
 
     def _load_images(self, image_sources: List[Any]) -> List[Image.Image]:
         images: List[Image.Image] = []
-        for source in image_sources:
+        for idx, source in enumerate(image_sources):
+            image_start = time.perf_counter()
             try:
                 image = self._load_single_image(source)
             except Exception as exc:
-                logger.warning("Failed to load DeepEyes image '%s': %s", source, exc)
+                logger.warning(
+                    "Failed to load DeepEyes image env=%s/%s index=%s source='%s' elapsed_ms=%s: %s",
+                    self.env_name,
+                    self.env_id,
+                    idx,
+                    _short_source_repr(source),
+                    _elapsed_ms(image_start),
+                    exc,
+                )
                 continue
+            image_elapsed_ms = _elapsed_ms(image_start)
+            if image_elapsed_ms >= SLOW_IMAGE_LOAD_MS:
+                logger.warning(
+                    "Slow DeepEyes image load env=%s/%s index=%s source='%s' elapsed_ms=%s",
+                    self.env_name,
+                    self.env_id,
+                    idx,
+                    _short_source_repr(source),
+                    image_elapsed_ms,
+                )
             images.append(image)
         return images
 
@@ -673,21 +794,57 @@ class DeepEyesEnv(BaseEnv):
 
     @staticmethod
     def _load_dataset_row_from_parquet_ref(dataset_ref: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            import pyarrow.parquet as pq
-        except ImportError as exc:
-            raise ImportError("DeepEyes parquet row references require pyarrow.") from exc
-
+        read_start = time.perf_counter()
         path = Path(str(dataset_ref.get("path", "")).strip()).expanduser()
-        if not path.exists():
-            raise FileNotFoundError(f"Parquet dataset row path does not exist: {path}")
-
         row_group = int(dataset_ref.get("row_group", 0))
         row_in_group = int(dataset_ref.get("row_in_group", 0))
-        parquet_file = pq.ParquetFile(path)
-        table = parquet_file.read_row_group(row_group).slice(row_in_group, 1)
-        rows = table.to_pylist()
-        return dict(rows[0]) if rows else {}
+        logger.info(
+            "DeepEyes Dataset Row Start: dataset_path=%s row_group=%s row_in_group=%s",
+            path,
+            row_group,
+            row_in_group,
+        )
+        try:
+            try:
+                import pyarrow.parquet as pq
+            except ImportError as exc:
+                raise ImportError("DeepEyes parquet row references require pyarrow.") from exc
+
+            if not path.exists():
+                raise FileNotFoundError(f"Parquet dataset row path does not exist: {path}")
+
+            parquet_file = pq.ParquetFile(path)
+            table = parquet_file.read_row_group(row_group).slice(row_in_group, 1)
+            rows = table.to_pylist()
+            elapsed_ms = _elapsed_ms(read_start)
+            if elapsed_ms >= SLOW_PARQUET_READ_MS:
+                logger.warning(
+                    "Slow DeepEyes Dataset Row Read: dataset_path=%s row_group=%s row_in_group=%s elapsed_ms=%s rows=%s",
+                    path,
+                    row_group,
+                    row_in_group,
+                    elapsed_ms,
+                    len(rows),
+                )
+            else:
+                logger.info(
+                    "DeepEyes Dataset Row Read Done: dataset_path=%s row_group=%s row_in_group=%s elapsed_ms=%s rows=%s",
+                    path,
+                    row_group,
+                    row_in_group,
+                    elapsed_ms,
+                    len(rows),
+                )
+            return dict(rows[0]) if rows else {}
+        except Exception:
+            logger.exception(
+                "DeepEyes Dataset Row Read Failed: dataset_path=%s row_group=%s row_in_group=%s elapsed_ms=%s",
+                path,
+                row_group,
+                row_in_group,
+                _elapsed_ms(read_start),
+            )
+            raise
 
     @staticmethod
     def _normalize_prompt_messages(value: Any) -> List[Dict[str, Any]]:

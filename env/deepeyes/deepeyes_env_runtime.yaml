@@ -5,5 +5,5 @@ judge_base_url: "http://10.103.1.55:30000/v1"
 judge_model: ""
 judge_api_key: "EMPTY"
 judge_timeout_s: 60.0
-cleanup_temp_dir_on_close: true
-crop_root: ""
+cleanup_temp_dir_on_close: false
+crop_root: "/mnt/shared-storage-user/evobox-share-gpfs2/yinzhenyun/deepeyes_crops"
