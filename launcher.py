@@ -385,7 +385,7 @@ def parse_args():
 
     # Interactor
     p.add_argument("--max-steps", type=int, default=1000)
-    p.add_argument("--message-cut", type=int, default=-1, help="Number of recent messages to keep in the conversation history (0 = keep all)")
+    p.add_argument("--message-cut", type=int, default=-1, help="Number of recent messages to keep in the conversation history (<= 0 keep all)")
     p.add_argument("--env-http-timeout-s", type=float, default=300.0)
     p.add_argument("--http-retries", type=int, default=2)
 
