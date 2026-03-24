@@ -243,16 +243,17 @@ class Interactor:
                     reward = 0.0
                     terminated = True
                     truncated = True
-                    done = True
+                    is_trainable = True
                     await self.data_manager.record_step(
                         session=session,
                         step_id=step_i,
-                        messages=prompt_raw,
+                        messages=prompt,
                         response=action,
                         step_reward=reward,
                         env_state=env_state,
                         terminated=terminated,
-                        truncated=truncated
+                        truncated=truncated,
+                        is_trainable=is_trainable,
                     )
                     break
 
@@ -273,16 +274,24 @@ class Interactor:
                 reward = float(out.get("reward", 0.0) or 0.0)
                 terminated = bool(out.get("terminated", False))
                 truncated = bool(out.get("truncated", False))
+                
+                if self.message_cut > 0:
+                    is_trainable = True
+                elif self.message_cut <= 0 and (terminated or truncated):
+                    is_trainable = True
+                else:
+                    is_trainable = False
 
                 await self.data_manager.record_step(
                     session=session,
                     step_id=step_i,
-                    messages=prompt_raw,
+                    messages=prompt,
                     response=action,
                     step_reward=reward,
                     env_state=env_state,
                     terminated=terminated,
-                    truncated=truncated
+                    truncated=truncated,
+                    is_trainable=is_trainable,
                 )
 
                 if terminated or truncated:

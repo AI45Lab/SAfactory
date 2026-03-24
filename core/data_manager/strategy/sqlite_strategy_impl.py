@@ -157,6 +157,7 @@ class SqliteStrategy(StorageStrategy):
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
+        is_trainable: bool = True
     ) -> None:
         """
         Record a single interaction step.
@@ -191,6 +192,7 @@ class SqliteStrategy(StorageStrategy):
             is_terminal=terminated,
             is_truncated=truncated,
             is_session_completed=terminated or truncated,
+            is_trainable=is_trainable,
         )
 
         # Use buffer or direct save
@@ -250,7 +252,7 @@ class SqliteStrategy(StorageStrategy):
 
         steps = await SessionStep.filter(
             job_id=job_id,
-            is_terminal=True,
+            is_trainable=True,
             id__gt=after_id
         ).order_by("id").limit(limit)
 

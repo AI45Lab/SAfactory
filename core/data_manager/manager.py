@@ -105,6 +105,7 @@ class DataManager:
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
+        is_trainable: bool = True
     ) -> None:
         """
         Record a single interaction step with full conversation history.
@@ -121,6 +122,7 @@ class DataManager:
             env_state=env_state,
             terminated=terminated,
             truncated=truncated,
+            is_trainable=is_trainable,
         )
 
     async def close(self) -> None:
