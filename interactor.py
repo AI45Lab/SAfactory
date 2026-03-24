@@ -117,7 +117,7 @@ class Interactor:
             start = 1
 
         tail = prompt[start:]
-        out.extend(tail[-(self.message_cut * 2):])
+        out.extend(tail[-(self.message_cut * 2 - 1):])
         return out
 
     def _url(self, a: ActorHandle, suffix: str) -> str:
