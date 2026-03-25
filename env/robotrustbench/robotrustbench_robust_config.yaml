@@ -1,0 +1,165 @@
+environments:
+  - env_name: rt_robust_base
+    env_num: 1
+    env_params:
+      eval_set: base
+      exp_name: aievobox_rt_robust_base
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      perturbation_type: none
+      dataset_name: dataset_robust.yaml
+      max_episode_steps: 20
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_robust_common_sense
+    env_num: 1
+    env_params:
+      eval_set: common_sense
+      exp_name: aievobox_rt_robust_common_sense
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      perturbation_type: none
+      dataset_name: dataset_robust.yaml
+      max_episode_steps: 20
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_robust_complex_instruction
+    env_num: 1
+    env_params:
+      eval_set: complex_instruction
+      exp_name: aievobox_rt_robust_complex_instruction
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      perturbation_type: none
+      dataset_name: dataset_robust.yaml
+      max_episode_steps: 20
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_robust_spatial_relationship
+    env_num: 1
+    env_params:
+      eval_set: spatial_relationship
+      exp_name: aievobox_rt_robust_spatial_relationship
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      perturbation_type: none
+      dataset_name: dataset_robust.yaml
+      max_episode_steps: 20
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_robust_visual_appearance
+    env_num: 1
+    env_params:
+      eval_set: visual_appearance
+      exp_name: aievobox_rt_robust_visual_appearance
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      perturbation_type: none
+      dataset_name: dataset_robust.yaml
+      max_episode_steps: 20
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_robust_long_horizon
+    env_num: 1
+    env_params:
+      eval_set: long_horizon
+      exp_name: aievobox_rt_robust_long_horizon
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      perturbation_type: none
+      dataset_name: dataset_robust.yaml
+      max_episode_steps: 20
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_robust_robust_robust_error
+    env_num: 1
+    env_params:
+      eval_set: robust_robust_error
+      exp_name: aievobox_rt_robust_robust_robust_error
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      perturbation_type: none
+      dataset_name: dataset_robust.yaml
+      max_episode_steps: 20
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_robust_robust_robust_redu
+    env_num: 1
+    env_params:
+      eval_set: robust_robust_redu
+      exp_name: aievobox_rt_robust_robust_robust_redu
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      perturbation_type: none
+      dataset_name: dataset_robust.yaml
+      max_episode_steps: 20
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_robust_robust_robust_sema
+    env_num: 1
+    env_params:
+      eval_set: robust_robust_sema
+      exp_name: aievobox_rt_robust_robust_robust_sema
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      perturbation_type: none
+      dataset_name: dataset_robust.yaml
+      max_episode_steps: 20
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_robust_robust_robust_raw
+    env_num: 1
+    env_params:
+      eval_set: robust_robust_raw
+      exp_name: aievobox_rt_robust_robust_robust_raw
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      perturbation_type: none
+      dataset_name: dataset_robust.yaml
+      max_episode_steps: 20
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_robust_robust_picture
+    env_num: 1
+    env_params:
+      eval_set: robust_picture
+      exp_name: aievobox_rt_robust_robust_picture
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      perturbation_type: none
+      dataset_name: dataset_robust.yaml
+      max_episode_steps: 20
+      auto_save_artifacts: true
+      save_step_images: true

@@ -1,0 +1,195 @@
+perturbations:
+  # Episode 0: Move one of the pear items to the indicated sofa.
+  # 扰动: 智能体首次尝试去左侧柜台找梨，我们趁机将梨从那里移到电视柜上。
+  "39":
+    trigger:
+      action_id: 11 # navigate to the left counter in the kitchen
+    perturbation_sequence:
+      - action_id: 31 # pick up the pear
+        description: "Pick up the pear from the left counter"
+      - action_id: 8  # navigate to the TV stand
+        description: "Move to the TV stand"
+      - action_id: 52 # place at the TV stand
+        description: "Place the pear on the TV stand"
+      - action_id: 11 # navigate to the left counter in the kitchen
+        description: "Navigate back to the original location (left counter)"
+
+  # Episode 1: Find a orange on the TV stand and move it to the sink.
+  # 扰动: 当智能体到达电视柜后，将橙子偷偷移动到旁边的椅子上。
+  "3":
+    trigger:
+      action_id: 8 # navigate to the TV stand
+    perturbation_sequence:
+      - action_id: 45 # pick up the orange
+        description: "Pick up the orange from the TV stand"
+      - action_id: 5  # navigate to the chair 1
+        description: "Move to chair 1"
+      - action_id: 49 # place at the chair 1
+        description: "Place the orange on chair 1"
+      - action_id: 8  # navigate to the TV stand
+        description: "Navigate back to the TV stand"
+
+  # Episode 2: Take an pear and transfer it to the allocated left counter.
+  # 扰动: 智能体去沙发上找梨，我们趁机将梨从那里移到桌子2上。
+  "47":
+    trigger:
+      action_id: 12 # navigate to the sofa
+    perturbation_sequence:
+      - action_id: 31 # pick up the pear
+        description: "Pick up the pear from the sofa"
+      - action_id: 7  # navigate to the table 2
+        description: "Move to table 2"
+      - action_id: 51 # place at the table 2
+        description: "Place the pear on table 2"
+      - action_id: 12 # navigate to the sofa
+        description: "Navigate back to the sofa"
+
+  # Episode 3: Find a orange and move it to the right counter.
+  # 扰动: 智能体去桌子1上找橙子，我们趁机将橙子从那里移到沙发上。
+  "5":
+    trigger:
+      action_id: 6 # navigate to the table 1
+    perturbation_sequence:
+      - action_id: 45 # pick up the orange
+        description: "Pick up the orange from table 1"
+      - action_id: 12 # navigate to the sofa
+        description: "Move to the sofa"
+      - action_id: 56 # place at the sofa
+        description: "Place the orange on the sofa"
+      - action_id: 6  # navigate to the table 1
+        description: "Navigate back to table 1"
+
+  # Episode 4: On the right counter, I need a toy airplane and a orange.
+  # 扰动: 智能体首次尝试去沙发找飞机，我们趁机将飞机从那里移到电视柜上。
+  "25":
+    trigger:
+      action_id: 12 # navigate to the sofa
+    perturbation_sequence:
+      - action_id: 47 # pick up the toy airplane
+        description: "Pick up the toy airplane from the sofa"
+      - action_id: 8  # navigate to the TV stand
+        description: "Move to the TV stand"
+      - action_id: 52 # place at the TV stand
+        description: "Place the toy airplane on the TV stand"
+      - action_id: 12 # navigate to the sofa
+        description: "Navigate back to the sofa"
+        
+  # Episode 6: On the TV stand I need you to put a plate.
+  # 扰动: 智能体首次尝试去桌子1拿盘子，我们趁机将盘子从那里移到水槽里。
+  "38":
+    trigger:
+      action_id: 6 # navigate to the table 1
+    perturbation_sequence:
+      - action_id: 27 # pick up the plate
+        description: "Pick up the plate from table 1"
+      - action_id: 9  # navigate to the sink in the kitchen
+        description: "Move to the sink"
+      - action_id: 53 # place at the sink in the kitchen
+        description: "Place the plate in the sink"
+      - action_id: 6  # navigate to the table 1
+        description: "Navigate back to table 1"
+
+  # Episode 7: Detach the strawberry from the right counter.
+  # 扰动: 智能体到达右侧柜台后，我们将草莓移到左侧柜台。
+  "28":
+    trigger:
+      action_id: 10 # navigate to the right counter in the kitchen
+    perturbation_sequence:
+      - action_id: 38 # pick up the strawberry
+        description: "Pick up the strawberry from the right counter"
+      - action_id: 11 # navigate to the left counter in the kitchen
+        description: "Move to the left counter"
+      - action_id: 55 # place at the left counter in the kitchen
+        description: "Place the strawberry on the left counter"
+      - action_id: 10 # navigate to the right counter in the kitchen
+        description: "Navigate back to the right counter"
+
+  # Episode 8: Bring a banana and a can to the left counter.
+  # 扰动: 智能体首次尝试去沙发拿香蕉，我们趁机将香蕉移到桌子1上。
+  "21":
+    trigger:
+      action_id: 12 # navigate to the sofa
+    perturbation_sequence:
+      - action_id: 37 # pick up the banana
+        description: "Pick up the banana from the sofa"
+      - action_id: 6  # navigate to the table 1
+        description: "Move to table 1"
+      - action_id: 50 # place at the table 1
+        description: "Place the banana on table 1"
+      - action_id: 12 # navigate to the sofa
+        description: "Navigate back to the sofa"
+        
+  # Episode 9: I left my mug on the sofa, can you bring it to the left counter?
+  # 扰动: 智能体到达沙发后，我们将马克杯移到电视柜上。
+  "35":
+    trigger:
+      action_id: 12 # navigate to the sofa
+    perturbation_sequence:
+      - action_id: 44 # pick up the mug
+        description: "Pick up the mug from the sofa"
+      - action_id: 8  # navigate to the TV stand
+        description: "Move to the TV stand"
+      - action_id: 52 # place at the TV stand
+        description: "Place the mug on the TV stand"
+      - action_id: 12 # navigate to the sofa
+        description: "Navigate back to the sofa"
+
+  # Episode 10: Find a toy airplane and move it to the right counter.
+  # 扰动: 智能体首次尝试去沙发找飞机，我们趁机将飞机移到桌子2上。
+  "0":
+    trigger:
+      action_id: 12 # navigate to the sofa
+    perturbation_sequence:
+      - action_id: 47 # pick up the toy airplane
+        description: "Pick up the toy airplane from the sofa"
+      - action_id: 7  # navigate to the table 2
+        description: "Move to table 2"
+      - action_id: 51 # place at the table 2
+        description: "Place the toy airplane on table 2"
+      - action_id: 12 # navigate to the sofa
+        description: "Navigate back to the sofa"
+
+  # Episode 11: Hey, on the sink, I accidentally left my plate, can you bring it to the right counter?
+  # 扰动: 智能体到达水槽后，我们将盘子移到左侧柜台。
+  "1":
+    trigger:
+      action_id: 9 # navigate to the sink in the kitchen
+    perturbation_sequence:
+      - action_id: 27 # pick up the plate
+        description: "Pick up the plate from the sink"
+      - action_id: 11 # navigate to the left counter in the kitchen
+        description: "Move to the left counter"
+      - action_id: 55 # place at the left counter in the kitchen
+        description: "Place the plate on the left counter"
+      - action_id: 9  # navigate to the sink in the kitchen
+        description: "Navigate back to the sink"
+
+  # Episode 12: I need a book on the TV stand. Can you help?
+  # 扰动: 智能体首次尝试去电视柜拿书，但我们让它去沙发找，找到后再将书移走。
+  "40":
+    trigger:
+      action_id: 12 # navigate to the sofa
+    perturbation_sequence:
+      - action_id: 41 # pick up the book
+        description: "Pick up the book from the sofa"
+      - action_id: 6  # navigate to the table 1
+        description: "Move to table 1"
+      - action_id: 50 # place at the table 1
+        description: "Place the book on table 1"
+      - action_id: 12 # navigate to the sofa
+        description: "Navigate back to the sofa"
+
+  # Episode 14: On the left counter, remove the lego.
+  # 扰动: 智能体到达左侧柜台后，我们将乐高移到右侧柜台。
+  "44":
+    trigger:
+      action_id: 11 # navigate to the left counter in the kitchen
+    perturbation_sequence:
+      - action_id: 39 # pick up the lego
+        description: "Pick up the lego from the left counter"
+      - action_id: 10 # navigate to the right counter in the kitchen
+        description: "Move to the right counter"
+      - action_id: 54 # place at the right counter in the kitchen
+        description: "Place the lego on the right counter"
+      - action_id: 11 # navigate to the left counter in the kitchen
+        description: "Navigate back to the left counter"

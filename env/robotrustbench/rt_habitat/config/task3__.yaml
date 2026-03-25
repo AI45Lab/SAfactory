@@ -1,0 +1,130 @@
+perturbations:
+  "1":
+    trigger:
+      step_id: 4 # navigate to the left counter in the kitchen
+    perturbation_sequence:
+      - action_id: 4 # pick up the pear
+        description: "navigate to the refrigerator push point"
+      - action_id: 62  # navigate to the TV stand
+        description: "open the refrigerator"
+
+  "2":
+    trigger:
+      step_id: 2 # navigate to the TV stand
+    perturbation_sequence:
+      - action_id: 14 # pick up the orange
+        description: "navigate to the cabinet 4"
+      - action_id: 5  # navigate to the chair 1
+        description: "open the cabinet 4"
+
+  "3":
+    trigger:
+      step_id: 3 # navigate to the sofa
+    perturbation_sequence:
+      - action_id: 14 # pick up the pear
+        description: "navigate to the left drawer of the kitchen counter"
+      - action_id: 64  # navigate to the table 2
+        description: "open the cabinet 7"
+
+  "4":
+    trigger:
+      step_id: 4 # navigate to the table 1
+    perturbation_sequence:
+      - action_id: 10 # pick up the orange
+        description: "navigate to the right counter in the kitchen"
+      - action_id: 25 # navigate to the sofa
+        description: "pick up the drill"
+      - action_id: 8 # place at the sofa
+        description: "navigate to the TV stand"
+      - action_id: 54  # navigate to the table 1
+        description: "place at the TV stand"
+
+  # Episode 4: On the right counter, I need a toy airplane and a orange.
+  # 扰动: 智能体首次尝试去沙发找飞机，我们趁机将飞机从那里移到电视柜上。
+  "5":
+    trigger:
+      step_id: 3 # navigate to the sofa
+    perturbation_sequence:
+      - action_id: 8 # pick up the toy airplane
+        description: "navigate to the TV stand"
+      - action_id: 27  # navigate to the TV stand
+        description: "pick up the knife"
+      - action_id: 10 # place at the TV stand
+        description: "navigate to the right counter in the kitchen"
+      - action_id: 56 # navigate to the sofa
+        description: "place at the right counter in the kitchen"
+
+  # Episode 6: On the TV stand I need you to put a plate.
+  # 扰动: 智能体首次尝试去桌子1拿盘子，我们趁机将盘子从那里移到水槽里。
+  "6":
+    trigger:
+      step_id: 2 # navigate to the table 1
+    perturbation_sequence:
+      - action_id: 10 # pick up the plate
+        description: "navigate to the right counter in the kitchen"
+      - action_id: 25  # navigate to the sink in the kitchen
+        description: "pick up the drill"
+      - action_id: 6 # place at the sink in the kitchen
+        description: "navigate to the table 1"
+      - action_id: 52  # navigate to the table 1
+        description: "place at the table 1"
+
+  # Episode 7: Detach the strawberry from the right counter.
+  # 扰动: 智能体到达右侧柜台后，我们将草莓移到左侧柜台。
+  "7":
+    trigger:
+      step_id: 4 # navigate to the right counter in the kitchen
+    perturbation_sequence:
+      - action_id: 6 # pick up the strawberry
+        description: "navigate to the table 1"
+      - action_id: 25 # navigate to the left counter in the kitchen
+        description: "pick up the drill"
+      - action_id: 10 # place at the left counter in the kitchen
+        description: "navigate to the right counter in the kitchen"
+      - action_id: 56 # navigate to the right counter in the kitchen
+        description: "place at the right counter in the kitchen"
+
+  # Episode 8: Bring a banana and a can to the left counter.
+  # 扰动: 智能体首次尝试去沙发拿香蕉，我们趁机将香蕉移到桌子1上。
+  "8":
+    trigger:
+      step_id: 5 # navigate to the sofa
+    perturbation_sequence:
+      - action_id: 6 # pick up the banana
+        description: "navigate to the table 1"
+      - action_id: 27  # navigate to the table 1
+        description: "pick up the knife"
+      - action_id: 8 # place at the table 1
+        description: "navigate to the TV stand"
+      - action_id: 54 # navigate to the sofa
+        description: "place at the TV stand"
+
+  # Episode 9: I left my mug on the sofa, can you bring it to the left counter?
+  # 扰动: 智能体到达沙发后，我们将马克杯移到电视柜上。
+  "9":
+    trigger:
+      step_id: 4 # navigate to the sofa
+    perturbation_sequence:
+      - action_id: 6 # pick up the mug
+        description: "navigate to the table 1"
+      - action_id: 35  # navigate to the TV stand
+        description: "pick up the apple"
+      - action_id: 7 # place at the TV stand
+        description: "navigate to the table 2"
+      - action_id: 53 # navigate to the sofa
+        description: "place at the table 2"
+
+  # Episode 10: Find a toy airplane and move it to the right counter.
+  # 扰动: 智能体首次尝试去沙发找飞机，我们趁机将飞机移到桌子2上。
+  "10":
+    trigger:
+      action_id: 12 # navigate to the sofa
+    perturbation_sequence:
+      - action_id: 6 # pick up the toy airplane
+        description: "navigate to the table 1"
+      - action_id: 27  # navigate to the table 2
+        description: "pick up the knife"
+      - action_id: 9 # place at the table 2
+        description: "navigate to the sink in the kitchen"
+      - action_id: 55 # navigate to the sofa
+        description: "place at the sink in the kitchen"

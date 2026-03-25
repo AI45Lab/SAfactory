@@ -1,0 +1,150 @@
+perturbations:
+  "7":
+    trigger:
+      action_id: 7 # navigate to the table 1
+    perturbation_sequence:
+      - action_id: 5 # pick up the orange
+        description: "navigate to the chair"
+      - action_id: 25  # navigate to the chair 1
+        description: "pick up the knife"
+      - action_id: 7 # place at the chair 1
+        description: "navigate to the table 2"
+      - action_id: 51  # navigate to the TV stand
+        description: "place at the table 2"
+      - action_id: 7  # navigate to the TV stand
+        description: "navigate to the table 2"
+
+  "15":
+    trigger:
+      action_id: 6 # navigate to the table 1
+    perturbation_sequence:
+      - action_id: 8 # pick up the orange
+        description: "navigate to the tvstand"
+      - action_id: 25  # navigate to the chair 1
+        description: "pick up the knife"
+      - action_id: 6 # place at the chair 1
+        description: "navigate to the table 1"
+      - action_id: 50  # navigate to the TV stand
+        description: "place at the table 1"
+      - action_id: 6  # navigate to the TV stand
+        description: "navigate to the table 1"
+
+  "19":
+    trigger:
+      action_id: 7 # navigate to the table 1
+    perturbation_sequence:
+      - action_id: 6 # pick up the orange
+        description: "navigate to the table 1"
+      - action_id: 33  # navigate to the chair 1
+        description: "pick up the apple"
+      - action_id: 7 # place at the chair 1
+        description: "navigate to the table 2"
+      - action_id: 51  # navigate to the TV stand
+        description: "place at the table 1"
+      - action_id: 7  # navigate to the TV stand
+        description: "navigate to the table 2"
+
+  "0":
+    trigger:
+      action_id: 6 # navigate to the table 1
+    perturbation_sequence:
+      - action_id: 12 # pick up the orange
+        description: "navigate to the sofa"
+      - action_id: 25  # navigate to the chair 1
+        description: "pick up the knife"
+      - action_id: 6 # place at the chair 1
+        description: "navigate to the table 2"
+      - action_id: 50  # navigate to the TV stand
+        description: "place at the table 1"
+      - action_id: 6  # navigate to the TV stand
+        description: "navigate to the table 2"
+
+  "2":
+    trigger:
+      action_id: 12 # navigate to the table 1
+    perturbation_sequence:
+      - action_id: 6 # pick up the orange
+        description: "navigate to the table 1"
+      - action_id: 23  # navigate to the chair 1
+        description: "pick up the drill"
+      - action_id: 12 # place at the chair 1
+        description: "navigate to the table 2"
+      - action_id: 56  # navigate to the TV stand
+        description: "place at the sofa"
+      - action_id: 6  # navigate to the TV stand
+        description: "navigate to the table 1"
+
+  "3":
+    trigger:
+      action_id: 4 # navigate to the table 1
+    perturbation_sequence:
+      - action_id: 7 # pick up the orange
+        description: "navigate to the table 2"
+      - action_id: 25  # navigate to the chair 1
+        description: "pick up the knife"
+      - action_id: 4 # place at the chair 1
+        description: "navigate to the fridge"
+      - action_id: 57  # navigate to the TV stand
+        description: "place in the fridge"
+      - action_id: 4  # navigate to the TV stand
+        description: "navigate to the fridge"
+
+  "13":
+    trigger:
+      action_id: 10 # navigate to the table 1
+    perturbation_sequence:
+      - action_id: 6 # pick up the orange
+        description: "navigate to the table 1"
+      - action_id: 25  # navigate to the chair 1
+        description: "pick up the knife"
+      - action_id: 10 # place at the chair 1
+        description: "navigate to the fridge"
+      - action_id: 54  # navigate to the TV stand
+        description: "place in the right kitchen counter"
+      - action_id: 10  # navigate to the TV stand
+        description: "navigate to the fridge"
+
+  "9":
+    trigger:
+      action_id: 9 # navigate to the sink in the kitchen
+    perturbation_sequence:
+      - action_id: 10 # pick up the orange
+        description: "navigate to the right counter"
+      - action_id: 25  # navigate to the chair 1
+        description: "pick up the knife"
+      - action_id: 9 # place at the chair 1
+        description: "navigate to the sink"
+      - action_id: 53  # navigate to the TV stand
+        description: "place in the sink"
+      - action_id: 9  # navigate to the TV stand
+        description: "navigate to the sink"
+
+  "10":
+    trigger:
+      action_id: 8 # navigate to the sink in the kitchen
+    perturbation_sequence:
+      - action_id: 6 # pick up the orange
+        description: "navigate to the table1"
+      - action_id: 25  # navigate to the chair 1
+        description: "pick up the knife"
+      - action_id: 8 # place at the chair 1
+        description: "navigate to the tvstand"
+      - action_id: 52  # navigate to the TV stand
+        description: "place at the tvstand"
+      - action_id: 8  # navigate to the TV stand
+        description: "navigate to the tvstand"
+
+  "6":
+    trigger:
+      action_id: 60 # navigate to the sink in the kitchen
+    perturbation_sequence:
+      - action_id: 10 # pick up the orange
+        description: "navigate to the right counter"
+      - action_id: 18  # navigate to the chair 1
+        description: "pick up the hammer"
+      - action_id: 4 # place at the chair 1
+        description: "navigate to the fridge"
+      - action_id: 57  # navigate to the TV stand
+        description: "place at the fridge"
+      - action_id: 4  # navigate to the TV stand
+        description: "navigate to the fridge"

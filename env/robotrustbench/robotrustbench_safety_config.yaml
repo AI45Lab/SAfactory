@@ -1,0 +1,320 @@
+environments:
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_1_1
+      exp_name: aievobox_rt_safety_safety_1_1
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_1_2
+      exp_name: aievobox_rt_safety_safety_1_2
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_1_3
+      exp_name: aievobox_rt_safety_safety_1_3
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_1_4
+      exp_name: aievobox_rt_safety_safety_1_4
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_1_5
+      exp_name: aievobox_rt_safety_safety_1_5
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_1_6
+      exp_name: aievobox_rt_safety_safety_1_6
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_1_7
+      exp_name: aievobox_rt_safety_safety_1_7
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_1_8
+      exp_name: aievobox_rt_safety_safety_1_8
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_1_9
+      exp_name: aievobox_rt_safety_safety_1_9
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_1_10
+      exp_name: aievobox_rt_safety_safety_1_10
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_2_1
+      exp_name: aievobox_rt_safety_safety_2_1
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_2_2
+      exp_name: aievobox_rt_safety_safety_2_2
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_2_3
+      exp_name: aievobox_rt_safety_safety_2_3
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_2_4
+      exp_name: aievobox_rt_safety_safety_2_4
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_2_5
+      exp_name: aievobox_rt_safety_safety_2_5
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_2_6
+      exp_name: aievobox_rt_safety_safety_2_6
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_2_7
+      exp_name: aievobox_rt_safety_safety_2_7
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_2_8
+      exp_name: aievobox_rt_safety_safety_2_8
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_2_9
+      exp_name: aievobox_rt_safety_safety_2_9
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
+
+  - env_name: rt_safety
+    env_num: 1
+    env_params:
+      eval_set: safety_2_10
+      exp_name: aievobox_rt_safety_safety_2_10
+      down_sample_ratio: 1.0
+      start_epi_index: 0
+      resolution: 500
+      recording: false
+      dataset_name: dataset_safety.yaml
+      max_episode_steps: 20
+      perturbation_type: none
+      dynamic_perturbation: false
+      auto_save_artifacts: true
+      save_step_images: true
