@@ -26,9 +26,9 @@ export PYTHONBUFFERED=16
 NUM_GPUS=${NUM_GPUS:-8}
 
 SLIME_HOME=${SLIME_HOME:-/root/slime}
-HF_CKPT_DIR="/root/.cache/huggingface/hub/models--Qwen--Qwen3-VL-4B-Instruct/snapshots/ebb281ec70b05090aa6165b016eac8ec08e71b17"
-SAVE_DIR="/mnt/shared-storage-user/evobox-share-gpfs2/yinzhenyun/slime/checkpoints/Qwen3-VL-4B-Instruct_megatron"
-MODEL_ARGS_ROTARY_BASE=5000000 source "${SLIME_HOME}/scripts/models/qwen3-4B.sh"
+HF_CKPT_DIR="/root/.cache/huggingface/hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots/89644892e4d85e24eaac8bacfd4f463576704203"
+SAVE_DIR="/mnt/shared-storage-user/evobox-share-gpfs2/yinzhenyun/slime/checkpoints/Qwen3-VL-2B-Instruct_megatron"
+MODEL_ARGS_ROTARY_BASE=5000000 source "${SLIME_HOME}/scripts/models/qwen3-1.7B.sh"
 
 CKPT_ARGS=(
    --hf-checkpoint ${HF_CKPT_DIR}
