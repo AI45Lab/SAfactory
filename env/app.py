@@ -23,7 +23,8 @@ from core.types.base import ResetOutput, RenderOutput, StepOutput, dumps_json_by
 
 from env.registry import (_import_os_env, _import_search_env, _import_emb_env, _import_gym_env,
                           _import_android_gym, _import_trading_env, _import_mc_env, _import_mc_gpu_env,
-                          _import_geo3k_vl_test_env, _import_qa_gym, _import_deepeyes_env)
+                          _import_geo3k_vl_test_env, _import_qa_gym, _import_deepeyes_env,
+                          _import_dab_env, _import_dw_env)
 
 ENV_CLASS_REGISTRY: Dict[str, Callable[[], Type]] = {
     "android_gym": _import_android_gym,
@@ -37,6 +38,8 @@ ENV_CLASS_REGISTRY: Dict[str, Callable[[], Type]] = {
     "geo3k_vl_test": _import_geo3k_vl_test_env,
     "qa_gym": _import_qa_gym,
     "deepeyes_env": _import_deepeyes_env,
+    "dabstepgym": _import_dab_env,
+    "discoveryworld": _import_dw_env,
 }
 
 

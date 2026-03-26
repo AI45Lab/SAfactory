@@ -55,6 +55,7 @@ class AndroidGym(BaseEnv):
         proxy_address: str = None,
         apk_list: List[str] = None, # 格式 ["path:package", ...]
         reverse_port: int = 8000,
+        host_ip: str = "127.0.0.1",
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -79,6 +80,7 @@ class AndroidGym(BaseEnv):
         self.emulator_process = None
         self.proxy_address = proxy_address
         self.apk_list = apk_list
+        self.host_ip = host_ip
 
         self.port_lock_file = None
         if self.start_emulator_flag:
@@ -101,6 +103,9 @@ class AndroidGym(BaseEnv):
         else:
             self.temp_dir = temp_dir
             self.screenshot_dir = screenshot_dir
+
+        if self.emulator_cmd_path == "redroid":
+            self.device_serial = f"{self.host_ip}:{self.emulator_console_port}"
 
         # 如果需要启动模拟器，在其它初始化之前执行
         if self.start_emulator_flag:
@@ -391,18 +396,22 @@ class AndroidGym(BaseEnv):
 
         # 4. 关闭模拟器进程
         if self.emulator_process is not None:
-            print(f"[Info] Killing emulator process {self.emulator_process.pid}...")
-            try:
-                self.emulator_process.kill()
-                # === [关键修复] ===
-                # 必须调用 wait()，否则产生僵尸进程
-                # 如果不 wait，进程表中会一直保留该 PID，直到父进程退出
-                self.emulator_process.wait(timeout=5) 
-            except subprocess.TimeoutExpired:
-                print("[Warning] Emulator process did not exit in time.")
-            except Exception as e:
-                print(f"[Warning] Error killing emulator: {e}")
-            self.emulator_process = None
+            if self.emulator_cmd_path == "redroid":
+                if getattr(self, "container_id", None):
+                    subprocess.run(["nerdctl", "rm", "-f", self.container_id], check=False)
+            else:
+                print(f"[Info] Killing emulator process {self.emulator_process.pid}...")
+                try:
+                    self.emulator_process.kill()
+                    # === [关键修复] ===
+                    # 必须调用 wait()，否则产生僵尸进程
+                    # 如果不 wait，进程表中会一直保留该 PID，直到父进程退出
+                    self.emulator_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    print("[Warning] Emulator process did not exit in time.")
+                except Exception as e:
+                    print(f"[Warning] Error killing emulator: {e}")
+                self.emulator_process = None
 
         # 5. 显式释放锁
         if self.port_lock_file:
@@ -418,38 +427,112 @@ class AndroidGym(BaseEnv):
 
         super().close()
         print("[Info] Environment closed successfully.")
-        
+
+    # ---------- 连接模拟器，设置重试机制 ----------
+    def _adb_connect_with_retry(self, max_retries: int, retry_interval: float, timeout: float):
+        """
+        带重试和超时的ADB连接逻辑
+        :param max_retries: 最大重试次数
+        :param retry_interval: 重试间隔（秒）
+        :param timeout: 总超时时间（秒）
+        """
+        start_time = time.time()
+        retry_count = 0
+
+        while retry_count < max_retries and (time.time() - start_time) < timeout:
+            retry_count += 1
+            try:
+                print(f"[Info] Attempt {retry_count}/{max_retries} to connect ADB to {self.device_serial}...")
+                # 执行adb connect命令
+                result = subprocess.run(
+                    [self.adb_path, "connect", self.device_serial],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=5  # 单次命令超时（避免卡住）
+                )
+                # 检查连接成功的标识（不同环境可能返回"connected to xxx"或"already connected"）
+                if "connected" in result.stdout.lower() or "already connected" in result.stdout.lower():
+                    print(f"✅ [Info] ADB connected successfully to {self.device_serial}!")
+                    return
+                else:
+                    print(f"[Warning] ADB connect returned unexpected output: {result.stdout}")
+
+            except subprocess.CalledProcessError as e:
+                print(f"[Warning] ADB connect failed (attempt {retry_count}): {e.stderr or e.stdout}")
+            except subprocess.TimeoutExpired:
+                print(f"[Warning] ADB connect timed out (attempt {retry_count})")
+            except Exception as e:
+                print(f"[Warning] Unexpected error in ADB connect (attempt {retry_count}): {str(e)}")
+
+            # 重试前等待
+            time.sleep(retry_interval)
+
+        # 所有重试失败，抛出超时异常
+        raise TimeoutError(
+            f"❌ Failed to connect ADB to {self.device_serial} after {retry_count} retries "
+            f"(total time: {time.time() - start_time:.1f}s). "
+            f"Check if redroid container is running properly and port {self.emulator_console_port} is open."
+        )
+
     # ---------- 模拟器启动与配置逻辑 ----------
     def _setup_emulator(self):
         print(f"[{self.emulator_name}] Starting setup sequence...")
 
         # 1. 启动模拟器
         print(f"[Info] Launching emulator: {self.emulator_name}...")
-        cmd = [
-            self.emulator_cmd_path,
-            f"@{self.emulator_name}",
-            "-port", str(self.emulator_console_port),
-            "-no-window",
-            # "-snapshot", "snap_2026-01-12_21-48-05",
-            "-noaudio",
-            "-no-boot-anim",
-            "-memory", "2048",
-            "-accel", "on",
-            "-camera-back", "none",
-            "-gpu", "off",
-            "-read-only"
-        ]
-        if self.proxy_address is not None:
-            cmd = cmd + ["-http-proxy", self.proxy_address]
-        print(f"[Info] Emulator start command is {cmd}")
+        if self.emulator_cmd_path == "redroid":
+            # start redroid container
+            cmd = [
+                "nerdctl", "run", "-td",
+                "--privileged",
+                "-p", f"{self.emulator_console_port}:5555",
+                "--name", f"redroid_{self.emulator_name}_{self.emulator_console_port}",
+                "redroid/redroid:10.0.0-latest",
+                "androidboot.redroid_gpu_mode=guest",
+            ]
 
-        # 后台运行
-        self.emulator_process = subprocess.Popen(
-            cmd, 
-            stdout=subprocess.DEVNULL, 
-            stderr=subprocess.DEVNULL
-        )
-        print(f"[Info] Emulator process started with PID: {self.emulator_process.pid}")
+            try:
+                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+                container_id = result.stdout.strip()
+                print(f"[Info] Redroid container started: {container_id}")
+                self.container_id = container_id
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Failed to start redroid container! Error: {e.stderr}")
+                raise  # 容器启动失败直接抛出异常，无需继续
+
+            # adb connect
+            self._adb_connect_with_retry(
+                max_retries=60,       # 最大重试次数
+                retry_interval=5,     # 每次重试间隔（秒）
+                timeout=300            # 总超时时间（秒）
+            )
+        else:
+            cmd = [
+                self.emulator_cmd_path,
+                f"@{self.emulator_name}",
+                "-port", str(self.emulator_console_port),
+                "-no-window",
+                # "-snapshot", "snap_2026-01-12_21-48-05",
+                "-noaudio",
+                "-no-boot-anim",
+                "-memory", "2048",
+                "-accel", "on",
+                "-camera-back", "none",
+                "-gpu", "off",
+                "-read-only"
+            ]
+            if self.proxy_address is not None:
+                cmd = cmd + ["-http-proxy", self.proxy_address]
+            print(f"[Info] Emulator start command is {cmd}")
+
+            # 后台运行
+            self.emulator_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            print(f"[Info] Emulator process started with PID: {self.emulator_process.pid}")
 
         # 2. 等待启动
         print("[Info] Waiting for emulator to boot...")
@@ -692,7 +775,7 @@ class AndroidGym(BaseEnv):
                 ]
             }
         ]
-        
+
         try:
             # 调用API（带重试机制）
             for _ in range(3):

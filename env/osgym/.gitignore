@@ -13,3 +13,4 @@ env_risk_utils/popup_logos/
 
 # Credentials (sensitive info)
 credentials.yaml
+client_secrets.json
