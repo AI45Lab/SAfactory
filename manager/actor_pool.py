@@ -175,8 +175,13 @@ class ActorPool:
                     elif status >= 400:
                         log.error("close failed: %s status=%s", delete_url, status)
 
-            except Exception as e:
-                log.error("close error: env='%s', id='%s', err=%s", env, env_id, e)
+            except Exception:
+                log.error(
+                    "close error: env='%s', id='%s'",
+                    env,
+                    env_id,
+                    exc_info=True,
+                )
         else:
             log.warning("close skipped: no route/binding for env='%s' id='%s'", env, env_id)
 
@@ -219,35 +224,42 @@ class ActorPool:
             try:
                 if sem:
                     async with sem:
-                        await self._attempt_create_actor(current_row, registry)
+                        created = await self._attempt_create_actor(current_row, registry)
                 else:
-                    await self._attempt_create_actor(current_row, registry)
+                    created = await self._attempt_create_actor(current_row, registry)
 
-                # Success!
-                log.info("Successfully created actor for %s", env_key)
-                return
+                if created:
+                    log.info("Successfully created actor for %s", env_key)
+                    return
 
-            except Exception as e:
-                # 3. Failure logic
-                log.error("Failed to create actor for %s after retries. Skipping row. Error: %s", env_key, e)
-                # Important: Set current_row to None so next loop fetches a NEW one
+                log.error("Failed to create actor for %s after retries. Skipping row.", env_key)
                 current_row = None
-                # Loop continues...
+                continue
+
+            except Exception:
+                # Unexpected failures should not kill the whole fill loop.
+                log.error(
+                    "Unexpected error while creating actor for %s. Skipping row.",
+                    env_key,
+                    exc_info=True,
+                )
+                current_row = None
 
     async def _attempt_create_actor(
             self,
             row: Dict[str, Any],
             registry: ClusterRegistry,
-    ) -> None:
+    ) -> bool:
         """
         Tries to create an actor for a SPECIFIC row.
         Retries 'reset' 2 times (total 3 attempts) as requested.
-        Raises exception if all attempts fail.
+        Returns whether the actor was created successfully.
         """
         env_name = str(row.get("env_name", "")).strip()
         env_id = str(row.get("env_id", "")).strip()
         if not env_name or not env_id:
-            raise ValueError(f"Invalid DB row (missing env_name/env_id): {row}")
+            log.error("Invalid DB row (missing env_name/env_id): %s", row)
+            return False
 
         image = (row.get("image") or "").strip()
         if not image:
@@ -258,15 +270,22 @@ class ActorPool:
                 image = self._base_image
 
         if not image:
-            raise RuntimeError(f"Cannot resolve image for env='{env_name}' id='{env_id}'")
+            log.error("Cannot resolve image for env='%s' id='%s'", env_name, env_id)
+            return False
 
         # Reservation Logic
         async with self._lock:
             try:
                 cluster = self._choose_cluster_and_reserve_locked(env_name=env_name, image=image, registry=registry)
                 reserved_key = (env_name, str(cluster.job_name))
-            except Exception as e:
-                raise RuntimeError(f"Reservation failed: {e}")
+            except Exception:
+                log.error(
+                    "Reservation failed for %s/%s",
+                    env_name,
+                    env_id,
+                    exc_info=True,
+                )
+                return False
 
         url = f"http://{cluster.head_ip}:{self._http_port}/{env_name}/{env_id}/reset"
         delete_url = f"http://{cluster.head_ip}:{self._http_port}/{env_name}/{env_id}"
@@ -285,20 +304,21 @@ class ActorPool:
                         stage,
                         cleanup_resp.status,
                     )
-            except Exception as cleanup_err:
+            except Exception:
                 log.warning(
-                    "Cleanup failed for %s/%s during %s: %s (ignoring)",
+                    "Cleanup failed for %s/%s during %s (ignoring)",
                     env_name,
                     env_id,
                     stage,
-                    cleanup_err,
+                    exc_info=True,
                 )
 
         # --- RETRY LOGIC (Requirement: retry twice if reset encounters any error) ---
         max_reset_attempts = 3  # 1 initial + 2 retries
-        last_error = None
+        cleanup_attempted_for_failure = False
 
         for attempt in range(1, max_reset_attempts + 1):
+            cleanup_attempted_for_failure = False
             try:
                 # Use aiohttp post
                 async with await self._http.post(url, json=payload) as resp:
@@ -322,23 +342,36 @@ class ActorPool:
                             status="ready",
                         )
                         self._actor_routes[key] = (cluster.head_ip, self._http_port)
-                    return  # Exit function on success
+                    return True
 
-            except (asyncio.TimeoutError, aiohttp.ClientError, RuntimeError) as e:
-                last_error = e
-                log.warning("Reset attempt %d/%d failed for %s/%s: %s", attempt, max_reset_attempts, env_name, env_id,
-                            e)
+            except (asyncio.TimeoutError, aiohttp.ClientError, RuntimeError):
+                log.warning(
+                    "Reset attempt %d/%d failed for %s/%s",
+                    attempt,
+                    max_reset_attempts,
+                    env_name,
+                    env_id,
+                    exc_info=True,
+                )
 
                 await cleanup_remote_actor(f"attempt_{attempt}")
+                cleanup_attempted_for_failure = True
 
                 if attempt < max_reset_attempts:
                     await asyncio.sleep(1.0)  # wait a bit before retry
-            except Exception as e:
+            except Exception:
                 # Non-recoverable errors (e.g. serialization)
-                last_error = e
+                log.error(
+                    "Non-recoverable reset failure for %s/%s on attempt %d/%d",
+                    env_name,
+                    env_id,
+                    attempt,
+                    max_reset_attempts,
+                    exc_info=True,
+                )
                 break
 
-        if not isinstance(last_error, (asyncio.TimeoutError, aiohttp.ClientError, RuntimeError)):
+        if not cleanup_attempted_for_failure:
             log.warning("Reset failed for %s/%s. Sending CLEANUP (DELETE) to %s...", env_name, env_id, cluster.head_ip)
             await cleanup_remote_actor("final_failure")
         else:
@@ -353,8 +386,7 @@ class ActorPool:
             else:
                 self._job_load[reserved_key] = cur - 1
 
-        raise RuntimeError(
-            f"Failed to reset {env_name}/{env_id} after {max_reset_attempts} attempts. Last error: {last_error}")
+        return False
 
     def _choose_cluster_and_reserve_locked(self, *, env_name: str, image: str, registry: 'ClusterRegistry'):
         """
