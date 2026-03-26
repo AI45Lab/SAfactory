@@ -45,6 +45,8 @@ export LLM_PROXY_HOST=127.0.0.1
 export LLM_PROXY_PORT=18890
 export LLM_MAX_LENGTH=28672
 export LLM_TEMPERATURE=1.0
+# Debug-only: compare cached multimodal processing against the official processor.
+export AIEVOBOX_DEBUG_CACHE_PROCESSOR_COMPARE=${AIEVOBOX_DEBUG_CACHE_PROCESSOR_COMPARE:-0}
 
 # -------------------------------------------
 # Slime Training Settings (reference RL values)
@@ -52,6 +54,6 @@ export LLM_TEMPERATURE=1.0
 export SLIME_ROLLBUF_RESTART_TRAINING=True
 export SLIME_N_SAMPLES_PER_PROMPT=$RL_GROUP_SIZE
 # train batch size
-export SLIME_GLOBAL_BATCH_SIZE=4096
+export SLIME_GLOBAL_BATCH_SIZE=2048
 # no use, will be removed
 export SLIME_ROLLOUT_BATCH_SIZE=$((SLIME_GLOBAL_BATCH_SIZE / RL_GROUP_SIZE))
