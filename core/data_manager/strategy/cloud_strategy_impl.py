@@ -166,6 +166,7 @@ class CloudStrategy(StorageStrategy):
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
+        is_trainable: bool = True
     ):
         """
         Record step to cloud LandingTable.
