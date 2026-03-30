@@ -174,6 +174,7 @@ class RayJobManager:
                 ttlSecondsAfterFinished=ttl_seconds,
                 backoffLimit=backoff_limit,
                 activeDeadlineSeconds=active_deadline_seconds,
+                privateMachine="yes",
             )
 
             job_name = _extract_job_name(result)

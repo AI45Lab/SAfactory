@@ -344,6 +344,7 @@ def parse_args():
     p.add_argument("--job-id", type=str, default="", help="job id is used to identify each task and record in the environmentconfig table as session")
     # YAML
     p.add_argument("--manager-config", type=str, default="./manager/config.yaml", help="Path to unified YAML config")
+    p.add_argument("--exp-config", type=str, default="./core/exp/config.yaml", help="Path to experience injection YAML config")
     p.add_argument("--mode", choices=["local", "remote"], default="local")
 
     # DB / YAML-aggregator
@@ -501,6 +502,25 @@ async def main():
         mgr = EnvPoolManager(cfg, conn)
         pool = ManagerActorPool(mgr, pool_size=total_pool_size)
 
+        # 5) build EpisodeHandler from config
+        _exp_cfg = _load_yaml(args.exp_config)
+        from core.exp.handler import build_episode_handler
+        episode_handler = build_episode_handler(
+            exp_dir=str(_exp_cfg.get("dir", "./experiences")),
+            enabled=bool(_exp_cfg.get("enabled", False)),
+            top_k=int(_exp_cfg.get("top_k", 3)),
+            mode=str(_exp_cfg.get("mode", "template")),
+            embedding_model=_exp_cfg.get("embedding_model"),
+        )
+        log.info(
+            "experience injection: config=%s enabled=%s dir=%s top_k=%d mode=%s",
+            args.exp_config,
+            bool(_exp_cfg.get("enabled", False)),
+            _exp_cfg.get("dir", "./experiences"),
+            int(_exp_cfg.get("top_k", 3)),
+            str(_exp_cfg.get("mode", "template")),
+        )
+
         # 根据参数选择 BaseURLProvider
         if args.rl_use_session_suffix_url:
             base_url_provider = SessionSuffixBaseURLProvider(base_url_root=args.llm_base_url)
@@ -522,6 +542,7 @@ async def main():
             max_workers=original_pool_size,
             http_retries=int(args.http_retries),
             verbose=True,
+            episode_handler=episode_handler,
         )
 
         log.info("starting interactor.run() ...")

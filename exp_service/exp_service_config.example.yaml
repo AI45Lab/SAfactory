@@ -1,0 +1,38 @@
+# ExpService 配置示例
+# 使用方式：python -m exp_service run-once --config exp_service_config.yaml
+
+db:
+  url: "sqlite:///path/to/evobox.db"        # AIEvoBox DB 路径（只读）
+
+llm:
+  base_url: "http://localhost:8000/v1"       # OpenAI 兼容 API 地址
+  api_key: "EMPTY"
+  model: "Qwen2.5-72B-Instruct"
+  temperature: 0.3
+  max_tokens: 65536
+  timeout_s: 120.0
+  max_concurrency: 3                         # 并发 LLM 调用数
+
+selector:
+  success_min_reward: 0.5                    # 成功轨迹 reward 下限
+  success_top_k: 20                          # 每轮最多处理成功轨迹数
+  failure_max_reward: 0.2                    # 失败轨迹 reward 上限
+  failure_top_k: 10
+  min_steps: 2                               # 有效轨迹的最少步骤数
+  env_names: []                              # 为空则处理所有环境
+
+generator:
+  max_exps_per_batch: 3                    # 每批轨迹最多提取几条 skill
+  batch_size: 5                              # 每次提交给 LLM 几条轨迹
+
+updater:
+  evolve_threshold: 0.4                      # success_rate 低于此值才触发 evolve
+  max_new_skills_per_evolve: 3
+  prune_min_success_rate: 0.15               # prune 的 success_rate 阈值
+  prune_min_usage_count: 3                   # prune 的 usage_count 阈值（同时满足才删除）
+  merge_similarity_threshold: 0.8           # 名称 Jaccard 相似度阈值
+
+exp_dir: "./experiences"                        # Experience 文件系统根目录
+state_path: "./exp_service_state.json"     # 已处理 session_id 记录（不写 AIEvoBox DB）
+poll_interval_s: 300.0                       # run-loop 轮询间隔（秒）
+log_level: "INFO"
