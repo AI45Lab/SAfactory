@@ -240,7 +240,7 @@ class SqliteStrategy(StorageStrategy):
 
     async def fetch_done_steps_with_context(
         self,
-        job_id: str = "6978763b718b94e540a221c3",
+        job_id: str,
         after_id: int = 0,
         limit: int = 100
     ) -> List[Dict]:
@@ -277,8 +277,8 @@ class SqliteStrategy(StorageStrategy):
             for s in steps
         ]
 
-    async def get_max_step_id(self) -> int:
+    async def get_max_step_id(self, job_id: str) -> int:
         """Get maximum primary key for pagination"""
         await self.init()
-        latest = await SessionStep.all().order_by("-id").first()
+        latest = await SessionStep.filter(job_id=job_id, is_terminal=True).order_by("-id").first()
         return latest.id if latest else 0

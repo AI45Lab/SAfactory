@@ -146,7 +146,7 @@ class DataManager:
     async def get_max_step_id(self) -> int:
         """Get maximum primary key for pagination"""
         if hasattr(self.strategy, 'get_max_step_id'):
-            return await self.strategy.get_max_step_id()
+            return await self.strategy.get_max_step_id(self.job_id)
         return 0
 
     @property

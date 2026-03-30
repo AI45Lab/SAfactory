@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import uuid
+import numpy as np
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional
@@ -111,7 +112,10 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a database row to the expected item format."""
     # Parse stored prompt (JSON serialized messages list)
     prompt_str = row.get("prompt", "")
-    base_messages = json.loads(prompt_str) if prompt_str else []
+    if isinstance(prompt_str, str):
+        base_messages = json.loads(prompt_str) if prompt_str else []
+    else:
+        base_messages = prompt_str
     messages = base_messages + [{"role": "assistant", "content": row.get("response", "")}]
 
     session_id = row.get("session_id", "")
@@ -167,7 +171,7 @@ async def fetch_new_items_from_db(limit: Optional[int] = None) -> List[Dict[str,
             item = _build_item_from_row(row)
             items.append(item)
             # Update cursor to the latest processed id
-            if step_pk > last_served_id:
+            if not last_served_id or step_pk > last_served_id:
                 last_served_id = step_pk
         except Exception as e:
             logger.error(f"Error building item from row: {e}")
@@ -268,12 +272,12 @@ async def get_rollout_data(request: Request):
     )
 
 
-async def init_data_manager(job_session: str, db_url: str, restart_training: bool = False):
+async def init_data_manager(job_session: str, storage_type: str, db_url: str, restart_training: bool = False):
     """Initialize the DataManager for querying the database."""
     global data_manager, last_served_id
-    data_manager = DataManager(job_id=job_session, storage_type="sqlite", db_url=db_url)
+    data_manager = DataManager(job_id=job_session, storage_type=storage_type, db_url=db_url)
     await data_manager.init()
-    logger.info(f"DataManager initialized with DB: {db_url}, job_session: {job_session}")
+    logger.info(f"DataManager initialized with {storage_type} DB: {db_url}, job_session: {job_session}")
 
     # Initialize cursor based on restart_training flag
     if restart_training:
@@ -302,6 +306,7 @@ def start_aievobox_process(data: dict):
     job_session = str(data.get("job_session") or uuid.uuid4().hex)
 
     # Database path
+    storage_type = os.environ.get("STORAGE_TYPE", "sqlite")
     db_url = os.environ.get("AIEVOBOX_DB_URL", f"sqlite:///{AIEVOBOX_ROOT}/rl/rl.db")
 
     # Run async init in a new event loop (since we're in a thread)
@@ -309,7 +314,7 @@ def start_aievobox_process(data: dict):
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(
-            init_data_manager(job_session=job_session, db_url=db_url, restart_training=restart_training)
+            init_data_manager(job_session=job_session, storage_type=storage_type, db_url=db_url, restart_training=restart_training)
         )
     finally:
         loop.close()
@@ -329,6 +334,7 @@ def start_aievobox_process(data: dict):
     cmd = [
         "python3", launcher_script,
         "--db-path", db_url,
+        "--storage-type", storage_type,
         *(["--env-config", env_config] if env_config else ["--env-root", env_root]),
         "--llm-base-url", llm_proxy_url,
         "--llm-model", llm_model,

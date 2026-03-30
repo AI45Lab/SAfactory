@@ -2,6 +2,7 @@ from pathlib import Path
 import asyncio
 import sqlite3
 import json
+import time
 import uuid
 import logging
 from collections import defaultdict
@@ -33,6 +34,22 @@ async def _do_bulk_insert(pending_records: list, batch_size: int = 500) -> None:
         log.info("Bulk insert done: %d env records", total)
     except Exception:
         log.exception("Background bulk insert failed for %d records", total)
+
+
+async def _do_bulk_cloud_insert(env_manager, pending_configs: list, batch_size: int = 500) -> None:
+    """Background coroutine: bulk-insert pending env config dicts into cloud storage.
+
+    Saves configs in batches so records become visible incrementally.
+    """
+    total = len(pending_configs)
+    try:
+        for i in range(0, total, batch_size):
+            batch = pending_configs[i:i + batch_size]
+            await asyncio.to_thread(env_manager.save_config, batch)
+            log.info("Cloud bulk insert progress: %d/%d", min(i + batch_size, total), total)
+        log.info("Cloud bulk insert done: %d env configs", total)
+    except Exception:
+        log.exception("Background cloud bulk insert failed for %d configs", total)
 
 
 async def wait_for_pending_inserts() -> None:
@@ -122,6 +139,8 @@ async def sync_configs_to_db(
     data_manager,
     yaml_configs: List[Dict],
     storage_type: str,
+    warmup_count: int = 100,
+    save_batch_size: int = 100,
 ) -> Any:
     """
     Sync YAML configurations to the database.
@@ -136,14 +155,14 @@ async def sync_configs_to_db(
     await data_manager.init()
 
     if storage_type == "sqlite":
-        return await _sync_sqlite(data_manager, yaml_configs)
+        return await _sync_sqlite(data_manager, yaml_configs, warmup_count, save_batch_size)
     elif storage_type == "cloud":
-        return await _sync_cloud(data_manager, yaml_configs)
+        return await _sync_cloud(data_manager, yaml_configs, warmup_count, save_batch_size)
     else:
         raise ValueError(f"Unknown storage type: {storage_type}")
 
 
-async def _sync_sqlite(data_manager, yaml_configs: List[Dict]) -> sqlite3.Connection:
+async def _sync_sqlite(data_manager, yaml_configs: List[Dict], warmup_count: int, save_batch_size: int) -> sqlite3.Connection:
     """Sync configs to SQLite.
 
     - Reuses existing env records where the config matches (env_name + env_params).
@@ -218,16 +237,15 @@ async def _sync_sqlite(data_manager, yaml_configs: List[Dict]) -> sqlite3.Connec
     # Commit the first batch synchronously so EnvPoolManager's initial DB query
     # (build_binding_plan) always finds data. The rest goes to a background task.
     if pending_records:
-        BATCH = 500
         async with in_transaction():
-            await JobEnvironment.bulk_create(pending_records[:BATCH])
+            await JobEnvironment.bulk_create(pending_records[:warmup_count])
         log.info(
             "Initial sync insert: %d/%d env records committed",
-            min(BATCH, len(pending_records)), len(pending_records),
+            min(warmup_count, len(pending_records)), len(pending_records),
         )
-        remaining = pending_records[BATCH:]
+        remaining = pending_records[warmup_count:]
         if remaining:
-            task = asyncio.create_task(_do_bulk_insert(remaining, batch_size=BATCH))
+            task = asyncio.create_task(_do_bulk_insert(remaining, batch_size=save_batch_size))
             _insert_tasks.add(task)
             task.add_done_callback(_insert_tasks.discard)
             log.info("Scheduled background bulk insert: %d remaining env records", len(remaining))
@@ -247,13 +265,21 @@ async def _sync_sqlite(data_manager, yaml_configs: List[Dict]) -> sqlite3.Connec
     return data_manager.get_sync_connection()
 
 
-async def _sync_cloud(data_manager, yaml_configs: List[Dict]) -> Any:
-    """Sync configs to cloud storage (S3) — full replace strategy."""
+async def _sync_cloud(data_manager, yaml_configs: List[Dict], warmup_count: int, save_batch_size: int) -> Any:
+    """Sync configs to cloud storage (S3) — full replace strategy with batched inserts.
+
+    Commits the first batch synchronously so downstream consumers find data
+    immediately, then schedules remaining records as a background task so the
+    main training loop is not blocked.
+    """
+    env_manager = data_manager.strategy.env_manager
 
     # Remove all existing configs before re-uploading
-    data_manager.strategy.env_manager.clean_all_configs()
+    env_manager.clean_all_configs()
+    data_manager.strategy._env_configs.clear()
 
     job_id = data_manager.job_id
+    pending_configs: list = []
 
     for cfg in yaml_configs:
         env_name = cfg["env_name"].strip()
@@ -270,12 +296,37 @@ async def _sync_cloud(data_manager, yaml_configs: List[Dict]) -> Any:
         group_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{env_name}:{task_idx}"))
 
         for _ in range(env_num):
-            await data_manager.add_environment(
-                env_name=env_name,
-                env_params=env_params,
-                image=image,
-                group_id=group_id,
-                job_id=job_id,
+            env_id = str(uuid.uuid4())
+            config_dict = {
+                "job_id": job_id,
+                "env_id": env_id,
+                "env_name": env_name,
+                "env_params": env_params,
+                "image": image,
+                "group_id": group_id,
+                "created_at": int(time.time()),
+            }
+            pending_configs.append(config_dict)
+            # Update in-memory cache immediately so get_all_environments is consistent
+            data_manager.strategy._env_configs[env_id] = config_dict
+
+    if pending_configs:
+        first_batch = pending_configs[:warmup_count]
+        await asyncio.to_thread(env_manager.save_config, first_batch)
+        log.info(
+            "Initial cloud sync insert: %d/%d env configs committed",
+            min(save_batch_size, len(pending_configs)), len(pending_configs),
+        )
+        remaining = pending_configs[save_batch_size:]
+        if remaining:
+            task = asyncio.create_task(
+                _do_bulk_cloud_insert(env_manager, remaining, batch_size=save_batch_size)
+            )
+            _insert_tasks.add(task)
+            task.add_done_callback(_insert_tasks.discard)
+            log.info(
+                "Scheduled background cloud bulk insert: %d remaining env configs",
+                len(remaining),
             )
 
-    return data_manager.strategy.env_manager
+    return env_manager

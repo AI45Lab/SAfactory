@@ -28,6 +28,11 @@ Safactory's configuration is layered: **CLI arguments take precedence over `mana
 | Job | `--job-id` | auto-generated | Unique ID recorded in the DB for this run |
 | Config | `--manager-config` | `./manager/config.yaml` | Manager config YAML path |
 | DB | `--storage-type` | `sqlite` | Storage backend |
+| | `--warmup-count` | `100` | The number of environment configs to pre-store in the manager |
+| | `--save-batch-size` | `100` | Size of environment configs to store in the manager |
+| | `--enable-buffer` | `False` | Enable buffer record storage |
+| | `--buffer-size` | `100` | Size of the buffer for storing records |
+| | `--flush-interval` | `5.0` | Interval (in seconds) for flushing buffered records |
 | | `--rebuild-table` | `false` | Drop and recreate DB tables before run |
 | Pool | `--multiplier` | `1.2` | Pre-warm `ceil(multiplier × pool_size)` actors |
 | Local | `--local-upstream-port` | `36663` | Port for the local env HTTP service |

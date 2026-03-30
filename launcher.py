@@ -349,7 +349,12 @@ def parse_args():
     # DB / YAML-aggregator
     p.add_argument("--env-config", type=str, default=None, help="env config which used for specify the input env configs, and it's incompatible with  env-root")
     p.add_argument("--env-root", type=str, default="env", help="only works when env-config is not specified")
-    p.add_argument("--storage-type", type=str, default="sqlite")
+    p.add_argument("--storage-type", type=str, default="sqlite", choices=["sqlite", "cloud"], help="Storage backend for environment configs and results (affects DataManager implementation)")
+    p.add_argument("--warmup-count", type=int, default=100, help="The number of environment configs to pre-store in the manager.")
+    p.add_argument("--save-batch-size", type=int, default=100, help="Size of environment configs to store in the manager.")
+    p.add_argument("--enable-buffer", type=bool, default=False, help="Enable buffer record storage")
+    p.add_argument("--buffer-size", type=int, default=100, help="Size of the buffer for storing records")
+    p.add_argument("--flush-interval", type=float, default=5.0, help="Interval (in seconds) for flushing buffered records")
     p.add_argument("--db-path", type=str, default="sqlite://android_envs.db")
     p.add_argument("--rebuild-table", action=argparse.BooleanOptionalAction, default=False,
                    help="Delete and recreate the SQLite DB file before loading configs (SQLite only)")
@@ -423,7 +428,7 @@ async def main():
     if args.rebuild_table and args.storage_type == "sqlite":
         _rebuild_sqlite_db(args.db_path)
 
-    data_manager = DataManager(job_id=job_id, storage_type=args.storage_type, db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
+    data_manager = DataManager(job_id=job_id, storage_type=args.storage_type, db_url=args.db_path, enable_buffer=args.enable_buffer, buffer_size=args.buffer_size, flush_interval=args.flush_interval)
     yaml_config_list = all_env_yaml_load(env_root=args.env_root, env_config=args.env_config)
 
     # 如果指定了 --rl-group-size，覆盖所有环境的 env_num
@@ -443,7 +448,7 @@ async def main():
                 yaml_config_list.append(epoch_cfg)
         log.info("rl_epoch=%d: expanded %d configs to %d configs", args.rl_epoch, num_tasks, len(yaml_config_list))
 
-    conn = await sync_configs_to_db(data_manager, yaml_config_list, args.storage_type)
+    conn = await sync_configs_to_db(data_manager, yaml_config_list, args.storage_type, args.warmup_count, args.save_batch_size)
 
     local_proc: Optional[subprocess.Popen] = None
     pool: Optional[ActorPool] = None
