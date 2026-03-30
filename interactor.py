@@ -323,10 +323,10 @@ class Interactor:
 
         async def worker(worker_id: int) -> None:
             while True:
-                # get the env actor for the queue
+                # acquire() now returns None only when the pool is truly exhausted
                 actor = await self.pool.acquire()
 
-                # kill the worker only when the queue length is 0
+                # Exit only when the pool confirms no more work can appear.
                 if actor is None:
                     log.info("worker=%d: no more actors (pool exhausted) -> exit", worker_id)
                     return

@@ -14,6 +14,7 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from typing import Any, Dict, Optional, Set, Tuple, List
 
+from utils import ActorPoolRuntimeState, discover_ready_actor_from_snapshot
 from core.llm import StaticBaseURLProvider, SessionSuffixBaseURLProvider
 from core.data_manager.manager import DataManager
 from core.data_manager.yaml_aggregator import all_env_yaml_load, sync_configs_to_db, wait_for_pending_inserts
@@ -243,9 +244,7 @@ class ManagerActorPool(ActorPool):
                         pass
         self.pool_size = max(1, int(ps or 1))
 
-        self._q: asyncio.Queue[Optional[ActorHandle]] = asyncio.Queue()
-        self._known: Set[Tuple[str, str]] = set()
-        self._lock = asyncio.Lock()
+        self._runtime = ActorPoolRuntimeState[ActorHandle]()
 
     @staticmethod
     def _route_to_base_url(route: Any) -> Optional[str]:
@@ -277,72 +276,56 @@ class ManagerActorPool(ActorPool):
             group_id = str(item.get("group_id") or "")
             base_url = self._actor_base_url(env, env_id)
             if base_url:
-                self._known.add((env, env_id))
-                self._q.put_nowait(ActorHandle(base_url=base_url, env_name=env, env_id=env_id, group_id=group_id))
-                log.debug("enqueued actor: %s/%s -> %s", env, env_id, base_url)
+                added = await self._runtime.add_ready_actor(
+                    (env, env_id),
+                    ActorHandle(base_url=base_url, env_name=env, env_id=env_id, group_id=group_id),
+                )
+                if added:
+                    log.debug("enqueued actor: %s/%s -> %s", env, env_id, base_url)
             else:
-                self._q.put_nowait(None)
-                log.warning("actor route missing for %s/%s (enqueued None)", env, env_id)
+                log.warning("actor route missing for %s/%s (skipped)", env, env_id)
 
-        for _ in range(self.pool_size - len(actors)):
-            self._q.put_nowait(None)
+        await self._runtime.mark_initial_load_done()
 
     async def acquire(self) -> Optional[ActorHandle]:
-        actor = await self._q.get()
+        actor = await self._runtime.acquire()
         if actor is None:
-            log.debug("acquire(): got None")
+            log.debug("acquire(): exhausted")
         else:
             log.debug("acquire(): got %s/%s", actor.env_name, actor.env_id)
         return actor
-
-    async def _discover_one_new_actor(self) -> Optional[ActorHandle]:
-        actors = await self.mgr.list_pool_actors()
-        return self._discover_from_actor_list(actors)
-
-    def _discover_from_actor_list(self, actors: List[dict]) -> Optional[ActorHandle]:
-        current = {(str(x["env_name"]), str(x["env_id"])) for x in actors}
-        candidates = list(current - self._known)
-        if not candidates:
-            return None
-
-        env, env_id = candidates[0]
-        base_url = self._actor_base_url(env, env_id)
-        if not base_url:
-            return None
-
-        # Find group_id from the actors list
-        group_id = ""
-        for x in actors:
-            if str(x["env_name"]) == env and str(x["env_id"]) == env_id:
-                group_id = str(x.get("group_id") or "")
-                break
-
-        self._known.add((env, env_id))
-        log.debug("discovered new actor: %s/%s -> %s", env, env_id, base_url)
-        return ActorHandle(base_url=base_url, env_name=env, env_id=env_id, group_id=group_id)
 
     async def done(self, actor: ActorHandle) -> None:
         old_key = (str(actor.env_name), str(actor.env_id))
         log.info("done(): scheduling background close_and_refill for env=%s id=%s", actor.env_name, actor.env_id)
 
-        # Fire and forget the refill process so the worker unblocks immediately
+        await self._runtime.begin_refill(old_key)
         asyncio.create_task(self._bg_done(actor, old_key))
 
     async def _bg_done(self, actor: ActorHandle, old_key: Tuple[str, str]) -> None:
         try:
             await self.mgr.close_and_refill(actor.env_name, actor.env_id)
         except Exception:
-            log.exception("close_and_refill failed for %s/%s; enqueuing None", actor.env_name, actor.env_id)
-            async with self._lock:
-                self._known.discard(old_key)
-                self._q.put_nowait(None)
+            log.exception("close_and_refill failed for %s/%s", actor.env_name, actor.env_id)
+            await self._runtime.fail_refill(old_key)
             return
 
         actors = await self.mgr.list_pool_actors()
-        async with self._lock:
-            self._known.discard(old_key)
-            new_actor = self._discover_from_actor_list(actors)
-            self._q.put_nowait(new_actor)
+        known_keys = await self._runtime.known_keys_snapshot()
+        new_key, new_actor = discover_ready_actor_from_snapshot(
+            actors,
+            known_keys=known_keys,
+            base_url_resolver=self._actor_base_url,
+            actor_builder=lambda base_url, env, env_id, group_id: ActorHandle(
+                base_url=base_url,
+                env_name=env,
+                env_id=env_id,
+                group_id=group_id,
+            ),
+        )
+        added = await self._runtime.finish_refill(old_key, new_key, new_actor)
+        if added and new_key is not None and new_actor is not None:
+            log.debug("discovered new actor: %s/%s -> %s", new_key[0], new_key[1], new_actor.base_url)
 
     async def aclose(self) -> None:
         log.info("ManagerActorPool.aclose(): closing EnvPoolManager ...")
