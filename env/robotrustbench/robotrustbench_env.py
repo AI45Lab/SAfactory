@@ -8,27 +8,33 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import habitat
-import hydra
 import imageio
 import numpy as np
 import yaml
 from PIL import Image
-from habitat.datasets import make_dataset
-from habitat.gym.gym_definitions import _add_sim_sensor_to_config
-from omegaconf import OmegaConf
 from openai.types.chat import ChatCompletionMessageParam
 
 from core.env.base_env import BaseEnv
 from core.types.base import RenderOutput, ResetOutput, StepOutput
-import env.robotrustbench.rt_habitat.measures  # noqa: F401
 from env.robotrustbench.rt_habitat.runtime_support import (
     RT_VERSIONED_DATA_ROOT,
+    bootstrap_gpu_runtime,
+    get_rt_resource_path,
     patch_dataset_episode_paths,
     patch_simulator_resource_paths,
     prepare_egl_runtime,
 )
 from env.robotrustbench.rt_habitat.utils import observations_to_image
+
+bootstrap_gpu_runtime()
+
+import habitat
+import hydra
+from habitat.datasets import make_dataset
+from habitat.gym.gym_definitions import _add_sim_sensor_to_config
+from omegaconf import OmegaConf
+
+import env.robotrustbench.rt_habitat.measures  # noqa: F401, E402
 
 try:
     import cv2
@@ -140,7 +146,7 @@ ROBOTRUSTBENCH_VALID_EVAL_SETS = {
 }
 
 ROBOTRUSTBENCH_DEFAULT_DATASETS = {
-    "truthfulness": "dataset_truthfulness.yaml",
+    "truthfulness": "dataset.yaml",
     "robust": "dataset_robust.yaml",
     "robustd": "dataset.yaml",
     "safety": "dataset_safety.yaml",
@@ -419,12 +425,12 @@ class RoboTrustBenchEnv(BaseEnv):
             auto_save_artifacts
         )
 
-        prepare_egl_runtime(logger, runtime_label)
+        gpu_device_id = prepare_egl_runtime(logger, runtime_label)
 
         hydra.core.global_hydra.GlobalHydra.instance().clear()
         self.config = habitat.get_config(HABITAT_CONFIG_PATH)
         OmegaConf.set_readonly(self.config, False)
-        self.config.habitat.simulator.habitat_sim_v0.gpu_device_id = 0
+        self.config.habitat.simulator.habitat_sim_v0.gpu_device_id = gpu_device_id
         patched_simulator_paths = patch_simulator_resource_paths(self.config)
         OmegaConf.set_readonly(self.config, True)
         _add_sim_sensor_to_config(self.config, ThirdRGBSensorConfig())
@@ -436,8 +442,8 @@ class RoboTrustBenchEnv(BaseEnv):
         OmegaConf.set_struct(self.config.habitat.task, False)
         self.config["habitat"]["dataset_name"] = dataset_name
         self.config.habitat.task.dataset_name = dataset_name
-        self.config.habitat.dataset.data_path = os.path.join(
-            os.path.dirname(__file__), "rt_habitat", "datasets", "%s.pickle" % eval_set
+        self.config.habitat.dataset.data_path = get_rt_resource_path(
+            "datasets", "%s.pickle" % eval_set
         )
         self.config.habitat.simulator.agents.main_agent.sim_sensors.head_rgb_sensor.height = (
             resolution
@@ -520,11 +526,8 @@ class RoboTrustBenchEnv(BaseEnv):
         self.perturbation_config_path = perturbation_config_path
         if self.dynamic_perturbation:
             if self.perturbation_config_path is None:
-                self.perturbation_config_path = os.path.join(
-                    os.path.dirname(__file__),
-                    "rt_habitat",
-                    "config",
-                    "dynamic_perturbation_config.yaml",
+                self.perturbation_config_path = get_rt_resource_path(
+                    "config", "dynamic_perturbation_config.yaml"
                 )
             self._load_perturbation_config(self.perturbation_config_path)
 

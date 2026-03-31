@@ -2,12 +2,12 @@
 # For licensing see accompanying LICENSE file.
 # Copyright (C) 2024 Apple Inc. All Rights Reserved.
 #
-import inspect
 import os
 import os.path as osp
 from typing import Dict, List, Tuple
 
 import yaml
+from env.robotrustbench.rt_habitat.runtime_support import get_rt_resource_path
 
 # import llarp.dataset
 
@@ -19,8 +19,7 @@ LOCAL_DATASETS_PATH = os.path.join(os.path.dirname(__file__), "data/datasets")
 
 
 def get_instruct_data():
-    instructs_path = osp.dirname(inspect.getfile(__file__))
-    instructs_cfg = osp.join(instructs_path, "configs", INSTRUCTION_FILE)
+    instructs_cfg = get_rt_resource_path("dataset", "configs", INSTRUCTION_FILE)
     with open(instructs_cfg, "r") as f:
         instructs = yaml.load(f, Loader=yaml.FullLoader)
     return instructs
@@ -43,15 +42,19 @@ def get_category_info(skip_load_receps=False, dataset_name="dataset.yaml"):
     """
     Get the list of all categories and a mapping from object name to category.
     """
-    dataset_path = osp.dirname(__file__)
-    dataset_cfg = osp.join(dataset_path, "configs", dataset_name)
+    dataset_cfg = get_rt_resource_path("dataset", "configs", dataset_name)
 
     # Load dataset_cfg as a dict
     with open(dataset_cfg, "r") as f:
             dataset = yaml.load(f, Loader=yaml.FullLoader)
     cat_groups = dataset["category_groups"]
-    all_receps_cat = dataset["receptacle_sets"][0]
-    assert all_receps_cat["name"] == "all_receps"
+    all_receps_cat = None
+    for recep_set in dataset["receptacle_sets"]:
+        if recep_set.get("name") == "all_receps":
+            all_receps_cat = recep_set
+            break
+    if all_receps_cat is None:
+        raise KeyError("Missing receptacle set 'all_receps' in %s" % dataset_name)
     all_obj_cats = dataset["category_groups"][ALL_CATS_NAME]["included"]
 
     all_cats = []

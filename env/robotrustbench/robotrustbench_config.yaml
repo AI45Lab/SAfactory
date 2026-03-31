@@ -21,7 +21,7 @@ _templates:
 
   truthfulness_params: &truthfulness_params
     <<: *common_params
-    dataset_name: dataset_truthfulness.yaml
+    dataset_name: dataset.yaml
 
   robust_params: &robust_params
     <<: [*common_params, *artifact_params, *perturbation_params]
