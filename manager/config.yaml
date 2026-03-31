@@ -12,6 +12,7 @@ cluster:
     port: 36663
     timeout_s: 100         # Connection timeouts from manager to env clusters
     concurrency: 200       # Max concurrent HTTP calls from manager when prewarming actors
+    startup_concurrency: 16  # Max concurrent cold starts / reset attempts during prewarm
   env_types:
     trading_gym:
       quotagroup: "evobox_cpu_task"         #TODO each env can specify it's distinguished quotagroup

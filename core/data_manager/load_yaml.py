@@ -20,68 +20,102 @@ def _convert_numpy_types(obj: Any) -> Any:
     return obj
 
 
-def load_dataset_file(base_dir: str, path: str):
-        """
-        根据后缀加载数据文件
-        支持: .json, .jsonl, .yaml/.yml, .parquet
-        返回: list[dict] 或 list[any]
-        """
-        if not os.path.isabs(path):
-            path = os.path.join(base_dir, path)
-        
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"dataset文件不存在：{path}")
+def _build_parquet_row_refs(path: str) -> List[Dict[str, Any]]:
+    """
+    Build lightweight references to each parquet row instead of eagerly
+    materializing the full dataset into memory.
+    """
+    try:
+        import pyarrow.parquet as pq
+    except ImportError:
+        raise ImportError("parquet_row_ref 模式需要安装 pyarrow: pip install pyarrow")
 
-        _, ext = os.path.splitext(path)
-        ext = ext.lower()
+    parquet_file = pq.ParquetFile(path)
+    refs: List[Dict[str, Any]] = []
+    row_idx = 0
 
-        data_list = []
-        
-        try:
-            # 1. JSONL (每行为一个JSON对象)
-            if ext == ".jsonl":
-                with open(path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            data_list.append(json.loads(line))
-            
-            # 2. JSON (标准列表)
-            elif ext == ".json":
-                with open(path, "r", encoding="utf-8") as f:
-                    content = json.load(f)
-                    if isinstance(content, list):
-                        data_list = content
-                    else:
-                        raise ValueError(f"JSON文件内容必须是列表: {path}")
+    for row_group in range(parquet_file.num_row_groups):
+        group_rows = parquet_file.metadata.row_group(row_group).num_rows
+        for row_in_group in range(group_rows):
+            refs.append({
+                "__dataset_ref__": {
+                    "kind": "parquet_row",
+                    "path": os.path.abspath(path),
+                    "row_group": row_group,
+                    "row_in_group": row_in_group,
+                    "row_idx": row_idx,
+                }
+            })
+            row_idx += 1
 
-            # 3. YAML (标准列表)
-            elif ext in [".yaml", ".yml"]:
-                with open(path, "r", encoding="utf-8") as f:
-                    content = yaml.safe_load(f)
-                    if isinstance(content, list):
-                        data_list = content
-                    else:
-                        raise ValueError(f"YAML文件内容必须是列表: {path}")
+    return refs
 
-            # 4. Parquet (需安装pandas和pyarrow/fastparquet)
-            elif ext == ".parquet":
-                try:
-                    import pandas as pd
-                except ImportError:
-                    raise ImportError("加载parquet文件需要安装pandas: pip install pandas pyarrow")
 
-                df = pd.read_parquet(path)
-                # 将DataFrame转换为字典列表，并转换 numpy 类型
-                data_list = [_convert_numpy_types(row) for row in df.to_dict(orient="records")]
+def load_dataset_file(base_dir: str, path: str, load_mode: str = "eager"):
+    """
+    根据后缀加载数据文件
+    支持: .json, .jsonl, .yaml/.yml, .parquet
+    返回: list[dict] 或 list[any]
+    """
+    if not os.path.isabs(path):
+        path = os.path.join(base_dir, path)
 
-            else:
-                raise ValueError(f"不支持的文件格式: {ext}，仅支持 json/jsonl/yaml/parquet")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"dataset文件不存在：{path}")
 
-        except Exception as e:
-            raise RuntimeError(f"解析dataset文件失败 [{path}]: {str(e)}")
+    _, ext = os.path.splitext(path)
+    ext = ext.lower()
 
-        return data_list
+    data_list = []
+
+    try:
+        # 1. JSONL (每行为一个JSON对象)
+        if ext == ".jsonl":
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        data_list.append(json.loads(line))
+
+        # 2. JSON (标准列表)
+        elif ext == ".json":
+            with open(path, "r", encoding="utf-8") as f:
+                content = json.load(f)
+                if isinstance(content, list):
+                    data_list = content
+                else:
+                    raise ValueError(f"JSON文件内容必须是列表: {path}")
+
+        # 3. YAML (标准列表)
+        elif ext in [".yaml", ".yml"]:
+            with open(path, "r", encoding="utf-8") as f:
+                content = yaml.safe_load(f)
+                if isinstance(content, list):
+                    data_list = content
+                else:
+                    raise ValueError(f"YAML文件内容必须是列表: {path}")
+
+        # 4. Parquet (需安装pandas和pyarrow/fastparquet)
+        elif ext == ".parquet":
+            if load_mode == "parquet_row_ref":
+                return _build_parquet_row_refs(path)
+
+            try:
+                import pandas as pd
+            except ImportError:
+                raise ImportError("加载parquet文件需要安装pandas: pip install pandas pyarrow")
+
+            df = pd.read_parquet(path)
+            # 将DataFrame转换为字典列表，并转换 numpy 类型
+            data_list = [_convert_numpy_types(row) for row in df.to_dict(orient="records")]
+
+        else:
+            raise ValueError(f"不支持的文件格式: {ext}，仅支持 json/jsonl/yaml/parquet")
+
+    except Exception as e:
+        raise RuntimeError(f"解析dataset文件失败 [{path}]: {str(e)}")
+
+    return data_list
 
 def load_yaml_configs(yaml_path: str) -> List[Dict]:
     """加载YAML配置并验证格式"""
@@ -108,12 +142,13 @@ def load_yaml_configs(yaml_path: str) -> List[Dict]:
         base_params = env.get("env_params", {}).copy()
         
         dataset_path = env.get("dataset")
+        dataset_load_mode = str(env.get("dataset_load_mode", "eager")).strip() or "eager"
         
         # 2. 加载 Dataset 数据
         dataset_items = []
         if dataset_path:
             try:
-                dataset_items = load_dataset_file(base_dir, dataset_path)
+                dataset_items = load_dataset_file(base_dir, dataset_path, load_mode=dataset_load_mode)
             except Exception as e:
                 print(f"环境 [{env_name}] 加载dataset失败: {e} (跳过此环境)")
                 continue

@@ -16,10 +16,7 @@ set -ex
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
-# Load environment variables
-if [ -f "${SCRIPT_DIR}/.env" ]; then
-    source "${SCRIPT_DIR}/.env"
-fi
+source "${SCRIPT_DIR}/env.sh"
 
 # Construct URLs from host and port
 ROLLOUT_BUFFER_URL="http://${BUFFER_SERVER_HOST}:${BUFFER_SERVER_PORT}"
@@ -48,7 +45,7 @@ ROLLOUT_ARGS=(
    --num-rollout 300
    --rollout-batch-size ${SLIME_ROLLOUT_BATCH_SIZE}
    --n-samples-per-prompt ${SLIME_N_SAMPLES_PER_PROMPT}
-   --rollout-max-response-len 64
+   --rollout-max-response-len ${LLM_MAX_LENGTH}
    --rollout-temperature ${LLM_TEMPERATURE}
    --global-batch-size ${SLIME_GLOBAL_BATCH_SIZE}
    --loss-mask-type qwen
@@ -120,7 +117,7 @@ export SGLANG_LOGGING_CONFIG_PATH=${SGLANG_LOGGING_CONFIG_PATH:-"/root/AIEvoBox/
 
 RUNTIME_ENV_JSON="{\
   \"env_vars\": {\
-    \"PYTHONPATH\": \"${SLIME_HOME}:${SCRIPT_DIR}:/root/AIEvoBox:/root/Megatron-LM\",\
+    \"PYTHONPATH\": \"${SLIME_HOME}:${AIEVOBOX_ROOT}/rl:${AIEVOBOX_ROOT}:/root/Megatron-LM\",\
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",\
     \"LLM_PROXY_URL\": \"${LLM_PROXY_URL}\",\
     \"ROLLOUT_BUFFER_URL\": \"${ROLLOUT_BUFFER_URL}\",\

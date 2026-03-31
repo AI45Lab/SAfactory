@@ -463,58 +463,76 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
             print(f"✅ Valid groups collected this round: {len(valid_groups)}")
 
             sample_results = []
-            for group_record in valid_groups:
-                group_results = []
-                drop_group = False
-                for record in group_record:
-                    oai_messages = record["messages"]
-                    session_id = record["extra_info"].get("session_id", "")
+            touched_session_ids = set()
+            try:
+                for group_record in valid_groups:
+                    group_results = []
+                    drop_group = False
+                    for record in group_record:
+                        oai_messages = record["messages"]
+                        session_id = record["extra_info"].get("session_id", "")
+                        group_id = record["extra_info"].get("group_id", "")
+                        if session_id:
+                            touched_session_ids.add(session_id)
+                        try:
+                            max_length = _llm_proxy_module.STATE.max_length
+                            tokens, response_mask, _image_data, _messages_str, mm_train_inputs = (
+                                TRAJECTORY_MASK_BUILDER.get_training_info(session_id, oai_messages)
+                            )
+                            if not tokens and not response_mask and _messages_str == "":
+                                logger.warning(
+                                    "Drop rollout group due to unmatched trajectory: instance_id=%s session_id=%s group_id=%s",
+                                    record.get("instance_id"),
+                                    session_id,
+                                    group_id,
+                                )
+                                drop_group = True
+                                break
+                            if max_length is not None and len(tokens) > max_length:
+                                tokens = tokens[:max_length]
+                                response_mask = response_mask[:max_length]
 
-                    max_length = _llm_proxy_module.STATE.max_length
-                    tokens, response_mask, _image_data, _messages_str, mm_train_inputs = (
-                        TRAJECTORY_MASK_BUILDER.get_training_info(session_id, oai_messages)
-                    )
-                    if not tokens and not response_mask and _messages_str == "":
-                        logger.warning(
-                            "Drop rollout group due to unmatched trajectory: instance_id=%s session_id=%s group_id=%s",
-                            record.get("instance_id"),
-                            session_id,
-                            record["extra_info"].get("group_id", ""),
-                        )
-                        drop_group = True
-                        break
-                    if max_length is not None and len(tokens) > max_length:
-                        tokens = tokens[:max_length]
-                        response_mask = response_mask[:max_length]
+                            token_ids, loss_mask, response_length = build_loss_mask_from_response_mask(tokens, response_mask)
+                            write_debug_to_file(tokenizer, rollout_id, record, oai_messages, token_ids, loss_mask, response_length)
 
-                    token_ids, loss_mask, response_length = build_loss_mask_from_response_mask(tokens, response_mask)
-                    write_debug_to_file(tokenizer, rollout_id, record, oai_messages, token_ids, loss_mask, response_length)
+                            metadata = dict(record["extra_info"])
+                            sample = Sample(
+                                index=record["instance_id"],
+                                prompt=record["uid"],
+                                tokens=token_ids,
+                                response_length=response_length,
+                                reward=record["reward"],
+                                status=(
+                                    Sample.Status.COMPLETED
+                                    if "finish_reason" not in record["extra_info"]
+                                    or record["extra_info"]["finish_reason"] != "length"
+                                    else Sample.Status.TRUNCATED
+                                ),
+                                loss_mask=loss_mask,
+                                metadata=metadata,
+                            )
 
-                    metadata = dict(record["extra_info"])
-                    sample = Sample(
-                        index=record["instance_id"],
-                        prompt=record["uid"],
-                        tokens=token_ids,
-                        response_length=response_length,
-                        reward=record["reward"],
-                        status=(
-                            Sample.Status.COMPLETED
-                            if "finish_reason" not in record["extra_info"]
-                            or record["extra_info"]["finish_reason"] != "length"
-                            else Sample.Status.TRUNCATED
-                        ),
-                        loss_mask=loss_mask,
-                        metadata=metadata,
-                    )
+                            if mm_train_inputs is not None:
+                                sample.multimodal_train_inputs = mm_train_inputs
 
-                    if mm_train_inputs is not None:
-                        sample.multimodal_train_inputs = mm_train_inputs
+                            group_results.append(sample)
+                        except Exception:
+                            logger.exception(
+                                "Drop rollout group due to sample assembly error: instance_id=%s session_id=%s group_id=%s",
+                                record.get("instance_id"),
+                                session_id,
+                                group_id,
+                            )
+                            drop_group = True
+                            break
 
-                    group_results.append(sample)
-
-                if drop_group:
-                    continue
-                sample_results.append(group_results)
+                    if drop_group:
+                        continue
+                    sample_results.append(group_results)
+            finally:
+                if TRAJECTORY_MASK_BUILDER is not None:
+                    for session_id in touched_session_ids:
+                        TRAJECTORY_MASK_BUILDER.clear_session(session_id)
             data_buffer.add_samples(sample_results)
             print(
                 "✅ Trainable groups added this round: "

@@ -11,6 +11,7 @@ export AIEVOBOX_ENV_CONFIG=/root/AIEvoBox/env/geo3k_vl_test/geo3k_vl_test_env_co
 # ENV_ROOT 指定读取目录下所有子目录的环境
 # export AIEVOBOX_ENV_ROOT=/root/AIEvoBox/env
 export AIEVOBOX_POOL_SIZE=256
+export STORAGE_TYPE=sqlite
 
 
 
@@ -19,9 +20,11 @@ export AIEVOBOX_POOL_SIZE=256
 # -------------------------------------------
 export RL_GROUP_SIZE=8
 export RL_EPOCH=10
-export RL_API_KEY=openai_api_key
-export RL_MODEL=model
 export RL_OFF_BY_N=0
+
+# no use, will be removed
+export RL_MODEL=model
+export RL_API_KEY=openai_api_key
 
 
 # -------------------------------------------

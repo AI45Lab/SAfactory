@@ -6,6 +6,7 @@
 """
 
 import json
+import hashlib
 import logging
 import os
 import time
@@ -36,6 +37,10 @@ class TrajectoryMaskBuilder:
     def __init__(self, tokenizer, processor: Any = None) -> None:
         self.tokenizer = tokenizer
         self.processor = processor
+        self.enable_cache_processor_compare = self._read_bool_env(
+            "AIEVOBOX_DEBUG_CACHE_PROCESSOR_COMPARE",
+            default=False,
+        )
         self.generation_tokens, self.generation_prompt = self._init_generation_tokens_and_prompt()
         self.end_tokens, self.end_prompt_str = self._init_end_tokens_and_prompt()
 
@@ -47,6 +52,25 @@ class TrajectoryMaskBuilder:
         #     "image_data": List[str],       # 编码后的图片数据
         # }]
         self.session_data: Dict[str, List[Dict[str, Any]]] = {}
+        # session_id -> image_key -> {
+        #     "pixel_values": Tensor,
+        #     "image_grid_thw": Tensor,
+        #     "num_image_tokens": int,
+        #     "image_data": str,
+        # }
+        self.session_image_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+    def _read_bool_env(self, name: str, default: bool = False) -> bool:
+        raw_value = os.environ.get(name)
+        if raw_value is None:
+            return default
+
+        normalized_value = raw_value.strip().lower()
+        if normalized_value in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized_value in {"0", "false", "no", "n", "off"}:
+            return False
+        return default
 
     def _init_generation_tokens_and_prompt(self) -> Tuple[List[int], str]:
         """计算 generation_tokens 和 generation_prompt（如 <|im_start|>assistant\n）。
@@ -148,6 +172,453 @@ class TrajectoryMaskBuilder:
             normalized.append(new_msg)
 
         return normalized
+
+    def _get_session_image_cache(self, session_id: str) -> Dict[str, Dict[str, Any]]:
+        if session_id not in self.session_image_cache:
+            self.session_image_cache[session_id] = {}
+        return self.session_image_cache[session_id]
+
+    def _make_image_cache_key(self, image_value: str) -> str:
+        return hashlib.sha256(image_value.encode("utf-8")).hexdigest()
+
+    def _extract_ordered_image_keys(self, messages: List[Dict[str, Any]]) -> List[str]:
+        image_keys: List[str] = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") != "image":
+                    continue
+
+                image_value = item.get("image")
+                if isinstance(image_value, str):
+                    image_keys.append(self._make_image_cache_key(image_value))
+
+        return image_keys
+
+    def _grid_product(self, grid: Any) -> int:
+        if hasattr(grid, "prod"):
+            product = grid.prod()
+            if hasattr(product, "item"):
+                return int(product.item())
+            return int(product)
+
+        result = 1
+        for value in grid:
+            if hasattr(value, "item"):
+                value = value.item()
+            result *= int(value)
+        return result
+
+    def _slice_copy(self, value: Any, start: int, end: int) -> Any:
+        sliced = value[start:end]
+        if hasattr(sliced, "clone"):
+            return sliced.clone()
+        if hasattr(sliced, "copy"):
+            return sliced.copy()
+        return sliced
+
+    def _concat_cached_values(self, values: List[Any]) -> Any:
+        if not values:
+            return None
+        first = values[0]
+        module_name = getattr(first.__class__, "__module__", "")
+        if module_name.startswith("torch"):
+            import torch
+
+            return torch.cat(values, dim=0)
+
+        try:
+            import numpy as np
+
+            return np.concatenate(values, axis=0)
+        except Exception:
+            if len(values) == 1:
+                return values[0]
+            raise
+
+    def _ensure_images_cached(
+        self,
+        session_id: str,
+        image_keys: List[str],
+        images: List[Any],
+    ) -> bool:
+        image_processor = getattr(self.processor, "image_processor", None)
+        image_token = getattr(self.processor, "image_token", None) or getattr(self.tokenizer, "image_token", None)
+        merge_size = getattr(image_processor, "merge_size", None)
+        if self.processor is None or image_processor is None or image_token is None or merge_size is None:
+            return False
+        if len(image_keys) != len(images):
+            logger.warning(
+                "Image key count mismatch: session=%s image_keys=%s images=%s",
+                session_id,
+                len(image_keys),
+                len(images),
+            )
+            return False
+
+        session_cache = self._get_session_image_cache(session_id)
+        missing_keys: List[str] = []
+        missing_images: List[Any] = []
+        scheduled_keys = set()
+        for image_key, image in zip(image_keys, images):
+            if image_key in session_cache or image_key in scheduled_keys:
+                continue
+            scheduled_keys.add(image_key)
+            missing_keys.append(image_key)
+            missing_images.append(image)
+
+        if not missing_images:
+            return True
+
+        image_inputs = self.processor.image_processor(images=missing_images, return_tensors="pt")
+        pixel_values = image_inputs["pixel_values"]
+        image_grid_thw = image_inputs["image_grid_thw"]
+        merge_length = self.processor.image_processor.merge_size ** 2
+
+        cursor = 0
+        for idx, (image_key, image) in enumerate(zip(missing_keys, missing_images)):
+            grid = image_grid_thw[idx]
+            patch_count = self._grid_product(grid)
+            session_cache[image_key] = {
+                "pixel_values": self._slice_copy(pixel_values, cursor, cursor + patch_count),
+                "image_grid_thw": self._slice_copy(image_grid_thw, idx, idx + 1),
+                "num_image_tokens": patch_count // merge_length,
+                "image_data": encode_image_for_rollout_engine(image),
+            }
+            cursor += patch_count
+
+        return True
+
+    def _expand_messages_with_cached_images(
+        self,
+        session_id: str,
+        messages_str: str,
+        image_keys: List[str],
+    ) -> str:
+        if not image_keys:
+            return messages_str
+
+        image_token = getattr(self.processor, "image_token", None) or getattr(self.tokenizer, "image_token", None)
+        if image_token is None:
+            raise ValueError("Processor image token is not available.")
+
+        session_cache = self._get_session_image_cache(session_id)
+        placeholder = "<|aievo_image_placeholder|>"
+        expanded_messages_str = messages_str
+
+        for image_key in image_keys:
+            cache_entry = session_cache.get(image_key)
+            if cache_entry is None:
+                raise KeyError(f"Missing cached image for key={image_key}")
+            token_count = int(cache_entry["num_image_tokens"])
+            if image_token not in expanded_messages_str:
+                raise ValueError("Image token count mismatch while expanding cached images.")
+            expanded_messages_str = expanded_messages_str.replace(
+                image_token,
+                placeholder * token_count,
+                1,
+            )
+
+        if image_token in expanded_messages_str:
+            raise ValueError("Unexpanded image token remains after cached image expansion.")
+
+        return expanded_messages_str.replace(placeholder, image_token)
+
+    def _build_mm_train_inputs_from_cache(
+        self,
+        session_id: str,
+        image_keys: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        if not image_keys:
+            return None
+
+        session_cache = self._get_session_image_cache(session_id)
+        pixel_values = []
+        image_grid_thw = []
+        for image_key in image_keys:
+            cache_entry = session_cache.get(image_key)
+            if cache_entry is None:
+                return None
+            pixel_values.append(cache_entry["pixel_values"])
+            image_grid_thw.append(cache_entry["image_grid_thw"])
+
+        return {
+            "pixel_values": self._concat_cached_values(pixel_values),
+            "image_grid_thw": self._concat_cached_values(image_grid_thw),
+        }
+
+    def _count_image_tokens_in_input_ids(self, input_ids: List[int]) -> Optional[int]:
+        image_token_id = getattr(self.processor, "image_token_id", None) or getattr(self.tokenizer, "image_token_id", None)
+        if image_token_id is None:
+            image_token = getattr(self.processor, "image_token", None) or getattr(self.tokenizer, "image_token", None)
+            if image_token is None:
+                return None
+            image_token_id = self.tokenizer.convert_tokens_to_ids(image_token)
+        return sum(1 for token_id in input_ids if token_id == image_token_id)
+
+    def _count_image_tokens_from_mm_inputs(self, mm_train_inputs: Optional[Dict[str, Any]]) -> Optional[int]:
+        if mm_train_inputs is None:
+            return 0
+
+        image_grid_thw = mm_train_inputs.get("image_grid_thw")
+        if image_grid_thw is None:
+            return 0
+
+        image_processor = getattr(self.processor, "image_processor", None)
+        merge_size = getattr(image_processor, "merge_size", None)
+        if merge_size is None:
+            return None
+
+        merge_length = merge_size ** 2
+        total = 0
+        for grid in image_grid_thw:
+            total += self._grid_product(grid) // merge_length
+        return total
+
+    def _values_equal(self, left: Any, right: Any) -> bool:
+        if left is None or right is None:
+            return left is right
+
+        left_module = getattr(left.__class__, "__module__", "")
+        right_module = getattr(right.__class__, "__module__", "")
+        if left_module.startswith("torch") and right_module.startswith("torch"):
+            import torch
+
+            return torch.equal(left, right)
+
+        try:
+            import numpy as np
+
+            if isinstance(left, np.ndarray) and isinstance(right, np.ndarray):
+                return np.array_equal(left, right)
+        except Exception:
+            pass
+
+        if isinstance(left, list) and isinstance(right, list):
+            return left == right
+
+        return left == right
+
+    def _value_shape(self, value: Any) -> Optional[List[int]]:
+        if value is None:
+            return None
+        shape = getattr(value, "shape", None)
+        if shape is not None:
+            return [int(dim) for dim in shape]
+        if isinstance(value, list):
+            return [len(value)]
+        return None
+
+    def _value_fingerprint(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+
+        module_name = getattr(value.__class__, "__module__", "")
+        if module_name.startswith("torch"):
+            tensor = value.detach().cpu().contiguous()
+            return hashlib.sha256(tensor.numpy().tobytes()).hexdigest()
+
+        try:
+            import numpy as np
+
+            if isinstance(value, np.ndarray):
+                return hashlib.sha256(np.ascontiguousarray(value).tobytes()).hexdigest()
+        except Exception:
+            pass
+
+        if isinstance(value, list):
+            return hashlib.sha256(json.dumps(value, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+        return hashlib.sha256(repr(value).encode("utf-8")).hexdigest()
+
+    def _first_diff_index(self, left: List[int], right: List[int]) -> Optional[int]:
+        for idx, (left_value, right_value) in enumerate(zip(left, right)):
+            if left_value != right_value:
+                return idx
+        if len(left) != len(right):
+            return min(len(left), len(right))
+        return None
+
+    def _value_debug_summary(self, value: Any) -> Dict[str, Any]:
+        summary: Dict[str, Any] = {
+            "type": type(value).__name__ if value is not None else None,
+            "shape": self._value_shape(value),
+            "fingerprint": self._value_fingerprint(value),
+        }
+        dtype = getattr(value, "dtype", None)
+        if dtype is not None:
+            summary["dtype"] = str(dtype)
+        return summary
+
+    def _write_cache_processor_mismatch_debug_file(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        normalized_messages: List[Dict[str, Any]],
+        original_messages_str: str,
+        cached_messages_str: str,
+        image_keys: List[str],
+        cached_input_ids: List[int],
+        processor_input_ids: List[int],
+        cached_mm_train_inputs: Optional[Dict[str, Any]],
+        processor_mm_train_inputs: Optional[Dict[str, Any]],
+        mismatches: List[str],
+    ) -> str:
+        debug_root = os.environ.get("AIEVOBOX_ROOT", os.getcwd())
+        debug_dir = os.path.join(debug_root, "logs", "trajectory_cache_processor_mismatch")
+        os.makedirs(debug_dir, exist_ok=True)
+
+        session_name = session_id or "empty_session"
+        debug_file = os.path.join(
+            debug_dir,
+            f"{session_name}_{time.time_ns()}.json",
+        )
+
+        first_diff_index = self._first_diff_index(cached_input_ids, processor_input_ids)
+        window_start = max((first_diff_index or 0) - 16, 0)
+        window_end = (first_diff_index or 0) + 16
+
+        payload = {
+            "session_id": session_id,
+            "messages": messages,
+            "normalized_messages": normalized_messages,
+            "original_messages_str": original_messages_str,
+            "cached_messages_str": cached_messages_str,
+            "image_keys": image_keys,
+            "mismatches": mismatches,
+            "cached_input_ids_len": len(cached_input_ids),
+            "processor_input_ids_len": len(processor_input_ids),
+            "cached_image_tokens": self._count_image_tokens_in_input_ids(cached_input_ids),
+            "processor_image_tokens": self._count_image_tokens_in_input_ids(processor_input_ids),
+            "first_input_diff_index": first_diff_index,
+            "cached_input_ids_window": cached_input_ids[window_start:window_end],
+            "processor_input_ids_window": processor_input_ids[window_start:window_end],
+            "cached_mm_train_inputs": {
+                "pixel_values": self._value_debug_summary(
+                    None if cached_mm_train_inputs is None else cached_mm_train_inputs.get("pixel_values")
+                ),
+                "image_grid_thw": self._value_debug_summary(
+                    None if cached_mm_train_inputs is None else cached_mm_train_inputs.get("image_grid_thw")
+                ),
+            },
+            "processor_mm_train_inputs": {
+                "pixel_values": self._value_debug_summary(
+                    None if processor_mm_train_inputs is None else processor_mm_train_inputs.get("pixel_values")
+                ),
+                "image_grid_thw": self._value_debug_summary(
+                    None if processor_mm_train_inputs is None else processor_mm_train_inputs.get("image_grid_thw")
+                ),
+            },
+        }
+
+        with open(debug_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+        return debug_file
+
+    def _validate_cache_against_processor(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        normalized_messages: List[Dict[str, Any]],
+        original_messages_str: str,
+        cached_messages_str: str,
+        images: List[Any],
+        image_keys: List[str],
+        cached_input_ids: List[int],
+        cached_mm_train_inputs: Optional[Dict[str, Any]],
+    ) -> None:
+        proc_out = self.processor(text=original_messages_str, images=images, return_tensors="pt")
+        raw_input_ids = proc_out["input_ids"][0]
+        processor_input_ids = raw_input_ids.tolist() if hasattr(raw_input_ids, "tolist") else list(raw_input_ids)
+        processor_mm_train_inputs = {
+            "pixel_values": proc_out.get("pixel_values"),
+            "image_grid_thw": proc_out.get("image_grid_thw"),
+        }
+
+        mismatches = []
+        if cached_input_ids != processor_input_ids:
+            mismatches.append("input_ids")
+
+        cached_pixel_values = None if cached_mm_train_inputs is None else cached_mm_train_inputs.get("pixel_values")
+        cached_image_grid_thw = None if cached_mm_train_inputs is None else cached_mm_train_inputs.get("image_grid_thw")
+        if not self._values_equal(cached_pixel_values, processor_mm_train_inputs.get("pixel_values")):
+            mismatches.append("pixel_values")
+        if not self._values_equal(cached_image_grid_thw, processor_mm_train_inputs.get("image_grid_thw")):
+            mismatches.append("image_grid_thw")
+
+        if mismatches:
+            debug_file = self._write_cache_processor_mismatch_debug_file(
+                session_id=session_id,
+                messages=messages,
+                normalized_messages=normalized_messages,
+                original_messages_str=original_messages_str,
+                cached_messages_str=cached_messages_str,
+                image_keys=image_keys,
+                cached_input_ids=cached_input_ids,
+                processor_input_ids=processor_input_ids,
+                cached_mm_train_inputs=cached_mm_train_inputs,
+                processor_mm_train_inputs=processor_mm_train_inputs,
+                mismatches=mismatches,
+            )
+            raise RuntimeError(
+                f"cache vs processor mismatch: session={session_id} mismatches={mismatches} debug_file={debug_file}"
+            )
+
+    def _process_with_image_cache(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        normalized_messages: List[Dict[str, Any]],
+        messages_str: str,
+        images: List[Any],
+        image_keys: List[str],
+    ) -> Dict[str, Any]:
+        if not self._ensure_images_cached(session_id, image_keys, images):
+            raise ValueError(f"Failed to populate image cache for session={session_id}")
+
+        expanded_messages_str = self._expand_messages_with_cached_images(
+            session_id,
+            messages_str,
+            image_keys,
+        )
+        if expanded_messages_str:
+            expanded_messages_str = unicodedata.normalize("NFC", expanded_messages_str)
+
+        input_ids = self.tokenizer.encode(expanded_messages_str, add_special_tokens=False)
+        session_cache = self._get_session_image_cache(session_id)
+        mm_train_inputs = self._build_mm_train_inputs_from_cache(session_id, image_keys)
+        if self.enable_cache_processor_compare:
+            self._validate_cache_against_processor(
+                session_id=session_id,
+                messages=messages,
+                normalized_messages=normalized_messages,
+                original_messages_str=messages_str,
+                cached_messages_str=expanded_messages_str,
+                images=images,
+                image_keys=image_keys,
+                cached_input_ids=input_ids,
+                cached_mm_train_inputs=mm_train_inputs,
+            )
+
+        return {
+            "messages_str": expanded_messages_str,
+            "input_ids": input_ids,
+            "image_data": [session_cache[image_key]["image_data"] for image_key in image_keys],
+            "mm_train_inputs": mm_train_inputs,
+        }
+
+    def clear_image_cache(self, session_id: str) -> None:
+        if session_id in self.session_image_cache:
+            del self.session_image_cache[session_id]
 
     def match_prefix_with_mask(
         self,
@@ -268,6 +739,43 @@ class TrajectoryMaskBuilder:
 
         return debug_file
 
+    def _write_mm_mismatch_debug_file(
+        self,
+        session_id: str,
+        messages: List[Dict[str, Any]],
+        normalized_messages: List[Dict[str, Any]],
+        target_messages_str: str,
+        matched_record: Dict[str, Any],
+        record_image_tokens: int,
+        mm_image_tokens: int,
+    ) -> str:
+        debug_root = os.environ.get("AIEVOBOX_ROOT", os.getcwd())
+        debug_dir = os.path.join(debug_root, "logs", "trajectory_mm_mismatch")
+        os.makedirs(debug_dir, exist_ok=True)
+
+        session_name = session_id or "empty_session"
+        debug_file = os.path.join(
+            debug_dir,
+            f"{session_name}_{time.time_ns()}.json",
+        )
+
+        payload = {
+            "session_id": session_id,
+            "messages": messages,
+            "normalized_messages": normalized_messages,
+            "target_messages_str": target_messages_str,
+            "target_messages_str_len": len(target_messages_str),
+            "matched_record_messages_str": matched_record.get("messages_str"),
+            "matched_record_tokens_len": len(matched_record.get("tokens") or []),
+            "record_image_tokens": record_image_tokens,
+            "mm_image_tokens": mm_image_tokens,
+        }
+
+        with open(debug_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+        return debug_file
+
     def prepare_generate_input(
         self,
         session_id: str,
@@ -293,8 +801,9 @@ class TrajectoryMaskBuilder:
         normalized_messages = self._normalize_messages_for_qwen_vision(messages)
 
         # 提取多模态信息
-        images, videos = process_vision_info(normalized_messages)
+        images, _ = process_vision_info(normalized_messages)
         images = images or []  # 确保 images 不为 None
+        image_keys = self._extract_ordered_image_keys(normalized_messages) if images else []
 
         # 构建当前 messages 的字符串（不含 generation_prompt，用于匹配）
         current_messages_str = self.tokenizer.apply_chat_template(
@@ -302,15 +811,21 @@ class TrajectoryMaskBuilder:
             add_generation_prompt=False,
             tokenize=False
         )
-
-        # 多模态处理：如果有 processor 且有 images，用 processor 处理
-        proc_out = None
         if self.processor is not None and images:
-            proc_out = self.processor(text=current_messages_str, images=images, tokenize=False)
-            current_messages_str = self.tokenizer.decode(
-                proc_out["input_ids"][0],
-                skip_special_tokens=False,
+            cached_result = self._process_with_image_cache(
+                session_id,
+                messages,
+                normalized_messages,
+                current_messages_str,
+                images,
+                image_keys,
             )
+            current_messages_str = cached_result["messages_str"]
+            current_input_ids = list(cached_result["input_ids"])
+            image_data = list(cached_result["image_data"])
+        else:
+            current_input_ids = self.tokenizer.encode(current_messages_str, add_special_tokens=False)
+            image_data = []
         if current_messages_str:
             current_messages_str = unicodedata.normalize("NFC", current_messages_str)
 
@@ -322,58 +837,34 @@ class TrajectoryMaskBuilder:
         matched_tokens_count = 0  # 匹配到的 tokens 数量
 
         if matched_record is not None:
-            # 找到匹配字符串对应的 token 位置
-            # matched_prefix_len 是字符级别的匹配长度
-            # 我们需要找到对应的 token 边界
-            matched_str = matched_record["messages_str"][:matched_prefix_len]
-
-            # Tokenize 匹配部分，找到对应的 token 数量
-            # 注意：我们不能简单地 tokenize matched_str，因为可能有上下文依赖
-            # 最安全的方式是遍历 tokens 逐个 decode，找到匹配位置
-            for i, token in enumerate(matched_record["tokens"]):
-                decoded = self.tokenizer.decode(matched_record["tokens"][:i+1])
+            for i in range(len(matched_record["tokens"])):
+                decoded = self.tokenizer.decode(matched_record["tokens"][: i + 1])
                 if decoded:
                     decoded = unicodedata.normalize("NFC", decoded)
                 if len(decoded) <= matched_prefix_len:
                     matched_tokens_count = i + 1
                 else:
                     break
-
-            # 复用匹配部分的 tokens
             input_ids = list(matched_record["tokens"][:matched_tokens_count])
-
-            # 计算新增的 context 字符串（使用字符级匹配长度）
             new_context_str = current_messages_str[matched_prefix_len:]
             new_context_str += self.generation_prompt
-
-            # Tokenize 新增部分并追加
             if new_context_str:
-                new_context_tokens = self.tokenizer.encode(new_context_str, add_special_tokens=False)
-                input_ids.extend(new_context_tokens)
+                input_ids.extend(self.tokenizer.encode(new_context_str, add_special_tokens=False))
         else:
-            # 没有匹配，完整 tokenize
-            if proc_out is not None:
-                # 使用 processor 的输出，并添加 generation_prompt
-                input_ids = proc_out["input_ids"][0]
-                input_ids.extend(self.generation_tokens)
-            else:
-                input_ids = self.tokenizer.apply_chat_template(
-                    normalized_messages,
-                    tokenize=True,
-                    add_generation_prompt=True
-                )
+            input_ids = list(current_input_ids)
+            input_ids.extend(self.generation_tokens)
 
         # 处理 image_data：复用匹配记录的 image_data，只编码新增图片
-        image_data: List[str] = []
-        if matched_record is not None:
-            prev_image_data = list(matched_record.get("image_data") or [])
-            if len(images) > len(prev_image_data):
-                new_images = images[len(prev_image_data):]
-                image_data = prev_image_data + [encode_image_for_rollout_engine(img) for img in new_images]
+        if not image_data:
+            if matched_record is not None:
+                prev_image_data = list(matched_record.get("image_data") or [])
+                if len(images) > len(prev_image_data):
+                    new_images = images[len(prev_image_data):]
+                    image_data = prev_image_data + [encode_image_for_rollout_engine(img) for img in new_images]
+                else:
+                    image_data = prev_image_data
             else:
-                image_data = prev_image_data
-        else:
-            image_data = [encode_image_for_rollout_engine(img) for img in images]
+                image_data = [encode_image_for_rollout_engine(img) for img in images]
 
         return {
             "input_ids": input_ids,
@@ -490,8 +981,9 @@ class TrajectoryMaskBuilder:
         normalized_messages = self._normalize_messages_for_qwen_vision(messages)
 
         # 提取多模态信息
-        images, videos = process_vision_info(normalized_messages)
+        images, _ = process_vision_info(normalized_messages)
         images = images or []  # 确保 images 不为 None
+        image_keys = self._extract_ordered_image_keys(normalized_messages) if images else []
 
         # 构建 messages_str
         messages_str = self.tokenizer.apply_chat_template(
@@ -500,18 +992,19 @@ class TrajectoryMaskBuilder:
             tokenize=False
         )
 
-        # 多模态处理：如果有 processor 且有 images，用 processor 处理
-        mm_train_inputs = None
         if self.processor is not None and images:
-            proc_out = self.processor(text=messages_str, images=images, return_tensors="pt")
-            messages_str = self.tokenizer.decode(
-                proc_out["input_ids"][0].tolist(),
-                skip_special_tokens=False,
+            cached_result = self._process_with_image_cache(
+                session_id,
+                messages,
+                normalized_messages,
+                messages_str,
+                images,
+                image_keys,
             )
-            mm_train_inputs = {
-                k: v for k, v in proc_out.items()
-                if k not in ("input_ids", "attention_mask")
-            } or None
+            messages_str = cached_result["messages_str"]
+            mm_train_inputs = cached_result["mm_train_inputs"]
+        else:
+            mm_train_inputs = None
         if messages_str:
             messages_str = unicodedata.normalize("NFC", messages_str)
 
@@ -533,6 +1026,32 @@ class TrajectoryMaskBuilder:
                 debug_file,
             )
             return [], [], [], "", None
+
+        if mm_train_inputs is not None:
+            record_image_tokens = self._count_image_tokens_in_input_ids(list(matched_record["tokens"]))
+            mm_image_tokens = self._count_image_tokens_from_mm_inputs(mm_train_inputs)
+            if (
+                record_image_tokens is not None
+                and mm_image_tokens is not None
+                and record_image_tokens != mm_image_tokens
+            ):
+                debug_file = self._write_mm_mismatch_debug_file(
+                    session_id=session_id,
+                    messages=messages,
+                    normalized_messages=normalized_messages,
+                    target_messages_str=messages_str,
+                    matched_record=matched_record,
+                    record_image_tokens=record_image_tokens,
+                    mm_image_tokens=mm_image_tokens,
+                )
+                logger.error(
+                    "get_training_info mm mismatch: session=%s record_image_tokens=%s mm_image_tokens=%s debug_file=%s",
+                    session_id,
+                    record_image_tokens,
+                    mm_image_tokens,
+                    debug_file,
+                )
+                return [], [], [], "", None
         return (
             list(matched_record["tokens"]),
             list(matched_record["response_mask"]),
@@ -561,3 +1080,4 @@ class TrajectoryMaskBuilder:
         """清除指定 session 的数据。"""
         if session_id in self.session_data:
             del self.session_data[session_id]
+        self.clear_image_cache(session_id)

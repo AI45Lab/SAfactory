@@ -49,3 +49,8 @@ def _import_geo3k_vl_test_env() -> Type:
 def _import_qa_gym() -> Type:
     from env.qagym.qa_env import QAGym
     return QAGym
+
+
+def _import_deepeyes_env() -> Type:
+    from env.deepeyes.deepeyes_env import DeepEyesEnv
+    return DeepEyesEnv
