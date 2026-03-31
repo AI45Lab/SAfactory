@@ -126,6 +126,12 @@ cd rl && ./run_buffer_server.sh
 
 Full setup guide: [docs/rl-training.md](docs/rl-training.md)
 
+### 4 — Experience Extraction & Injection（Optional）
+
+Safactory supports optional experience extraction and injection. You can distill reusable lessons from historical trajectories into a local experience library, then inject relevant experience into the agent prompt at the start of a new episode.
+
+For a detailed usage guide, see [docs/experience-extraction-injection.md](docs/experience-extraction-injection.md). 
+
 ---
 
 ## 📚 Documentation
@@ -134,6 +140,7 @@ Full setup guide: [docs/rl-training.md](docs/rl-training.md)
 |-------|-------------|
 | [Supported Environments](docs/environments.md) | Per-environment setup, Docker images, and configuration |
 | [RL Training](docs/rl-training.md) | Slime integration, Buffer Server setup, and RL parameters |
+| [Experience Extraction & Injection](docs/experience-extraction-injection.md) | Lightweight guide to generating experiences and enabling prompt injection |
 | [Custom Environment](docs/custom-environment.md) | Step-by-step guide to adding a new environment |
 | [Configuration](docs/configuration.md) | Full CLI reference and `config.yaml` schema |
 | [Data Manager](docs/data-manager.md) | Database schema and SQLite query examples |

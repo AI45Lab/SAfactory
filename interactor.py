@@ -9,6 +9,7 @@ import aiohttp
 from core.llm import LLM, BaseURLProvider
 from core.data_manager.manager import DataManager, SessionContext
 from core.http.http_client import HttpClient
+from core.exp.handler import EpisodeHandler, NullEpisodeHandler
 
 log = logging.getLogger("interactor")
 
@@ -59,6 +60,7 @@ class Interactor:
             http_retry_backoff_s: float = 0.5,
             verbose: bool = True,
             log_actions_preview_chars: int = 120,
+            episode_handler: Optional[EpisodeHandler] = None,
     ):
         self.pool = pool
         self.max_steps = int(max_steps)
@@ -70,6 +72,7 @@ class Interactor:
         self.verbose = bool(verbose)
 
         self.log_actions_preview_chars = max(0, int(log_actions_preview_chars))
+        self.episode_handler = episode_handler or NullEpisodeHandler()
 
         self.model = model
         self.data_manager = data_manager
@@ -194,6 +197,7 @@ class Interactor:
     async def _run_one_environment(self, a: ActorHandle, worker_id: int) -> float:
 
         env_key = f"{a.env_name}_{a.env_id}"
+        last_info: Optional[Dict[str, Any]] = None
 
         session = await self.data_manager.create_session(
             env_id=a.env_id,
@@ -215,6 +219,8 @@ class Interactor:
                     log.error("worker=%d env=%s: get_task_prompt FAILED: %s. Aborting episode.", worker_id, env_key, e)
                     raise e
 
+                prompt_raw = await self.episode_handler.handle(a.env_name, a.env_id, step_i, prompt_raw)
+                
                 prompt = self._trim_messages(prompt_raw)
                 if not prompt:
                     log.info("worker=%d env=%s: empty prompt -> end episode", worker_id, env_key)
@@ -274,6 +280,8 @@ class Interactor:
                 reward = float(out.get("reward", 0.0) or 0.0)
                 terminated = bool(out.get("terminated", False))
                 truncated = bool(out.get("truncated", False))
+                raw_info = out.get("info")
+                last_info = raw_info if isinstance(raw_info, dict) else None
                 
                 if self.message_cut > 0:
                     is_trainable = True
@@ -302,6 +310,16 @@ class Interactor:
         except Exception:
             #for all the error caught, exit for this env
             raise
+        finally:
+            try:
+                await self.episode_handler.on_episode_end(
+                    env_name=a.env_name,
+                    env_id=a.env_id,
+                    total_reward=session.total_reward,
+                    info=last_info,
+                )
+            except Exception:
+                log.exception("worker=%d env=%s: episode_handler.on_episode_end failed", worker_id, env_key)
 
         return session.total_reward
 

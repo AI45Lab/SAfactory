@@ -9,6 +9,8 @@ gif_generate.py
 *.db
 *.db-shm
 *.db-wal
+*.txt
+*.sh
 data/
 examples/test_env.py
 env/mc/MineStudio/MineStudio
@@ -36,6 +38,7 @@ env/gitgym/generated_code
 
 # osgym env
 env/osgym/docker_vm_data
+env/osgym/results
 
 # python logging
 *.log.*
@@ -100,6 +103,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+tests/
 
 # Translations
 *.mo
@@ -264,6 +268,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# skill/exp
+exp_service/README.md
+docs/exp-design.md
+docs/debug/
+experiences/
+_experiences/
+exp_service_state.json
 
 # dabstep env
 env/dabstep/agent_core/
