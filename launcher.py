@@ -245,6 +245,10 @@ class ManagerActorPool(ActorPool):
         self.pool_size = max(1, int(ps or 1))
 
         self._runtime = ActorPoolRuntimeState[ActorHandle]()
+        self._bg_refill_tasks: Set[asyncio.Task] = set()
+        self._lifecycle_lock = asyncio.Lock()
+        self._closing = False
+        self._closed = False
 
     @staticmethod
     def _route_to_base_url(route: Any) -> Optional[str]:
@@ -297,14 +301,60 @@ class ManagerActorPool(ActorPool):
 
     async def done(self, actor: ActorHandle) -> None:
         old_key = (str(actor.env_name), str(actor.env_id))
-        log.info("done(): scheduling background close_and_refill for env=%s id=%s", actor.env_name, actor.env_id)
+        async with self._lifecycle_lock:
+            if self._closing or self._closed:
+                log.info(
+                    "done(): pool is closing; skip refill for env=%s id=%s",
+                    actor.env_name,
+                    actor.env_id,
+                )
+                await self._finish_without_replacement(old_key)
+                return
 
+            log.info(
+                "done(): scheduling background close_and_refill for env=%s id=%s",
+                actor.env_name,
+                actor.env_id,
+            )
+            await self._runtime.begin_refill(old_key)
+            try:
+                task = asyncio.create_task(
+                    self._bg_done(actor, old_key),
+                    name=f"manager-close-and-refill:{actor.env_name}:{actor.env_id}",
+                )
+            except Exception:
+                await self._runtime.fail_refill(old_key)
+                raise
+            self._register_bg_task(task)
+
+    async def _finish_without_replacement(self, old_key: Tuple[str, str]) -> None:
         await self._runtime.begin_refill(old_key)
-        asyncio.create_task(self._bg_done(actor, old_key))
+        await self._runtime.fail_refill(old_key)
+
+    def _register_bg_task(self, task: asyncio.Task) -> None:
+        self._bg_refill_tasks.add(task)
+        task.add_done_callback(self._on_bg_task_done)
+
+    def _on_bg_task_done(self, task: asyncio.Task) -> None:
+        self._bg_refill_tasks.discard(task)
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            log.debug("background refill task cancelled: %s", task.get_name())
+        except Exception:
+            log.exception("background refill task failed unexpectedly: %s", task.get_name())
 
     async def _bg_done(self, actor: ActorHandle, old_key: Tuple[str, str]) -> None:
         try:
             await self.mgr.close_and_refill(actor.env_name, actor.env_id)
+        except asyncio.CancelledError:
+            log.info(
+                "_bg_done cancelled during shutdown for %s/%s",
+                actor.env_name,
+                actor.env_id,
+            )
+            await self._runtime.fail_refill(old_key)
+            raise
         except Exception:
             log.exception("close_and_refill failed for %s/%s", actor.env_name, actor.env_id)
             await self._runtime.fail_refill(old_key)
@@ -327,9 +377,47 @@ class ManagerActorPool(ActorPool):
         if added and new_key is not None and new_actor is not None:
             log.debug("discovered new actor: %s/%s -> %s", new_key[0], new_key[1], new_actor.base_url)
 
+    async def _wait_for_bg_refill_tasks(self) -> None:
+        while True:
+            async with self._lifecycle_lock:
+                tasks = list(self._bg_refill_tasks)
+
+            if not tasks:
+                return
+
+            log.info(
+                "ManagerActorPool.aclose(): waiting for %d background refill task(s)",
+                len(tasks),
+            )
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            except asyncio.CancelledError:
+                log.warning(
+                    "ManagerActorPool.aclose(): cancelled while waiting; cancelling %d refill task(s)",
+                    len(tasks),
+                )
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
+
     async def aclose(self) -> None:
-        log.info("ManagerActorPool.aclose(): closing EnvPoolManager ...")
-        await self.mgr.close_all()
+        async with self._lifecycle_lock:
+            if self._closed:
+                log.info("ManagerActorPool.aclose(): already closed")
+                return
+            self._closing = True
+
+        log.info("ManagerActorPool.aclose(): waiting for background refill tasks ...")
+        await self._wait_for_bg_refill_tasks()
+
+        async with self._lifecycle_lock:
+            if self._closed:
+                log.info("ManagerActorPool.aclose(): already closed")
+                return
+            log.info("ManagerActorPool.aclose(): closing EnvPoolManager ...")
+            await self.mgr.close_all()
+            self._closed = True
 
 
 # -------------------------
@@ -499,7 +587,7 @@ async def main():
                 log.info("local upstream auto-start disabled; assuming already running at %s", args.local_upstream_url)
 
         # 4) start manager + adapter pool
-        mgr = EnvPoolManager(cfg, conn)
+        mgr = EnvPoolManager(cfg, conn, job_id=job_id)
         pool = ManagerActorPool(mgr, pool_size=total_pool_size)
 
         # 5) build EpisodeHandler from config

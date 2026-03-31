@@ -401,7 +401,3 @@ class Interactor:
             await self.http.close()
         except Exception:
             log.exception("failed to close http client (ignored)")
-        try:
-            await self.pool.aclose()
-        except Exception:
-            log.exception("failed to close pool (ignored)")

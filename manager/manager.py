@@ -33,9 +33,10 @@ def _detect_mode(cfg: Dict[str, Any]) -> str:
 
 
 class EnvPoolManager:
-    def __init__(self, cfg: dict, conn: Optional[sqlite3.Connection]) -> None:
+    def __init__(self, cfg: dict, conn: Optional[sqlite3.Connection], *, job_id: str = "") -> None:
         self.cfg = cfg or {}
-        self._repo = EnvDataRepository(conn)
+        self._job_id = str(job_id or "").strip()
+        self._repo = EnvDataRepository(conn, job_id=self._job_id)
 
         self._pool_size: int = int(self.cfg.get("pool_size", 0) or 0)
 
@@ -85,11 +86,13 @@ class EnvPoolManager:
         self._registry: ClusterRegistry = ClusterRegistry(clusters_by_image={}, env_bindings={})
         self._state_lock = asyncio.Lock()
         self._initialized: bool = False
+        self._closed: bool = False
 
     async def start(self) -> None:
         async with self._state_lock:
             if self._initialized:
                 return
+            self._closed = False
 
             await self._http.start()
 
@@ -132,11 +135,20 @@ class EnvPoolManager:
             await self._pool.prewarm(self._registry, rows=prewarm_rows)
 
             self._initialized = True
-            log.info("started in mode='%s', pool_size=%d", self._mode, self._pool_size)
+            log.info(
+                "started in mode='%s', pool_size=%d, job_id=%s",
+                self._mode,
+                self._pool_size,
+                self._job_id or "<all>",
+            )
 
     async def close_all(self) -> None:
         async with self._state_lock:
+            if self._closed:
+                log.info("EnvPoolManager.close_all(): already closed")
+                return
             self._initialized = False
+            self._closed = True
             await self._pool.reset()
             self._registry = ClusterRegistry(clusters_by_image={}, env_bindings={})
 

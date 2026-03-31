@@ -1,41 +1,157 @@
 from __future__ import annotations
 
+import inspect
 import sqlite3
 from typing import List, Dict, Any, Optional
+
+
+def _supports_job_id_kw(fn: Any) -> bool:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+
+    for param in sig.parameters.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+        if param.name == "job_id":
+            return True
+    return False
+
+
+def _invoke_sync_reader(fn: Any, *args: Any, job_id: Optional[str] = None, **kwargs: Any) -> Any:
+    if job_id and _supports_job_id_kw(fn):
+        kwargs["job_id"] = job_id
+    result = fn(*args, **kwargs)
+    if inspect.isawaitable(result):
+        raise TypeError("db_loader requires synchronous reader methods")
+    return result
+
+
+def _normalize_rows(rows: Any) -> List[Dict[str, Any]]:
+    if not rows:
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    for row in rows:
+        if isinstance(row, dict):
+            normalized.append(dict(row))
+        else:
+            try:
+                normalized.append(dict(row))
+            except Exception:
+                continue
+    return normalized
+
+
+def _filter_rows_by_job_id(rows: List[Dict[str, Any]], job_id: Optional[str]) -> List[Dict[str, Any]]:
+    if not job_id:
+        return rows
+
+    has_job_id = any("job_id" in row for row in rows)
+    if not has_job_id:
+        return rows
+
+    return [row for row in rows if str(row.get("job_id") or "") == job_id]
+
+
+def _load_remote_rows(
+    conn: Any,
+    *,
+    limit: Optional[int] = None,
+    offset: int = 0,
+    job_id: Optional[str] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    get_env_configs = getattr(conn, "get_env_configs", None)
+    if callable(get_env_configs):
+        kwargs: Dict[str, Any] = {"offset": offset}
+        if limit is not None:
+            kwargs["limit"] = limit
+        rows = _invoke_sync_reader(get_env_configs, job_id=job_id, **kwargs)
+        return _filter_rows_by_job_id(_normalize_rows(rows), job_id)
+
+    get_all_environments = getattr(conn, "get_all_environments", None)
+    if callable(get_all_environments):
+        rows = _invoke_sync_reader(get_all_environments, job_id=job_id)
+        normalized = _filter_rows_by_job_id(_normalize_rows(rows), job_id)
+        if limit is None:
+            return normalized[offset:]
+        return normalized[offset: offset + limit]
+
+    return None
+
+
+def _build_env_image_map(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for row in rows:
+        env_name = row.get("env_name")
+        image = row.get("image")
+        if env_name is None:
+            continue
+        env_name = str(env_name)
+        if image:
+            result[env_name] = image
+        elif env_name not in result:
+            result[env_name] = None
+    return result
+
+
+def _build_image_to_env_map(rows: List[Dict[str, Any]]) -> Dict[str, str]:
+    image_to_env: Dict[str, str] = {}
+    for row in rows:
+        img = str(row.get("image") or "").strip()
+        env = str(row.get("env_name") or "").strip()
+        if img and env and img not in image_to_env:
+            image_to_env[img] = env
+    return image_to_env
 
 
 def get_active_data(
     conn: Optional[sqlite3.Connection],
     limit: int,
     offset: int,
+    job_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Return a paginated slice of active (non-deleted) environment rows."""
     if isinstance(conn, sqlite3.Connection):
+        filters = ["is_deleted = 0"]
+        params: List[Any] = []
+        if job_id:
+            filters.append("job_id = ?")
+            params.append(job_id)
         query = """
         SELECT
-            id, env_id, env_name, env_params, image, group_id
+            id, job_id, env_id, env_name, env_params, image, group_id
         FROM job_environments
-        WHERE is_deleted = 0
+        WHERE {where_clause}
         ORDER BY id ASC
         LIMIT ? OFFSET ?;
         """
-        cursor = conn.execute(query, (limit, offset))
+        cursor = conn.execute(query.format(where_clause=" AND ".join(filters)), tuple(params + [limit, offset]))
         cols = [d[0] for d in cursor.description]
         return [dict(zip(cols, row)) for row in cursor.fetchall()]
-    else:
-        return conn.get_env_configs(limit=limit, offset=offset)
+
+    rows = _load_remote_rows(conn, limit=limit, offset=offset, job_id=job_id)
+    if rows is not None:
+        return rows
+    return []
 
 
-def get_env_image_map(conn: Optional[sqlite3.Connection]) -> Dict[str, Any]:
+def get_env_image_map(conn: Optional[sqlite3.Connection], job_id: Optional[str] = None) -> Dict[str, Any]:
     """Return a mapping of env_name -> image for all active environments."""
     if isinstance(conn, sqlite3.Connection):
+        filters = ["is_deleted = 0"]
+        params: List[Any] = []
+        if job_id:
+            filters.append("job_id = ?")
+            params.append(job_id)
         query = """
         SELECT env_name, image
         FROM job_environments
-        WHERE is_deleted = 0
+        WHERE {where_clause}
         ORDER BY id ASC;
         """
-        cursor = conn.execute(query)
+        cursor = conn.execute(query.format(where_clause=" AND ".join(filters)), tuple(params))
         result: Dict[str, Any] = {}
         for env_name, image in cursor.fetchall():
             if env_name is None:
@@ -45,21 +161,35 @@ def get_env_image_map(conn: Optional[sqlite3.Connection]) -> Dict[str, Any]:
             elif env_name not in result:
                 result[env_name] = None
         return result
-    else:
-        return conn.get_env_image_map()
+
+    rows = _load_remote_rows(conn, job_id=job_id)
+    if rows is not None:
+        return _build_env_image_map(rows)
+
+    get_map = getattr(conn, "get_env_image_map", None)
+    if callable(get_map):
+        return _invoke_sync_reader(get_map, job_id=job_id) or {}
+    return {}
 
 
-def get_all_image(conn: Optional[sqlite3.Connection]) -> Dict[str, str]:
+def get_all_image(conn: Optional[sqlite3.Connection], job_id: Optional[str] = None) -> Dict[str, str]:
     """Return a mapping of image -> env_name for all active environments."""
     if isinstance(conn, sqlite3.Connection):
+        filters = [
+            "is_deleted = 0",
+            "image IS NOT NULL AND TRIM(image) != ''",
+            "env_name IS NOT NULL",
+        ]
+        params: List[Any] = []
+        if job_id:
+            filters.append("job_id = ?")
+            params.append(job_id)
         query = """
         SELECT image, env_name
         FROM job_environments
-        WHERE is_deleted = 0
-          AND image IS NOT NULL AND TRIM(image) != ''
-          AND env_name IS NOT NULL;
+        WHERE {where_clause};
         """
-        cursor = conn.execute(query)
+        cursor = conn.execute(query.format(where_clause=" AND ".join(filters)), tuple(params))
         image_to_env: Dict[str, str] = {}
         for image, env_name in cursor.fetchall():
             img = (image or "").strip()
@@ -67,5 +197,12 @@ def get_all_image(conn: Optional[sqlite3.Connection]) -> Dict[str, str]:
             if img and env and img not in image_to_env:
                 image_to_env[img] = env
         return image_to_env
-    else:
-        return conn.get_all_image()
+
+    rows = _load_remote_rows(conn, job_id=job_id)
+    if rows is not None:
+        return _build_image_to_env_map(rows)
+
+    get_map = getattr(conn, "get_all_image", None)
+    if callable(get_map):
+        return _invoke_sync_reader(get_map, job_id=job_id) or {}
+    return {}
