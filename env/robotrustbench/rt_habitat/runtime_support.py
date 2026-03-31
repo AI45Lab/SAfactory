@@ -67,28 +67,30 @@ RT_REPLICA_CAD_ROOT = os.path.join(RT_VERSIONED_DATA_ROOT, "replica_cad_dataset"
 RT_YCB_CONFIG_ROOT = os.path.join(RT_VERSIONED_DATA_ROOT, "ycb", "configs")
 RT_HAB_FETCH_ROOT = os.path.join(RT_VERSIONED_DATA_ROOT, "hab_fetch")
 RT_HAB_FETCH_OLD_ROOT = os.path.join(RT_VERSIONED_DATA_ROOT, "hab_fetch_1.0")
+_PATH_MARKER_REWRITES = [
+    (
+        "EmbodiedBench/data/replica_cad/",
+        RT_REPLICA_CAD_ROOT + "/",
+    ),
+    (
+        "robotrustbench/envs/rt_habitat/data/versioned_data/replica_cad_dataset/",
+        RT_REPLICA_CAD_ROOT + "/",
+    ),
+    (
+        "EmbodiedBench/data/objects/ycb/configs",
+        RT_YCB_CONFIG_ROOT,
+    ),
+    (
+        "robotrustbench/envs/rt_habitat/data/versioned_data/ycb/configs",
+        RT_YCB_CONFIG_ROOT,
+    ),
+]
 
 
 def _build_path_prefix_rewrites():
     rewrites = [
-        (
-            "/data/zxy/Stereotypes/EmbodiedBench/data/replica_cad/",
-            RT_REPLICA_CAD_ROOT + "/",
-        ),
-        (
-            "/data/zxy/EmbodiedBench/robotrustbench/envs/rt_habitat/data/versioned_data/replica_cad_dataset/",
-            RT_REPLICA_CAD_ROOT + "/",
-        ),
         ("./data/replica_cad/", RT_REPLICA_CAD_ROOT + "/"),
         ("data/replica_cad/", RT_REPLICA_CAD_ROOT + "/"),
-        (
-            "/data/zxy/Stereotypes/EmbodiedBench/data/objects/ycb/configs",
-            RT_YCB_CONFIG_ROOT,
-        ),
-        (
-            "/data/zxy/EmbodiedBench/robotrustbench/envs/rt_habitat/data/versioned_data/ycb/configs",
-            RT_YCB_CONFIG_ROOT,
-        ),
         ("./data/objects/ycb/configs/", RT_YCB_CONFIG_ROOT + "/"),
         ("./data/objects/ycb/configs", RT_YCB_CONFIG_ROOT),
         ("data/objects/ycb/configs/", RT_YCB_CONFIG_ROOT + "/"),
@@ -120,12 +122,24 @@ def _build_path_prefix_rewrites():
 _PATH_PREFIX_REWRITES = _build_path_prefix_rewrites()
 
 
+def _rewrite_marker_path(normalized_value):
+    for marker, new_prefix in _PATH_MARKER_REWRITES:
+        marker_index = normalized_value.find(marker)
+        if marker_index == -1:
+            continue
+        suffix = normalized_value[marker_index + len(marker) :]
+        return os.path.normpath(new_prefix + suffix)
+    return None
+
+
 def prepare_egl_runtime(logger, env_label):
     os.environ.pop("DISPLAY", None)
     os.environ.pop("WAYLAND_DISPLAY", None)
     os.environ.setdefault(
         "__EGL_VENDOR_LIBRARY_FILENAMES",
-        "/usr/share/glvnd/egl_vendor.d/10_nvidia.json",
+        os.path.join(
+            os.sep, "usr", "share", "glvnd", "egl_vendor.d", "10_nvidia.json"
+        ),
     )
     os.environ.setdefault("__GLX_VENDOR_LIBRARY_NAME", "nvidia")
     os.environ.setdefault("__GLVND_DISALLOW_PATCHING", "1")
@@ -148,6 +162,9 @@ def rewrite_rt_data_path(value):
     for old_prefix, new_prefix in _PATH_PREFIX_REWRITES:
         if normalized.startswith(old_prefix):
             return os.path.normpath(new_prefix + normalized[len(old_prefix) :])
+    marker_rewrite = _rewrite_marker_path(normalized)
+    if marker_rewrite is not None:
+        return marker_rewrite
     return value
 
 
