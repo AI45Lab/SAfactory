@@ -70,26 +70,19 @@ pip install -r requirements.txt
 
 ### 1 — Evaluate a Model
 
-The example below evaluates a model on the **Android** environment. Each Safactory environment runs as a containerised HTTP service; the launcher connects to it over HTTP.
+The example below evaluates a model on the **Android** environment (`android_gym`) in `local` mode.
 
-> **Environment prerequisites** — each environment has its own Docker-based setup:
-> - **Android** (`android_gym`): requires Docker with `--privileged` (for KVM-accelerated emulation) and network access to pull the image.
-> - **OS** (`os_gym`): requires a QEMU/KVM-capable host and a VM disk image. See [docs/environments.md](docs/environments.md#️-desktop--pc-os_gym).
-> - **Minecraft** (`mc`): requires Java 8, Xvfb, and optionally CUDA. See [docs/environments.md](docs/environments.md#-minecraft-mc).
+> **Environment prerequisites (Android / host-native)**:
+> - You have `adb` available on the host (or set `adb_path` in `env/androidgym/android_env.yaml`).
+> - You have a local Android Emulator AVD available for `emulator_name` (default: `nexus_safe`), and `emulator_cmd_path` is `emulator`.
+> - If you use `redroid`, ensure `nerdctl` is installed on the host (the environment will start a redroid container automatically).
+> - The archive mirror includes the dataset file at `env/androidgym/cases.jsonl` (the repository does not ship datasets).
+>
+> **Internal/optional (not required for OSS):** if you have access to the private registry image, you can run the Android environment container as documented previously, but the OSS-first workflow is the host-native path above.
 
-#### Step 1 — Pull and start the Android environment container
+#### Step 1 — Prepare the Android environment
 
-```bash
-# Pull the Android environment image
-docker pull registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/android-emu-pjlab:and001
-
-# Start the environment service
-# --privileged is required for the Android emulator (KVM acceleration)
-docker run -d \
-  --name android-env \
-  --privileged \
-  registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/android-emu-pjlab:and001
-```
+No separate Docker step is required for the OSS-first workflow: `launcher.py` will start the emulator when `start_emulator: true`.
 
 #### Step 2 — Run the evaluation
 
@@ -98,8 +91,9 @@ python launcher.py \
   --mode local \
   --env-config env/androidgym/android_env.yaml \
   --llm-base-url http://YOUR_LLM_HOST/v1 \
+  --llm-api-key YOUR_LLM_API_KEY \
   --llm-model YOUR_MODEL_NAME \
-  --pool-size 4
+  --pool-size 1
 ```
 
 Results (reward per episode) are printed to the console and saved under `logs/`.
@@ -108,7 +102,7 @@ Results (reward per episode) are printed to the console and saved under `logs/`.
 
 Every run automatically records step-level interactions (messages, response, reward, environment state) to `test_envs.db`. Records are available immediately after the run completes.
 
-See [docs/data-manager.md](docs/data-manager.md) for the database schema and example queries.
+See [docs/data-manager.md](./docs/data-manager.md) for the database schema and example queries.
 
 ### 3 — RL Training (Optional)
 
@@ -124,7 +118,7 @@ cd rl && ./run_buffer_server.sh
 
 > Terminals 1 and 2 can run on different machines as long as they can communicate.
 
-Full setup guide: [docs/rl-training.md](docs/rl-training.md)
+Full setup guide: [docs/rl-training.md](./docs/rl-training.md)
 
 ### 4 — Experience Extraction & Injection（Optional）
 
@@ -138,18 +132,17 @@ For a detailed usage guide, see [docs/experience-extraction-injection.md](docs/e
 
 | Guide | Description |
 |-------|-------------|
-| [Supported Environments](docs/environments.md) | Per-environment setup, Docker images, and configuration |
-| [RL Training](docs/rl-training.md) | Slime integration, Buffer Server setup, and RL parameters |
-| [Experience Extraction & Injection](docs/experience-extraction-injection.md) | Lightweight guide to generating experiences and enabling prompt injection |
-| [Custom Environment](docs/custom-environment.md) | Step-by-step guide to adding a new environment |
-| [Configuration](docs/configuration.md) | Full CLI reference and `config.yaml` schema |
-| [Data Manager](docs/data-manager.md) | Database schema and SQLite query examples |
+| [Supported Environments](./docs/environments.md) | Per-environment setup, Docker images, and configuration |
+| [RL Training](./docs/rl-training.md) | Slime integration, Buffer Server setup, and RL parameters |
+| [Custom Environment](./docs/custom-environment.md) | Step-by-step guide to adding a new environment |
+| [Configuration](./docs/configuration.md) | Full CLI reference and `config.yaml` schema |
+| [Data Manager](./docs/data-manager.md) | Database schema and SQLite query examples |
 
 ---
 
 ## 🏗️ Architecture
 
-![Architecture diagram](fig/agentic_sandbox.PNG)
+![Architecture diagram](./fig/agentic_sandbox.PNG)
 
 ---
 

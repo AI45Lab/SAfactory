@@ -1,15 +1,15 @@
 environments:
   - env_name: android_gym
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/android-emu-pjlab:and001
+    env_image: "android-env:latest"
     env_num: 1
     dataset: cases.jsonl
     env_params:
       adb_path: "/opt/android/platform-tools/adb"
-      API_url: "http://35.220.164.252:3888/v1/responses"
-      token: "sk-x7s0oj3W9vGGlmLwCJVukRmAWBf3ZOW8Meb31j4M3qb5AcYM"
+      API_url: "http://127.0.0.1:8000/v1/responses"
+      token: ""
       caption_call_method: "api"
-      caption_model: "gpt-4o-2024-05-13"
-      judge_model: "gpt-4o"
+      caption_model: "gpt-4o-mini"
+      judge_model: "gpt-4o-mini"
       qwen_api_key: ""
       add_info: 'If you want to tap an icon of an app, use the action "Open app". If you want to exit an app, use the action "Home"'
       device: "cuda"
@@ -18,9 +18,21 @@ environments:
       file_dir: "env/androidgym/files"
       max_step: 10
       seed: 1234
-      start_emulator: True
-      emulator_name: "nexus_safe"
+      start_emulator: true
+      emulator_name: "nexus"
       emulator_cmd_path: "emulator"
-      proxy_address: "http://chenxinquan:3lXACc8UoD2cFnjOejBpmLYKyjpdfPtWL6erFUUHqXRdJXCMQIGgN9AfaSIY@proxy.h.pjlab.org.cn:23128"
-      apk_list: ["env/androidgym/app-debug.apk:com.example.myapplication","env/androidgym/com-booking-901604-70100967-59b84aa09d59c303417f707fb3fc04ab.apk:com.booking"]
+      emulator_mode: "parallel"
+      snapshot_name: null
+      proxy_address: null
+      apk_list:
+        - "/workspace/app-debug.apk:com.example.myapplication"
       reverse_port: 8000
+      use_dynamic_reverse_port: true
+      host_ip: "127.0.0.1"
+      avd_home: null
+      cleanup_avd_locks: false
+      emulator_log_path: null
+      emulator_extra_args: []
+      modelscope_cache_dir: null
+      use_dynamic_reverse_port: true
+      android_res_path: "env/androidgym/results.jsonl"

@@ -1,6 +1,6 @@
 # Supported Environments
 
-Safactory supports a growing set of simulation environments across multiple domains. All environments run as containerised HTTP services managed by the launcher.
+Safactory supports a growing set of simulation environments across multiple domains. All environments expose an HTTP service managed by the launcher; some environments use host-native tooling (e.g. `adb`/emulator) while others use Docker.
 
 ## Overview
 
@@ -19,20 +19,17 @@ Safactory supports a growing set of simulation environments across multiple doma
 
 ### 📱 Android (`android_gym`)
 
-Drives a real Android emulator over ADB. Tasks are drawn from the Ghost Bench dataset and cover everyday mobile app interactions such as navigation, form filling, and in-app actions.
+Drives a real Android emulator over ADB. Tasks are drawn from the [Ghost Bench](https://arxiv.org/abs/2510.20333) dataset and cover everyday mobile app interactions such as navigation, form filling, and in-app actions.
 
 **Host requirements:**
-- Docker with `--privileged` (required for KVM-accelerated emulation)
-- Network access to pull the image
-
-**Start the environment:**
-```bash
-docker pull registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/android-emu-pjlab:and001
-docker run -d --name android-env --privileged \
-  registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/android-emu-pjlab:and001
-```
+- `adb` available on the host (or configure `adb_path`)
+- Android Emulator available on the host (for standard emulator; must have an AVD named `emulator_name`, default `nexus`)
+- Dataset file available at `/workspace/cases.jsonl` (provided in the archive mirror; the repo does not ship datasets)
 
 **Config:** `env/androidgym/android_env.yaml`
+
+**Startup Environment**
+Please see details [Androidgym Readme](../env/androidgym/README_EN.md)
 
 ---
 
@@ -46,6 +43,8 @@ Wraps [OSWorld](https://github.com/xlang-ai/OSWorld) and [RiOSWorld](https://git
 - Recommended: ≥ 60 GB RAM, ≥ 20 CPU cores
 
 **Start the environment:**
+> **Internal/optional (private registry):** if you have access to the private registry images, you can use the commands below.
+> Otherwise, use the full setup guide.
 ```bash
 docker pull registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/lite-osenv:v1.5
 docker run -d --name os-env --privileged \
