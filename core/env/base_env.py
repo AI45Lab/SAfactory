@@ -68,7 +68,9 @@ class BaseEnv(gym.Env, ABC):
         pass
 
     def isDone(self) -> bool:
+        """used for checking if env is done"""
         return self.done
     
     def isHealth(self) -> bool:
+        """startup check interface"""
         return True
