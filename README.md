@@ -96,7 +96,7 @@ python launcher.py \
   --pool-size 1
 ```
 
-Results (reward per episode) are printed to the console and saved under `logs/`.
+Results (reward per episode) are printed to the console and saved under a run-specific directory such as `logs/<run-id>/`.
 
 ### 2 — Collect Training Data
 
