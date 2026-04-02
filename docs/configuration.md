@@ -30,7 +30,7 @@ Safactory's configuration is layered: **CLI arguments take precedence over `mana
 | DB | `--storage-type` | `sqlite` | Storage backend |
 | | `--warmup-count` | `100` | The number of environment configs to pre-store in the manager |
 | | `--save-batch-size` | `100` | Size of environment configs to store in the manager |
-| | `--enable-buffer` | `False` | Enable buffered record storage; omit the flag to keep it disabled |
+| | `--disable-buffer` | — | Disable buffered record storage (buffer is enabled by default) |
 | | `--buffer-size` | `100` | Size of the buffer for storing records |
 | | `--flush-interval` | `5.0` | Interval (in seconds) for flushing buffered records |
 | | `--rebuild-table` | `false` | Drop and recreate DB tables before run |
@@ -50,9 +50,8 @@ Safactory's configuration is layered: **CLI arguments take precedence over `mana
 
 Notes:
 
-- Use `--enable-buffer` to enable buffered record storage.
-- If you do not pass this flag, buffer storage stays disabled by default.
-- Do not pass values like `--enable-buffer False`; this flag is now a simple presence-based switch.
+- Buffered record storage is **enabled by default**.
+- Pass `--disable-buffer` to turn it off. It is a simple presence-based switch (no value needed).
 
 ---
 

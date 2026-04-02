@@ -53,5 +53,5 @@ class ClusterRegistry:
     """
     Shared registry used by pool and manager.
     """
-    clusters_by_image: Dict[str, RayClusterInfo]
+    clusters_by_id: Dict[str, RayClusterInfo]
     env_bindings: Dict[str, EnvClusterBinding]

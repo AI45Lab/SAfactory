@@ -351,12 +351,8 @@ def parse_args():
     p.add_argument("--storage-type", type=str, default="sqlite", choices=["sqlite", "cloud"], help="Storage backend for environment configs and results (affects DataManager implementation)")
     p.add_argument("--warmup-count", type=int, default=100, help="The number of environment configs to pre-store in the manager.")
     p.add_argument("--save-batch-size", type=int, default=100, help="Size of environment configs to store in the manager.")
-    p.add_argument(
-        "--enable-buffer",
-        action="store_true",
-        default=False,
-        help="Enable buffer record storage",
-    )
+    p.add_argument("--disable-buffer", dest="enable_buffer", action="store_false", default=True,
+                   help="Disable buffered record storage (buffer is enabled by default)")
     p.add_argument("--buffer-size", type=int, default=100, help="Size of the buffer for storing records")
     p.add_argument("--flush-interval", type=float, default=5.0, help="Interval (in seconds) for flushing buffered records")
     p.add_argument("--db-path", type=str, default="sqlite://android_envs.db")

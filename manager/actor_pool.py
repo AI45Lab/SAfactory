@@ -80,7 +80,7 @@ class ActorPool:
 
     async def prewarm(self, registry: ClusterRegistry, rows: Optional[List[Dict[str, Any]]] = None) -> None:
         if self._pool_size <= 0:
-            print("[manager] pool_size <= 0, skip prewarm")
+            log.info("pool_size <= 0, skip prewarm")
             return
 
         # Reserve rows under lock, but do not do network under lock.
@@ -89,7 +89,7 @@ class ActorPool:
                 rows = self._repo.fetch_active_rows(self._pool_size)
 
         if not rows:
-            print("[manager] no active rows, skip prewarm")
+            log.info("no active rows, skip prewarm")
             return
 
         log.info(
@@ -396,32 +396,18 @@ class ActorPool:
         prefix = f"{env_name}#"
         candidates = []
 
-        # 1. Look for clusters matching env_name or starting with "env_name#"
-        clusters = registry.clusters_by_image or {}
+        # 1. Look for clusters belonging to this env.
+        clusters = registry.clusters_by_id or {}
         for cid, info in clusters.items():
-            if cid == env_name or str(cid).startswith(prefix):
+            if str(cid).startswith(prefix):
                 if info is not None and getattr(info, "head_ip", None):
                     candidates.append(info)
 
-        # 2. Backward-compatible fallback: try matching directly by image key
-        if not candidates and image:
-            info = clusters.get(image)
-            if info is not None and getattr(info, "head_ip", None):
-                candidates = [info]
-
-        # 3. Second fallback: iterate through all clusters to find a matching image attribute
-        if not candidates and image:
-            for info in clusters.values():
-                if info is None:
-                    continue
-                if getattr(info, "image", None) == image and getattr(info, "head_ip", None):
-                    candidates.append(info)
-
-        # 4. Error handling if no candidates are found
+        # 2. Error handling if no candidates are found
         if not candidates:
             raise RuntimeError(f"No cluster/head_ip available for env='{env_name}', image='{image}'")
 
-        # 5. Load balancing and environment limits logic
+        # 3. Load balancing and environment limits logic
         lim = int(self._env_limits.get(env_name, 0) or 0)
 
         def load_of(info) -> int:
@@ -437,11 +423,11 @@ class ActorPool:
         else:
             pool = candidates
 
-        # 6. Select the cluster with the minimum load
+        # 4. Select the cluster with the minimum load
         # Tie-break using job_name for deterministic selection
         chosen = min(pool, key=lambda c: (load_of(c), str(getattr(c, "job_name", "") or "")))
 
-        # 7. Increment the load counter and reserve the slot
+        # 5. Increment the load counter and reserve the slot
         chosen_job = str(getattr(chosen, "job_name", "") or "")
         lk = (env_name, chosen_job)
         self._job_load[lk] = int(self._job_load.get(lk, 0) or 0) + 1

@@ -17,6 +17,10 @@ class HttpServiceClient(HttpClient):
         try:
             # Explicitly passing timeout for this specific check
             async with await self.get(url, timeout=timeout_s) as resp:
-                return resp.status == 200
+                if resp.status != 200:
+                    log.debug("readiness check returned non-200: host=%s port=%d status=%d", host, int(port), resp.status)
+                    return False
+                return True
         except Exception:
+            log.debug("readiness check failed: host=%s port=%d", host, int(port), exc_info=True)
             return False
