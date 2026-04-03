@@ -4,6 +4,8 @@ import inspect
 import sqlite3
 from typing import List, Dict, Any, Optional
 
+REMOTE_FETCH_PAGE_SIZE = 1000
+
 
 def _supports_job_id_kw(fn: Any) -> bool:
     try:
@@ -16,6 +18,39 @@ def _supports_job_id_kw(fn: Any) -> bool:
             return True
         if param.name == "job_id":
             return True
+    return False
+
+
+def _supports_kw(fn: Any, kw_name: str) -> bool:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+
+    for param in sig.parameters.values():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+        if param.name == kw_name:
+            return True
+    return False
+
+
+def _requires_kw(fn: Any, kw_name: str) -> bool:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+
+    for param in sig.parameters.values():
+        if param.name != kw_name:
+            continue
+        return (
+            param.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+            and param.default is inspect._empty
+        )
     return False
 
 
@@ -64,11 +99,39 @@ def _load_remote_rows(
 ) -> Optional[List[Dict[str, Any]]]:
     get_env_configs = getattr(conn, "get_env_configs", None)
     if callable(get_env_configs):
-        kwargs: Dict[str, Any] = {"offset": offset}
+        supports_limit = _supports_kw(get_env_configs, "limit")
+        supports_offset = _supports_kw(get_env_configs, "offset")
+        requires_limit = _requires_kw(get_env_configs, "limit")
+
+        def _fetch_page(page_offset: int, page_limit: Optional[int]) -> List[Dict[str, Any]]:
+            kwargs: Dict[str, Any] = {}
+            if supports_offset:
+                kwargs["offset"] = page_offset
+            if supports_limit and page_limit is not None:
+                kwargs["limit"] = page_limit
+            rows = _invoke_sync_reader(get_env_configs, job_id=job_id, **kwargs)
+            return _filter_rows_by_job_id(_normalize_rows(rows), job_id)
+
         if limit is not None:
-            kwargs["limit"] = limit
-        rows = _invoke_sync_reader(get_env_configs, job_id=job_id, **kwargs)
-        return _filter_rows_by_job_id(_normalize_rows(rows), job_id)
+            return _fetch_page(offset, limit)
+
+        if supports_limit or requires_limit:
+            page_size = REMOTE_FETCH_PAGE_SIZE
+            all_rows: List[Dict[str, Any]] = []
+            page_offset = offset
+            while True:
+                page_rows = _fetch_page(page_offset, page_size)
+                if not page_rows:
+                    break
+                all_rows.extend(page_rows)
+                if len(page_rows) < page_size:
+                    break
+                if not supports_offset:
+                    break
+                page_offset += len(page_rows)
+            return all_rows
+
+        return _fetch_page(offset, None)
 
     get_all_environments = getattr(conn, "get_all_environments", None)
     if callable(get_all_environments):
