@@ -1,33 +1,64 @@
-FROM registry.h.pjlab.org.cn/ailab-evobox-evobox_gpu/hc_ray:embodied0311
+# syntax=docker/dockerfile:1.7
+
+FROM safactory/ray:base
+
+SHELL ["/bin/bash", "-lc"]
+
 
 WORKDIR /workspace/AIEvoBox
 USER root
 
-ENV PYTHONPATH=. \
-    RT_CONDA_ENV=.robotrustbench_env \
-    PATH=.robotrustbench_env/bin:${PATH} \
-    LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/nvidia/lib:.robotrustbench_env/lib:${LD_LIBRARY_PATH} \
-    AIEVOBOX_RT_HABITAT_RESOURCE_ROOT=/opt/robotrustbench/rt_habitat \
-    __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json \
-    http_proxy= \
-    https_proxy= \
-    no_proxy=localhost,127.0.0.1 \
-    NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility \
-    MAGNUM_LOG=quiet \
-    HABITAT_SIM_LOG=quiet
+ENV PATH=/opt/robotrustbench_env/bin:/usr/local/bin:/opt/micromamba/bin:${PATH} \
+    PYTHONPATH=/workspace/AIEvoBox:/workspace/AIEvoBox/env/robotrustbench/EmbodiedBench:/workspace/AIEvoBox/env/robotrustbench/EmbodiedBench/habitat-lab/habitat-lab \
+    LD_LIBRARY_PATH=/opt/robotrustbench_env/lib:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/usr/local/nvidia/lib64:/usr/local/nvidia/lib \
+    AIEVOBOX_RT_HABITAT_RESOURCE_ROOT=/workspace/AIEvoBox/env/robotrustbench/rt_habitat
 
-COPY ./core ./core
-COPY ./env/__init__.py ./env/__init__.py
-COPY ./env/app.py ./env/app.py
-COPY ./env/registry.py ./env/registry.py
-COPY ./env/robotrustbench ./env/robotrustbench
-COPY ./env/robotrustbench/rt_habitat/config ${AIEVOBOX_RT_HABITAT_RESOURCE_ROOT}/config
-COPY ./env/robotrustbench/rt_habitat/dataset/configs ${AIEVOBOX_RT_HABITAT_RESOURCE_ROOT}/dataset/configs
-COPY ./env/robotrustbench/rt_habitat/datasets ${AIEVOBOX_RT_HABITAT_RESOURCE_ROOT}/datasets
-COPY --from=embench_env / ./.robotrustbench_env
-COPY --from=host_gl libEGL.so.1 libEGL.so.1.1.0 libOpenGL.so.0 libOpenGL.so.0.0.0 libGLdispatch.so.0 libGLdispatch.so.0.0.0 libGLX.so.0 libGLX.so.0.0.0 libnvidia-gpucomp.so.570.133.20 /usr/lib/x86_64-linux-gnu/
-COPY --from=host_egl_vendor 10_nvidia.json /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+RUN apt-get -o Acquire::Retries=3 update && apt-get install -y --no-install-recommends \
+      bash \
+      bzip2 \
+      ca-certificates \
+      curl \
+      git \
+      git-lfs \
+      libegl-mesa0 \
+      libegl1 \
+      libgl1 \
+      libgl1-mesa-dri \
+      libglib2.0-0 \
+      libglvnd0 \
+      libglx-mesa0 \
+      libopengl0 \
+      libosmesa6 \
+      libsm6 \
+      libx11-6 \
+      libxau6 \
+      libxcb1 \
+      libxdmcp6 \
+      libxext6 && \
+    rm -rf /var/lib/apt/lists/* && \
+    curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | \
+      tar -xj -C /usr/local/bin --strip-components=1 bin/micromamba && \
+    mkdir -p /usr/share/glvnd/egl_vendor.d /etc/profile.d && \
+    printf '%s\n' \
+      '{' \
+      '  "file_format_version": "1.0.0",' \
+      '  "ICD": {' \
+      '    "library_path": "libEGL_nvidia.so.0"' \
+      '  }' \
+      '}' > /usr/share/glvnd/egl_vendor.d/10_nvidia.json && \
+    printf '%s\n' 'export PATH=/opt/robotrustbench_env/bin:$PATH' > /etc/profile.d/robotrustbench_env.sh
+
+COPY ./requirements.txt ./requirements.txt
+COPY ./env/robotrustbench/EmbodiedBench/conda_envs/environment_runtime_robotrustbench.yaml ./env/robotrustbench/EmbodiedBench/conda_envs/environment_runtime_robotrustbench.yaml
+COPY ./env/robotrustbench/requirements_runtime_robotrustbench.txt ./env/robotrustbench/requirements_runtime_robotrustbench.txt
+
+RUN micromamba create -y -p /opt/robotrustbench_env \
+      -f env/robotrustbench/EmbodiedBench/conda_envs/environment_runtime_robotrustbench.yaml && \
+    micromamba install -y -p /opt/robotrustbench_env -c conda-forge -c aihabitat \
+      habitat-sim==0.3.0 withbullet headless && \
+    micromamba run -p /opt/robotrustbench_env pip install --no-cache-dir \
+      -r env/robotrustbench/requirements_runtime_robotrustbench.txt
 
 EXPOSE 36663
 
-CMD ["bash", "-lc", "set -euo pipefail && app_root=$(pwd -P) && site_packages=${RT_CONDA_ENV}/lib/python3.9/site-packages && printf '%s/env/robotrustbench/EmbodiedBench\n.\n' \"${app_root}\" > ${site_packages}/embodiedbench.egg-link && printf '%s/env/robotrustbench/EmbodiedBench/habitat-lab/habitat-lab\n.\n' \"${app_root}\" > ${site_packages}/habitat-lab.egg-link && printf '%s/env/robotrustbench/EmbodiedBench/habitat-lab/habitat-lab\n%s/env/robotrustbench/EmbodiedBench\n' \"${app_root}\" \"${app_root}\" > ${site_packages}/easy-install.pth && exec ${RT_CONDA_ENV}/bin/python -m uvicorn env.app:app --host 0.0.0.0 --port 36663"]
+CMD ["/bin/bash"]

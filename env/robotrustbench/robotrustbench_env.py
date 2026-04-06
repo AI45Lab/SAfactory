@@ -13,9 +13,18 @@ import numpy as np
 import yaml
 from PIL import Image
 from openai.types.chat import ChatCompletionMessageParam
+import env.robotrustbench as _robotrustbench_pkg
 
+from core.env import register_env
 from core.env.base_env import BaseEnv
 from core.types.base import RenderOutput, ResetOutput, StepOutput
+
+_IMAGE_RT_PACKAGE_ROOT = os.path.normpath(os.path.join(os.sep, "opt", "robotrustbench"))
+if os.path.isdir(_IMAGE_RT_PACKAGE_ROOT):
+    package_paths = list(getattr(_robotrustbench_pkg, "__path__", []))
+    if _IMAGE_RT_PACKAGE_ROOT not in package_paths:
+        _robotrustbench_pkg.__path__.append(_IMAGE_RT_PACKAGE_ROOT)
+
 from env.robotrustbench.rt_habitat.runtime_support import (
     RT_VERSIONED_DATA_ROOT,
     bootstrap_gpu_runtime,
@@ -25,6 +34,8 @@ from env.robotrustbench.rt_habitat.runtime_support import (
     prepare_egl_runtime,
 )
 from env.robotrustbench.rt_habitat.utils import observations_to_image
+
+logger = logging.getLogger(__name__)
 
 bootstrap_gpu_runtime()
 
@@ -48,21 +59,47 @@ from env.robotrustbench.EmbodiedBench.embodiedbench.envs.eb_habitat.config.defau
 # Re-register task after EmbodiedBench side-effect imports to keep RT task binding.
 import env.robotrustbench.rt_habitat.predicate_task  # noqa: F401, E402
 
-logger = logging.getLogger(__name__)
+
+def _resolve_habitat_config_path() -> str:
+    candidates = [
+        os.path.join(
+            os.environ.get("AIEVOBOX_RT_EMBODIEDBENCH_ROOT", "").strip(),
+            "embodiedbench",
+            "envs",
+            "eb_habitat",
+            "config",
+            "task",
+            "language_rearrangement.yaml",
+        ),
+        os.path.join(
+            _IMAGE_RT_PACKAGE_ROOT,
+            "EmbodiedBench",
+            "embodiedbench",
+            "envs",
+            "eb_habitat",
+            "config",
+            "task",
+            "language_rearrangement.yaml",
+        ),
+        os.path.join(
+            os.path.dirname(__file__),
+            "EmbodiedBench",
+            "embodiedbench",
+            "envs",
+            "eb_habitat",
+            "config",
+            "task",
+            "language_rearrangement.yaml",
+        ),
+    ]
+    for candidate in candidates:
+        normalized = os.path.normpath(candidate)
+        if os.path.isfile(normalized):
+            return normalized
+    return os.path.normpath(candidates[-1])
 
 
-HABITAT_CONFIG_PATH = os.path.normpath(
-    os.path.join(
-        os.path.dirname(__file__),
-        "EmbodiedBench",
-        "embodiedbench",
-        "envs",
-        "eb_habitat",
-        "config",
-        "task",
-        "language_rearrangement.yaml",
-    )
-)
+HABITAT_CONFIG_PATH = _resolve_habitat_config_path()
 if not os.path.isfile(HABITAT_CONFIG_PATH):
     raise FileNotFoundError(
         "Missing RoboTrustBench Habitat config: %s" % HABITAT_CONFIG_PATH
@@ -87,7 +124,6 @@ COMMON_ROBUST_VALID_EVAL_SETS = COMMON_VALID_EVAL_SETS + [
 ]
 
 ROBOTRUSTBENCH_VALID_EVAL_SETS = {
-    "truthfulness": COMMON_VALID_EVAL_SETS + ["truthfulness", "truthfulness1"],
     "robust": COMMON_ROBUST_VALID_EVAL_SETS + ["dynamic_robust", "robust_picture"],
     "robustd": COMMON_ROBUST_VALID_EVAL_SETS,
     "safety": COMMON_ROBUST_VALID_EVAL_SETS
@@ -96,7 +132,6 @@ ROBOTRUSTBENCH_VALID_EVAL_SETS = {
 }
 
 ROBOTRUSTBENCH_DEFAULT_DATASETS = {
-    "truthfulness": "dataset.yaml",
     "robust": "dataset_robust.yaml",
     "robustd": "dataset.yaml",
     "safety": "dataset_safety.yaml",
@@ -122,14 +157,12 @@ RECEPTACLE_TEXT_MAP = {
 }
 
 ENV_NAME_PREFIXES = (
-    ("rt_truthfulness", "truthfulness"),
     ("rt_safety", "safety"),
     ("rt_robustd", "robustd"),
     ("rt_robust", "robust"),
 )
 
 DATASET_VARIANTS = {
-    "dataset_truthfulness.yaml": "truthfulness",
     "dataset_safety.yaml": "safety",
     "dataset_robust.yaml": "robust",
 }
@@ -315,6 +348,7 @@ def _successful_action_feedback(action_name: str, verbosity: int) -> Tuple[str, 
     return feedback + ".", None
 
 
+@register_env("robotrustbench")
 class RoboTrustBenchEnv(BaseEnv):
     def __init__(
         self,
@@ -457,9 +491,7 @@ class RoboTrustBenchEnv(BaseEnv):
         self.recording = recording
         self.episode_video = []
         self.auto_save_artifacts = bool(auto_save_artifacts)
-        self.auto_save_episode_log = bool(
-            auto_save_artifacts or self.rt_variant == "truthfulness"
-        )
+        self.auto_save_episode_log = bool(auto_save_artifacts)
         self.save_step_images = bool(save_step_images) and self.auto_save_artifacts
         self._episode_log_saved = False
         self._saved_image_keys = set()
@@ -1058,18 +1090,6 @@ class RoboTrustBenchEnv(BaseEnv):
             'Return JSON only. Format: {"action": <int or [int,...]>, "reasoning": "<short reason>"}'
             % (self.episode_language_instruction, last_feedback, actions_text)
         )
-
-        if self.rt_variant == "safety":
-            if self._last_obs and "head_rgb" in self._last_obs:
-                user_text += (
-                    "\n\nVisual observation: a first-person RGB image is available for this "
-                    "step, but the current RL text pipeline does not pass raw image bytes to "
-                    "the model."
-                )
-            return [
-                {"role": "system", "content": system_text},
-                {"role": "user", "content": user_text},
-            ]
 
         if self._last_obs and "head_rgb" in self._last_obs:
             image_array = _render_observation(self._last_obs, self._last_info, "head_rgb")
