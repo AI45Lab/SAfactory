@@ -19,7 +19,7 @@ from core.env import register_env
 from core.env.base_env import BaseEnv
 from core.types.base import RenderOutput, ResetOutput, StepOutput
 
-_IMAGE_RT_PACKAGE_ROOT = os.path.normpath(os.path.join(os.sep, "opt", "robotrustbench"))
+_IMAGE_RT_PACKAGE_ROOT = os.path.normpath("/opt/robotrustbench")
 if os.path.isdir(_IMAGE_RT_PACKAGE_ROOT):
     package_paths = list(getattr(_robotrustbench_pkg, "__path__", []))
     if _IMAGE_RT_PACKAGE_ROOT not in package_paths:
@@ -60,43 +60,30 @@ from env.robotrustbench.EmbodiedBench.embodiedbench.envs.eb_habitat.config.defau
 import env.robotrustbench.rt_habitat.predicate_task  # noqa: F401, E402
 
 
+_HABITAT_CONFIG_SUFFIX = (
+    "embodiedbench",
+    "envs",
+    "eb_habitat",
+    "config",
+    "task",
+    "language_rearrangement.yaml",
+)
+
+
 def _resolve_habitat_config_path() -> str:
-    candidates = [
-        os.path.join(
-            os.environ.get("AIEVOBOX_RT_EMBODIEDBENCH_ROOT", "").strip(),
-            "embodiedbench",
-            "envs",
-            "eb_habitat",
-            "config",
-            "task",
-            "language_rearrangement.yaml",
-        ),
-        os.path.join(
-            _IMAGE_RT_PACKAGE_ROOT,
-            "EmbodiedBench",
-            "embodiedbench",
-            "envs",
-            "eb_habitat",
-            "config",
-            "task",
-            "language_rearrangement.yaml",
-        ),
-        os.path.join(
-            os.path.dirname(__file__),
-            "EmbodiedBench",
-            "embodiedbench",
-            "envs",
-            "eb_habitat",
-            "config",
-            "task",
-            "language_rearrangement.yaml",
-        ),
+    roots = [
+        os.environ.get("AIEVOBOX_RT_EMBODIEDBENCH_ROOT", "").strip(),
+        os.path.join(_IMAGE_RT_PACKAGE_ROOT, "EmbodiedBench"),
+        os.path.join(os.path.dirname(__file__), "EmbodiedBench"),
     ]
-    for candidate in candidates:
-        normalized = os.path.normpath(candidate)
-        if os.path.isfile(normalized):
-            return normalized
-    return os.path.normpath(candidates[-1])
+    fallback = os.path.normpath(os.path.join(roots[-1], *_HABITAT_CONFIG_SUFFIX))
+    for root in roots:
+        if not root:
+            continue
+        candidate = os.path.normpath(os.path.join(root, *_HABITAT_CONFIG_SUFFIX))
+        if os.path.isfile(candidate):
+            return candidate
+    return fallback
 
 
 HABITAT_CONFIG_PATH = _resolve_habitat_config_path()
@@ -105,39 +92,43 @@ if not os.path.isfile(HABITAT_CONFIG_PATH):
         "Missing RoboTrustBench Habitat config: %s" % HABITAT_CONFIG_PATH
     )
 
-COMMON_VALID_EVAL_SETS = [
+BASE_EVAL_SETS = (
     "base",
     "common_sense",
     "complex_instruction",
     "spatial_relationship",
     "visual_appearance",
     "long_horizon",
-]
+)
 
-COMMON_ROBUST_VALID_EVAL_SETS = COMMON_VALID_EVAL_SETS + [
+ROBUST_EXTRA_EVAL_SETS = (
     "robust_word",
     "single_robust_test",
     "robust_robust_error",
     "robust_robust_redu",
     "robust_robust_sema",
     "robust_robust_raw",
-]
+)
 
-ROBOTRUSTBENCH_VALID_EVAL_SETS = {
-    "robust": COMMON_ROBUST_VALID_EVAL_SETS + ["dynamic_robust", "robust_picture"],
-    "robustd": COMMON_ROBUST_VALID_EVAL_SETS,
-    "safety": COMMON_ROBUST_VALID_EVAL_SETS
-    + ["safety"]
-    + ["safety_%d_%d" % (i, j) for i in [1, 2] for j in range(1, 11)],
+VARIANT_CONFIG = {
+    "robust": {
+        "dataset": "dataset_robust.yaml",
+        "eval_sets": BASE_EVAL_SETS + ROBUST_EXTRA_EVAL_SETS + ("dynamic_robust", "robust_picture"),
+    },
+    "robustd": {
+        "dataset": "dataset.yaml",
+        "eval_sets": BASE_EVAL_SETS + ROBUST_EXTRA_EVAL_SETS,
+    },
+    "safety": {
+        "dataset": "dataset_safety.yaml",
+        "eval_sets": BASE_EVAL_SETS
+        + ROBUST_EXTRA_EVAL_SETS
+        + ("safety",)
+        + tuple("safety_%d_%d" % (i, j) for i in [1, 2] for j in range(1, 11)),
+    },
 }
 
-ROBOTRUSTBENCH_DEFAULT_DATASETS = {
-    "robust": "dataset_robust.yaml",
-    "robustd": "dataset.yaml",
-    "safety": "dataset_safety.yaml",
-}
-
-ENABLED_ENV_CHOICES = tuple(ROBOTRUSTBENCH_DEFAULT_DATASETS)
+ENABLED_ENV_CHOICES = tuple(VARIANT_CONFIG)
 
 RECEPTACLE_TEXT_MAP = {
     "fridge": "refrigerator push point",
@@ -162,10 +153,17 @@ ENV_NAME_PREFIXES = (
     ("rt_robust", "robust"),
 )
 
-DATASET_VARIANTS = {
-    "dataset_safety.yaml": "safety",
-    "dataset_robust.yaml": "robust",
-}
+DATASET_VARIANTS = dict(
+    (config["dataset"], variant)
+    for variant, config in VARIANT_CONFIG.items()
+    if config["dataset"] != "dataset.yaml"
+)
+ACTION_KINDS = ("nav", "pick", "open", "close", "place")
+OPEN_CLOSE_FEEDBACK = (
+    "Last action is invalid. Check whether the receptacle is already open "
+    "or the robot is not near the receptacle."
+)
+RECEPTACLE_PREFIXES = (("table_0", "table "), ("chair_0", "chair "))
 
 
 def _resolve_variant_from_env_name(env_name: Optional[str]) -> Optional[str]:
@@ -190,7 +188,7 @@ def _infer_variant(
         return "robustd"
     if (
         dataset_name == "dataset.yaml"
-        and eval_set in ROBOTRUSTBENCH_VALID_EVAL_SETS["robustd"]
+        and eval_set in VARIANT_CONFIG["robustd"]["eval_sets"]
     ):
         return "robustd"
     return "robust"
@@ -214,19 +212,9 @@ def _normalize_enabled_envs(enabled_envs):
             return None
         if item not in ENABLED_ENV_CHOICES:
             raise ValueError("Unsupported enabled_env value: %s" % item)
-        normalized.append(item)
-
-    if not normalized:
-        return None
-    return normalized
-
-
-def _render_observation(
-    observation: Dict[str, Any],
-    info: Optional[Dict[str, Any]],
-    key: str,
-) -> np.ndarray:
-    return observations_to_image(observation, info or {}, key=key)
+        if item not in normalized:
+            normalized.append(item)
+    return normalized or None
 
 
 def _encode_png(image_array: np.ndarray) -> bytes:
@@ -237,7 +225,7 @@ def _encode_png(image_array: np.ndarray) -> bytes:
 
 
 def _describe_receptacle(receptacle: str) -> str:
-    for prefix, label in (("table_0", "table "), ("chair_0", "chair ")):
+    for prefix, label in RECEPTACLE_PREFIXES:
         if prefix in receptacle:
             return label + receptacle.split(prefix, 1)[1]
     if "cab" in receptacle:
@@ -257,33 +245,32 @@ def _describe_open_close_target(action_name: str, receptacle: str) -> str:
 
 
 def _action_kind(action_name: str) -> Optional[str]:
-    for kind in ("nav", "pick", "open", "close", "place"):
+    for kind in ACTION_KINDS:
         if kind in action_name:
             return kind
     return None
 
 
+def _action_to_text(action_name: str, receptacle: str) -> str:
+    action_kind = _action_kind(action_name)
+    if action_kind == "nav":
+        return "navigate to the " + _describe_receptacle(receptacle)
+    if action_kind == "pick":
+        return "pick up the " + action_name.split("_")[1]
+    if action_kind in ("open", "close"):
+        return "%s the %s" % (
+            action_kind,
+            _describe_open_close_target(action_name, receptacle),
+        )
+    if action_kind == "place":
+        return "place at the " + _describe_receptacle(receptacle)
+    raise NotImplementedError(action_name)
+
+
 def transform_action_to_natural_language(
     skill_set: List[Tuple[str, List[str]]]
 ) -> List[str]:
-    language_skill_set = []
-    for action_name, args in skill_set:
-        receptacle = args[0]
-        action_kind = _action_kind(action_name)
-        if action_kind == "nav":
-            language_skill_set.append("navigate to the " + _describe_receptacle(receptacle))
-        elif action_kind == "pick":
-            language_skill_set.append("pick up the " + action_name.split("_")[1])
-        elif action_kind in ("open", "close"):
-            language_skill_set.append(
-                "%s the %s"
-                % (action_kind, _describe_open_close_target(action_name, receptacle))
-            )
-        elif action_kind == "place":
-            language_skill_set.append("place at the " + _describe_receptacle(receptacle))
-        else:
-            raise NotImplementedError(action_name)
-    return language_skill_set
+    return [_action_to_text(action_name, args[0]) for action_name, args in skill_set]
 
 
 def _cabinet_name_from_action(action_name: str) -> str:
@@ -296,35 +283,25 @@ def _invalid_action_feedback(action_name: str, is_holding: bool, verbosity: int)
         return feedback
     action_kind = _action_kind(action_name)
     if action_kind == "pick":
-        if is_holding:
-            return (
-                feedback
-                + " Robot cannot pick any object when holding something. "
-                "Please place the object before picking something."
-            )
-        return (
-            feedback
-            + " Robot cannot pick any object that is not near the robot. "
+        suffix = (
+            " Robot cannot pick any object when holding something. "
+            "Please place the object before picking something."
+            if is_holding
+            else " Robot cannot pick any object that is not near the robot. "
             "Navigate to other place to find the object."
         )
+        return feedback + suffix
     if action_kind == "place":
-        if is_holding:
-            return (
-                feedback
-                + " Robot cannot place any object that is not near the robot. "
-                "Navigate to other place to find the object."
-            )
-        return (
-            feedback
-            + " Robot cannot place any object when not holding something. "
+        suffix = (
+            " Robot cannot place any object that is not near the robot. "
+            "Navigate to other place to find the object."
+            if is_holding
+            else " Robot cannot place any object when not holding something. "
             "Please pick the object before place it."
         )
+        return feedback + suffix
     if action_kind in ("open", "close"):
-        return (
-            feedback
-            + " Check whether the receptacle is already open or the robot "
-            "is not near the receptacle."
-        )
+        return OPEN_CLOSE_FEEDBACK
     return feedback
 
 
@@ -342,7 +319,11 @@ def _successful_action_feedback(action_name: str, verbosity: int) -> Tuple[str, 
     if action_kind == "place":
         return feedback + " and you are holding nothing.", False
     if action_kind in ("open", "close"):
-        target = "refrigerator" if "fridge" in action_name else _cabinet_name_from_action(action_name)
+        target = (
+            "refrigerator"
+            if "fridge" in action_name
+            else _cabinet_name_from_action(action_name)
+        )
         state = "open" if action_kind == "open" else "closed"
         return feedback + " and now %s is %s." % (target, state), None
     return feedback + ".", None
@@ -413,7 +394,7 @@ class RoboTrustBenchEnv(BaseEnv):
                 % (self.rt_variant, self.enabled_envs)
             )
         if dataset_name is None:
-            dataset_name = ROBOTRUSTBENCH_DEFAULT_DATASETS[self.rt_variant]
+            dataset_name = VARIANT_CONFIG[self.rt_variant]["dataset"]
         return dataset_name, "RTHabEnv_%s" % self.rt_variant
 
     def _init_habitat_env(
@@ -426,7 +407,7 @@ class RoboTrustBenchEnv(BaseEnv):
         self.config.habitat.simulator.habitat_sim_v0.gpu_device_id = gpu_device_id
         patched_simulator_paths = patch_simulator_resource_paths(self.config)
         _add_sim_sensor_to_config(self.config, ThirdRGBSensorConfig())
-        valid_eval_sets = ROBOTRUSTBENCH_VALID_EVAL_SETS[self.rt_variant]
+        valid_eval_sets = VARIANT_CONFIG[self.rt_variant]["eval_sets"]
         assert eval_set in valid_eval_sets
         OmegaConf.set_struct(self.config.habitat, False)
         OmegaConf.set_struct(self.config.habitat.task, False)
@@ -688,6 +669,17 @@ class RoboTrustBenchEnv(BaseEnv):
 
     def current_episode(self, all_info: bool = False):
         return self.env.current_episode(all_info)
+
+    def _current_image(
+        self,
+        obs: Dict[str, Any],
+        key: str = "head_rgb",
+        apply_perturbation: bool = False,
+    ) -> np.ndarray:
+        image = observations_to_image(obs, self._last_info or {}, key=key)
+        if apply_perturbation and self.perturbation_type != "none":
+            return self._apply_perturbation(image)
+        return image
 
     def reset(self, seed: Optional[int] = None) -> ResetOutput:
         assert self._current_episode_num <= self.number_of_episodes
@@ -1002,7 +994,7 @@ class RoboTrustBenchEnv(BaseEnv):
         )
         os.makedirs(folder, exist_ok=True)
 
-        original_image_array = _render_observation(obs, self._last_info, key)
+        original_image_array = self._current_image(obs, key)
         base_name = "episode_%s_step_%s" % (
             self._current_episode_num,
             self._current_step,
@@ -1092,9 +1084,9 @@ class RoboTrustBenchEnv(BaseEnv):
         )
 
         if self._last_obs and "head_rgb" in self._last_obs:
-            image_array = _render_observation(self._last_obs, self._last_info, "head_rgb")
-            if self.perturbation_type != "none":
-                image_array = self._apply_perturbation(image_array)
+            image_array = self._current_image(
+                self._last_obs, "head_rgb", apply_perturbation=True
+            )
             image_url = "data:image/png;base64," + base64.b64encode(
                 _encode_png(image_array)
             ).decode("ascii")
@@ -1118,9 +1110,7 @@ class RoboTrustBenchEnv(BaseEnv):
         if self._last_obs and "head_rgb" in self._last_obs:
             return RenderOutput(
                 step=self._current_step,
-                image_data=_encode_png(
-                    _render_observation(self._last_obs, self._last_info, "head_rgb")
-                ),
+                image_data=_encode_png(self._current_image(self._last_obs)),
             )
         return RenderOutput(
             step=self._current_step, text_content="No observation available."
