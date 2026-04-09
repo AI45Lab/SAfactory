@@ -329,7 +329,7 @@ def filter_by_weight_version(data_buffer, current_version: int, off_by_n: int = 
 
     Args:
         data_buffer: 数据 buffer
-        current_version: 当前权重版本（通常是 rollout_id）
+        current_version: 当前权重版本（当前 pipeline 中通常是 rollout_id + 1）
         off_by_n: 允许的最大权重差，默认为 0（只保留当前版本的数据）
     """
     buffer_length = data_buffer.get_buffer_length()
@@ -373,10 +373,11 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
 
     metrics = MetricsRecorder()
     print("rollout_id: ", rollout_id)
+    current_version = rollout_id + 1
 
     # 根据weight_version过滤已完成的数据
     off_by_n = int(get_env("RL_OFF_BY_N"))
-    filter_by_weight_version(data_buffer, current_version=rollout_id, off_by_n=off_by_n)
+    filter_by_weight_version(data_buffer, current_version=current_version, off_by_n=off_by_n)
     buffer_length = data_buffer.get_buffer_length()
     needed_groups = max(0, args.rollout_batch_size - buffer_length)
     data_number_to_fetch = needed_groups * args.n_samples_per_prompt
@@ -447,17 +448,17 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
                 if len(set(rewards)) == 1:
                     logger.info(
                         f"Filtered out group with rewards={rewards}, "
-                        f"current_version={rollout_id}"
+                        f"current_version={current_version}"
                     )
                     continue
-                if all(rollout_id - record.get("weight_version", 0) <= off_by_n for record in group):
+                if all(current_version - record.get("weight_version", 0) <= off_by_n for record in group):
                     valid_groups.append(group)
                 else:
                     # 记录被过滤的 group 信息
                     versions = [record.get("weight_version", 0) for record in group]
                     logger.info(
                         f"Filtered out group with weight_versions={versions}, "
-                        f"current_version={rollout_id}, off_by_n={off_by_n}"
+                        f"current_version={current_version}, off_by_n={off_by_n}"
                     )
 
             print(f"✅ Valid groups collected this round: {len(valid_groups)}")
