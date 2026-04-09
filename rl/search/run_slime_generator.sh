@@ -128,7 +128,7 @@ RUNTIME_ENV_JSON="{\
 
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- python3 ${SLIME_HOME}/train_async.py \
+   -- python3 ${SLIME_HOME}/train.py \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node 1 \
    --rollout-num-gpus 7 \
