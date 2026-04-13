@@ -54,7 +54,7 @@ ROLLOUT_ARGS=(
 MEGATRON_ARGS=(
    --train-backend megatron
    --megatron-to-hf-mode bridge
-   --tensor-model-parallel-size 1
+   --tensor-model-parallel-size 2
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
    --expert-model-parallel-size 1
@@ -71,7 +71,7 @@ MEGATRON_ARGS=(
 
 TRAIN_ARGS=(
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 5000
+   --max-tokens-per-gpu 3000
    --calculate-per-token-loss
 )
 
@@ -101,7 +101,6 @@ WANDB_ARGS=(
 )
 
 SGLANG_ARGS=(
-   --use-slime-router
    --rollout-num-gpus-per-engine 1
    --sglang-mem-fraction-static 0.7
    --sglang-attention-backend fa3
@@ -130,8 +129,8 @@ ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 ${SLIME_HOME}/train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 1 \
-   --rollout-num-gpus 7 \
+   --actor-num-gpus-per-node 2 \
+   --rollout-num-gpus 6 \
    ${MODEL_ARGS[@]} \
    ${MEGATRON_ARGS[@]} \
    ${CKPT_ARGS[@]} \
