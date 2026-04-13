@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Dict
 
 from ..binding_plan import BindingPlan
 from ..http_client import HttpServiceClient
 from ..types import ClusterRegistry, EnvClusterBinding, RayClusterInfo
 from .base import ClusterBackend
+
+log = logging.getLogger("manager.local_clusters")
 
 
 class LocalHTTPBackend(ClusterBackend):
@@ -38,14 +41,14 @@ class LocalHTTPBackend(ClusterBackend):
         """
         # 1. Early exit if no environment mapping is provided
         if not plan.env_to_image:
-            return ClusterRegistry(clusters_by_image={}, env_bindings={})
+            return ClusterRegistry(clusters_by_id={}, env_bindings={})
 
         # 2. Wait for the local environment to be ready
         await self._wait_for_local_http_ready()
 
         # 3. Initialize counts and storage
         env_job_counts = dict(getattr(plan, "env_job_counts", None) or {})
-        clusters_by_image: Dict[str, 'RayClusterInfo'] = {}
+        clusters_by_id: Dict[str, 'RayClusterInfo'] = {}
         env_bindings: Dict[str, 'EnvClusterBinding'] = {}
 
         # 4. Iterate through environments to set up clusters and bindings
@@ -63,7 +66,7 @@ class LocalHTTPBackend(ClusterBackend):
                 cid = f"{env_name}#{idx}"
                 job_name = f"local-{env_name}-{idx}"
 
-                clusters_by_image[cid] = RayClusterInfo(
+                clusters_by_id[cid] = RayClusterInfo(
                     image=image,
                     project="local",
                     job_name=job_name,
@@ -81,7 +84,7 @@ class LocalHTTPBackend(ClusterBackend):
 
         # 5. Return the populated registry
         return ClusterRegistry(
-            clusters_by_image=clusters_by_image,
+            clusters_by_id=clusters_by_id,
             env_bindings=env_bindings
         )
 
@@ -98,7 +101,7 @@ class LocalHTTPBackend(ClusterBackend):
         while True:
             ok = await self._http.check_envs_ready(self._host, self._http_port)
             if ok:
-                print(f"[manager] local HTTP service ready at {self._host}:{self._http_port}")
+                log.info("local HTTP service ready at %s:%d", self._host, self._http_port)
                 return
 
             attempt += 1
@@ -107,8 +110,11 @@ class LocalHTTPBackend(ClusterBackend):
                     f"Timeout waiting for local HTTP service at {self._host}:{self._http_port}"
                 )
 
-            print(
-                f"[manager] local HTTP not ready (attempt {attempt}), "
-                f"retry in {self._poll_interval_s}s: {self._host}:{self._http_port}"
+            log.info(
+                "local HTTP not ready (attempt %d), retry in %.1fs: %s:%d",
+                attempt,
+                self._poll_interval_s,
+                self._host,
+                self._http_port,
             )
             await asyncio.sleep(self._poll_interval_s)

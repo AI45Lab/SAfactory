@@ -9,6 +9,8 @@ gif_generate.py
 *.db
 *.db-shm
 *.db-wal
+*.txt
+*.sh
 data/
 examples/test_env.py
 env/mc/MineStudio/MineStudio
@@ -30,12 +32,14 @@ env/androidgym/*.jsonl
 env/androidgym/db_data
 env/androidgym/run.sh
 env/androidgym/classified_jsonl
+env/androidgym/files
 
 # gitgym env
 env/gitgym/generated_code
 
 # osgym env
 env/osgym/docker_vm_data
+env/osgym/results
 
 # python logging
 *.log.*
@@ -100,6 +104,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+tests/
 
 # Translations
 *.mo
@@ -203,7 +208,6 @@ activemq-data/
 .venv
 # env/
 venv/
-ENV/
 env.bak/
 venv.bak/
 
@@ -265,9 +269,18 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# skill/exp
+exp_service/README.md
+docs/exp-design.md
+docs/debug/
+experiences/
+_experiences/
+exp_service_state.json
+
 # dabstep env
 env/dabstep/agent_core/
 
 # dw env
 env/dwgym/discoveryworld/
 video/
+ai-gen

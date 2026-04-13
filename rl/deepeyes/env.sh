@@ -10,6 +10,7 @@ export AIEVOBOX_ENV_CONFIG=/root/AIEvoBox/env/deepeyes/deepeyes_mixed_v1v8_think
 # ENV_ROOT 指定读取目录下所有子目录的环境
 # export AIEVOBOX_ENV_ROOT=/root/AIEvoBox/env
 export AIEVOBOX_POOL_SIZE=1024
+export STORAGE_TYPE=sqlite
 
 
 

@@ -157,6 +157,7 @@ class SqliteStrategy(StorageStrategy):
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
+        is_trainable: bool = True
     ) -> None:
         """
         Record a single interaction step.
@@ -191,6 +192,7 @@ class SqliteStrategy(StorageStrategy):
             is_terminal=terminated,
             is_truncated=truncated,
             is_session_completed=terminated or truncated,
+            is_trainable=is_trainable,
         )
 
         # Use buffer or direct save
@@ -238,7 +240,7 @@ class SqliteStrategy(StorageStrategy):
 
     async def fetch_done_steps_with_context(
         self,
-        job_id: str = "6978763b718b94e540a221c3",
+        job_id: str,
         after_id: int = 0,
         limit: int = 100
     ) -> List[Dict]:
@@ -250,7 +252,7 @@ class SqliteStrategy(StorageStrategy):
 
         steps = await SessionStep.filter(
             job_id=job_id,
-            is_terminal=True,
+            is_trainable=True,
             id__gt=after_id
         ).order_by("id").limit(limit)
 
@@ -275,8 +277,8 @@ class SqliteStrategy(StorageStrategy):
             for s in steps
         ]
 
-    async def get_max_step_id(self) -> int:
+    async def get_max_step_id(self, job_id: str) -> int:
         """Get maximum primary key for pagination"""
         await self.init()
-        latest = await SessionStep.all().order_by("-id").first()
+        latest = await SessionStep.filter(job_id=job_id, is_terminal=True).order_by("-id").first()
         return latest.id if latest else 0

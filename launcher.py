@@ -10,108 +10,19 @@ import math
 import requests
 import yaml
 import logging
-from logging.handlers import RotatingFileHandler
-from datetime import datetime
 from typing import Any, Dict, Optional, Set, Tuple, List
 
+from utils import ActorPoolRuntimeState, discover_ready_actor_from_snapshot
 from core.llm import StaticBaseURLProvider, SessionSuffixBaseURLProvider
 from core.data_manager.manager import DataManager
 from core.data_manager.yaml_aggregator import all_env_yaml_load, sync_configs_to_db, wait_for_pending_inserts
 
 from interactor import Interactor, ActorHandle, ActorPool
 from manager import EnvPoolManager
+from log_setup import setup_launcher_logging
 
 
 log = logging.getLogger("launcher")
-
-
-# -------------------------
-# Logging setup
-# -------------------------
-class ConsoleFilter(logging.Filter):
-    """
-    Gate on the console (stdout) handler.
-
-    Rules (applied in order):
-    1. INFO/DEBUG from core.llm.* are always suppressed.
-    2. DEBUG records are suppressed unless the logger name is in *debug_loggers*.
-    3. Everything else passes through.
-    """
-    def __init__(self, debug_loggers: Optional[List[str]] = None):
-        super().__init__()
-        self._debug_loggers: Set[str] = set(debug_loggers or [])
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        if record.name.startswith("core.llm") and record.levelno < logging.WARNING:
-            return False
-        if record.levelno < logging.INFO and record.name not in self._debug_loggers:
-            return False
-        return True
-
-
-def _setup_logging(
-    *,
-    log_dir: str,
-    run_name: Optional[str],
-    console_level: str = "INFO",
-    file_level: str = "DEBUG",
-    max_bytes: int = 50 * 1024 * 1024,
-    backup_count: int = 5,
-    debug_loggers: Optional[List[str]] = None,
-) -> str:
-    os.makedirs(log_dir, exist_ok=True)
-
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_name = (run_name or "").strip()
-    base = f"{run_name}-" if run_name else ""
-    log_path = os.path.join(log_dir, f"{base}run-{stamp}.log")
-
-    root = logging.getLogger()
-    root.setLevel(logging.DEBUG)  # let handlers filter
-
-    fmt = logging.Formatter(
-        fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    # Console handler
-    ch = logging.StreamHandler(stream=sys.stdout)
-    # When debug_loggers are specified, lower the handler level so DEBUG records
-    # reach the filter; ConsoleFilter then allowlists only the named loggers.
-    ch_level = logging.DEBUG if debug_loggers else getattr(logging, console_level.upper(), logging.INFO)
-    ch.setLevel(ch_level)
-    ch.setFormatter(fmt)
-    ch.addFilter(ConsoleFilter(debug_loggers))
-
-    # File handler (keeps everything)
-    fh = RotatingFileHandler(
-        log_path,
-        maxBytes=int(max_bytes),
-        backupCount=int(backup_count),
-        encoding="utf-8",
-    )
-    fh.setLevel(getattr(logging, file_level.upper(), logging.DEBUG))
-    fh.setFormatter(fmt)
-
-    # Avoid duplicated handlers
-    root.handlers.clear()
-    root.addHandler(ch)
-    root.addHandler(fh)
-
-    # Optional: reduce other noisy libs on console too
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
-    logging.getLogger("core.llm").setLevel(logging.WARNING)
-    logging.getLogger("core.llm.base").setLevel(logging.WARNING)
-
-    # Keep warnings in logs
-    logging.captureWarnings(True)
-
-    root.info(
-        "logging initialized: console_level=%s file_level=%s log_path=%s",
-        console_level.upper(), file_level.upper(), log_path
-    )
-    return log_path
 
 # -------------------------
 # Utils
@@ -243,9 +154,11 @@ class ManagerActorPool(ActorPool):
                         pass
         self.pool_size = max(1, int(ps or 1))
 
-        self._q: asyncio.Queue[Optional[ActorHandle]] = asyncio.Queue()
-        self._known: Set[Tuple[str, str]] = set()
-        self._lock = asyncio.Lock()
+        self._runtime = ActorPoolRuntimeState[ActorHandle]()
+        self._bg_refill_tasks: Set[asyncio.Task] = set()
+        self._lifecycle_lock = asyncio.Lock()
+        self._closing = False
+        self._closed = False
 
     @staticmethod
     def _route_to_base_url(route: Any) -> Optional[str]:
@@ -277,76 +190,144 @@ class ManagerActorPool(ActorPool):
             group_id = str(item.get("group_id") or "")
             base_url = self._actor_base_url(env, env_id)
             if base_url:
-                self._known.add((env, env_id))
-                self._q.put_nowait(ActorHandle(base_url=base_url, env_name=env, env_id=env_id, group_id=group_id))
-                log.debug("enqueued actor: %s/%s -> %s", env, env_id, base_url)
+                added = await self._runtime.add_ready_actor(
+                    (env, env_id),
+                    ActorHandle(base_url=base_url, env_name=env, env_id=env_id, group_id=group_id),
+                )
+                if added:
+                    log.debug("enqueued actor: %s/%s -> %s", env, env_id, base_url)
             else:
-                self._q.put_nowait(None)
-                log.warning("actor route missing for %s/%s (enqueued None)", env, env_id)
+                log.warning("actor route missing for %s/%s (skipped)", env, env_id)
 
-        for _ in range(self.pool_size - len(actors)):
-            self._q.put_nowait(None)
+        await self._runtime.mark_initial_load_done()
 
     async def acquire(self) -> Optional[ActorHandle]:
-        actor = await self._q.get()
+        actor = await self._runtime.acquire()
         if actor is None:
-            log.debug("acquire(): got None")
+            log.debug("acquire(): exhausted")
         else:
             log.debug("acquire(): got %s/%s", actor.env_name, actor.env_id)
         return actor
 
-    async def _discover_one_new_actor(self) -> Optional[ActorHandle]:
-        actors = await self.mgr.list_pool_actors()
-        return self._discover_from_actor_list(actors)
-
-    def _discover_from_actor_list(self, actors: List[dict]) -> Optional[ActorHandle]:
-        current = {(str(x["env_name"]), str(x["env_id"])) for x in actors}
-        candidates = list(current - self._known)
-        if not candidates:
-            return None
-
-        env, env_id = candidates[0]
-        base_url = self._actor_base_url(env, env_id)
-        if not base_url:
-            return None
-
-        # Find group_id from the actors list
-        group_id = ""
-        for x in actors:
-            if str(x["env_name"]) == env and str(x["env_id"]) == env_id:
-                group_id = str(x.get("group_id") or "")
-                break
-
-        self._known.add((env, env_id))
-        log.debug("discovered new actor: %s/%s -> %s", env, env_id, base_url)
-        return ActorHandle(base_url=base_url, env_name=env, env_id=env_id, group_id=group_id)
-
     async def done(self, actor: ActorHandle) -> None:
         old_key = (str(actor.env_name), str(actor.env_id))
-        log.info("done(): scheduling background close_and_refill for env=%s id=%s", actor.env_name, actor.env_id)
+        async with self._lifecycle_lock:
+            if self._closing or self._closed:
+                log.info(
+                    "done(): pool is closing; skip refill for env=%s id=%s",
+                    actor.env_name,
+                    actor.env_id,
+                )
+                await self._finish_without_replacement(old_key)
+                return
 
-        # Fire and forget the refill process so the worker unblocks immediately
-        asyncio.create_task(self._bg_done(actor, old_key))
+            log.info(
+                "done(): scheduling background close_and_refill for env=%s id=%s",
+                actor.env_name,
+                actor.env_id,
+            )
+            await self._runtime.begin_refill(old_key)
+            try:
+                task = asyncio.create_task(
+                    self._bg_done(actor, old_key),
+                    name=f"manager-close-and-refill:{actor.env_name}:{actor.env_id}",
+                )
+            except Exception:
+                await self._runtime.fail_refill(old_key)
+                raise
+            self._register_bg_task(task)
+
+    async def _finish_without_replacement(self, old_key: Tuple[str, str]) -> None:
+        await self._runtime.begin_refill(old_key)
+        await self._runtime.fail_refill(old_key)
+
+    def _register_bg_task(self, task: asyncio.Task) -> None:
+        self._bg_refill_tasks.add(task)
+        task.add_done_callback(self._on_bg_task_done)
+
+    def _on_bg_task_done(self, task: asyncio.Task) -> None:
+        self._bg_refill_tasks.discard(task)
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            log.debug("background refill task cancelled: %s", task.get_name())
+        except Exception:
+            log.exception("background refill task failed unexpectedly: %s", task.get_name())
 
     async def _bg_done(self, actor: ActorHandle, old_key: Tuple[str, str]) -> None:
         try:
             await self.mgr.close_and_refill(actor.env_name, actor.env_id)
+        except asyncio.CancelledError:
+            log.info(
+                "_bg_done cancelled during shutdown for %s/%s",
+                actor.env_name,
+                actor.env_id,
+            )
+            await self._runtime.fail_refill(old_key)
+            raise
         except Exception:
-            log.exception("close_and_refill failed for %s/%s; enqueuing None", actor.env_name, actor.env_id)
-            async with self._lock:
-                self._known.discard(old_key)
-                self._q.put_nowait(None)
+            log.exception("close_and_refill failed for %s/%s", actor.env_name, actor.env_id)
+            await self._runtime.fail_refill(old_key)
             return
 
         actors = await self.mgr.list_pool_actors()
-        async with self._lock:
-            self._known.discard(old_key)
-            new_actor = self._discover_from_actor_list(actors)
-            self._q.put_nowait(new_actor)
+        known_keys = await self._runtime.known_keys_snapshot()
+        new_key, new_actor = discover_ready_actor_from_snapshot(
+            actors,
+            known_keys=known_keys,
+            base_url_resolver=self._actor_base_url,
+            actor_builder=lambda base_url, env, env_id, group_id: ActorHandle(
+                base_url=base_url,
+                env_name=env,
+                env_id=env_id,
+                group_id=group_id,
+            ),
+        )
+        added = await self._runtime.finish_refill(old_key, new_key, new_actor)
+        if added and new_key is not None and new_actor is not None:
+            log.debug("discovered new actor: %s/%s -> %s", new_key[0], new_key[1], new_actor.base_url)
+
+    async def _wait_for_bg_refill_tasks(self) -> None:
+        while True:
+            async with self._lifecycle_lock:
+                tasks = list(self._bg_refill_tasks)
+
+            if not tasks:
+                return
+
+            log.info(
+                "ManagerActorPool.aclose(): waiting for %d background refill task(s)",
+                len(tasks),
+            )
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            except asyncio.CancelledError:
+                log.warning(
+                    "ManagerActorPool.aclose(): cancelled while waiting; cancelling %d refill task(s)",
+                    len(tasks),
+                )
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
 
     async def aclose(self) -> None:
-        log.info("ManagerActorPool.aclose(): closing EnvPoolManager ...")
-        await self.mgr.close_all()
+        async with self._lifecycle_lock:
+            if self._closed:
+                log.info("ManagerActorPool.aclose(): already closed")
+                return
+            self._closing = True
+
+        log.info("ManagerActorPool.aclose(): waiting for background refill tasks ...")
+        await self._wait_for_bg_refill_tasks()
+
+        async with self._lifecycle_lock:
+            if self._closed:
+                log.info("ManagerActorPool.aclose(): already closed")
+                return
+            log.info("ManagerActorPool.aclose(): closing EnvPoolManager ...")
+            await self.mgr.close_all()
+            self._closed = True
 
 
 # -------------------------
@@ -361,12 +342,19 @@ def parse_args():
     p.add_argument("--job-id", type=str, default="", help="job id is used to identify each task and record in the environmentconfig table as session")
     # YAML
     p.add_argument("--manager-config", type=str, default="./manager/config.yaml", help="Path to unified YAML config")
+    p.add_argument("--exp-config", type=str, default="./core/exp/config.yaml", help="Path to experience injection YAML config")
     p.add_argument("--mode", choices=["local", "remote"], default="local")
 
     # DB / YAML-aggregator
     p.add_argument("--env-config", type=str, default=None, help="env config which used for specify the input env configs, and it's incompatible with  env-root")
     p.add_argument("--env-root", type=str, default="env", help="only works when env-config is not specified")
-    p.add_argument("--storage-type", type=str, default="sqlite")
+    p.add_argument("--storage-type", type=str, default="sqlite", choices=["sqlite", "cloud"], help="Storage backend for environment configs and results (affects DataManager implementation)")
+    p.add_argument("--warmup-count", type=int, default=100, help="The number of environment configs to pre-store in the manager.")
+    p.add_argument("--save-batch-size", type=int, default=100, help="Size of environment configs to store in the manager.")
+    p.add_argument("--disable-buffer", dest="enable_buffer", action="store_false", default=True,
+                   help="Disable buffered record storage (buffer is enabled by default)")
+    p.add_argument("--buffer-size", type=int, default=100, help="Size of the buffer for storing records")
+    p.add_argument("--flush-interval", type=float, default=5.0, help="Interval (in seconds) for flushing buffered records")
     p.add_argument("--db-path", type=str, default="sqlite://android_envs.db")
     p.add_argument("--rebuild-table", action=argparse.BooleanOptionalAction, default=False,
                    help="Delete and recreate the SQLite DB file before loading configs (SQLite only)")
@@ -385,7 +373,7 @@ def parse_args():
 
     # Interactor
     p.add_argument("--max-steps", type=int, default=1000)
-    p.add_argument("--message-cut", type=int, default=3)
+    p.add_argument("--message-cut", type=int, default=-1, help="Number of recent messages to keep in the conversation history (<= 0 keep all)")
     p.add_argument("--env-http-timeout-s", type=float, default=300.0)
     p.add_argument("--http-retries", type=int, default=2)
 
@@ -403,11 +391,21 @@ def parse_args():
 
     # Logging
     p.add_argument("--log-dir", type=str, default="logs", help="Directory to store log files")
-    p.add_argument("--run-name", type=str, default="", help="Optional run name prefix for log file")
+    p.add_argument("--run-name", type=str, default="", help="Optional run name prefix for the log directory")
     p.add_argument("--console-log-level", type=str, default="INFO", help="Console log level")
     p.add_argument("--file-log-level", type=str, default="DEBUG", help="File log level")
-    p.add_argument("--log-max-bytes", type=int, default=50 * 1024 * 1024, help="Rotate log after this size")
-    p.add_argument("--log-backup-count", type=int, default=5, help="How many rotated logs to keep")
+    p.add_argument(
+        "--log-max-bytes",
+        type=int,
+        default=50 * 1024 * 1024,
+        help="Legacy per-file rotation size (ignored in run-directory log mode)",
+    )
+    p.add_argument(
+        "--log-backup-count",
+        type=int,
+        default=20,
+        help="How many recent run log directories to keep (0 = keep all)",
+    )
     p.add_argument("--debug-log", action="store_true", default=False,
                    help="Enable DEBUG-level console logging for the storage layer")
 
@@ -418,7 +416,7 @@ async def main():
     args = parse_args()
 
     # Setup logs FIRST (so everything goes to file)
-    main_log_path = _setup_logging(
+    log_session = setup_launcher_logging(
         log_dir=args.log_dir,
         run_name=args.run_name,
         console_level=args.console_log_level,
@@ -427,45 +425,61 @@ async def main():
         backup_count=args.log_backup_count,
         debug_loggers=["sqlite_strategy", "yaml_aggregator"] if args.debug_log else None,
     )
-
-    # Optional: upstream service log file
-    upstream_log_path = os.path.join(args.log_dir, "upstream.log")
+    main_log_path = log_session.main_log_path
+    upstream_log_path = log_session.upstream_log_path
     log.info("main log file: %s", main_log_path)
+    log.info("log run directory: %s", log_session.run_dir)
 
-    job_id=args.job_id
-    if job_id=="":
-       job_id =  uuid.uuid4().hex
+    job_id = args.job_id
+    if job_id == "":
+        job_id = uuid.uuid4().hex
 
-    # Rebuild the DB file if requested (SQLite only)
-    if args.rebuild_table and args.storage_type == "sqlite":
-        _rebuild_sqlite_db(args.db_path)
-
-    data_manager = DataManager(job_id=job_id, storage_type=args.storage_type, db_url=args.db_path, enable_buffer=True, buffer_size=100, flush_interval=5.0)
-    yaml_config_list = all_env_yaml_load(env_root=args.env_root, env_config=args.env_config)
-
-    # 如果指定了 --rl-group-size，覆盖所有环境的 env_num
-    if args.rl_group_size > 0:
-        for cfg in yaml_config_list:
-            cfg["env_num"] = args.rl_group_size
-        log.info("Override env_num=%d for all %d environments", args.rl_group_size, len(yaml_config_list))
-
-    # 如果 --rl-epoch > 1，复制配置 N 次，每次用不同 task_idx 产生不同 group_id
-    if args.rl_epoch > 1:
-        base_configs = list(yaml_config_list)
-        num_tasks = len(base_configs)
-        for epoch_idx in range(1, args.rl_epoch):
-            for cfg in base_configs:
-                epoch_cfg = dict(cfg)
-                epoch_cfg["task_idx"] = cfg.get("task_idx", 1) + epoch_idx * num_tasks
-                yaml_config_list.append(epoch_cfg)
-        log.info("rl_epoch=%d: expanded %d configs to %d configs", args.rl_epoch, num_tasks, len(yaml_config_list))
-
-    conn = await sync_configs_to_db(data_manager, yaml_config_list, args.storage_type)
-
+    data_manager: Optional[DataManager] = None
+    conn = None
     local_proc: Optional[subprocess.Popen] = None
     pool: Optional[ActorPool] = None
+    interactor: Optional[Interactor] = None
 
     try:
+        # Rebuild the DB file if requested (SQLite only)
+        if args.rebuild_table and args.storage_type == "sqlite":
+            _rebuild_sqlite_db(args.db_path)
+
+        data_manager = DataManager(
+            job_id=job_id,
+            storage_type=args.storage_type,
+            db_url=args.db_path,
+            enable_buffer=args.enable_buffer,
+            buffer_size=args.buffer_size,
+            flush_interval=args.flush_interval,
+        )
+        yaml_config_list = all_env_yaml_load(env_root=args.env_root, env_config=args.env_config)
+
+        # 如果指定了 --rl-group-size，覆盖所有环境的 env_num
+        if args.rl_group_size > 0:
+            for cfg in yaml_config_list:
+                cfg["env_num"] = args.rl_group_size
+            log.info("Override env_num=%d for all %d environments", args.rl_group_size, len(yaml_config_list))
+
+        # 如果 --rl-epoch > 1，复制配置 N 次，每次用不同 task_idx 产生不同 group_id
+        if args.rl_epoch > 1:
+            base_configs = list(yaml_config_list)
+            num_tasks = len(base_configs)
+            for epoch_idx in range(1, args.rl_epoch):
+                for cfg in base_configs:
+                    epoch_cfg = dict(cfg)
+                    epoch_cfg["task_idx"] = cfg.get("task_idx", 1) + epoch_idx * num_tasks
+                    yaml_config_list.append(epoch_cfg)
+            log.info("rl_epoch=%d: expanded %d configs to %d configs", args.rl_epoch, num_tasks, len(yaml_config_list))
+
+        conn = await sync_configs_to_db(
+            data_manager,
+            yaml_config_list,
+            args.storage_type,
+            args.warmup_count,
+            args.save_batch_size,
+        )
+
         # 3) load YAML config
         cfg = _load_yaml(args.manager_config)
         log.info("loaded config: %s", args.manager_config)
@@ -478,10 +492,11 @@ async def main():
         original_pool_size = int(cfg.get("pool_size", 1) or 1)
         if int(args.pool_size) > 0:
             original_pool_size = int(args.pool_size)
-        buffer_multiplier = float(args.multiplier) if args.multiplier >0.0 else 1.2
+        buffer_multiplier = float(args.multiplier) if args.multiplier > 0.0 else 1.2
         total_pool_size = math.ceil(original_pool_size * buffer_multiplier)
         cfg["pool_size"] = total_pool_size
         log.info("override pool_size=%d (original=%d, multiplier=%.2f)", total_pool_size, original_pool_size, buffer_multiplier)
+
         # Mode override
         if args.mode in ("local", "remote"):
             cfg["mode"] = args.mode
@@ -510,8 +525,27 @@ async def main():
                 log.info("local upstream auto-start disabled; assuming already running at %s", args.local_upstream_url)
 
         # 4) start manager + adapter pool
-        mgr = EnvPoolManager(cfg, conn)
+        mgr = EnvPoolManager(cfg, conn, job_id=job_id)
         pool = ManagerActorPool(mgr, pool_size=total_pool_size)
+
+        # 5) build EpisodeHandler from config
+        _exp_cfg = _load_yaml(args.exp_config)
+        from core.exp.handler import build_episode_handler
+        episode_handler = build_episode_handler(
+            exp_dir=str(_exp_cfg.get("dir", "./experiences")),
+            enabled=bool(_exp_cfg.get("enabled", False)),
+            top_k=int(_exp_cfg.get("top_k", 3)),
+            mode=str(_exp_cfg.get("mode", "template")),
+            embedding_model=_exp_cfg.get("embedding_model"),
+        )
+        log.info(
+            "experience injection: config=%s enabled=%s dir=%s top_k=%d mode=%s",
+            args.exp_config,
+            bool(_exp_cfg.get("enabled", False)),
+            _exp_cfg.get("dir", "./experiences"),
+            int(_exp_cfg.get("top_k", 3)),
+            str(_exp_cfg.get("mode", "template")),
+        )
 
         # 根据参数选择 BaseURLProvider
         if args.rl_use_session_suffix_url:
@@ -534,11 +568,11 @@ async def main():
             max_workers=original_pool_size,
             http_retries=int(args.http_retries),
             verbose=True,
+            episode_handler=episode_handler,
         )
 
         log.info("starting interactor.run() ...")
         results = await interactor.run_all_environments()
-        await interactor.aclose()
 
         # Summary (also printed to console via INFO)
         log.info("RUN SUMMARY: episodes=%d", len(results))
@@ -548,6 +582,13 @@ async def main():
         log.info("done. main_log=%s upstream_log=%s", main_log_path, upstream_log_path)
 
     finally:
+        if interactor is not None:
+            try:
+                log.info("Closing interactor...")
+                await interactor.aclose()
+            except Exception:
+                log.exception("interactor.aclose failed (ignored)")
+
         if pool is not None:
             try:
                 log.info("Closing actor pool...")
@@ -557,7 +598,7 @@ async def main():
 
         if local_proc is not None:
             await stop_process(local_proc)
-            
+
         await asyncio.sleep(0.5)
 
         try:
@@ -565,19 +606,18 @@ async def main():
         except Exception:
             log.exception("wait_for_pending_inserts failed (ignored)")
 
-        try:
-            log.info("Closing data manager...")
-            await data_manager.close()
-        except Exception:
-            log.exception("db manager failed close")
-        
-        try:
-            conn.close()
-        except Exception:
-            log.exception("conn close failed (ignored)")
+        if data_manager is not None:
+            try:
+                log.info("Closing data manager...")
+                await data_manager.close()
+            except Exception:
+                log.exception("db manager failed close")
 
-        if local_proc is not None:
-            await stop_process(local_proc)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                log.exception("conn close failed (ignored)")
 
 
 if __name__ == "__main__":

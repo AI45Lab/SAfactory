@@ -19,7 +19,7 @@ Safactory's configuration is layered: **CLI arguments take precedence over `mana
 | `--llm-api-key` | `EMPTY` | API key (set to `EMPTY` when not required) |
 | `--max-steps` | `1000` | Maximum agent steps per episode |
 | `--db-path` | `sqlite://test_envs.db` | SQLite database path |
-| `--log-dir` | `logs` | Directory for run log files |
+| `--log-dir` | `logs` | Directory that stores run-specific log directories |
 
 ### Full CLI reference
 
@@ -28,6 +28,11 @@ Safactory's configuration is layered: **CLI arguments take precedence over `mana
 | Job | `--job-id` | auto-generated | Unique ID recorded in the DB for this run |
 | Config | `--manager-config` | `./manager/config.yaml` | Manager config YAML path |
 | DB | `--storage-type` | `sqlite` | Storage backend |
+| | `--warmup-count` | `100` | The number of environment configs to pre-store in the manager |
+| | `--save-batch-size` | `100` | Size of environment configs to store in the manager |
+| | `--disable-buffer` | — | Disable buffered record storage (buffer is enabled by default) |
+| | `--buffer-size` | `100` | Size of the buffer for storing records |
+| | `--flush-interval` | `5.0` | Interval (in seconds) for flushing buffered records |
 | | `--rebuild-table` | `false` | Drop and recreate DB tables before run |
 | Pool | `--multiplier` | `1.2` | Pre-warm `ceil(multiplier × pool_size)` actors |
 | Local | `--local-upstream-port` | `36663` | Port for the local env HTTP service |
@@ -39,9 +44,14 @@ Safactory's configuration is layered: **CLI arguments take precedence over `mana
 | RL | `--rl-group-size` | `0` | Override `env_num` for all environments |
 | | `--rl-epoch` | `1` | Repeat configs N times with distinct group IDs |
 | | `--rl-use-session-suffix-url` | `false` | Use session-routed LLM proxy (for RL) |
-| Logging | `--run-name` | `""` | Prefix for the log filename |
+| Logging | `--run-name` | `""` | Prefix for the run log directory name |
 | | `--console-log-level` | `INFO` | Console verbosity |
 | | `--file-log-level` | `DEBUG` | File log verbosity |
+
+Notes:
+
+- Buffered record storage is **enabled by default**.
+- Pass `--disable-buffer` to turn it off. It is a simple presence-based switch (no value needed).
 
 ---
 

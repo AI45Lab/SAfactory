@@ -567,6 +567,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
                             drop_group = True
                             break
 
+
                     if drop_group:
                         continue
                     sample_results.append(group_results)

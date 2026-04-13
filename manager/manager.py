@@ -17,25 +17,32 @@ log = logging.getLogger("manager")
 
 def _detect_mode(cfg: Dict[str, Any]) -> str:
     """
-    Priority:
-      1) root `mode` if set (new config)
-      2) cluster.mode if set (backward compatible)
-      3) if rayjob required keys exist -> remote
-      4) otherwise -> local
-    """
+    Read root `mode` and normalize to `local` or `remote`.
 
+    Recognized aliases:
+      local:  `local`, `localhost`
+      remote: `remote`, `rayjob`, `cluster`
+
+    Returns `remote` if mode is unset or unrecognized
+    (backward-compatible default).
+    """
     top_mode = str(cfg.get("mode", "")).strip().lower()
     if top_mode in ("local", "localhost"):
         return "local"
     if top_mode in ("remote", "rayjob", "cluster"):
         return "remote"
-    return "remote"  # if no mode set, start up with remote mode
+    if not top_mode:
+        log.warning("'mode' not set in config, defaulting to 'remote'")
+    else:
+        log.warning("unrecognized mode=%r, defaulting to 'remote'", top_mode)
+    return "remote"
 
 
 class EnvPoolManager:
-    def __init__(self, cfg: dict, conn: Optional[sqlite3.Connection]) -> None:
+    def __init__(self, cfg: dict, conn: Optional[sqlite3.Connection], *, job_id: str = "") -> None:
         self.cfg = cfg or {}
-        self._repo = EnvDataRepository(conn)
+        self._job_id = str(job_id or "").strip()
+        self._repo = EnvDataRepository(conn, job_id=self._job_id)
 
         self._pool_size: int = int(self.cfg.get("pool_size", 0) or 0)
 
@@ -85,21 +92,23 @@ class EnvPoolManager:
             env_limits=self._env_limits,
         )
 
-        self._registry: ClusterRegistry = ClusterRegistry(clusters_by_image={}, env_bindings={})
+        self._registry: ClusterRegistry = ClusterRegistry(clusters_by_id={}, env_bindings={})
         self._state_lock = asyncio.Lock()
         self._initialized: bool = False
+        self._closed: bool = False
 
     async def start(self) -> None:
         async with self._state_lock:
             if self._initialized:
                 return
+            self._closed = False
 
             await self._http.start()
 
             tmp_plan = build_binding_plan(self._repo, base_image=self._base_image)
             if not tmp_plan.env_to_image:
                 log.warning("No env/image mapping found in DB; nothing to start.")
-                self._registry = ClusterRegistry(clusters_by_image={}, env_bindings={})
+                self._registry = ClusterRegistry(clusters_by_id={}, env_bindings={})
                 self._initialized = True
                 return
 
@@ -136,18 +145,23 @@ class EnvPoolManager:
 
             self._initialized = True
             log.info(
-                "started in mode='%s', pool_size=%d, startup_concurrency=%d, http_concurrency=%d",
+                "started in mode='%s', pool_size=%d, startup_concurrency=%d, http_concurrency=%d, job_id=%s",
                 self._mode,
                 self._pool_size,
                 self._startup_concurrency,
                 self._http_concurrency,
+                self._job_id or "<all>",
             )
 
     async def close_all(self) -> None:
         async with self._state_lock:
+            if self._closed:
+                log.info("EnvPoolManager.close_all(): already closed")
+                return
             self._initialized = False
+            self._closed = True
             await self._pool.reset()
-            self._registry = ClusterRegistry(clusters_by_image={}, env_bindings={})
+            self._registry = ClusterRegistry(clusters_by_id={}, env_bindings={})
 
         try:
             await self._http.close()

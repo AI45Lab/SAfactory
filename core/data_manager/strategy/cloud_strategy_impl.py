@@ -6,15 +6,17 @@ import time
 import uuid
 import re
 import base64
-from typing import List, Dict, Optional, Any
-from datetime import datetime, date
+import tempfile
+import numpy as np
+from typing import List, Dict, Optional, Any, Set
+from datetime import date
 
 from core.data_manager.strategy.base_strategy import StorageStrategy, SessionContext
 
 # Cloud SDK imports
 from wt_sdk import WTGatewayClient, GatewayConfig, EnvConfigManager
 from wt_sdk.models import LandingRecord, ChatMessage, ContentItem
-from wt_sdk.utils import generate_deterministic_id, S3Uploader
+from wt_sdk.utils import generate_deterministic_id, S3Uploader, S3Downloader
 
 log = logging.getLogger("cloud_strategy")
 
@@ -50,6 +52,21 @@ class CloudStrategy(StorageStrategy):
         self.client: Optional[WTGatewayClient] = None
         self.env_manager: Optional[EnvConfigManager] = None
         self.s3_uploader: Optional[S3Uploader] = None
+
+        self._enable_buffer = enable_buffer
+        self._buffer_size = buffer_size
+        self._flush_interval = flush_interval
+        self._record_buffer: List[LandingRecord] = []
+        self._buffer_lock = asyncio.Lock()
+        self._flush_lock = asyncio.Lock()
+        self._flush_task: Optional[asyncio.Task] = None
+        self._running = False
+        self._background_tasks: Set[asyncio.Task] = set()
+        self._stats = {
+            "total_create_buffered": 0,
+            "total_create_flushed": 0,
+            "flush_count": 0,
+        }
 
         # In-memory caches
         self._env_configs: Dict[str, Dict] = {}
@@ -90,6 +107,15 @@ class CloudStrategy(StorageStrategy):
             self.s3_uploader = None
 
         self.initialized = True
+
+        if self._enable_buffer and not self._running:
+            self._running = True
+            self._flush_task = asyncio.create_task(self._periodic_flush())
+            log.info(
+                "Cloud buffer started: buffer_size=%d flush_interval=%.2fs",
+                self._buffer_size,
+                self._flush_interval,
+            )
 
     async def add_environment(
         self,
@@ -166,6 +192,7 @@ class CloudStrategy(StorageStrategy):
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
+        is_trainable: bool = True
     ):
         """
         Record step to cloud LandingTable.
@@ -239,16 +266,21 @@ class CloudStrategy(StorageStrategy):
             })
         )
         
-        # Upload to cloud
-        try:
-            await asyncio.to_thread(self.client.ingest_landing, record)
-            log.debug("Step %d recorded to cloud: %s", step_id, record_id)
-        except Exception as e:
-            log.error("Failed to ingest step %d: %s", step_id, e)
-            raise
+        if self._enable_buffer:
+            await self._buffer_record(record)
+        else:
+            try:
+                await asyncio.to_thread(self.client.ingest_landing, record)
+                log.debug("Step %d recorded to cloud: %s", step_id, record_id)
+            except Exception as e:
+                log.error("Failed to ingest step %d: %s", step_id, e)
+                raise
 
     async def close(self) -> None:
         """Clean up cloud clients"""
+        if self._enable_buffer:
+            await self._stop_buffer()
+
         if self.client and hasattr(self.client, 'close'):
             self.client.close()
 
@@ -261,6 +293,11 @@ class CloudStrategy(StorageStrategy):
     def get_sync_connection(self) -> None:
         """Not applicable for cloud storage"""
         return None
+
+    @property
+    def buffer_stats(self) -> Optional[dict]:
+        """Get buffer statistics"""
+        return self._stats if self._enable_buffer else None
     
     async def _process_images(
         self,
@@ -332,6 +369,69 @@ class CloudStrategy(StorageStrategy):
             processed_messages.append(new_message)
 
         return processed_messages, uploaded_urls
+
+    async def _buffer_record(self, record: LandingRecord) -> None:
+        should_flush = False
+
+        async with self._buffer_lock:
+            self._record_buffer.append(record)
+            self._stats["total_create_buffered"] += 1
+            if len(self._record_buffer) >= self._buffer_size:
+                should_flush = True
+
+        if should_flush:
+            self._create_flush_task(self._flush_records())
+
+    def _create_flush_task(self, coro) -> None:
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _periodic_flush(self) -> None:
+        try:
+            while self._running:
+                await asyncio.sleep(self._flush_interval)
+                await self._flush_records()
+        except asyncio.CancelledError:
+            raise
+
+    async def _stop_buffer(self) -> None:
+        self._running = False
+
+        if self._flush_task:
+            self._flush_task.cancel()
+            try:
+                await self._flush_task
+            except asyncio.CancelledError:
+                pass
+            self._flush_task = None
+
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+
+        await self._flush_records()
+        log.info("Cloud buffer stopped: stats=%s", self._stats)
+
+    async def _flush_records(self) -> int:
+        async with self._flush_lock:
+            async with self._buffer_lock:
+                if not self._record_buffer:
+                    return 0
+                records = list(self._record_buffer)
+                self._record_buffer.clear()
+
+            try:
+                await asyncio.to_thread(self.client.ingest_landing_batch, records)
+            except Exception as e:
+                async with self._buffer_lock:
+                    self._record_buffer = records + self._record_buffer
+                log.error("Failed to flush %d cloud records: %s", len(records), e)
+                raise
+
+            self._stats["total_create_flushed"] += len(records)
+            self._stats["flush_count"] += 1
+            log.debug("Flushed %d cloud records", len(records))
+            return len(records)
     
     async def _upload_image_with_retry(
         self,
@@ -404,14 +504,167 @@ class CloudStrategy(StorageStrategy):
         after_id: int = 0,
         limit: int = 100
     ) -> List[Dict]:
-        """Waiting for API support"""
-        pass
+        """
+        Fetch completed steps for training data collection.
+        Uses cursor-based pagination.
+        """
+        await self.init()
         
-    async def get_max_step_id(self) -> int:
-        """Waiting for API support"""
-        pass
+        results = self.client.pull_data(
+            dataset_type="Test",
+            cursor=after_id,
+            checkout_latest=True,
+            where_sql="job_id = '{}' AND is_terminal = True".format(job_id),
+            limit=limit,
+        )
+        
+        if results is None or len(results) == 0:
+            print(f"len results {len(results)} No more data to fetch")
+            return []
+        
+        cursor = self.client.extract_cursor(results)
+        
+        rows = []
+        for _, row in results.iterrows():
+            rows.append(
+                {
+                    "step_pk": cursor,
+                    "step_id": row["step_id"],
+                    "env_name": row["env_name"],
+                    "env_id": row["session_id"],
+                    "env_state": json.loads(row["meta_json"]).get("env_state") if row["meta_json"] else None,
+                    "prompt": self.normalize_messages(row["messages"]),
+                    "response": row["response"]["content"].tolist()[0]["text"],
+                    "reward": row["reward"],
+                    "step_reward": row["step_reward"],
+                    "total_reward": row["reward"],
+                    "session_id": row["session_id"],
+                    "session_end_time": row["created_at"] if row["created_at"] else None,
+                    "group_id": json.loads(row["meta_json"]).get("group_id") if row["meta_json"] else None,
+                    "truncated": row["is_truncated"],
+                    "is_session_completed": row["is_session_completed"], 
+                }
+            )
+        return rows
+        
+    async def get_max_step_id(self, job_id: str) -> int:
+        """Get maximum primary key for pagination"""
+        await self.init()
+        
+        last_cursor = self.client.get_max_created_at(
+            where_sql="dataset_type = 'Test' AND job_id = '{}' AND is_terminal = True".format(job_id),
+        )
+        
+        return last_cursor
 
     # --- Helpers ---
+    def ndarray_to_native(self, obj: Any) -> Any:
+        """
+        Recursively remove numpy.array / numpy scalar and convert to native Python types
+        """
+        
+        if isinstance(obj, np.ndarray):
+            return [self.ndarray_to_native(x) for x in obj.tolist()]
+        if isinstance(obj, np.generic):
+            return obj.item()
+        if isinstance(obj, list):
+            return [self.ndarray_to_native(x) for x in obj]
+        if isinstance(obj, dict):
+            return {k: self.ndarray_to_native(v) for k, v in obj.items()}
+        return obj
+    
+    def extract_image_path(self, item: dict) -> str | None:
+        """
+        Extract image path:
+        1. Priority: item["image_url"]["url"]
+        2. Otherwise, try s3:// or http(s):// within item["text"]
+        """
+        
+        image_url = item.get("image_url")
+        if isinstance(image_url, dict):
+            url = image_url.get("url")
+            if url:
+                return url
+
+        text = item.get("text")
+        if isinstance(text, str) and text.startswith(("s3://", "http://", "https://")):
+            return text
+
+        return None
+    
+    def download_image_as_base64(self, image_path: str) -> tuple[str, str | None]:
+        """
+        Use S3Downloader to download the image and convert it to base64
+
+        Returns:
+            (base64_string, media_type)
+        """
+        downloader = S3Downloader()
+
+        suffix = os.path.splitext(image_path)[1]
+        if not suffix:
+            suffix = ".bin"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_path = os.path.join(tmpdir, f"image{suffix}")
+            downloader.download_file(image_path, local_path)
+
+            with open(local_path, "rb") as f:
+                image_bytes = f.read()
+
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+        media_type = suffix[1:]
+        return image_base64, media_type
+    
+    def remove_none_and_empty(self, obj: Any) -> Any:
+        if isinstance(obj, dict):
+            cleaned = {}
+            for k, v in obj.items():
+                v = self.remove_none_and_empty(v)
+                if v is not None and v != [] and v != {}:
+                    cleaned[k] = v
+            return cleaned
+
+        if isinstance(obj, list):
+            return [self.remove_none_and_empty(x) for x in obj]
+
+        return obj
+    
+    def normalize_messages(self, messages: Any) -> list:
+        messages = self.ndarray_to_native(messages)
+
+        if isinstance(messages, dict):
+            messages = [messages]
+        elif not isinstance(messages, list):
+            raise TypeError(f"Unsupported messages type: {type(messages)}")
+
+        for msg in messages:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+
+                if item.get("type") == "image_url":
+                    image_path = self.extract_image_path(item)
+                    if image_path:
+                        try:
+                            image_base64, media_type = self.download_image_as_base64(image_path)
+                            item.clear()
+                            item["type"] = "image_url"
+                            item["image_url"] = {
+                                "url": f"data:image/{media_type};base64,{image_base64}"
+                            }
+                        except Exception as e:
+                            item.clear()
+                            item["type"] = "image_error"
+                            item["error"] = str(e)
+                            item["source"] = image_path
+
+        messages = self.remove_none_and_empty(messages)
+        return messages
 
     def _convert_to_chat_messages(self, messages: List[Dict]) -> List[ChatMessage]:
         """Convert OpenAI format messages to SDK ChatMessage format"""

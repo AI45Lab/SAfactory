@@ -2,6 +2,7 @@
 # AIEvobox (rollout) Settings
 # -------------------------------------------
 export AIEVOBOX_ROOT=/root/AIEvoBox
+export STORAGE_TYPE=sqlite
 export AIEVOBOX_DB_URL=sqlite:///${AIEVOBOX_ROOT}/rl/vl.db
 export AIEVOBOX_MAX_STEPS=10
 export AIEVOBOX_MESSAGE_CUT=0
@@ -10,6 +11,7 @@ export AIEVOBOX_ENV_CONFIG=/root/AIEvoBox/env/geo3k_vl_test/geo3k_vl_test_env_co
 # ENV_ROOT 指定读取目录下所有子目录的环境
 # export AIEVOBOX_ENV_ROOT=/root/AIEvoBox/env
 export AIEVOBOX_POOL_SIZE=256
+export STORAGE_TYPE=sqlite
 
 
 

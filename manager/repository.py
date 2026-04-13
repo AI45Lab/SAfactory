@@ -16,8 +16,9 @@ class EnvDataRepository:
         should guard calls with an asyncio.Lock (done in ActorPool).
     """
 
-    def __init__(self, conn: Optional[sqlite3.Connection]) -> None:
+    def __init__(self, conn: Optional[sqlite3.Connection], *, job_id: str = "") -> None:
         self._conn = conn
+        self._job_id = str(job_id or "").strip() or None
         self._offset: int = 0
 
     @property
@@ -28,26 +29,26 @@ class EnvDataRepository:
         self._offset = 0
 
     def get_env_image_map(self) -> Dict[str, str]:
-        m = get_env_image_map(self._conn) or {}
+        m = get_env_image_map(self._conn, job_id=self._job_id) or {}
         out: Dict[str, str] = {}
         for k, v in m.items():
             out[str(k)] = "" if v is None else str(v)
         return out
 
     def get_image_to_env_map(self) -> Dict[str, str]:
-        m = get_all_image(self._conn) or {}
+        m = get_all_image(self._conn, job_id=self._job_id) or {}
         out: Dict[str, str] = {}
         for k, v in m.items():
             out[str(k)] = str(v)
         return out
 
     def fetch_active_rows(self, limit: int) -> List[Dict[str, Any]]:
-        rows = get_active_data(self._conn, int(limit), int(self._offset)) or []
+        rows = get_active_data(self._conn, int(limit), int(self._offset), job_id=self._job_id) or []
         self._offset += len(rows)
         return rows
 
     def fetch_one_active_row(self) -> Optional[Dict[str, Any]]:
-        rows = get_active_data(self._conn, 1, int(self._offset)) or []
+        rows = get_active_data(self._conn, 1, int(self._offset), job_id=self._job_id) or []
         if not rows:
             return None
         self._offset += 1

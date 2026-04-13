@@ -1,0 +1,5 @@
+enabled: true
+dir: /mnt/shared-storage-gpfs2/evobox-share-gpfs2/liubangwei/codes/AIEvoBox/experiences
+top_k: 1
+mode: contextual_ucb
+embedding_model: null

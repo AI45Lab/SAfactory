@@ -247,7 +247,7 @@ class RemoteRayJobBackend(ClusterBackend):
 
     async def start(self, plan: BindingPlan) -> ClusterRegistry:
         if not plan.env_to_image:
-            return ClusterRegistry(clusters_by_image={}, env_bindings={})
+            return ClusterRegistry(clusters_by_id={}, env_bindings={})
 
         # required counts per env (computed by manager using batch_size/limit)
         required_counts = dict(getattr(plan, "env_job_counts", None) or {})
@@ -373,7 +373,7 @@ class RemoteRayJobBackend(ClusterBackend):
                 head_ip=info.head_ip,
             )
 
-        return ClusterRegistry(clusters_by_image=kept_clusters, env_bindings=env_bindings)
+        return ClusterRegistry(clusters_by_id=kept_clusters, env_bindings=env_bindings)
 
     async def close(self) -> None:
         # Snapshot all cluster ids (including extras that might have failed deletion earlier)
