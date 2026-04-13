@@ -88,6 +88,12 @@ class Interactor:
             max_keepalive_connections=max(32, pool.pool_size * 4),
             trust_env=True,
         )
+        self.llm_http = HttpClient(
+            timeout_s=300.0,
+            max_connections=max(128, pool.pool_size * 4),
+            max_keepalive_connections=max(64, pool.pool_size * 2),
+            trust_env=True,
+        )
 
         log.info(
             "Interactor initialized: model=%s temp=%.3f max_steps=%d message_cut=%d http_timeout=%.1fs retries=%d",
@@ -102,6 +108,7 @@ class Interactor:
             base_url=base_url,
             model=self.model,
             temperature=self.temperature,
+            http_client=self.llm_http,
         )
 
     def _trim_messages(self, prompt: Any) -> List[Dict[str, Any]]:
@@ -150,7 +157,7 @@ class Interactor:
             t0 = time.perf_counter()
             try:
                 # Pass parameters directly via kwargs
-                async with await self.http.request(method, url, json=json_body) as r:
+                async with self.http.request(method, url, json=json_body) as r:
                     dt = time.perf_counter() - t0
 
                     status = r.status
@@ -328,6 +335,7 @@ class Interactor:
         Run workers until pool is exhausted.
         """
         await self.http.start()
+        await self.llm_http.start()
         await self.pool.start()
 
         results: Dict[str, float] = {}
@@ -401,3 +409,7 @@ class Interactor:
             await self.http.close()
         except Exception:
             log.exception("failed to close http client (ignored)")
+        try:
+            await self.llm_http.close()
+        except Exception:
+            log.exception("failed to close llm http client (ignored)")

@@ -5,6 +5,8 @@ import logging
 import aiohttp
 import threading
 
+from core.http.http_client import HttpClient
+
 logger = logging.getLogger(__name__)
 
 # 从环境变量读取重试配置，支持模型权重更新期间的长时间等待
@@ -30,6 +32,7 @@ class LLM:
         max_retries: int = DEFAULT_MAX_RETRIES,
         retry_backoff: float = DEFAULT_RETRY_BACKOFF,
         max_retry_delay: float = DEFAULT_MAX_RETRY_DELAY,
+        http_client: Optional[HttpClient] = None,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
@@ -39,6 +42,54 @@ class LLM:
         self.max_retries = int(max_retries)  # -1 表示无限重试
         self.retry_backoff = float(retry_backoff)
         self.max_retry_delay = float(max_retry_delay)
+        self._http_client = http_client
+
+    @staticmethod
+    def _parse_response_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+        choice = data["choices"][0]
+        content = choice["message"]["content"]
+        finish_reason = choice.get("finish_reason", "stop")
+        # 从 metadata 中获取 weight_version（SGLang 等引擎会返回）
+        metadata = data.get("metadata") or {}
+        weight_version = metadata.get("weight_version")
+        return {
+            "content": content,
+            "finish_reason": finish_reason,
+            "weight_version": weight_version,
+        }
+
+    def _retry_delay(self, attempt: int, *, rate_limited: bool = False) -> float:
+        exponent = attempt if rate_limited else max(attempt - 1, 0)
+        return min(self.retry_backoff * (2 ** exponent), self.max_retry_delay)
+
+    def _retry_info(self, attempt: int) -> str:
+        return "∞" if self.max_retries == -1 else f"{attempt}/{self.max_retries}"
+
+    async def _post_with_shared_client(self, url: str, payload: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+        request_kwargs: Dict[str, Any] = {
+            "json": payload,
+            "headers": headers,
+        }
+        if self.llm_proxy:
+            request_kwargs["proxy"] = self.llm_proxy
+
+        async with self._http_client.request("POST", url, **request_kwargs) as resp:
+            logger.info("[LLM] POST %s got response status=%s", url, resp.status)
+            resp.raise_for_status()
+            return await resp.json()
+
+    async def _post_with_standalone_client(
+        self,
+        url: str,
+        payload: Dict[str, Any],
+        headers: Dict[str, str],
+    ) -> Dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=300)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with session.post(url, json=payload, headers=headers, proxy=self.llm_proxy) as resp:
+                logger.info("[LLM] POST %s got response status=%s", url, resp.status)
+                resp.raise_for_status()
+                return await resp.json()
 
     async def generate(self, messages: List[dict]) -> Dict[str, Any]:
         """
@@ -68,43 +119,68 @@ class LLM:
         last_error = None
         # max_retries == -1 表示无限重试
         while self.max_retries == -1 or attempt <= self.max_retries:
-            # 每次重试创建新的 session，避免连接状态问题
-            timeout = aiohttp.ClientTimeout(total=300)
             try:
-                async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-                    logger.info(f"[LLM] POST {url} (thread={threading.current_thread().name}, attempt={attempt})")
-                    async with session.post(url, json=payload, headers=headers, proxy=self.llm_proxy) as resp:
-                        logger.info(f"[LLM] POST {url} got response status={resp.status}")
-                        resp.raise_for_status()
-                        data = await resp.json()
-                    logger.info(f"[LLM] POST {url} returned")
+                logger.info("[LLM] POST %s (thread=%s, attempt=%d)", url, threading.current_thread().name, attempt)
+                if self._http_client is not None:
+                    data = await self._post_with_shared_client(url, payload, headers)
+                else:
+                    data = await self._post_with_standalone_client(url, payload, headers)
+                logger.info("[LLM] POST %s returned", url)
+                return self._parse_response_payload(data)
+            except aiohttp.ClientResponseError as e:
+                last_error = e
+                attempt += 1
+                if self.max_retries != -1 and attempt > self.max_retries:
+                    break
 
-                    choice = data["choices"][0]
-                    content = choice["message"]["content"]
-                    finish_reason = choice.get("finish_reason", "stop")
-                    # 从 metadata 中获取 weight_version（SGLang 等引擎会返回）
-                    metadata = data.get("metadata") or {}
-                    weight_version = metadata.get("weight_version")
-                    return {
-                        "content": content,
-                        "finish_reason": finish_reason,
-                        "weight_version": weight_version,
-                    }
+                if e.status == 429:
+                    delay = self._retry_delay(attempt, rate_limited=True)
+                    logger.warning("[LLM] rate limited (429), retry in %.1fs (attempt=%s)", delay, self._retry_info(attempt))
+                    await asyncio.sleep(delay)
+                    continue
+
+                if 500 <= e.status <= 599:
+                    delay = self._retry_delay(attempt)
+                    logger.warning(
+                        "[LLM] upstream %s, retry in %.1fs (attempt=%s)",
+                        e.status,
+                        delay,
+                        self._retry_info(attempt),
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                raise
+            except (aiohttp.ServerDisconnectedError, aiohttp.ClientOSError, aiohttp.ClientConnectionError) as e:
+                last_error = e
+                attempt += 1
+                if self.max_retries != -1 and attempt > self.max_retries:
+                    break
+                delay = self._retry_delay(attempt)
+                logger.warning(
+                    "[LLM] transport error, retry in %.1fs (attempt=%s): %s",
+                    delay,
+                    self._retry_info(attempt),
+                    e,
+                )
+                await asyncio.sleep(delay)
+            except asyncio.TimeoutError as e:
+                last_error = e
+                attempt += 1
+                if self.max_retries != -1 and attempt > self.max_retries:
+                    break
+                delay = self._retry_delay(attempt)
+                logger.warning("[LLM] timeout, retry in %.1fs (attempt=%s)", delay, self._retry_info(attempt))
+                await asyncio.sleep(delay)
             except Exception as e:
                 last_error = e
                 attempt += 1
-                # 无限重试模式下不检查 max_retries
                 if self.max_retries != -1 and attempt > self.max_retries:
                     break
-                # 指数退避，但不超过 max_retry_delay
-                delay = min(self.retry_backoff * (2 ** (attempt - 1)), self.max_retry_delay)
-                # 检测可能是模型更新的错误（503、连接拒绝等）
-                error_str = str(e).lower()
-                retry_info = "∞" if self.max_retries == -1 else f"{attempt}/{self.max_retries}"
-                if any(hint in error_str for hint in ["503", "service unavailable", "connection refused", "temporarily unavailable"]):
-                    print(f"[LLM] Model may be updating, waiting {delay:.1f}s before retry (attempt={retry_info}): {e}")
-                else:
-                    print(f"[LLM] generate failed (attempt={retry_info}), retry in {delay:.1f}s: {e}")
+                delay = self._retry_delay(attempt)
+                logger.warning("[LLM] unexpected error, retry in %.1fs (attempt=%s): %s", delay, self._retry_info(attempt), e)
                 await asyncio.sleep(delay)
 
-        raise RuntimeError(f"[LLM] All {self.max_retries} retries exhausted. Last error: {last_error}")
+        raise RuntimeError(
+            f"[LLM] All retries exhausted (limit={self._retry_info(attempt)}). Last error: {last_error}"
+        )
