@@ -2,7 +2,7 @@
 # AIEvobox (rollout) Settings
 # -------------------------------------------
 export AIEVOBOX_ROOT=/root/AIEvoBox
-export AIEVOBOX_DB_URL=sqlite:///${AIEVOBOX_ROOT}/rl/deepeyes.db
+export AIEVOBOX_DB_URL=sqlite:///${AIEVOBOX_ROOT}/rl/examples/deepeyes/deepeyes.db
 export AIEVOBOX_MAX_STEPS=5
 export AIEVOBOX_MESSAGE_CUT=0
 # ENV_CONFIG 指定单个 yaml 文件
