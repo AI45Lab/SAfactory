@@ -230,6 +230,8 @@ class SqliteStrategy(StorageStrategy):
             file_path = url_suffix
 
         conn = sqlite3.connect(file_path, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.row_factory = sqlite3.Row
         return conn
 

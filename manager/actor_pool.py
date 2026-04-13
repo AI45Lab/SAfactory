@@ -56,7 +56,8 @@ class ActorPool:
         self._actor_routes: Dict[ActorKey, ActorRoute] = {}
         self._job_load: Dict[Tuple[str, str], int] = {}
 
-
+    def _repo_fetch_batch_size(self, requested: int = 1) -> int:
+        return max(1, self._pool_size, int(requested))
 
     async def reset(self) -> None:
         async with self._lock:
@@ -83,10 +84,11 @@ class ActorPool:
             log.info("pool_size <= 0, skip prewarm")
             return
 
-        # Reserve rows under lock, but do not do network under lock.
         if rows is None:
-            async with self._lock:
-                rows = self._repo.fetch_active_rows(self._pool_size)
+            rows = await self._repo.reserve_rows(
+                self._pool_size,
+                fetch_batch_size=self._repo_fetch_batch_size(self._pool_size),
+            )
 
         if not rows:
             log.info("no active rows, skip prewarm")
@@ -112,13 +114,15 @@ class ActorPool:
         while True:
             async with self._lock:
                 deficit = max(0, self._pool_size - len(self._pool))
-                if deficit <= 0:
-                    return
-                # Fetch just enough rows to fill deficit
-                rows = self._repo.fetch_active_rows(deficit)
+            if deficit <= 0:
+                return
 
+            rows = await self._repo.reserve_rows(
+                deficit,
+                fetch_batch_size=self._repo_fetch_batch_size(deficit),
+            )
             if not rows:
-                log.info("[manager] ensure_capacity: no more DB rows to fill pool")
+                log.info("[manager] ensure_capacity: no DB rows currently available to fill pool")
                 return
 
             tasks = [asyncio.create_task(self._robust_fill_slot(registry, self._fill_sem, initial_row=row)) for row in rows]
@@ -149,8 +153,7 @@ class ActorPool:
                     else:
                         self._job_load[lk] = cur - 1
 
-            # Fetch one new row specifically for this refill
-            next_row = self._repo.fetch_one_active_row()
+        next_row = await self._repo.reserve_one(fetch_batch_size=self._repo_fetch_batch_size())
 
         # 2. Issue HTTP Delete (Close)
         host = ""
@@ -188,7 +191,7 @@ class ActorPool:
         # 3. Refill the slot
         # If we got a row, start the robust loop. If no row, we just exit (pool shrinks).
         if not next_row:
-            log.info("close_and_refill: no more DB rows to refill pool")
+            log.info("close_and_refill: no DB row currently available to refill pool")
             return
 
         # No semaphore needed for single replacement, or create a dummy one
@@ -212,11 +215,11 @@ class ActorPool:
         while True:
             # 1. Ensure we have a row
             if current_row is None:
-                async with self._lock:
-                    current_row = self._repo.fetch_one_active_row()
-
+                current_row = await self._repo.reserve_one(
+                    fetch_batch_size=self._repo_fetch_batch_size(),
+                )
                 if current_row is None:
-                    log.info("robust_fill_slot: DB exhausted, stopping slot fill.")
+                    log.info("robust_fill_slot: no DB row currently available, stopping slot fill.")
                     return
 
             # 2. Try to create actor for this row
