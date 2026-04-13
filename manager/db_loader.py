@@ -169,6 +169,14 @@ def _build_image_to_env_map(rows: List[Dict[str, Any]]) -> Dict[str, str]:
     return image_to_env
 
 
+def _coerce_row_id(row: Dict[str, Any]) -> Optional[int]:
+    value = row.get("id")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def get_active_data(
     conn: Optional[sqlite3.Connection],
     limit: int,
@@ -198,6 +206,48 @@ def get_active_data(
     if rows is not None:
         return rows
     return []
+
+
+def get_active_data_after_id(
+    conn: Optional[sqlite3.Connection],
+    limit: int,
+    after_id: int,
+    job_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Return active rows whose primary key is greater than ``after_id``."""
+    if isinstance(conn, sqlite3.Connection):
+        filters = ["is_deleted = 0", "id > ?"]
+        params: List[Any] = [after_id]
+        if job_id:
+            filters.append("job_id = ?")
+            params.append(job_id)
+        query = """
+        SELECT
+            id, job_id, env_id, env_name, env_params, image, group_id
+        FROM job_environments
+        WHERE {where_clause}
+        ORDER BY id ASC
+        LIMIT ?;
+        """
+        cursor = conn.execute(query.format(where_clause=" AND ".join(filters)), tuple(params + [limit]))
+        cols = [d[0] for d in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+    rows = _load_remote_rows(conn, job_id=job_id)
+    if rows is None:
+        return []
+
+    filtered_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        row_id = _coerce_row_id(row)
+        if row_id is None or row_id <= after_id:
+            continue
+        normalized_row = dict(row)
+        normalized_row["id"] = row_id
+        filtered_rows.append(normalized_row)
+
+    filtered_rows.sort(key=lambda row: int(row["id"]))
+    return filtered_rows[:limit]
 
 
 def get_env_image_map(conn: Optional[sqlite3.Connection], job_id: Optional[str] = None) -> Dict[str, Any]:

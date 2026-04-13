@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .actor_pool import ActorPool
 from .binding_plan import build_binding_plan
@@ -39,10 +39,21 @@ def _detect_mode(cfg: Dict[str, Any]) -> str:
 
 
 class EnvPoolManager:
-    def __init__(self, cfg: dict, conn: Optional[sqlite3.Connection], *, job_id: str = "") -> None:
+    def __init__(
+        self,
+        cfg: dict,
+        conn: Optional[sqlite3.Connection],
+        *,
+        job_id: str = "",
+        db_processing_done_checker: Optional[Callable[[], bool]] = None,
+    ) -> None:
         self.cfg = cfg or {}
         self._job_id = str(job_id or "").strip()
-        self._repo = EnvDataRepository(conn, job_id=self._job_id)
+        self._repo = EnvDataRepository(
+            conn,
+            job_id=self._job_id,
+            db_processing_done_checker=db_processing_done_checker,
+        )
 
         self._pool_size: int = int(self.cfg.get("pool_size", 0) or 0)
 
@@ -112,11 +123,12 @@ class EnvPoolManager:
                 self._initialized = True
                 return
 
-            # peek first `pool_size` rows as initial batch
+            # Prime the initial warm-pool batch up front so prewarm does not have
+            # to assemble its first usable rows through repeated DB probes.
             prewarm_rows: Optional[List[dict]] = None
             batch_counts: Dict[str, int] = {}
             if self._pool_size > 0:
-                prewarm_rows = self._repo.fetch_active_rows(self._pool_size)
+                prewarm_rows = await self._repo.prime(self._pool_size)
                 for row in prewarm_rows:
                     env_name = str(row.get("env_name", "")).strip()
                     if not env_name:

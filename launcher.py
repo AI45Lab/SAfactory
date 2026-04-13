@@ -15,7 +15,12 @@ from typing import Any, Dict, Optional, Set, Tuple, List
 from utils import ActorPoolRuntimeState, discover_ready_actor_from_snapshot
 from core.llm import StaticBaseURLProvider, SessionSuffixBaseURLProvider
 from core.data_manager.manager import DataManager
-from core.data_manager.yaml_aggregator import all_env_yaml_load, sync_configs_to_db, wait_for_pending_inserts
+from core.data_manager.yaml_aggregator import (
+    all_env_yaml_load,
+    is_job_db_processing_done,
+    sync_configs_to_db,
+    wait_for_pending_inserts,
+)
 
 from interactor import Interactor, ActorHandle, ActorPool
 from manager import EnvPoolManager
@@ -124,6 +129,19 @@ def _load_yaml(path: str) -> Dict[str, Any]:
     if not isinstance(cfg, dict):
         raise ValueError(f"Invalid yaml root (expected dict): {path}")
     return cfg
+
+
+def _derive_pool_sizing(configured_pool_size: int, pool_size_override: int, multiplier: float) -> Tuple[int, int, int, int]:
+    """Return base pool size, warm pool size, startup submit count, and follow-up batch size."""
+    base_pool_size = int(configured_pool_size or 1)
+    if int(pool_size_override) > 0:
+        base_pool_size = int(pool_size_override)
+
+    normalized_multiplier = float(multiplier) if multiplier > 0.0 else 1.2
+    warm_pool_size = math.ceil(base_pool_size * normalized_multiplier)
+    startup_submit_count = max(base_pool_size * 2, warm_pool_size)
+    followup_submit_batch = max(1, base_pool_size)
+    return base_pool_size, warm_pool_size, startup_submit_count, followup_submit_batch
 
 
 # -------------------------
@@ -472,30 +490,36 @@ async def main():
                     yaml_config_list.append(epoch_cfg)
             log.info("rl_epoch=%d: expanded %d configs to %d configs", args.rl_epoch, num_tasks, len(yaml_config_list))
 
+        cfg = _load_yaml(args.manager_config)
+        log.info("loaded config: %s", args.manager_config)
+
+        configured_pool_size = int(cfg.get("pool_size", 1) or 1)
+        base_pool_size, warm_pool_size, startup_submit_count, followup_submit_batch = _derive_pool_sizing(
+            configured_pool_size=configured_pool_size,
+            pool_size_override=int(args.pool_size),
+            multiplier=float(args.multiplier),
+        )
+
         conn = await sync_configs_to_db(
             data_manager,
             yaml_config_list,
             args.storage_type,
-            args.warmup_count,
-            args.save_batch_size,
+            startup_submit_count,
+            followup_submit_batch,
         )
-
-        # 3) load YAML config
-        cfg = _load_yaml(args.manager_config)
-        log.info("loaded config: %s", args.manager_config)
 
         # Ensure config points to our DB path
         _set_nested(cfg, ["database", "driver"], cfg.get("database", {}).get("driver", "sqlite"))
         _set_nested(cfg, ["database", "sqlite_path"], args.db_path)
 
-        # Override pool size if requested
-        original_pool_size = int(cfg.get("pool_size", 1) or 1)
-        if int(args.pool_size) > 0:
-            original_pool_size = int(args.pool_size)
-        buffer_multiplier = float(args.multiplier) if args.multiplier > 0.0 else 1.2
-        total_pool_size = math.ceil(original_pool_size * buffer_multiplier)
-        cfg["pool_size"] = total_pool_size
-        log.info("override pool_size=%d (original=%d, multiplier=%.2f)", total_pool_size, original_pool_size, buffer_multiplier)
+        cfg["pool_size"] = warm_pool_size
+        log.info(
+            "runtime pool sizing: base_pool_size=%d warm_pool_size=%d startup_submit_count=%d followup_submit_batch=%d",
+            base_pool_size,
+            warm_pool_size,
+            startup_submit_count,
+            followup_submit_batch,
+        )
 
         # Mode override
         if args.mode in ("local", "remote"):
@@ -525,8 +549,13 @@ async def main():
                 log.info("local upstream auto-start disabled; assuming already running at %s", args.local_upstream_url)
 
         # 4) start manager + adapter pool
-        mgr = EnvPoolManager(cfg, conn, job_id=job_id)
-        pool = ManagerActorPool(mgr, pool_size=total_pool_size)
+        mgr = EnvPoolManager(
+            cfg,
+            conn,
+            job_id=job_id,
+            db_processing_done_checker=lambda: is_job_db_processing_done(job_id),
+        )
+        pool = ManagerActorPool(mgr, pool_size=warm_pool_size)
 
         # 5) build EpisodeHandler from config
         _exp_cfg = _load_yaml(args.exp_config)
@@ -565,7 +594,7 @@ async def main():
             max_steps=args.max_steps,
             message_cut=args.message_cut,
             env_http_timeout_s=args.env_http_timeout_s,
-            max_workers=original_pool_size,
+            max_workers=base_pool_size,
             http_retries=int(args.http_retries),
             verbose=True,
             episode_handler=episode_handler,
