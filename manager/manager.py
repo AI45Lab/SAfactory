@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, List, Optional
 from .actor_pool import ActorPool
 from .binding_plan import build_binding_plan
 from .http_client import HttpServiceClient
-from .types import ActorRoute, ClusterRegistry, EnvClusterBinding
+from .types import ActorRoute, ClusterRegistry, EnvClusterBinding, PoolEntry
 from .repository import EnvDataRepository
 from .clusters.base import ClusterBackend
 
@@ -74,6 +74,8 @@ class EnvPoolManager:
                 continue
 
         self._base_image: str = str(cluster_cfg.get("base_image") or self.cfg.get("base_image") or "").strip()
+        transport_raw = cluster_cfg.get("transport", self.cfg.get("transport", "http"))
+        self._transport_mode: str = str(transport_raw or "http").strip().lower() or "http"
 
         http_cfg = dict(cluster_cfg.get("http", {}) or {})
         self._http_port: int = int(http_cfg.get("port", self.cfg.get("server", {}).get("port", 36663)))
@@ -87,6 +89,10 @@ class EnvPoolManager:
         self._http = HttpServiceClient(timeout_s=self._http_timeout_s, trust_env=True)
 
         self._mode: str = _detect_mode(self.cfg)
+        if self._transport_mode not in {"http", "inproc"}:
+            raise ValueError(f"Unsupported transport mode: {self._transport_mode}")
+        if self._transport_mode == "inproc" and self._mode != "local":
+            raise ValueError("transport=inproc is currently supported only in local mode")
 
         # IMPORTANT: backend is created lazily with imports inside _build_backend()
         self._backend: ClusterBackend = self._build_backend(cluster_cfg=cluster_cfg, rayjob_cfg=rayjob_cfg)
@@ -101,6 +107,7 @@ class EnvPoolManager:
             base_image=self._base_image,
             default_seed=self._default_seed,
             env_limits=self._env_limits,
+            transport_mode=self._transport_mode,
         )
 
         self._registry: ClusterRegistry = ClusterRegistry(clusters_by_id={}, env_bindings={})
@@ -114,9 +121,13 @@ class EnvPoolManager:
                 return
             self._closed = False
 
-            await self._http.start()
+            if self._transport_mode == "http":
+                await self._http.start()
 
-            tmp_plan = build_binding_plan(self._repo, base_image=self._base_image)
+            plan_base_image = self._base_image
+            if self._transport_mode == "inproc" and not plan_base_image:
+                plan_base_image = "__inproc_local__"
+            tmp_plan = build_binding_plan(self._repo, base_image=plan_base_image)
             if not tmp_plan.env_to_image:
                 log.warning("No env/image mapping found in DB; nothing to start.")
                 self._registry = ClusterRegistry(clusters_by_id={}, env_bindings={})
@@ -173,6 +184,7 @@ class EnvPoolManager:
             self._initialized = False
             self._closed = True
             await self._pool.reset()
+            await self._pool.shutdown()
             self._registry = ClusterRegistry(clusters_by_id={}, env_bindings={})
 
         try:
@@ -207,7 +219,7 @@ class EnvPoolManager:
             for b in self._registry.env_bindings.values()
         ]
 
-    async def list_pool_actors(self) -> List[dict]:
+    async def list_pool_actors(self) -> List[PoolEntry]:
         return await self._pool.list_actors()
 
     def get_actor_route(self, env: str, id_: str) -> Optional[ActorRoute]:
@@ -217,10 +229,10 @@ class EnvPoolManager:
     async def close_and_remove(self, env: str, id_: str) -> None:
         await self.close_and_refill(env, id_)
 
-    async def close_and_refill(self, env: str, id_: str) -> None:
+    async def close_and_refill(self, env: str, id_: str) -> Optional[PoolEntry]:
         if not self._initialized:
             raise RuntimeError("EnvPoolManager not started. Call await start() first.")
-        await self._pool.close_and_refill(env=str(env), env_id=str(id_), registry=self._registry)
+        return await self._pool.close_and_refill(env=str(env), env_id=str(id_), registry=self._registry)
 
     def _build_backend(self, *, cluster_cfg: Dict[str, Any], rayjob_cfg: Dict[str, Any]) -> ClusterBackend:
         """
@@ -238,6 +250,7 @@ class EnvPoolManager:
                 host=host,
                 http=self._http,
                 http_port=self._http_port,
+                require_http_ready=(self._transport_mode == "http"),
                 poll_interval_s=float(local_cfg.get("poll_interval_s", 1.0)),
                 poll_timeout_s=float(local_cfg.get("poll_timeout_s", 60.0)),
             )

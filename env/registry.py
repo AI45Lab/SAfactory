@@ -54,3 +54,8 @@ def _import_qa_gym() -> Type:
 def _import_deepeyes_env() -> Type:
     from env.deepeyes.deepeyes_env import DeepEyesEnv
     return DeepEyesEnv
+
+
+def _import_robotrustbench_env() -> Type:
+    from env.robotrustbench.robotrustbench_env import RoboTrustBenchEnv
+    return RoboTrustBenchEnv
