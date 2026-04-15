@@ -11,6 +11,7 @@ gif_generate.py
 *.db-wal
 *.txt
 *.sh
+!rl/examples/**/*.sh
 data/
 examples/test_env.py
 env/mc/MineStudio/MineStudio

@@ -157,9 +157,11 @@ class EnvPoolManager:
 
             self._initialized = True
             log.info(
-                "started in mode='%s', pool_size=%d, job_id=%s",
+                "started in mode='%s', pool_size=%d, startup_concurrency=%d, http_concurrency=%d, job_id=%s",
                 self._mode,
                 self._pool_size,
+                self._startup_concurrency,
+                self._http_concurrency,
                 self._job_id or "<all>",
             )
 

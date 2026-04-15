@@ -26,8 +26,8 @@ export PYTHONBUFFERED=16
 NUM_GPUS=${NUM_GPUS:-8}
 
 SLIME_HOME=${SLIME_HOME:-/root/slime}
-HF_CKPT_DIR="/mnt/shared-storage-user/evobox-share/hf-hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots/89644892e4d85e24eaac8bacfd4f463576704203"
-SAVE_DIR="/mnt/shared-storage-user/evobox-share/yinzhenyun/slime/checkpoints/Qwen3-VL-2B-Instruct_megatron"
+HF_CKPT_DIR="/root/.cache/huggingface/hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots/89644892e4d85e24eaac8bacfd4f463576704203"
+SAVE_DIR="/mnt/shared-storage-user/evobox-share-gpfs2/yinzhenyun/slime/checkpoints/Qwen3-VL-2B-Instruct_megatron"
 MODEL_ARGS_ROTARY_BASE=5000000 source "${SLIME_HOME}/scripts/models/qwen3-1.7B.sh"
 
 CKPT_ARGS=(
@@ -54,8 +54,9 @@ ROLLOUT_ARGS=(
 MEGATRON_ARGS=(
    --train-backend megatron
    --megatron-to-hf-mode bridge
-   --tensor-model-parallel-size 1
+   --tensor-model-parallel-size 4
    --pipeline-model-parallel-size 1
+   # Currently the vlm does not support context parallel. See: https://github.com/THUDM/slime/issues/1379
    --context-parallel-size 1
    --expert-model-parallel-size 1
    --expert-tensor-parallel-size 1
@@ -97,7 +98,7 @@ WANDB_ARGS=(
     --wandb-team aievobox
     --wandb-group slime
     --wandb-dir /root/wandb_logs
-    # --wandb-always-use-train-step
+    --wandb-always-use-train-step
 )
 
 SGLANG_ARGS=(
@@ -111,7 +112,7 @@ SGLANG_ARGS=(
 
 # Start Ray
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats
 
 export SGLANG_LOGGING_CONFIG_PATH=${SGLANG_LOGGING_CONFIG_PATH:-"/root/AIEvoBox/rl/sglang_logging.json"}
 
@@ -127,10 +128,10 @@ RUNTIME_ENV_JSON="{\
 
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- python3 ${SLIME_HOME}/train_async.py \
-   --actor-num-nodes 1 \
+   -- python3 ${SLIME_HOME}/train.py \
+   --actor-num-nodes 4 \
    --actor-num-gpus-per-node 1 \
-   --rollout-num-gpus 7 \
+   --rollout-num-gpus 4 \
    ${MODEL_ARGS[@]} \
    ${MEGATRON_ARGS[@]} \
    ${CKPT_ARGS[@]} \

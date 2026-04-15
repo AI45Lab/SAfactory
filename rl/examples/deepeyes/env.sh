@@ -2,7 +2,7 @@
 # AIEvobox (rollout) Settings
 # -------------------------------------------
 export AIEVOBOX_ROOT=/root/AIEvoBox
-export AIEVOBOX_DB_URL=sqlite:///${AIEVOBOX_ROOT}/rl/deepeyes.db
+export AIEVOBOX_DB_URL=sqlite:///${AIEVOBOX_ROOT}/rl/examples/deepeyes/deepeyes.db
 export AIEVOBOX_MAX_STEPS=5
 export AIEVOBOX_MESSAGE_CUT=0
 # ENV_CONFIG 指定单个 yaml 文件
@@ -55,6 +55,6 @@ export AIEVOBOX_DEBUG_CACHE_PROCESSOR_COMPARE=${AIEVOBOX_DEBUG_CACHE_PROCESSOR_C
 export SLIME_ROLLBUF_RESTART_TRAINING=True
 export SLIME_N_SAMPLES_PER_PROMPT=$RL_GROUP_SIZE
 # train batch size
-export SLIME_GLOBAL_BATCH_SIZE=2048
+export SLIME_GLOBAL_BATCH_SIZE=4096
 # no use, will be removed
 export SLIME_ROLLOUT_BATCH_SIZE=$((SLIME_GLOBAL_BATCH_SIZE / RL_GROUP_SIZE))

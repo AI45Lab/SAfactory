@@ -228,6 +228,21 @@ def build_loss_mask_from_response_mask(
     return tokens, loss_mask, response_length
 
 
+def _get_record_training_info(record: Dict[str, Any]) -> Dict[str, Any]:
+    oai_messages = record["messages"]
+    session_id = record["extra_info"].get("session_id", "")
+    tokens, response_mask, _image_data, messages_str, mm_train_inputs = TRAJECTORY_MASK_BUILDER.get_training_info(
+        session_id,
+        oai_messages,
+    )
+    return {
+        "tokens": tokens,
+        "response_mask": response_mask,
+        "messages_str": messages_str,
+        "mm_train_inputs": mm_train_inputs,
+    }
+
+
 def group_by_instance_id(results: List[Dict]) -> List[List[Dict]]:
     """按 instance_id 将样本分组。
 
@@ -329,7 +344,7 @@ def filter_by_weight_version(data_buffer, current_version: int, off_by_n: int = 
 
     Args:
         data_buffer: 数据 buffer
-        current_version: 当前权重版本（通常是 rollout_id）
+        current_version: 当前权重版本（当前 pipeline 中通常是 rollout_id + 1）
         off_by_n: 允许的最大权重差，默认为 0（只保留当前版本的数据）
     """
     buffer_length = data_buffer.get_buffer_length()
@@ -373,10 +388,11 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
 
     metrics = MetricsRecorder()
     print("rollout_id: ", rollout_id)
+    current_version = rollout_id + 1
 
     # 根据weight_version过滤已完成的数据
     off_by_n = int(get_env("RL_OFF_BY_N"))
-    filter_by_weight_version(data_buffer, current_version=rollout_id, off_by_n=off_by_n)
+    filter_by_weight_version(data_buffer, current_version=current_version, off_by_n=off_by_n)
     buffer_length = data_buffer.get_buffer_length()
     needed_groups = max(0, args.rollout_batch_size - buffer_length)
     data_number_to_fetch = needed_groups * args.n_samples_per_prompt
@@ -447,17 +463,17 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
                 if len(set(rewards)) == 1:
                     logger.info(
                         f"Filtered out group with rewards={rewards}, "
-                        f"current_version={rollout_id}"
+                        f"current_version={current_version}"
                     )
                     continue
-                if all(rollout_id - record.get("weight_version", 0) <= off_by_n for record in group):
+                if all(current_version - record.get("weight_version", 0) <= off_by_n for record in group):
                     valid_groups.append(group)
                 else:
                     # 记录被过滤的 group 信息
                     versions = [record.get("weight_version", 0) for record in group]
                     logger.info(
                         f"Filtered out group with weight_versions={versions}, "
-                        f"current_version={rollout_id}, off_by_n={off_by_n}"
+                        f"current_version={current_version}, off_by_n={off_by_n}"
                     )
 
             print(f"✅ Valid groups collected this round: {len(valid_groups)}")
@@ -465,20 +481,45 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
             sample_results = []
             touched_session_ids = set()
             try:
+                flat_records = [record for group_record in valid_groups for record in group_record]
+                for record in flat_records:
+                    session_id = record["extra_info"].get("session_id", "")
+                    if session_id:
+                        touched_session_ids.add(session_id)
+
+                training_info_results = await asyncio.gather(
+                    *(asyncio.to_thread(_get_record_training_info, record) for record in flat_records),
+                    return_exceptions=True,
+                )
+
+                result_offset = 0
                 for group_record in valid_groups:
                     group_results = []
                     drop_group = False
-                    for record in group_record:
+                    group_training_infos = training_info_results[result_offset:result_offset + len(group_record)]
+                    result_offset += len(group_record)
+
+                    for record, training_info in zip(group_record, group_training_infos):
                         oai_messages = record["messages"]
                         session_id = record["extra_info"].get("session_id", "")
                         group_id = record["extra_info"].get("group_id", "")
-                        if session_id:
-                            touched_session_ids.add(session_id)
+                        if isinstance(training_info, Exception):
+                            logger.error(
+                                "Drop rollout group due to sample assembly error: instance_id=%s session_id=%s group_id=%s",
+                                record.get("instance_id"),
+                                session_id,
+                                group_id,
+                                exc_info=(type(training_info), training_info, training_info.__traceback__),
+                            )
+                            drop_group = True
+                            break
+
                         try:
                             max_length = _llm_proxy_module.STATE.max_length
-                            tokens, response_mask, _image_data, _messages_str, mm_train_inputs = (
-                                TRAJECTORY_MASK_BUILDER.get_training_info(session_id, oai_messages)
-                            )
+                            tokens = training_info["tokens"]
+                            response_mask = training_info["response_mask"]
+                            _messages_str = training_info["messages_str"]
+                            mm_train_inputs = training_info["mm_train_inputs"]
                             if not tokens and not response_mask and _messages_str == "":
                                 logger.warning(
                                     "Drop rollout group due to unmatched trajectory: instance_id=%s session_id=%s group_id=%s",
@@ -525,6 +566,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
                             )
                             drop_group = True
                             break
+
 
                     if drop_group:
                         continue

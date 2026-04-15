@@ -3,7 +3,7 @@
 # -------------------------------------------
 export AIEVOBOX_ROOT=/root/AIEvoBox
 export STORAGE_TYPE=sqlite
-export AIEVOBOX_DB_URL=sqlite:///${AIEVOBOX_ROOT}/rl/vl.db
+export AIEVOBOX_DB_URL=sqlite:///${AIEVOBOX_ROOT}/rl/examples/geo3k_vl/geo3k_vl.db
 export AIEVOBOX_MAX_STEPS=10
 export AIEVOBOX_MESSAGE_CUT=0
 # ENV_CONFIG 指定单个 yaml 文件
