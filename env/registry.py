@@ -54,3 +54,8 @@ def _import_qa_gym() -> Type:
 def _import_deepeyes_env() -> Type:
     from env.deepeyes.deepeyes_env import DeepEyesEnv
     return DeepEyesEnv
+
+
+def _import_math500_text_env() -> Type:
+    from env.math500_text.math500_text_env import Math500TextEnv
+    return Math500TextEnv

@@ -24,6 +24,9 @@ cd /root/AIEvoBox/rl
 # 文本模型
 ./run_slime_generator.sh
 
+# Math500 文本模型（OPD + sglang teacher）
+./examples/math500/run_slime_generator_opd_sglang.sh
+
 # VL 模型
 ./run_slime_generator_vl.sh
 ```

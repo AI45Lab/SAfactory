@@ -29,6 +29,7 @@ from env.registry import (
     _import_gym_env,
     _import_mc_env,
     _import_mc_gpu_env,
+    _import_math500_text_env,
     _import_os_env,
     _import_qa_gym,
     _import_search_env,
@@ -52,6 +53,7 @@ ENV_CLASS_REGISTRY: Dict[str, Callable[[], Type]] = {
     "deepeyes_env": _import_deepeyes_env,
     "dabstepgym": _import_dab_env,
     "discoveryworld": _import_dw_env,
+    "math500_text": _import_math500_text_env,
 }
 
 
