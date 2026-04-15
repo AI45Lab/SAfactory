@@ -1,4 +1,4 @@
-from .base import LLM
+from .base import LLM, LLMHTTPSettings, resolve_llm_http_settings
 from .base_url_provider import (
     BaseURLProvider,
     StaticBaseURLProvider,
@@ -7,8 +7,9 @@ from .base_url_provider import (
 
 __all__ = [
     "LLM",
+    "LLMHTTPSettings",
     "BaseURLProvider",
     "StaticBaseURLProvider",
     "SessionSuffixBaseURLProvider",
+    "resolve_llm_http_settings",
 ]
-
