@@ -516,6 +516,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
 
     # 根据weight_version过滤已完成的数据
     off_by_n = int(get_env("RL_OFF_BY_N"))
+    dapo_filter_enabled = os.environ.get("DAPO_filter", "true").strip().lower() in ("1", "true", "yes", "on")
     filter_by_weight_version(data_buffer, current_version=current_version, off_by_n=off_by_n)
     buffer_length = data_buffer.get_buffer_length()
     needed_groups = max(0, args.rollout_batch_size - buffer_length)
@@ -584,7 +585,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
             valid_groups = []
             for group in grouped_results:
                 rewards = [record.get("reward") for record in group]
-                if len(set(rewards)) == 1:
+                if dapo_filter_enabled and len(set(rewards)) == 1:
                     logger.info(
                         f"Filtered out group with rewards={rewards}, "
                         f"current_version={current_version}"

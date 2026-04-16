@@ -32,7 +32,8 @@ ROLLOUT_BUFFER_URL="http://${BUFFER_SERVER_HOST}:${BUFFER_SERVER_PORT}"
 LLM_PROXY_URL="http://${LLM_PROXY_HOST}:${LLM_PROXY_PORT}"
 
 # Teacher endpoint used by OPD.
-TEACHER_URL="${TEACHER_URL:-${RM_URL:-http://127.0.0.1:30000/generate}}"
+# Force set to correct SGLang server address
+TEACHER_URL="http://100.99.167.245:30172/generate"
 OPD_KL_COEF="${OPD_KL_COEF:-1.0}"
 OPD_TEACHER_MAX_CONCURRENCY="${OPD_TEACHER_MAX_CONCURRENCY:-16}"
 OPD_TEACHER_TIMEOUT_SECONDS="${OPD_TEACHER_TIMEOUT_SECONDS:-60}"
@@ -42,7 +43,7 @@ echo "[opd] OPD_KL_COEF=${OPD_KL_COEF}"
 echo "[opd] OPD_TEACHER_MAX_CONCURRENCY=${OPD_TEACHER_MAX_CONCURRENCY}"
 
 export PYTHONBUFFERED=16
-NUM_GPUS=${NUM_GPUS:-3}
+NUM_GPUS=${NUM_GPUS:-8}
 
 SLIME_HOME=${SLIME_HOME:-/root/slime}
 MODEL_PRESET_SCRIPT="${MODEL_PRESET_SCRIPT:-qwen2.5-7B.sh}"
@@ -201,8 +202,8 @@ RUNTIME_ENV_JSON="{\
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- "${PYTHON_BIN}" "${SLIME_HOME}/train_async.py" \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 1 \
-   --rollout-num-gpus 2 \
+   --actor-num-gpus-per-node 2 \
+   --rollout-num-gpus 6 \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
