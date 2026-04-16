@@ -56,6 +56,11 @@ def _import_deepeyes_env() -> Type:
     return DeepEyesEnv
 
 
+def _import_robotrustbench_env() -> Type:
+    from env.robotrustbench.robotrustbench_env import RoboTrustBenchEnv
+    return RoboTrustBenchEnv
+
+
 def _import_math500_text_env() -> Type:
     from env.math500_text.math500_text_env import Math500TextEnv
     return Math500TextEnv

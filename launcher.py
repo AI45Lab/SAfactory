@@ -12,7 +12,7 @@ import yaml
 import logging
 from typing import Any, Dict, Optional, Set, Tuple, List
 
-from utils import ActorPoolRuntimeState, discover_ready_actor_from_snapshot
+from utils import ActorPoolRuntimeState
 from core.llm import StaticBaseURLProvider, SessionSuffixBaseURLProvider
 from core.data_manager.manager import DataManager
 from core.data_manager.yaml_aggregator import (
@@ -24,6 +24,7 @@ from core.data_manager.yaml_aggregator import (
 
 from interactor import Interactor, ActorHandle, ActorPool
 from manager import EnvPoolManager
+from manager.types import PoolEntry
 from log_setup import setup_launcher_logging
 
 
@@ -195,6 +196,36 @@ class ManagerActorPool(ActorPool):
         route = self.mgr.get_actor_route(env, env_id)
         return self._route_to_base_url(route)
 
+    def _entry_to_actor_handle(self, entry: PoolEntry) -> Optional[ActorHandle]:
+        transport = str(getattr(entry, "transport", "http") or "http")
+        env = str(entry.env_name)
+        env_id = str(entry.env_id)
+        group_id = str(entry.group_id or "")
+
+        if transport == "inproc":
+            if entry.local_env is None:
+                log.warning("inproc actor missing local_env for %s/%s", env, env_id)
+                return None
+            return ActorHandle(
+                env_name=env,
+                env_id=env_id,
+                group_id=group_id,
+                transport="inproc",
+                local_env=entry.local_env,
+            )
+
+        base_url = self._actor_base_url(env, env_id)
+        if not base_url:
+            log.warning("actor route missing for %s/%s (transport=%s)", env, env_id, transport)
+            return None
+        return ActorHandle(
+            env_name=env,
+            env_id=env_id,
+            group_id=group_id,
+            transport="http",
+            base_url=base_url,
+        )
+
     async def start(self) -> None:
         log.info("ManagerActorPool.start(): starting EnvPoolManager ...")
         await self.mgr.start()
@@ -202,20 +233,13 @@ class ManagerActorPool(ActorPool):
         actors = await self.mgr.list_pool_actors()
         log.info("ManagerActorPool.start(): manager reports %d warmed actors", len(actors))
 
-        for item in actors:
-            env = str(item["env_name"])
-            env_id = str(item["env_id"])
-            group_id = str(item.get("group_id") or "")
-            base_url = self._actor_base_url(env, env_id)
-            if base_url:
-                added = await self._runtime.add_ready_actor(
-                    (env, env_id),
-                    ActorHandle(base_url=base_url, env_name=env, env_id=env_id, group_id=group_id),
-                )
-                if added:
-                    log.debug("enqueued actor: %s/%s -> %s", env, env_id, base_url)
-            else:
-                log.warning("actor route missing for %s/%s (skipped)", env, env_id)
+        for entry in actors:
+            actor = self._entry_to_actor_handle(entry)
+            if actor is None:
+                continue
+            added = await self._runtime.add_ready_actor((actor.env_name, actor.env_id), actor)
+            if added:
+                log.debug("enqueued actor: %s/%s transport=%s", actor.env_name, actor.env_id, actor.transport)
 
         await self._runtime.mark_initial_load_done()
 
@@ -274,7 +298,7 @@ class ManagerActorPool(ActorPool):
 
     async def _bg_done(self, actor: ActorHandle, old_key: Tuple[str, str]) -> None:
         try:
-            await self.mgr.close_and_refill(actor.env_name, actor.env_id)
+            replacement = await self.mgr.close_and_refill(actor.env_name, actor.env_id)
         except asyncio.CancelledError:
             log.info(
                 "_bg_done cancelled during shutdown for %s/%s",
@@ -288,22 +312,20 @@ class ManagerActorPool(ActorPool):
             await self._runtime.fail_refill(old_key)
             return
 
-        actors = await self.mgr.list_pool_actors()
-        known_keys = await self._runtime.known_keys_snapshot()
-        new_key, new_actor = discover_ready_actor_from_snapshot(
-            actors,
-            known_keys=known_keys,
-            base_url_resolver=self._actor_base_url,
-            actor_builder=lambda base_url, env, env_id, group_id: ActorHandle(
-                base_url=base_url,
-                env_name=env,
-                env_id=env_id,
-                group_id=group_id,
-            ),
-        )
+        if replacement is None:
+            await self._runtime.finish_refill(old_key)
+            return
+
+        new_actor = self._entry_to_actor_handle(replacement)
+        if new_actor is None:
+            log.error("replacement actor could not be converted for %s/%s", replacement.env_name, replacement.env_id)
+            await self._runtime.fail_refill(old_key)
+            return
+
+        new_key = (new_actor.env_name, new_actor.env_id)
         added = await self._runtime.finish_refill(old_key, new_key, new_actor)
-        if added and new_key is not None and new_actor is not None:
-            log.debug("discovered new actor: %s/%s -> %s", new_key[0], new_key[1], new_actor.base_url)
+        if added:
+            log.debug("registered replacement actor: %s/%s transport=%s", new_key[0], new_key[1], new_actor.transport)
 
     async def _wait_for_bg_refill_tasks(self) -> None:
         while True:
@@ -362,6 +384,7 @@ def parse_args():
     p.add_argument("--manager-config", type=str, default="./manager/config.yaml", help="Path to unified YAML config")
     p.add_argument("--exp-config", type=str, default="./core/exp/config.yaml", help="Path to experience injection YAML config")
     p.add_argument("--mode", choices=["local", "remote"], default="local")
+    p.add_argument("--env-transport", choices=["http", "inproc"], default="http")
 
     # DB / YAML-aggregator
     p.add_argument("--env-config", type=str, default=None, help="env config which used for specify the input env configs, and it's incompatible with  env-root")
@@ -525,28 +548,36 @@ async def main():
         if args.mode in ("local", "remote"):
             cfg["mode"] = args.mode
             log.info("override mode=%s", args.mode)
+        _set_nested(cfg, ["cluster", "transport"], args.env_transport)
+
+        mode = str(cfg.get("mode") or (cfg.get("cluster") or {}).get("mode", "")).lower()
+        transport = str(((cfg.get("cluster") or {}).get("transport")) or "http").lower()
+        if mode == "remote" and transport == "inproc":
+            raise ValueError("remote mode does not support --env-transport inproc")
 
         # Local mode upstream service handling
-        mode = str(cfg.get("mode") or (cfg.get("cluster") or {}).get("mode", "")).lower()
         if mode == "local" or (args.mode == "local"):
             cfg["mode"] = "local"
             _set_nested(cfg, ["cluster", "local", "host"], "127.0.0.1")
             _set_nested(cfg, ["cluster", "http", "port"], int(args.local_upstream_port))
 
-            start_local = args.start_local_upstream
-            if start_local is None:
-                start_local = True
-
-            if start_local:
-                local_proc = start_local_upstream_service(
-                    host=str(args.local_upstream_host),
-                    port=int(args.local_upstream_port),
-                    uvicorn_app=str(args.local_upstream_app),
-                    stdout_path=upstream_log_path,
-                )
-                await wait_http_ready(str(args.local_upstream_url), float(args.wait_timeout))
+            if transport == "inproc":
+                log.info("local inproc transport selected; skipping local upstream HTTP service startup")
             else:
-                log.info("local upstream auto-start disabled; assuming already running at %s", args.local_upstream_url)
+                start_local = args.start_local_upstream
+                if start_local is None:
+                    start_local = True
+
+                if start_local:
+                    local_proc = start_local_upstream_service(
+                        host=str(args.local_upstream_host),
+                        port=int(args.local_upstream_port),
+                        uvicorn_app=str(args.local_upstream_app),
+                        stdout_path=upstream_log_path,
+                    )
+                    await wait_http_ready(str(args.local_upstream_url), float(args.wait_timeout))
+                else:
+                    log.info("local upstream auto-start disabled; assuming already running at %s", args.local_upstream_url)
 
         # 4) start manager + adapter pool
         mgr = EnvPoolManager(

@@ -1,12 +1,11 @@
 import asyncio
-import json
 import logging
 import os
 import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type
+from typing import Any, Dict, List, Optional, Tuple
 
 import ray
 from fastapi import FastAPI, HTTPException, Response
@@ -19,42 +18,10 @@ project_root = os.path.dirname(examples_dir)
 sys.path.append(project_root)
 
 from core.types.base import RenderOutput, ResetOutput, StepOutput, dumps_json_bytes
-from env.registry import (
-    _import_android_gym,
-    _import_dab_env,
-    _import_deepeyes_env,
-    _import_dw_env,
-    _import_emb_env,
-    _import_geo3k_vl_test_env,
-    _import_gym_env,
-    _import_mc_env,
-    _import_mc_gpu_env,
-    _import_math500_text_env,
-    _import_os_env,
-    _import_qa_gym,
-    _import_search_env,
-    _import_trading_env,
-)
+from env.env_factory import is_supported_env_name, list_supported_env_names, normalize_create_kwargs, resolve_env_class
 
 EnvKey = Tuple[str, str]
 JsonDict = Dict[str, Any]
-
-ENV_CLASS_REGISTRY: Dict[str, Callable[[], Type]] = {
-    "android_gym": _import_android_gym,
-    "search": _import_search_env,
-    "trading_gym": _import_trading_env,
-    "mc": _import_mc_env,
-    "emb": _import_emb_env,
-    "git_gym": _import_gym_env,
-    "os_gym": _import_os_env,
-    "mc_gpu": _import_mc_gpu_env,
-    "geo3k_vl_test": _import_geo3k_vl_test_env,
-    "qa_gym": _import_qa_gym,
-    "deepeyes_env": _import_deepeyes_env,
-    "dabstepgym": _import_dab_env,
-    "discoveryworld": _import_dw_env,
-    "math500_text": _import_math500_text_env,
-}
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
@@ -83,8 +50,7 @@ class EnvActor:
 
         import_done_ms: Optional[int] = None
         try:
-            env_import_func = ENV_CLASS_REGISTRY[envname]
-            env_cls = env_import_func()
+            env_cls = resolve_env_class(envname)
             import_done_ms = _elapsed_ms(init_start)
             logger.debug(
                 "Actor Import Done: %s/%s pid=%s env_class=%s import_ms=%s",
@@ -94,10 +60,7 @@ class EnvActor:
                 getattr(env_cls, "__name__", str(env_cls)),
                 import_done_ms,
             )
-        except KeyError:
-            logger.error("Unknown envname: %s", envname)
-            raise ValueError(f"Unknown envname: {envname} (available: {list(ENV_CLASS_REGISTRY.keys())})")
-        except ImportError as exc:
+        except (ValueError, ImportError) as exc:
             logger.error("Import failed for %s: %s", envname, exc)
             raise ImportError(
                 f"Failed to import env '{envname}': {exc}\n"
@@ -209,20 +172,11 @@ def _key(envname: str, env_id: str) -> EnvKey:
 
 
 def _parse_create_kwargs(raw_param: Any) -> JsonDict:
-    if isinstance(raw_param, str):
-        try:
-            parsed = json.loads(raw_param)
-        except json.JSONDecodeError as exc:
-            logger.warning("JSON decode failed in reset: %s", exc)
-            raise HTTPException(status_code=400, detail=f"Invalid env_param JSON string: {exc}")
-        if not isinstance(parsed, dict):
-            raise HTTPException(status_code=400, detail="env_param JSON string must decode to an object.")
-        return dict(parsed)
-
-    if isinstance(raw_param, dict):
-        return dict(raw_param)
-
-    raise HTTPException(status_code=400, detail="env_param must be a JSON object or JSON string.")
+    try:
+        return normalize_create_kwargs(raw_param)
+    except (TypeError, ValueError) as exc:
+        logger.warning("Invalid env_param in reset: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _touch_actor_record(record: ActorRecord, *, is_reset: bool = False) -> None:
@@ -451,10 +405,10 @@ async def reset_env(envname: str, env_id: str, req: ResetRequest) -> Response:
     _init_ray_if_needed()
     request_start = time.perf_counter()
 
-    if envname not in ENV_CLASS_REGISTRY:
+    if not is_supported_env_name(envname):
         raise HTTPException(
             status_code=400,
-            detail=f"Unknown envname '{envname}'. Available: {list(ENV_CLASS_REGISTRY.keys())}",
+            detail=f"Unknown envname '{envname}'. Available: {list_supported_env_names()}",
         )
 
     key = _key(envname, env_id)

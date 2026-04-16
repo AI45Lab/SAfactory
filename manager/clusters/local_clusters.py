@@ -25,12 +25,14 @@ class LocalHTTPBackend(ClusterBackend):
         host: str,
         http: HttpServiceClient,
         http_port: int,
+        require_http_ready: bool = True,
         poll_interval_s: float = 1.0,
         poll_timeout_s: float = 60.0,
     ) -> None:
         self._host = (host or "").strip() or "127.0.0.1"
         self._http = http
         self._http_port = int(http_port)
+        self._require_http_ready = bool(require_http_ready)
         self._poll_interval_s = float(poll_interval_s)
         self._poll_timeout_s = float(poll_timeout_s)
 
@@ -44,7 +46,8 @@ class LocalHTTPBackend(ClusterBackend):
             return ClusterRegistry(clusters_by_id={}, env_bindings={})
 
         # 2. Wait for the local environment to be ready
-        await self._wait_for_local_http_ready()
+        if self._require_http_ready:
+            await self._wait_for_local_http_ready()
 
         # 3. Initialize counts and storage
         env_job_counts = dict(getattr(plan, "env_job_counts", None) or {})

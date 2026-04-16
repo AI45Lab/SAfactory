@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 ActorKey = Tuple[str, str]     # (env_name, env_id)
 ActorRoute = Tuple[str, int]   # (host, port)
@@ -36,7 +36,7 @@ class EnvClusterBinding:
 @dataclass(slots=True)
 class PoolEntry:
     """
-    Local record of an actor that exists behind an HTTP env service.
+    Local record of a ready actor, regardless of transport.
     """
     env_name: str
     env_id: str
@@ -46,6 +46,8 @@ class PoolEntry:
     head_ip: str
     group_id: str = ""
     status: str = "ready"
+    transport: str = "http"
+    local_env: Optional[Any] = None
 
 
 @dataclass(slots=True)
