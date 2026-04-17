@@ -15,6 +15,7 @@ import random
 import atexit
 import time
 import logging
+import copy
 from typing import Optional, Dict, Any, List
 
 import gymnasium as gym
@@ -59,6 +60,10 @@ from .core.result_persistence import ResultPersistence
 from .core.prompt_builder import PromptBuilder
 from .core.risk_service_manager import RiskServiceManager
 from .evaluation.evaluator import TaskEvaluator
+from .evaluation.risk_adapter import (
+    is_locally_supported_evaluator_config,
+    requires_local_evaluator_adapter,
+)
 
 
 @register_env("os_gym")
@@ -82,19 +87,23 @@ class OSGym(BaseEnv):
         self,
         eval_mode: str = "standard",  # "standard" or "safety"
         provider_name: str = "docker",
+        vm_path: str = None,
         headless: bool = True,
         action_space: str = "pyautogui",
-        observation_type: str = "screenshot_a11y_tree",
+        capture_observation_type: Optional[str] = None,
+        prompt_observation_type: Optional[str] = None,
         screen_width: int = 1920,
         screen_height: int = 1080,
         cache_dir: str = None,
         sleep_after_execution: float = 0.0,
         post_reset_wait: float = 3.0,
-        max_steps: int = 15,
+        max_steps: int = 30,
+        message_cut: int = -1,
         result_dir: str = None,
         save_screenshots: bool = True,
         enable_recording: bool = False,
         host_ip: str = None,
+        prompt_format: str = "kimi",
         **kwargs
     ):
         # Extract llm_judge_config from kwargs before passing to BaseEnv
@@ -117,16 +126,28 @@ class OSGym(BaseEnv):
 
         # Configuration
         self.provider_name = provider_name
+        if vm_path:
+            expanded_vm_path = os.path.expandvars(os.path.expanduser(vm_path))
+            if not os.path.isabs(expanded_vm_path):
+                expanded_vm_path = os.path.join(CURRENT_DIR, expanded_vm_path)
+            self.vm_path = os.path.abspath(expanded_vm_path)
+        else:
+            self.vm_path = None
         self.headless = headless
         self.action_space_type = action_space
-        self.observation_type = observation_type
+        self.capture_observation_type, self.prompt_observation_type = self._resolve_observation_modalities(
+            capture_observation_type=capture_observation_type,
+            prompt_observation_type=prompt_observation_type,
+        )
         self.screen_size = (screen_width, screen_height)
         self.cache_dir = cache_dir or "/tmp/osgym_cache"
         self.sleep_after_execution = sleep_after_execution
         self.post_reset_wait = post_reset_wait
         self.max_steps = max_steps
+        self.message_cut = message_cut
         self.enable_recording = enable_recording
         self.host_ip = host_ip
+        self.prompt_format = prompt_format
         # Load credentials for tasks that need authentication
         self._load_credentials()
 
@@ -137,17 +158,21 @@ class OSGym(BaseEnv):
         self.action_parser = ActionParser(
             screen_width=screen_width,
             screen_height=screen_height,
+            prompt_format=self.prompt_format
         )
-        self.obs_processor = ObservationProcessor(observation_type)
+        self.obs_processor = ObservationProcessor(self.prompt_observation_type)
         self.result_persistence = ResultPersistence(
             result_dir=result_dir,
             action_space_type=action_space,
-            observation_type=observation_type,
+            observation_type=self._build_result_observation_label(),
             save_screenshots=save_screenshots
         )
         self.prompt_builder = PromptBuilder(
-            observation_type=observation_type,
-            action_space_type=action_space
+            prompt_observation_type=self.prompt_observation_type,
+            action_space_type=action_space,
+            prompt_format=self.prompt_format,
+            screen_width=screen_width,
+            screen_height=screen_height
         )
 
         # State tracking
@@ -188,6 +213,65 @@ class OSGym(BaseEnv):
 
         # Register cleanup on exit
         atexit.register(self.close)
+
+        logger.info(
+            "OSGym observation modalities: capture=%s prompt=%s",
+            self.capture_observation_type,
+            self.prompt_observation_type,
+        )
+
+    @staticmethod
+    def _validate_observation_type(observation_type: Optional[str], field_name: str) -> Optional[str]:
+        if observation_type is None:
+            return None
+
+        supported = {"screenshot", "a11y_tree", "screenshot_a11y_tree"}
+        normalized = observation_type.strip()
+        if normalized not in supported:
+            raise ValueError(
+                f"Invalid {field_name}: {observation_type}. Expected one of {sorted(supported)}."
+            )
+        return normalized
+
+    @classmethod
+    def _resolve_observation_modalities(
+        cls,
+        capture_observation_type: Optional[str],
+        prompt_observation_type: Optional[str],
+    ) -> tuple[str, str]:
+        """
+        Resolve observation modalities from explicit parameters.
+        Defaults to screenshot_a11y_tree for capture and screenshot for prompt if not specified.
+        """
+        capture_type = cls._validate_observation_type(
+            capture_observation_type, "capture_observation_type"
+        )
+        prompt_type = cls._validate_observation_type(
+            prompt_observation_type, "prompt_observation_type"
+        )
+
+        # Apply defaults
+        if capture_type is None:
+            capture_type = "screenshot_a11y_tree"
+        if prompt_type is None:
+            prompt_type = "screenshot"
+
+        # Validation: prompt requiring a11y tree must have it captured
+        if prompt_type in {"a11y_tree", "screenshot_a11y_tree"} and capture_type not in {
+            "a11y_tree",
+            "screenshot_a11y_tree",
+        }:
+            raise ValueError(
+                "prompt_observation_type requires accessibility tree data, "
+                "but capture_observation_type does not collect it."
+            )
+
+        return capture_type, prompt_type
+
+    def _build_result_observation_label(self) -> str:
+        if self.capture_observation_type == self.prompt_observation_type:
+            return self.prompt_observation_type
+        return f"capture_{self.capture_observation_type}__prompt_{self.prompt_observation_type}"
 
     def _load_credentials(self):
         """Load credentials from credentials.yaml for tasks that need authentication."""
@@ -293,14 +377,19 @@ class OSGym(BaseEnv):
 
     def _create_desktop_env(self):
         """Create and configure the DesktopEnv instance."""
-        try:
-            from desktop_env.providers.docker.manager import DockerVMManager
-            vm_manager = DockerVMManager()
-            vm_path = vm_manager.get_vm_path(os_type="Ubuntu", region=None)
-        except Exception as exc:
-            vm_path = os.path.join(CURRENT_DIR, "docker_vm_data", "Ubuntu.qcow2")
-            logger.warning(f"Auto-download VM failed, falling back to: {vm_path}")
-            logger.debug(f"Reason: {exc}")
+        if self.vm_path:
+            vm_path = self.vm_path
+            if not os.path.exists(vm_path):
+                logger.warning(f"Configured vm_path does not exist yet: {vm_path}")
+        else:
+            try:
+                from desktop_env.providers.docker.manager import DockerVMManager
+                vm_manager = DockerVMManager()
+                vm_path = vm_manager.get_vm_path(os_type="Ubuntu", region=None)
+            except Exception as exc:
+                vm_path = os.path.join(CURRENT_DIR, "docker_vm_data", "Ubuntu.qcow2")
+                logger.warning(f"Auto-download VM failed, falling back to: {vm_path}")
+                logger.debug(f"Reason: {exc}")
 
         logger.info(f"Using VM path: {vm_path}")
         logger.info(f"Using cache dir: {self.cache_dir}")
@@ -312,7 +401,7 @@ class OSGym(BaseEnv):
                 action_space=self.action_space_type,
                 screen_size=self.screen_size,
                 headless=self.headless,
-                require_a11y_tree=self.observation_type in ["a11y_tree", "screenshot_a11y_tree", "som"],
+                require_a11y_tree=self.capture_observation_type in ["a11y_tree", "screenshot_a11y_tree"],
                 require_terminal=False,
                 os_type="Ubuntu",
                 cache_dir=self.cache_dir,
@@ -325,11 +414,55 @@ class OSGym(BaseEnv):
                 action_space=self.action_space_type,
                 screen_size=self.screen_size,
                 headless=self.headless,
-                require_a11y_tree=self.observation_type in ["a11y_tree", "screenshot_a11y_tree", "som"],
+                require_a11y_tree=self.capture_observation_type in ["a11y_tree", "screenshot_a11y_tree"],
                 require_terminal=False,
                 os_type="Ubuntu",
                 cache_dir=self.cache_dir
             )
+
+    def _build_desktop_env_task_config(self) -> Dict[str, Any]:
+        """
+        Build a DesktopEnv-compatible task config for reset/setup.
+
+        DesktopEnv resolves evaluator functions eagerly during reset. OSGym's
+        own local adapters handle `llm_judge`, RiOSWorld DIY metrics, and any
+        evaluator configs that are unsupported by the upstream DesktopEnv
+        package. In those cases we pass a dummy evaluator to DesktopEnv while
+        preserving the original task config on `self.task_config` for final
+        scoring in TaskEvaluator.
+        """
+        desktop_task_config = copy.deepcopy(self.task_config)
+        evaluator = desktop_task_config.get("evaluator")
+
+        if isinstance(evaluator, dict):
+            should_bypass_desktop_eval = (
+                evaluator.get("func") == "llm_judge"
+                or requires_local_evaluator_adapter(evaluator)
+                or not is_locally_supported_evaluator_config(evaluator)
+            )
+            if should_bypass_desktop_eval:
+                desktop_task_config["evaluator"] = {"func": "infeasible"}
+
+        return desktop_task_config
+
+    def _run_halfway_setup(self) -> None:
+        """
+        Execute RiOSWorld-style halfway setup directly from task_config.
+
+        Upstream OSWorld DesktopEnv does not track `halfway_config`, so OSGym
+        owns this compatibility layer instead of relying on a patched DesktopEnv.
+        """
+        halfway_config = self.task_config.get("halfway_config") or []
+        if not halfway_config:
+            return
+
+        logger.info("Running halfway setup...")
+        use_proxy = bool(self.task_config.get("proxy", False) and getattr(self.env, "enable_proxy", False))
+
+        if hasattr(self.env.setup_controller, "halfway_setup"):
+            self.env.setup_controller.halfway_setup(halfway_config)
+        else:
+            self.env.setup_controller.setup(halfway_config, use_proxy=use_proxy)
 
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None) -> ResetOutput:
         """Reset environment for the single task from dataset."""
@@ -358,17 +491,16 @@ class OSGym(BaseEnv):
         if self.eval_mode == "safety":
             self.risk_service_manager.start_service_for_task(self.task_config)
 
-        # Reset desktop environment with task config
-        obs = self.env.reset(task_config=self.task_config)
+        # Reset desktop environment with a DesktopEnv-compatible task config.
+        obs = self.env.reset(task_config=self._build_desktop_env_task_config())
         if self.post_reset_wait and self.post_reset_wait > 0:
             logger.info(f"Waiting {self.post_reset_wait}s for environment stabilization...")
             time.sleep(self.post_reset_wait)
             obs = self.env._get_obs()
 
-        # Execute halfway_setup if present
-        if hasattr(self.env, "halfway_config") and self.env.halfway_config:
-            logger.info("Running halfway setup...")
-            self.env.setup_controller.halfway_setup(self.env.halfway_config)
+        # Execute halfway setup from task config if present
+        if self.eval_mode == "safety" and self.task_config.get("halfway_config"):
+            self._run_halfway_setup()
             obs = self.env._get_obs()
 
         # Start recording if enabled
@@ -421,6 +553,7 @@ class OSGym(BaseEnv):
 
         # Handle special commands without environment actions
         if special_cmd == "WAIT":
+            self.evaluator.add_trajectory_step("WAIT")
             processed_obs = self._process_obs(self.current_obs)
             self.result_persistence.save_step_result(
                 self.current_step_in_task, action, processed_obs, 0.0, False,
@@ -439,6 +572,7 @@ class OSGym(BaseEnv):
             # Pass DONE/FAIL through env.step() so DesktopEnv records the terminal signal in action_history before OSGym computes final scores.
             obs, reward, done, info = self.env.step(special_cmd, pause=self.sleep_after_execution)
             self.current_obs = obs
+            self.evaluator.add_trajectory_step(special_cmd)
 
             processed_obs = self._process_obs(self.current_obs)
             self.result_persistence.save_step_result(
@@ -461,7 +595,8 @@ class OSGym(BaseEnv):
         done = False
 
         # Capture state before action execution for risk evaluation
-        self.evaluator.capture_pre_action_state()
+        if self.eval_mode == "safety":
+            self.evaluator.capture_pre_action_state()
 
         for act in parsed_actions:
             obs, reward, done, info = self.env.step(act, pause=self.sleep_after_execution)
@@ -469,6 +604,9 @@ class OSGym(BaseEnv):
             self.current_obs = obs
             if done:
                 break
+
+        for act in executed_actions:
+            self.evaluator.add_trajectory_step(str(act))
 
         # Save step result
         processed_obs = self._process_obs(self.current_obs)
@@ -478,15 +616,17 @@ class OSGym(BaseEnv):
         )
 
         # Evaluate step risk
-        risk_result = self.evaluator.evaluate_step_risk(
-            executed_actions,
-            self.task_id,
-            self.obs_processor.get_attack_params()
-        )
-        if risk_result is not None:
-            info = dict(info) if info else {}
-            info["risk_result"] = risk_result
-            self.risk_results.append(risk_result)
+        if self.eval_mode == "safety":
+            risk_result = self.evaluator.evaluate_step_risk(
+                executed_actions,
+                self.task_id,
+                self.obs_processor.get_attack_params(),
+                risk_evaluator=self.task_config.get("risk_evaluator"),
+            )
+            if risk_result is not None:
+                info = dict(info) if info else {}
+                info["risk_result"] = risk_result
+                self.risk_results.append(risk_result)
 
         info = info or {}
         info.setdefault("executed_actions", executed_actions)
@@ -496,6 +636,7 @@ class OSGym(BaseEnv):
 
         if special_cmd in {"DONE", "FAIL"}:
             self.env.step(special_cmd, pause=self.sleep_after_execution)
+            self.evaluator.add_trajectory_step(special_cmd)
 
             task_score_override = 0.0 if special_cmd == "FAIL" and self.eval_mode == "safety" else None
             return self._finish_task(
@@ -581,27 +722,7 @@ class OSGym(BaseEnv):
         # Get final screenshot for LLM Judge evaluation
         final_screenshot = None
         if self.current_obs and "screenshot" in self.current_obs:
-            screenshot = self.current_obs["screenshot"]
-            if screenshot is not None:
-                try:
-                    import numpy as np
-                    # Handle different screenshot formats
-                    if isinstance(screenshot, np.ndarray):
-                        # Numpy array - encode to PNG
-                        import cv2
-                        _, encoded = cv2.imencode(".png", screenshot)
-                        final_screenshot = encoded.tobytes()
-                    elif isinstance(screenshot, bytes):
-                        # Already bytes
-                        final_screenshot = screenshot
-                    elif hasattr(screenshot, 'save'):
-                        # PIL Image
-                        from io import BytesIO
-                        buffer = BytesIO()
-                        screenshot.save(buffer, format='PNG')
-                        final_screenshot = buffer.getvalue()
-                except Exception as e:
-                    logger.warning(f"Failed to encode screenshot for LLM Judge: {e}")
+            final_screenshot = ObservationProcessor.screenshot_to_png_bytes(self.current_obs["screenshot"])
 
         score_result = self.evaluator.compute_task_score(
             self.task_id,
@@ -648,11 +769,11 @@ class OSGym(BaseEnv):
         return self.obs_processor.process(obs, self.task_config, self.current_instruction)
 
     def get_task_prompt(self) -> List[Dict[str, Any]]:
-        """Generate task prompt for agent."""
-        # Process observation (applies attack overlay for popup/induced_text tasks)
+        """Generate task prompt for agent with OOM protection and message-cut alignment."""
+        # 1. Process current observation (applies attack overlay if needed)
         processed_obs = self._process_obs(self.current_obs)
 
-        # Build user content for current observation
+        # 2. Build user content for current observation (contains the high-res screenshot)
         user_content = self.prompt_builder.build_user_content(
             current_obs=processed_obs,
             task_id=self.task_id,
@@ -660,10 +781,42 @@ class OSGym(BaseEnv):
             encode_image_func=ObservationProcessor.encode_image_bytes
         )
 
-        # Append user content to messages
+        # 3. Append current turn to history
         self.messages.append({"role": "user", "content": user_content})
 
-        return self.messages
+        # 4. Message Trimming (Physical Cut)
+        # We always keep the System Prompt (index 0)
+        system_msg = self.messages[0] if self.messages and self.messages[0].get("role") == "system" else None
+        history = self.messages[1:] if system_msg else self.messages
+
+        if self.message_cut > 0:
+            # Keep only the last N turns (2*N - 1 messages, as the last one is the current User prompt)
+            keep_count = self.message_cut * 2 - 1
+            history = history[-keep_count:]
+
+        # 5. Image Optimization (OOM Protection within the window)
+        # To save massive memory/bandwidth, we strip images from ALL historical messages,
+        # keeping ONLY the image in the current (very last) User message.
+        processed_history = []
+        for i, msg in enumerate(history):
+            # If it's not the current step's user message
+            if i < len(history) - 1 and msg.get("role") == "user":
+                new_msg = copy.deepcopy(msg)
+                content = new_msg.get("content")
+                if isinstance(content, list):
+                    new_msg["content"] = [
+                        item if not (isinstance(item, dict) and item.get("type") == "image_url")
+                        else {"type": "text", "text": "<history_image_removed_for_memory_saving>"}
+                        for item in content
+                    ]
+                processed_history.append(new_msg)
+            else:
+                # Assistant messages or the current User message are kept as-is
+                processed_history.append(msg)
+
+        # Reconstruct the prompt
+        final_messages = [system_msg] + processed_history if system_msg else processed_history
+        return final_messages
 
     def render(self) -> RenderOutput:
         """Render current environment state."""
