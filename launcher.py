@@ -384,7 +384,7 @@ def parse_args():
     p.add_argument("--manager-config", type=str, default="./manager/config.yaml", help="Path to unified YAML config")
     p.add_argument("--exp-config", type=str, default="./core/exp/config.yaml", help="Path to experience injection YAML config")
     p.add_argument("--mode", choices=["local", "remote"], default="local")
-    p.add_argument("--env-transport", choices=["http", "inproc"], default="http")
+    p.add_argument("--env-transport", choices=["http", "inproc"], default="inproc")
 
     # DB / YAML-aggregator
     p.add_argument("--env-config", type=str, default=None, help="env config which used for specify the input env configs, and it's incompatible with  env-root")
