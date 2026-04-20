@@ -2,253 +2,223 @@
 Action Parser Module
 
 Parses agent response strings into executable action commands.
-Handles special commands (WAIT, DONE, FAIL) and code block extraction.
+Handles special commands (WAIT, DONE, FAIL), `computer.*` helpers,
+and the local `## Action` + `## Code` response protocol.
 """
 
 import ast
+import json
+import logging
 import re
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
+
+logger = logging.getLogger("osgym.action_parser")
 
 
 class _PyAutoGuiCoordinateNormalizer(ast.NodeTransformer):
-    """Convert normalized pyautogui coordinates into absolute pixel positions."""
-
-    TARGET_FUNCTIONS = {
-        "click",
-        "doubleClick",
-        "dragTo",
-        "leftClick",
-        "middleClick",
-        "mouseDown",
-        "mouseUp",
-        "moveTo",
-        "rightClick",
-        "tripleClick",
-    }
+    """Convert normalized [0, 1] coordinates in AST into absolute pixels."""
 
     def __init__(self, screen_width: int, screen_height: int):
-        self.screen_width = screen_width
-        self.screen_height = screen_height
+        self.width = screen_width
+        self.height = screen_height
 
-    def visit_Call(self, node: ast.Call) -> ast.AST:
+    def visit_Call(self, node):
         self.generic_visit(node)
-
-        if not self._is_supported_pyautogui_call(node):
-            return node
-
-        self._normalize_positional_coordinates(node)
-        self._normalize_keyword_coordinates(node)
+        if isinstance(node.func, ast.Attribute) and node.func.value.id == "pyautogui":
+            new_args = []
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, float) and 0.0 <= arg.value <= 1.0:
+                    # Heuristic: assume float in [0,1] is a normalized coordinate
+                    if node.func.attr in ["click", "moveTo", "dragTo", "rightClick", "doubleClick", "middleClick"]:
+                        arg_idx = node.args.index(arg)
+                        if arg_idx == 0:
+                            new_args.append(ast.Constant(value=int(arg.value * self.width)))
+                            continue
+                        elif arg_idx == 1:
+                            new_args.append(ast.Constant(value=int(arg.value * self.height)))
+                            continue
+                new_args.append(arg)
+            node.args = new_args
         return node
-
-    @classmethod
-    def _is_supported_pyautogui_call(cls, node: ast.Call) -> bool:
-        func = node.func
-        return (
-            isinstance(func, ast.Attribute)
-            and isinstance(func.value, ast.Name)
-            and func.value.id == "pyautogui"
-            and func.attr in cls.TARGET_FUNCTIONS
-        )
-
-    def _normalize_positional_coordinates(self, node: ast.Call) -> None:
-        if len(node.args) < 2:
-            return
-
-        x_node = node.args[0]
-        y_node = node.args[1]
-        x_val = self._numeric_literal(x_node)
-        y_val = self._numeric_literal(y_node)
-
-        if not self._should_normalize(x_node, y_node, x_val, y_val):
-            return
-
-        node.args[0] = ast.Constant(value=self._scale_coordinate(x_val, self.screen_width))
-        node.args[1] = ast.Constant(value=self._scale_coordinate(y_val, self.screen_height))
-
-    def _normalize_keyword_coordinates(self, node: ast.Call) -> None:
-        x_kw = next((kw for kw in node.keywords if kw.arg == "x"), None)
-        y_kw = next((kw for kw in node.keywords if kw.arg == "y"), None)
-        if x_kw is None or y_kw is None:
-            return
-
-        x_val = self._numeric_literal(x_kw.value)
-        y_val = self._numeric_literal(y_kw.value)
-
-        if not self._should_normalize(x_kw.value, y_kw.value, x_val, y_val):
-            return
-
-        x_kw.value = ast.Constant(value=self._scale_coordinate(x_val, self.screen_width))
-        y_kw.value = ast.Constant(value=self._scale_coordinate(y_val, self.screen_height))
-
-    @staticmethod
-    def _numeric_literal(node: ast.AST) -> Optional[float]:
-        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
-            return float(node.value)
-        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-            inner = _PyAutoGuiCoordinateNormalizer._numeric_literal(node.operand)
-            if inner is not None:
-                return -inner
-        return None
-
-    @staticmethod
-    def _is_float_literal(node: ast.AST) -> bool:
-        return isinstance(node, ast.Constant) and isinstance(node.value, float)
-
-    @classmethod
-    def _should_normalize(
-        cls,
-        x_node: ast.AST,
-        y_node: ast.AST,
-        x_val: Optional[float],
-        y_val: Optional[float],
-    ) -> bool:
-        if x_val is None or y_val is None:
-            return False
-        if not (0.0 <= x_val <= 1.0 and 0.0 <= y_val <= 1.0):
-            return False
-        # Only treat decimal literals as normalized coordinates. Integer 0/1 can be valid pixels.
-        return cls._is_float_literal(x_node) or cls._is_float_literal(y_node)
-
-    @staticmethod
-    def _scale_coordinate(value: float, size: int) -> int:
-        if size <= 1:
-            return 0
-        scaled = int(round(value * (size - 1)))
-        return min(max(scaled, 0), size - 1)
 
 
 class ActionParser:
     """
-    Parses agent response strings into executable action commands.
-
-    Supports:
-    - Special commands: WAIT, DONE, FAIL
-    - Code blocks with optional language identifiers
-    - Multiple actions separated by semicolons
+    Parses and sanitizes agent actions.
     """
 
     SPECIAL_COMMANDS = {"WAIT", "DONE", "FAIL"}
 
-    def __init__(self, screen_width: int = 1920, screen_height: int = 1080):
-        if screen_width <= 0 or screen_height <= 0:
-            raise ValueError("screen_width and screen_height must be positive integers")
-        self.screen_width = screen_width
-        self.screen_height = screen_height
+    def __init__(self, screen_width: int = 1920, screen_height: int = 1080, prompt_format: str = "kimi"):
+        self.width = screen_width
+        self.height = screen_height
+        self.prompt_format = prompt_format
+        self._normalizer = _PyAutoGuiCoordinateNormalizer(screen_width, screen_height)
 
     def parse_actions(self, action_str: str) -> List[str]:
         """
-        Parse action string into list of executable commands.
-
-        Args:
-            action_str: Raw action string from agent response
-
-        Returns:
-            List of parsed action commands
+        Parse agent response string into a list of executable commands.
         """
-        if not action_str:
+        if not action_str or not action_str.strip():
             return []
 
-        normalized = "\n".join([line.strip() for line in action_str.split(';') if line.strip()])
-        special_cmds = ActionParser.SPECIAL_COMMANDS
+        if "<tool_call>" in action_str:
+            return self._parse_xml_actions(action_str)
 
-        if normalized in special_cmds:
-            return [normalized]
+        return self._parse_legacy_actions(action_str)
 
-        # Check for ```DONE```, ```FAIL```, ```WAIT``` format special commands
-        special_pattern = r"```\s*(DONE|FAIL|WAIT)\s*```"
-        special_matches = re.findall(special_pattern, action_str, re.IGNORECASE)
-        if special_matches:
-            return [m.upper() for m in special_matches]
+    def _parse_xml_actions(self, action_str: str) -> List[str]:
+        """Parse Qwen-style XML tool calls."""
+        pyautogui_commands = []
+        function_pattern = re.compile(r"<function=(?P<name>.*?)>(?P<body>.*?)</function>", re.DOTALL)
+        parameter_pattern = re.compile(r"<parameter=(?P<name>.*?)>(?P<value>.*?)</parameter>", re.DOTALL)
 
-        # Regex to match code blocks, requiring whitespace/newline after language identifier
-        pattern = r"```(?:(\w+)\s+)?(.*?)```"
-        matches = re.findall(pattern, action_str, re.DOTALL)
-        commands: List[str] = []
+        for func_match in function_pattern.finditer(action_str):
+            params = {}
+            for param_match in parameter_pattern.finditer(func_match.group("body")):
+                params[param_match.group("name").strip()] = param_match.group("value").strip()
+            
+            if params:
+                cmds = self._process_xml_params_to_pyautogui(params)
+                pyautogui_commands.extend(cmds)
 
-        if matches:
-            for lang, match in matches:
-                snippet = match.strip()
-                if not snippet:
-                    continue
-                last_line = snippet.splitlines()[-1].strip() if snippet.splitlines() else ""
-                if snippet in special_cmds:
-                    commands.append(snippet)
-                    continue
-                if last_line in special_cmds:
-                    body = "\n".join(snippet.splitlines()[:-1]).strip()
-                    if body:
-                        commands.append(body)
-                    commands.append(last_line)
-                else:
-                    commands.append(snippet)
-        else:
-            upper_text = action_str.upper()
-            if re.search(r'\bDONE\b', upper_text):
-                commands.append("DONE")
-            elif re.search(r'\bFAIL\b', upper_text):
-                commands.append("FAIL")
-            elif re.search(r'\bWAIT\b', upper_text):
-                commands.append("WAIT")
-            elif normalized:
-                commands.append(normalized)
+        return pyautogui_commands
 
-        if not commands:
-            stripped = action_str.strip()
-            triple_match = re.fullmatch(r"`{3}(?:\w+)?\s*(DONE|FAIL|WAIT)\s*`{3}", stripped, re.IGNORECASE)
-            if triple_match:
-                commands.append(triple_match.group(1).upper())
+    def _process_xml_params_to_pyautogui(self, params: Dict) -> List[str]:
+        """Convert XML parameters into standard pyautogui strings."""
+        action = params.get("action")
+        if not action:
+            return []
 
-        return [self._normalize_pyautogui_coordinates(cmd) for cmd in commands if cmd]
+        cmds = []
+        raw_coord = params.get("coordinate")
+        coordinate = None
+        if isinstance(raw_coord, str):
+            try:
+                # Handle cases like "[100, 200]" or "100, 200"
+                cleaned_coord = raw_coord.strip("[]() ")
+                parts = [p.strip() for p in cleaned_coord.split(",")]
+                if len(parts) >= 2:
+                    x, y = float(parts[0]), float(parts[1])
+                    # If we are parsing XML, we ALWAYS assume 1000x1000 normalization (Qwen-style)
+                    x_scale = self.width / 999.0
+                    y_scale = self.height / 999.0
+                    coordinate = (int(x * x_scale), int(y * y_scale))
+            except (ValueError, TypeError):
+                pass
 
-    def _normalize_pyautogui_coordinates(self, command: str) -> str:
-        """
-        Convert normalized pyautogui coordinates such as click(0.5, 0.25)
-        into absolute pixel coordinates for the configured screen size.
-        """
-        try:
-            tree = ast.parse(command)
-        except SyntaxError:
-            return command
+        text = params.get("text", "")
+        keys = params.get("keys", [])
+        if isinstance(keys, str):
+            try: 
+                keys = json.loads(keys) if (keys.startswith("[") or keys.startswith("{")) else [keys]
+            except Exception: 
+                keys = [keys]
 
-        normalizer = _PyAutoGuiCoordinateNormalizer(
-            screen_width=self.screen_width,
-            screen_height=self.screen_height,
-        )
-        normalized_tree = normalizer.visit(tree)
-        ast.fix_missing_locations(normalized_tree)
-        try:
-            return ast.unparse(normalized_tree)
-        except Exception:
-            return command
+        def _py_str(s): return json.dumps(str(s), ensure_ascii=False)
 
-    @staticmethod
-    def strip_special_command(actions: List[str]) -> Tuple[List[str], Optional[str]]:
-        """
-        Separate special commands from regular actions.
+        # Mapping of XML actions to pyautogui commands
+        action_map = {
+            "left_click": ("click", True),
+            "right_click": ("rightClick", True),
+            "middle_click": ("middleClick", True),
+            "double_click": ("doubleClick", True),
+            "triple_click": ("doubleClick", True), # Map triple_click to doubleClick
+            "mouse_move": ("moveTo", True),
+            "left_click_drag": ("dragTo", True),
+        }
 
-        Args:
-            actions: List of action commands
+        if action in action_map:
+            func_name, needs_coord = action_map[action]
+            if needs_coord and coordinate:
+                cmds.append(f"pyautogui.{func_name}({coordinate[0]}, {coordinate[1]})")
+            else:
+                cmds.append(f"pyautogui.{func_name}()")
+        elif action == "type":
+            cmds.append(f"pyautogui.typewrite({_py_str(text)})")
+        elif action == "key":
+            if len(keys) > 1:
+                cmds.append(f"pyautogui.hotkey({', '.join(_py_str(k) for k in keys)})")
+            elif keys:
+                cmds.append(f"pyautogui.press({_py_str(keys[0])})")
+        elif action == "wait":
+            cmds.append("WAIT")
+        elif action in {"terminate", "answer"}:
+            status = params.get("status", "success")
+            cmds.append("DONE" if status == "success" else "FAIL")
+        elif action in {"scroll", "hscroll"}:
+            try:
+                pixels = int(float(params.get("pixels", 0)))
+            except (ValueError, TypeError):
+                pixels = 0
+            cmds.append(f"pyautogui.scroll({pixels})")
+        
+        return cmds
 
-        Returns:
-            Tuple of (cleaned_actions, special_command)
-            where special_command is DONE/FAIL/WAIT if present, None otherwise
-        """
-        special_cmd: Optional[str] = None
-        cleaned: List[str] = []
+    def _parse_legacy_actions(self, action_str: str) -> List[str]:
+        """Parse legacy ## Action / ## Code block format."""
+        commands = []
+        code_blocks = re.findall(r"```python\n(.*?)\n```", action_str, re.DOTALL)
+        
+        if not code_blocks:
+            code_match = re.search(r"## Code:\s*(.*)", action_str, re.DOTALL)
+            if code_match:
+                content = code_match.group(1).split("##")[0].strip()
+                code_blocks = [content]
 
-        for cmd in actions:
-            normalized = cmd.strip().upper()
-            if normalized in {"DONE", "FAIL"}:
-                special_cmd = normalized
-                continue
-            if normalized == "WAIT" and len(actions) == 1:
-                special_cmd = normalized
-                continue
-            cleaned.append(cmd)
+        for block in code_blocks:
+            lines = [line.strip() for line in block.split("\n") if line.strip()]
+            for line in lines:
+                sanitized = self._sanitize_command(line)
+                if sanitized:
+                    commands.append(sanitized)
+        
+        return commands
 
-        return cleaned, special_cmd
+    def _sanitize_command(self, command: str) -> Optional[str]:
+        if not command:
+            return None
+        special = self._try_get_special_command(command)
+        if special:
+            return special
+        if command.startswith("computer."):
+            return self._map_computer_helper(command)
+        if command.startswith("pyautogui."):
+            try:
+                tree = ast.parse(command)
+                normalized_tree = self._normalizer.visit(tree)
+                return ast.unparse(normalized_tree).strip()
+            except Exception:
+                return command
+        return command
+
+    def _map_computer_helper(self, command: str) -> str:
+        if "wait()" in command:
+            return "WAIT"
+        if "terminate" in command:
+            if 'status="success"' in command or "status='success'" in command:
+                return "DONE"
+            return "FAIL"
+        return command
+
+    def _try_get_special_command(self, command: str) -> Optional[str]:
+        cleaned = command.strip().upper()
+        for cmd in self.SPECIAL_COMMANDS:
+            if cleaned.startswith(cmd):
+                return cmd
+        return None
 
     @staticmethod
     def is_special_command(action: str) -> bool:
-        """Check if action is a special command."""
         return action.strip().upper() in ActionParser.SPECIAL_COMMANDS
+
+    def strip_special_command(self, actions: List[str]) -> Tuple[List[str], Optional[str]]:
+        special_cmd = None
+        remaining_actions = []
+        for act in actions:
+            cmd = self._try_get_special_command(act)
+            if cmd:
+                special_cmd = cmd
+            else:
+                remaining_actions.append(act)
+        return remaining_actions, special_cmd
