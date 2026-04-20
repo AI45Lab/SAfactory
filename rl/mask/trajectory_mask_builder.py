@@ -26,7 +26,7 @@ class MessageNode:
     delta_response_mask: List[int] = field(default_factory=list)
     delta_images: List[Any] = field(default_factory=list)
     delta_image_data: List[str] = field(default_factory=list)
-    mm_train_inputs: Optional[Dict[str, Any]] = None
+    delta_mm_train_inputs: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -286,7 +286,17 @@ class TrajectoryMaskBuilder:
         self,
         session_id: str,
         messages: List[Dict[str, Any]],
-    ) -> Tuple[MessageNode, int, List[Dict[str, Any]], str, List[int], List[int], List[Any], List[str]]:
+    ) -> Tuple[
+        MessageNode,
+        int,
+        List[Dict[str, Any]],
+        str,
+        List[int],
+        List[int],
+        List[Any],
+        List[str],
+        Optional[Dict[str, Any]],
+    ]:
         node = self.session_roots.get(session_id)
         if node is None:
             node = MessageNode(raw_message=None, model_input_message=None)
@@ -298,6 +308,7 @@ class TrajectoryMaskBuilder:
         response_mask: List[int] = []
         images: List[Any] = []
         image_data: List[str] = []
+        mm_train_inputs: Optional[Dict[str, Any]] = None
 
         for message in messages:
             child = None
@@ -316,10 +327,21 @@ class TrajectoryMaskBuilder:
             response_mask.extend(child.delta_response_mask)
             images.extend(child.delta_images)
             image_data.extend(child.delta_image_data)
+            mm_train_inputs = self._concat_mm_train_inputs(mm_train_inputs, child.delta_mm_train_inputs)
             node = child
             matched += 1
 
-        return node, matched, model_input_messages, messages_str, tokens, response_mask, images, image_data
+        return (
+            node,
+            matched,
+            model_input_messages,
+            messages_str,
+            tokens,
+            response_mask,
+            images,
+            image_data,
+            mm_train_inputs,
+        )
 
     def _add_prompt_message(
         self,
@@ -342,10 +364,7 @@ class TrajectoryMaskBuilder:
         next_images.extend(new_images)
         next_image_data = list(image_data)
         next_image_data.extend(new_image_data)
-        mm_train_inputs = self._concat_mm_train_inputs(
-            parent.mm_train_inputs,
-            self._build_mm_train_inputs_for_images(new_images),
-        )
+        delta_mm_train_inputs = self._build_mm_train_inputs_for_images(new_images)
 
         delta_message_str = self._render_message_delta_str(model_input_message)
         next_messages_str = messages_str + delta_message_str
@@ -363,7 +382,7 @@ class TrajectoryMaskBuilder:
             delta_response_mask=delta_response_mask,
             delta_images=new_images,
             delta_image_data=new_image_data,
-            mm_train_inputs=mm_train_inputs,
+            delta_mm_train_inputs=delta_mm_train_inputs,
         )
         parent.children.append(node)
         return (
@@ -397,7 +416,7 @@ class TrajectoryMaskBuilder:
             delta_response_mask=delta_response_mask,
             delta_images=[],
             delta_image_data=[],
-            mm_train_inputs=parent.mm_train_inputs,
+            delta_mm_train_inputs=None,
         )
         parent.children.append(node)
         return node
@@ -407,7 +426,7 @@ class TrajectoryMaskBuilder:
         session_id: str,
         messages: List[Dict[str, Any]],
     ) -> Tuple[MessageNode, List[Dict[str, Any]], str, List[int], List[Any], List[str]]:
-        node, matched, model_input_messages, messages_str, tokens, _response_mask, images, image_data = self._match_prefix(
+        node, matched, model_input_messages, messages_str, tokens, _response_mask, images, image_data, _mm_train_inputs = self._match_prefix(
             session_id,
             messages,
         )
@@ -463,7 +482,7 @@ class TrajectoryMaskBuilder:
         session_id: str,
         messages: List[Dict[str, Any]],
     ):
-        node, matched, _model_input_messages, messages_str, tokens, response_mask, images, image_data = self._match_prefix(
+        node, matched, _model_input_messages, messages_str, tokens, response_mask, images, image_data, mm_train_inputs = self._match_prefix(
             session_id,
             messages,
         )
@@ -477,10 +496,8 @@ class TrajectoryMaskBuilder:
             )
             return [], [], [], "", None
 
-        mm_train_inputs = node.mm_train_inputs
         if mm_train_inputs is None and self.processor is not None and images:
-            node.mm_train_inputs = self._build_mm_train_inputs_for_images(images)
-            mm_train_inputs = node.mm_train_inputs
+            mm_train_inputs = self._build_mm_train_inputs_for_images(images)
 
         return (
             tokens,
