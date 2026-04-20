@@ -330,6 +330,7 @@ def start_aievobox_process(data: dict):
     llm_temperature = float(get_env("LLM_TEMPERATURE") or 1.0)
     pool_size = int(get_env("AIEVOBOX_POOL_SIZE") or 16)
     rl_epoch = int(get_env("RL_EPOCH") or 1)
+    env_transport = os.environ.get("AIEVOBOX_ENV_TRANSPORT", "http")
 
     cmd = [
         "python3", launcher_script,
@@ -347,6 +348,7 @@ def start_aievobox_process(data: dict):
         "--rl-use-session-suffix-url",
         "--rl-group-size", str(group_size),
         "--rl-epoch", str(rl_epoch),
+        "--env-transport", env_transport,
     ]
 
     logger.info(f"Starting launcher.py: {' '.join(cmd)}")
