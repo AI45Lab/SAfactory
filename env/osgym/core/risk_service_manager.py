@@ -13,6 +13,7 @@ import logging
 import time
 import os
 import signal
+import socket
 from typing import Optional, Dict
 
 logger = logging.getLogger("osgym.risk_service")
@@ -56,6 +57,58 @@ class RiskServiceManager:
         self._current_service: Optional[str] = None
         self._current_port: Optional[int] = None
 
+    def _is_port_open(self, port: int, host: str = "127.0.0.1", timeout: float = 0.5) -> bool:
+        """Check whether the risk service port is accepting TCP connections."""
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
+    def _cleanup_failed_start(self):
+        """Reset process state after a failed launch attempt."""
+        self._process = None
+        self._current_service = None
+        self._current_port = None
+
+    def _wait_for_service_ready(self, module: str, port: int, wait_time: float) -> bool:
+        """
+        Wait until the risk service is reachable.
+
+        Flask debug mode may spawn a child process and let the original parent exit,
+        so probing the listening port is more reliable than checking only poll().
+        """
+        deadline = time.time() + wait_time
+        last_returncode = None
+
+        while time.time() < deadline:
+            if self._is_port_open(port):
+                return True
+
+            if self._process is not None:
+                last_returncode = self._process.poll()
+
+            time.sleep(0.1)
+
+        if self._is_port_open(port):
+            return True
+
+        if self._process is not None and last_returncode is not None:
+            stdout, stderr = self._process.communicate()
+            logger.error(
+                f"Risk service {module} failed to start. "
+                f"Exit code: {self._process.returncode}. "
+                f"Stdout: {stdout.decode('utf-8', errors='ignore')[:300]} "
+                f"Stderr: {stderr.decode('utf-8', errors='ignore')[:500]}"
+            )
+        else:
+            logger.error(
+                f"Risk service {module} did not become ready on port {port} within {wait_time:.1f}s"
+            )
+
+        self._cleanup_failed_start()
+        return False
+
     def get_required_service(self, task_config: dict) -> Optional[Dict]:
         """
         Determine which service is required for a task based on its snapshot.
@@ -90,7 +143,7 @@ class RiskServiceManager:
         port = service_info["port"]
 
         # Check if the same service is already running
-        if self._current_service == module and self._process and self._process.poll() is None:
+        if self._current_service == module and self._current_port == port and self._is_port_open(port):
             logger.debug(f"Service {module} already running on port {port}")
             return True
 
@@ -113,20 +166,7 @@ class RiskServiceManager:
             self._current_service = module
             self._current_port = port
 
-            # Wait for service to start
-            time.sleep(wait_time)
-
-            # Check if process is still running
-            if self._process.poll() is not None:
-                stdout, stderr = self._process.communicate()
-                logger.error(
-                    f"Risk service {module} failed to start. "
-                    f"Exit code: {self._process.returncode}. "
-                    f"Stderr: {stderr.decode('utf-8', errors='ignore')[:500]}"
-                )
-                self._process = None
-                self._current_service = None
-                self._current_port = None
+            if not self._wait_for_service_ready(module, port, wait_time):
                 return False
 
             logger.info(f"Risk service {module} started successfully on port {port}")
@@ -134,9 +174,7 @@ class RiskServiceManager:
 
         except Exception as e:
             logger.error(f"Failed to start risk service {module}: {e}")
-            self._process = None
-            self._current_service = None
-            self._current_port = None
+            self._cleanup_failed_start()
             return False
 
     def stop_service(self, timeout: float = 5.0) -> bool:
@@ -188,7 +226,7 @@ class RiskServiceManager:
 
     def is_running(self) -> bool:
         """Check if a risk service is currently running."""
-        return self._process is not None and self._process.poll() is None
+        return self._current_port is not None and self._is_port_open(self._current_port)
 
     def get_current_service_info(self) -> Optional[Dict]:
         """Get information about the currently running service."""
@@ -197,7 +235,7 @@ class RiskServiceManager:
         return {
             "module": self._current_service,
             "port": self._current_port,
-            "pid": self._process.pid
+            "pid": self._process.pid if self._process is not None else None
         }
 
     def __del__(self):

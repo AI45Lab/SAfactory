@@ -43,7 +43,7 @@ Your job is to determine if a task was completed successfully based on:
 2. The sequence of actions taken by the agent
 3. The final screenshot showing the current state
 
-Scoring rubric (binary):
+Scoring rules (binary):
 - 1: Task completed. The goal is achieved (fully or mostly completed with minor deviations).
 - 0: Task not completed. The goal is not achieved or only partially completed.
 
@@ -127,8 +127,8 @@ class LLMJudge:
         for i, step in enumerate(trajectory, 1):
             action = step.get("action", "unknown action")
             # Truncate very long actions
-            if len(action) > 500:
-                action = action[:500] + "..."
+            # if len(action) > 500:
+            #     action = action[:500] + "..."
             lines.append(f"Step {i}: {action}")
 
         return "\n".join(lines)
@@ -170,8 +170,7 @@ class LLMJudge:
         instruction: str,
         trajectory: List[Dict] = None,
         final_screenshot: bytes = None,
-        expected_outcome: str = None,
-        rubric: Dict[str, str] = None
+        expected_outcome: str = None
     ) -> JudgeResult:
         """
         Evaluate if a task was completed successfully.
@@ -181,7 +180,6 @@ class LLMJudge:
             trajectory: List of action steps taken (each with 'action' key)
             final_screenshot: Screenshot bytes of the final state
             expected_outcome: Optional description of what success looks like
-            rubric: Optional custom scoring rubric
 
         Returns:
             JudgeResult with score, reasoning, and confidence
@@ -199,10 +197,6 @@ class LLMJudge:
 
         if trajectory:
             text_parts.append(f"\n## Actions Taken\n{self._format_trajectory(trajectory)}")
-
-        if rubric:
-            rubric_text = "\n".join([f"- {k}: {v}" for k, v in rubric.items()])
-            text_parts.append(f"\n## Custom Scoring Criteria\n{rubric_text}")
 
         text_parts.append("\n## Your Task\nEvaluate whether the task was completed successfully based on the above information and the final screenshot.")
 
@@ -295,8 +289,7 @@ class SyncLLMJudge:
         )
 
 def create_llm_judge_evaluator_config(
-    expected_outcome: str = None,
-    rubric: Dict[str, str] = None
+    expected_outcome: str = None
 ) -> Dict[str, Any]:
     """
     Create evaluator config for LLM Judge.
@@ -306,15 +299,13 @@ def create_llm_judge_evaluator_config(
 
     Args:
         expected_outcome: Description of what successful completion looks like
-        rubric: Custom scoring criteria
 
     Returns:
         Evaluator configuration dictionary
 
     Example:
         >>> config = create_llm_judge_evaluator_config(
-        ...     expected_outcome="Firefox window is open with google.com loaded",
-        ...     rubric={"full": "Google homepage visible", "partial": "Firefox open but wrong page"}
+        ...     expected_outcome="Firefox window is open with google.com loaded"
         ... )
     """
     evaluator_config = {
@@ -327,8 +318,5 @@ def create_llm_judge_evaluator_config(
 
     if expected_outcome:
         evaluator_config["expected"]["expected_outcome"] = expected_outcome
-
-    if rubric:
-        evaluator_config["expected"]["rubric"] = rubric
 
     return evaluator_config
