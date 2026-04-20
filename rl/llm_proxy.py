@@ -12,6 +12,7 @@ shared TrajectoryMaskBuilder in memory — no HTTP round-trip needed.
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import sys
@@ -41,6 +42,7 @@ LOG_FILE = os.path.join(LOG_DIR, "llm_proxy.log")
 
 logger = logging.getLogger("llm_proxy")
 logger.setLevel(logging.DEBUG)
+logger.propagate = False
 
 # File handler with rotation
 file_handler = RotatingFileHandler(
@@ -53,12 +55,13 @@ file_handler.setFormatter(logging.Formatter(
 logger.addHandler(file_handler)
 
 # Console handler
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(logging.Formatter(
-    "%(asctime)s [%(levelname)s] %(message)s"
-))
-logger.addHandler(console_handler)
+if os.getenv("LLM_PROXY_ENABLE_CONSOLE_LOG") == "1":
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s"
+    ))
+    logger.addHandler(console_handler)
 
 logger.info(f"LLM Proxy logging to: {LOG_FILE}")
 
@@ -67,9 +70,28 @@ MASK_DIR = os.path.join(AIEVOBOX_ROOT, "rl", "mask")
 if MASK_DIR not in sys.path:
     sys.path.insert(0, MASK_DIR)
 
-from trajectory_mask_builder import TrajectoryMaskBuilder
+from trajectory_mask_builder import PreparedPrompt, TrajectoryMaskBuilder
 
 app = FastAPI(title="LLM Proxy Server", debug=True)
+
+def _resolve_proxy_workers() -> int:
+    default_workers = min(32, max(8, os.cpu_count() or 8))
+    raw = os.getenv("AIEVOBOX_LLM_PROXY_WORKERS")
+    if not raw:
+        return default_workers
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid AIEVOBOX_LLM_PROXY_WORKERS=%r, fallback to default=%d",
+            raw,
+            default_workers,
+        )
+        return default_workers
+
+
+_PROXY_WORKERS = _resolve_proxy_workers()
+
 
 @app.middleware("http")
 async def set_body_size(request: Request, call_next):
@@ -88,6 +110,7 @@ class ProxyState:
         self.trajectory_mask_builder: Optional[TrajectoryMaskBuilder] = None
         self.remote_engine_url: Optional[str] = None  # Base URL without /v1
         self._http_client: Optional[httpx.AsyncClient] = None
+        self._builder_executor: Optional[ThreadPoolExecutor] = None
         self.max_length: Optional[int] = None
         # Sampling params
         self.temperature: float = 1.0
@@ -110,11 +133,27 @@ class ProxyState:
             )
         return self._http_client
 
+    def get_builder_executor(self) -> ThreadPoolExecutor:
+        """Get or create the dedicated builder executor."""
+        if self._builder_executor is None:
+            self._builder_executor = ThreadPoolExecutor(
+                max_workers=_PROXY_WORKERS,
+                thread_name_prefix="llm-proxy",
+            )
+            logger.info(
+                "Initialized llm_proxy executor: workers=%d",
+                _PROXY_WORKERS,
+            )
+        return self._builder_executor
+
     async def close(self):
         """Close the HTTP client."""
         if self._http_client is not None:
             await self._http_client.aclose()
             self._http_client = None
+        if self._builder_executor is not None:
+            self._builder_executor.shutdown(wait=False, cancel_futures=True)
+            self._builder_executor = None
 
 
 STATE = ProxyState()
@@ -143,16 +182,16 @@ async def proxy_chat_completions(session_id: str, request: Request):
 
     # Prepare input tokens (with multimodal state like cumulative image_data).
     # Run in thread pool to avoid blocking the event loop (CPU-bound tokenization)
-    prep = await asyncio.to_thread(
+    loop = asyncio.get_running_loop()
+    builder_executor = STATE.get_builder_executor()
+    prep: PreparedPrompt = await loop.run_in_executor(
+        builder_executor,
         STATE.trajectory_mask_builder.prepare_generate_input,
         session_id,
         messages
     )
-    input_ids = prep["input_ids"]
-    messages_str = prep["messages_str"]
-    image_data = prep.get("image_data") or []
-    matched_record = prep.get("matched_record")
-    matched_tokens_count = prep.get("matched_tokens_count", 0)
+    input_ids = prep.input_ids
+    image_data = prep.image_data
 
     # Calculate max_new_tokens
     if STATE.max_length is not None:
@@ -234,18 +273,14 @@ async def proxy_chat_completions(session_id: str, request: Request):
     # Save trajectory
     if STATE.trajectory_mask_builder is not None:
         try:
-            await asyncio.to_thread(
-                STATE.trajectory_mask_builder.save,
-                session_id,
-                messages_str,
-                input_ids,
+            await loop.run_in_executor(
+                builder_executor,
+                STATE.trajectory_mask_builder.record_generation,
+                prep,
                 output_ids,
                 output_logprobs,
-                image_data,
-                finish_reason,
-                matched_record,
-                matched_tokens_count,
                 assistant_text,
+                finish_reason,
             )
         except Exception as e:
             import traceback

@@ -1,11 +1,13 @@
+import atexit
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import os
 import sys
 import threading
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import copy
 
 # Add rl directory to path for utils import
@@ -40,8 +42,54 @@ TOKENIZER = None
 TRAJECTORY_MASK_BUILDER = None
 START_ROLLOUT = True
 _LLM_PROXY_STARTED = False
+_TRAININFO_EXECUTOR: Optional[ThreadPoolExecutor] = None
 
 _llm_proxy_port = int(get_env("LLM_PROXY_PORT"))
+
+
+def _resolve_traininfo_workers() -> int:
+    default_workers = min(16, max(4, (os.cpu_count() or 8) // 2))
+    raw = os.getenv("AIEVOBOX_TRAININFO_WORKERS")
+    if not raw:
+        return default_workers
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid AIEVOBOX_TRAININFO_WORKERS=%r, fallback to default=%d",
+            raw,
+            default_workers,
+        )
+        return default_workers
+
+
+_TRAININFO_WORKERS = _resolve_traininfo_workers()
+
+
+def _get_traininfo_executor() -> ThreadPoolExecutor:
+    global _TRAININFO_EXECUTOR
+
+    if _TRAININFO_EXECUTOR is None:
+        _TRAININFO_EXECUTOR = ThreadPoolExecutor(
+            max_workers=_TRAININFO_WORKERS,
+            thread_name_prefix="traininfo",
+        )
+        logger.info(
+            "Initialized traininfo executor: workers=%d",
+            _TRAININFO_WORKERS,
+        )
+    return _TRAININFO_EXECUTOR
+
+
+def _shutdown_traininfo_executor() -> None:
+    global _TRAININFO_EXECUTOR
+
+    if _TRAININFO_EXECUTOR is not None:
+        _TRAININFO_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+        _TRAININFO_EXECUTOR = None
+
+
+atexit.register(_shutdown_traininfo_executor)
 
 
 def decode_tokens_with_mask_debug(tokenizer, token_ids, loss_mask):
@@ -487,8 +535,10 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
                     if session_id:
                         touched_session_ids.add(session_id)
 
+                loop = asyncio.get_running_loop()
+                traininfo_executor = _get_traininfo_executor()
                 training_info_results = await asyncio.gather(
-                    *(asyncio.to_thread(_get_record_training_info, record) for record in flat_records),
+                    *(loop.run_in_executor(traininfo_executor, _get_record_training_info, record) for record in flat_records),
                     return_exceptions=True,
                 )
 

@@ -105,7 +105,7 @@ SGLANG_ARGS=(
    --sglang-mem-fraction-static 0.7
    --sglang-attention-backend fa3
    # --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
-   --sglang-log-level error
+   --sglang-log-level info
    --sglang-log-level-http error
 )
 

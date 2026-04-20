@@ -11,6 +11,10 @@ export AIEVOBOX_ENV_CONFIG=/root/AIEvoBox/env/geo3k_vl_test/geo3k_vl_test_env_co
 # ENV_ROOT 指定读取目录下所有子目录的环境
 # export AIEVOBOX_ENV_ROOT=/root/AIEvoBox/env
 export AIEVOBOX_POOL_SIZE=256
+export AIEVOBOX_LLM_MAX_CONCURRENCY=$AIEVOBOX_POOL_SIZE
+export AIEVOBOX_LLM_PROXY_WORKERS=$AIEVOBOX_POOL_SIZE
+export AIEVOBOX_LLM_STARTUP_JITTER_S=0
+export AIEVOBOX_TRAININFO_WORKERS=$AIEVOBOX_POOL_SIZE
 export STORAGE_TYPE=sqlite
 
 
@@ -48,11 +52,12 @@ export LLM_PROXY_HOST=127.0.0.1
 export LLM_PROXY_PORT=18890
 export LLM_MAX_LENGTH=5120
 export LLM_TEMPERATURE=1.0
+export LLM_PROXY_ENABLE_CONSOLE_LOG=0
 
 # -------------------------------------------
 # Slime Training Settings (reference RL values)
 # -------------------------------------------
 export SLIME_ROLLBUF_RESTART_TRAINING=True
 export SLIME_N_SAMPLES_PER_PROMPT=$RL_GROUP_SIZE
-export SLIME_GLOBAL_BATCH_SIZE=512
+export SLIME_GLOBAL_BATCH_SIZE=51200
 export SLIME_ROLLOUT_BATCH_SIZE=$((SLIME_GLOBAL_BATCH_SIZE / RL_GROUP_SIZE))
