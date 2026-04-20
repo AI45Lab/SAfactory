@@ -285,3 +285,6 @@ env/dabstep/agent_core/
 env/dwgym/discoveryworld/
 video/
 ai-gen
+
+# logs
+trajectory_match_miss/

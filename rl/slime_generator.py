@@ -30,6 +30,7 @@ from slime.utils.types import Sample
 
 import llm_proxy as _llm_proxy_module
 from trajectory_mask_builder import TrajectoryMaskBuilder
+from opd.teacher_log_probs import attach_teacher_log_probs
 
 __all__ = ["generate_rollout"]
 
@@ -392,6 +393,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
 
     # 根据weight_version过滤已完成的数据
     off_by_n = int(get_env("RL_OFF_BY_N"))
+    dapo_filter_enabled = os.environ.get("DAPO_filter", "true").strip().lower() in ("1", "true", "yes", "on")
     filter_by_weight_version(data_buffer, current_version=current_version, off_by_n=off_by_n)
     buffer_length = data_buffer.get_buffer_length()
     needed_groups = max(0, args.rollout_batch_size - buffer_length)
@@ -460,7 +462,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
             valid_groups = []
             for group in grouped_results:
                 rewards = [record.get("reward") for record in group]
-                if len(set(rewards)) == 1:
+                if dapo_filter_enabled and len(set(rewards)) == 1:
                     logger.info(
                         f"Filtered out group with rewards={rewards}, "
                         f"current_version={current_version}"
@@ -632,4 +634,7 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
         print(f"start rollout id: {rollout_id}")
         START_ROLLOUT = False
 
-    return run(generate_rollout_async(args, rollout_id, data_buffer, evaluation))
+    sample_groups = run(generate_rollout_async(args, rollout_id, data_buffer, evaluation))
+    if evaluation:
+        return sample_groups
+    return run(attach_teacher_log_probs(args, sample_groups))
