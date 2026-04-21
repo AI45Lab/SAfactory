@@ -18,16 +18,12 @@ from env.registry import (
     _import_os_env,
     _import_qa_gym,
     _import_robotrustbench_env,
-    _import_search_env,
-    _import_trading_env,
 )
 
 EnvImporter = Callable[[], Type[Any]]
 
 _ENV_IMPORTERS: Dict[str, EnvImporter] = {
     "android_gym": _import_android_gym,
-    "search": _import_search_env,
-    "trading_gym": _import_trading_env,
     "mc": _import_mc_env,
     "mc_gym": _import_mc_env,
     "emb": _import_emb_env,

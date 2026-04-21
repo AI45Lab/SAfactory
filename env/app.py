@@ -353,7 +353,7 @@ class StepRequest(BaseModel):
 
 
 app = FastAPI(
-    title="Env HTTP Service (Ray + TradingGym)",
+    title="Env HTTP Service (Ray + Gym)",
     version="0.2.0",
 )
 

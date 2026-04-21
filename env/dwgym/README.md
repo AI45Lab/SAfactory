@@ -101,9 +101,9 @@ DiscoveryWorld 包含 8 个科学发现主题，每个主题支持 3 种难度�
 docker build -f env/dwgym/Dockerfile -t dwgym:latest .
 ```
 
-- 直接拉取镜像
+- 如需预构建镜像，请替换为你自己的镜像仓库地址，例如：
 ```bash
-docker pull registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/dwgym:<tag>
+docker pull <your-registry>/dwgym:latest
 ```
 
 ---

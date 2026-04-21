@@ -3,7 +3,7 @@
 <h1>🧪 Safactory</h1>
 
 <p>
-  <strong>A universal AI agent sandbox for evaluation, training data construction, and RL training<br>across simulation environments — Android, OS, Embodied, and more.</strong>
+  <strong>A universal AI agent sandbox for evaluation, training data construction, and RL training<br>across ten open-source environments spanning Android, OS, Minecraft, Embodied agents, QA, data processing, scientific discovery, and multimodal reasoning.</strong>
 </p>
 
 <p>
@@ -50,7 +50,7 @@ Safactory provides a **unified pipeline** so you can go from model evaluation to
 
 Key strengths:
 
-- 🌍 **Multi-domain environments** — Android, OS, Embodied Robotics, code, search, and more
+- 🌍 **Multi-domain environments** — Android, OS, Minecraft, RoboTrustBench, Embodied ALFRED and more
 - ⚡ **High concurrency** — Environment pool management with async workers for fast parallel rollouts
 - 🔌 **LLM-agnostic** — Works with any OpenAI-compatible endpoint (vLLM, SGLang, OpenAI API)
 - 🏗️ **Two deployment modes** — `local` (single machine) or `remote` (Ray-based cluster)
@@ -77,12 +77,10 @@ The example below evaluates a model on the **Android** environment (`android_gym
 > - You have a local Android Emulator AVD available for `emulator_name` (default: `nexus_safe`), and `emulator_cmd_path` is `emulator`.
 > - If you use `redroid`, ensure `nerdctl` is installed on the host (the environment will start a redroid container automatically).
 > - The archive mirror includes the dataset file at `env/androidgym/cases.jsonl` (the repository does not ship datasets).
->
-> **Internal/optional (not required for OSS):** if you have access to the private registry image, you can run the Android environment container as documented previously, but the OSS-first workflow is the host-native path above.
 
 #### Step 1 — Prepare the Android environment
 
-No separate Docker step is required for the OSS-first workflow: `launcher.py` will start the emulator when `start_emulator: true`.
+No separate Docker step is required for the default host-native workflow: `launcher.py` will start the emulator when `start_emulator: true`.
 
 #### Step 2 — Run the evaluation
 
@@ -132,7 +130,7 @@ For a detailed usage guide, see [docs/experience-extraction-injection.md](docs/e
 
 | Guide | Description |
 |-------|-------------|
-| [Supported Environments](./docs/environments.md) | Per-environment setup, Docker images, and configuration |
+| [Supported Environments](./docs/environments.md) | Setup, Prerequisites, Docker images, and Configuration|
 | [RL Training](./docs/rl-training.md) | Slime integration, Buffer Server setup, and RL parameters |
 | [Custom Environment](./docs/custom-environment.md) | Step-by-step guide to adding a new environment |
 | [Configuration](./docs/configuration.md) | Full CLI reference and `config.yaml` schema |

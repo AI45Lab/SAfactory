@@ -1,6 +1,6 @@
 environments:
   - env_name: discoveryworld
-    image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:dwgymv0.1
+    image: dwgym:latest
     env_num: 1
     dataset: ""
     env_params:
@@ -16,7 +16,7 @@ environments:
       max_history_length: 20
 
   - env_name: discoveryworld
-    image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:dwgymv0.1
+    image: dwgym:latest
     env_num: 1
     dataset: ""
     env_params:
@@ -32,7 +32,7 @@ environments:
       max_history_length: 20
 
 #  - env_name: discoveryworld
-#    image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:dwgymv0.1
+#    image: dwgym:latest
 #    env_num: 1
 #    env_params:
 #      thread_id: 13
@@ -47,7 +47,7 @@ environments:
 #      max_history_length: 20
 
 #  - env_name: discoveryworld
-#    image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:dwgymv0.1
+#    image: dwgym:latest
 #    env_num: 1
 #    env_params:
 #      thread_id: 14
@@ -62,7 +62,7 @@ environments:
 #      max_history_length: 20
 
 #  - env_name: discoveryworld
-#    image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:dwgymv0.1
+#    image: dwgym:latest
 #    env_num: 1
 #    env_params:
 #      thread_id: 15
@@ -77,7 +77,7 @@ environments:
 #      max_history_length: 20
 
 #  - env_name: discoveryworld
-#    image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:dwgymv0.1
+#    image: dwgym:latest
 #    env_num: 1
 #    env_params:
 #      thread_id: 16

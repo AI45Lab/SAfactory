@@ -1,8 +1,0 @@
-# SearchEnv 运行时配置
-# 这些参数不放在环境配置中，而是由环境自行加载
-
-top_k: 3
-search_api_url: "http://10.103.15.26:8000/retrieve"
-search_timeout: -1
-judge_url: "http://10.103.15.26:28080/judge"
-judge_timeout: -1
