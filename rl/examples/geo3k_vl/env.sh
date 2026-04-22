@@ -17,6 +17,8 @@ export AIEVOBOX_LLM_PROXY_WORKERS=$AIEVOBOX_POOL_SIZE
 export AIEVOBOX_LLM_STARTUP_JITTER_S=0
 export AIEVOBOX_TRAININFO_WORKERS=$AIEVOBOX_POOL_SIZE
 export STORAGE_TYPE=sqlite
+export AIEVOBOX_SQLITE_BULK_INSERT_BATCH_SIZE=256
+export AIEVOBOX_SQLITE_BULK_INSERT_PAUSE_S=0.01
 
 
 
@@ -24,7 +26,7 @@ export STORAGE_TYPE=sqlite
 # RL Settings
 # -------------------------------------------
 export RL_GROUP_SIZE=8
-export RL_EPOCH=10
+export RL_EPOCH=1000
 export RL_OFF_BY_N=0
 
 # no use, will be removed
