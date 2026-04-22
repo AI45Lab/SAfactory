@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+import time
 from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional
 
@@ -14,6 +15,8 @@ from .db_loader import (
 )
 
 log = logging.getLogger("manager.repository")
+
+DB_FETCH_WARN_SECONDS = 1.0
 
 
 class EnvDataRepository:
@@ -86,7 +89,19 @@ class EnvDataRepository:
                     break
 
                 if not self._row_buffer:
-                    self._fill_buffer_locked(max(batch_size, requested - len(reserved)))
+                    fetch_limit = max(batch_size, requested - len(reserved))
+                    started_at = time.perf_counter()
+                    await asyncio.to_thread(self._fill_buffer_locked, fetch_limit)
+                    elapsed = time.perf_counter() - started_at
+                    if elapsed >= DB_FETCH_WARN_SECONDS:
+                        log.warning(
+                            "env DB fetch took %.2fs limit=%d last_seen_id=%d buffered=%d job_id=%s",
+                            elapsed,
+                            int(fetch_limit),
+                            int(self._last_seen_id),
+                            len(self._row_buffer),
+                            self._job_id or "<all>",
+                        )
                     if not self._row_buffer:
                         break
 

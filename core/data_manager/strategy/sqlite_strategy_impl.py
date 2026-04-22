@@ -3,6 +3,7 @@ from core.data_manager.models import JobEnvironment, SessionStep
 from core.data_manager.write_buffer import WriteBuffer
 from tortoise import Tortoise
 from typing import List, Dict, Optional, Tuple, Any
+import asyncio
 import uuid
 import json
 import sqlite3
@@ -11,6 +12,18 @@ import logging
 from datetime import datetime
 
 log = logging.getLogger("sqlite_strategy")
+
+RUNTIME_INDEX_SQL = (
+    """
+    CREATE INDEX IF NOT EXISTS idx_job_environments_job_deleted_id
+    ON job_environments(job_id, is_deleted, id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_session_steps_job_trainable_id
+    ON session_steps(job_id, is_trainable, id)
+    """,
+)
+
 
 class SqliteStrategy(StorageStrategy):
     """
@@ -51,6 +64,7 @@ class SqliteStrategy(StorageStrategy):
             modules={"models": ["core.data_manager.models"]}
         )
         await Tortoise.generate_schemas()
+        await self._ensure_runtime_indexes()
         self.initialized = True
 
         # Initialize write buffer for batched writes
@@ -63,6 +77,29 @@ class SqliteStrategy(StorageStrategy):
             )
 
         log.debug("SQLite strategy initialized: %s", self.db_url)
+
+    async def _ensure_runtime_indexes(self) -> None:
+        if not self.db_url.startswith("sqlite://"):
+            raise ValueError("Only sqlite:// protocol is supported")
+
+        file_path = self.db_url[9:].split("?", 1)[0]
+        started_at = time.perf_counter()
+
+        def create_indexes() -> None:
+            conn = sqlite3.connect(file_path)
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA busy_timeout=5000")
+                for sql in RUNTIME_INDEX_SQL:
+                    conn.execute(sql)
+                conn.commit()
+            finally:
+                conn.close()
+
+        await asyncio.to_thread(create_indexes)
+        elapsed = time.perf_counter() - started_at
+        if elapsed >= 1.0:
+            log.info("Ensured SQLite runtime indexes in %.2fs: %s", elapsed, file_path)
 
     async def add_environment(
         self,
@@ -99,7 +136,7 @@ class SqliteStrategy(StorageStrategy):
 
         log.debug("Added environment: %s/%s", env_name, env_id)
         return env_id
-    
+
     async def get_all_environments(self, job_id: Optional[str] = None) -> List[Dict]:
         """Retrieve all registered environments"""
         await self.init()
@@ -146,7 +183,7 @@ class SqliteStrategy(StorageStrategy):
 
         log.debug("Created session: %s for env %s", session.session_id, env_name)
         return session
-    
+
     async def record_step(
         self,
         session: SessionContext,
@@ -222,13 +259,7 @@ class SqliteStrategy(StorageStrategy):
         if not self.db_url.startswith("sqlite://"):
             raise ValueError("Only sqlite:// protocol is supported")
 
-        # Parse URL
-        url_suffix = self.db_url[9:]
-        if "?" in url_suffix:
-            file_path = url_suffix.split("?")[0]
-        else:
-            file_path = url_suffix
-
+        file_path = self.db_url[9:].split("?", 1)[0]
         conn = sqlite3.connect(file_path, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")

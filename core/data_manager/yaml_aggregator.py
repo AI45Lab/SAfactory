@@ -2,6 +2,7 @@ from pathlib import Path
 import asyncio
 import sqlite3
 import json
+import os
 import time
 import uuid
 import logging
@@ -58,11 +59,38 @@ async def _do_bulk_insert(pending_records: list, batch_size: int = 500) -> None:
     EnvPoolManager incrementally, rather than only after the entire insert completes.
     """
     total = len(pending_records)
+    batch_size_raw = os.environ.get("AIEVOBOX_SQLITE_BULK_INSERT_BATCH_SIZE")
+    pause_raw = os.environ.get("AIEVOBOX_SQLITE_BULK_INSERT_PAUSE_S")
+
     try:
+        batch_size = max(1, int(batch_size_raw or batch_size))
+    except (TypeError, ValueError):
+        log.warning(
+            "Invalid AIEVOBOX_SQLITE_BULK_INSERT_BATCH_SIZE=%r; using %d",
+            batch_size_raw,
+            batch_size,
+        )
+        batch_size = max(1, int(batch_size))
+
+    try:
+        pause_s = max(0.0, float(pause_raw or 0.0))
+    except (TypeError, ValueError):
+        log.warning("Invalid AIEVOBOX_SQLITE_BULK_INSERT_PAUSE_S=%r; using 0.0", pause_raw)
+        pause_s = 0.0
+
+    try:
+        log.info(
+            "Bulk insert start: total=%d batch_size=%d pause_s=%.3f",
+            total,
+            batch_size,
+            pause_s,
+        )
         for i in range(0, total, batch_size):
             async with in_transaction():
                 await JobEnvironment.bulk_create(pending_records[i:i + batch_size])
             log.info("Bulk insert progress: %d/%d", min(i + batch_size, total), total)
+            if pause_s > 0.0 and i + batch_size < total:
+                await asyncio.sleep(pause_s)
         log.info("Bulk insert done: %d env records", total)
     except Exception:
         log.exception("Background bulk insert failed for %d records", total)
