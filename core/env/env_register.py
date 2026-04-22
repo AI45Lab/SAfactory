@@ -11,7 +11,7 @@ def register_env(env_name: str):
     环境注册装饰器，用于将环境类注册到全局注册表中
     
     Args:
-        env_name: 环境的唯一标识名称（如"trading_gym"）
+        env_name: 环境的唯一标识名称（如"android_gym"）
     """
     def decorator(env_class: Type[Any]) -> Type[Any]:
         if env_name in _env_registry:

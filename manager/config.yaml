@@ -14,22 +14,6 @@ cluster:
     concurrency: 200       # Max concurrent HTTP calls from manager when prewarming actors
     startup_concurrency: 16  # Max concurrent cold starts / reset attempts during prewarm
   env_types:
-    trading_gym:
-      quotagroup: "evobox_cpu_task"         #TODO each env can specify it's distinguished quotagroup
-      entrypoint: "python /app/app.py"      #TODO reqiured
-      volumes:                              #TODO this is example , not required, but we can use mount for code and data change
-        - fsType: "mount.brainpp.cn/gpfs"
-          endpoint: "gpfs://gpfs1/evobox-share"
-          containerPath: "/mnt/shared-storage-user/evobox-share"
-      resources:                            #TODO not required, below is the default value if not setting for each env
-        head:
-          cpu: 10
-          gpu: 0
-          memory: 20Gi
-      limit: 30                             #TODO required
-    git_gym:
-      quotagroup: "evobox_cpu_task"
-      entrypoint: "python /app/app.py"
     mc:
       quotagroup: "evobox_cpu_task"
       entrypoint: "python /app/app.py"

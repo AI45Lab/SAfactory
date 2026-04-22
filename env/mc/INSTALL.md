@@ -141,7 +141,7 @@ bash examples/run_1_mc_envs.sh
 
 运行后应该看到 `mc_gym` 在已注册环境列表中：
 ```
-已注册的环境类型：['trading_gym', 'search', 'core_git_env', 'embodied_alfred', 'mc_gym']
+已注册的环境类型：['android_gym', 'core_git_env', 'embodied_alfred', 'mc_gym']
 ```
 
 ---

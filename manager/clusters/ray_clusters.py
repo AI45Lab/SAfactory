@@ -185,7 +185,7 @@ def _jobname_hint(env_name: str, idx: int) -> str:
     """Job name hint: prefix before '_' + index.
 
     Example:
-      trading_gym, idx=1 -> trading-1
+      android_gym, idx=1 -> android-1
     """
     base = (str(env_name).split("_", 1)[0] or str(env_name)).strip()
     if not base:

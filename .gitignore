@@ -35,8 +35,6 @@ env/androidgym/run.sh
 env/androidgym/classified_jsonl
 env/androidgym/files
 
-# gitgym env
-env/gitgym/generated_code
 
 # osgym env
 env/osgym/docker_vm_data
@@ -285,3 +283,6 @@ env/dabstep/agent_core/
 env/dwgym/discoveryworld/
 video/
 ai-gen
+
+# logs
+trajectory_match_miss/

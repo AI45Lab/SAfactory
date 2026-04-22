@@ -12,21 +12,18 @@ from env.registry import (
     _import_emb_env,
     _import_geo3k_vl_test_env,
     _import_gym_env,
+    _import_math500_text_env,
     _import_mc_env,
     _import_mc_gpu_env,
     _import_os_env,
     _import_qa_gym,
     _import_robotrustbench_env,
-    _import_search_env,
-    _import_trading_env,
 )
 
 EnvImporter = Callable[[], Type[Any]]
 
 _ENV_IMPORTERS: Dict[str, EnvImporter] = {
     "android_gym": _import_android_gym,
-    "search": _import_search_env,
-    "trading_gym": _import_trading_env,
     "mc": _import_mc_env,
     "mc_gym": _import_mc_env,
     "emb": _import_emb_env,
@@ -37,6 +34,8 @@ _ENV_IMPORTERS: Dict[str, EnvImporter] = {
     "mc_gpu": _import_mc_gpu_env,
     "mc_gpu_gym": _import_mc_gpu_env,
     "geo3k_vl_test": _import_geo3k_vl_test_env,
+    "math500_text": _import_math500_text_env,
+    "math500": _import_math500_text_env,
     "qa_gym": _import_qa_gym,
     "deepeyes_env": _import_deepeyes_env,
     "dabstepgym": _import_dab_env,

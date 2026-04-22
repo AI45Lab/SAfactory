@@ -1,0 +1,4 @@
+environments:
+  - env_name: math500_text
+    env_num: 1
+    dataset: /mnt/shared-storage-user/leishanzhe/dataset/HuggingFaceH4/MATH-500/test.jsonl

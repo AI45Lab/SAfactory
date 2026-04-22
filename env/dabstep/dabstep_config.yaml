@@ -2,7 +2,7 @@ environments:
   - env_name: dabstepgym
     env_num: 1
     dataset: ""
-    image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:dab002
+    image: dabstep:latest
     env_params:
       data_dir: "env/dabstep/data"
       artifacts_dir: "env/dabstep/artifacts"
@@ -16,7 +16,7 @@ environments:
   - env_name: dabstepgym
     env_num: 1
     dataset: ""
-    image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:dab002
+    image: dabstep:latest
     env_params:
       data_dir: "env/dabstep/data"
       artifacts_dir: "env/dabstep/artifacts"
@@ -30,7 +30,7 @@ environments:
   - env_name: dabstepgym
     env_num: 1
     dataset: ""
-    image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:dab002
+    image: dabstep:latest
     env_params:
       data_dir: "env/dabstep/data"
       artifacts_dir: "env/dabstep/artifacts"
@@ -43,7 +43,7 @@ environments:
 
   - env_name: dabstepgym
     env_num: 1
-    image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:dab002
+    image: dabstep:latest
     dataset: ""
     env_params:
       data_dir: "env/dabstep/data"
@@ -58,7 +58,7 @@ environments:
   - env_name: dabstepgym
     env_num: 1
     dataset: ""
-    image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:dab002
+    image: dabstep:latest
     env_params:
       data_dir: "env/dabstep/data"
       artifacts_dir: "env/dabstep/artifacts"
@@ -72,7 +72,7 @@ environments:
   - env_name: dabstepgym
     env_num: 1
     dataset: ""
-    image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:dab002
+    image: dabstep:latest
     env_params:
       data_dir: "env/dabstep/data"
       artifacts_dir: "env/dabstep/artifacts"
@@ -86,7 +86,7 @@ environments:
   - env_name: dabstepgym
     env_num: 1
     dataset: ""
-    image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:dab002
+    image: dabstep:latest
     env_params:
       data_dir: "env/dabstep/data"
       artifacts_dir: "env/dabstep/artifacts"
@@ -100,7 +100,7 @@ environments:
   - env_name: dabstepgym
     env_num: 1
     dataset: ""
-    image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/ray:dab002
+    image: dabstep:latest
     env_params:
       data_dir: "env/dabstep/data"
       artifacts_dir: "env/dabstep/artifacts"

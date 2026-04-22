@@ -8,7 +8,9 @@ Create a new file, e.g. `env/mygym/my_env.py`, and subclass `BaseEnv`:
 
 ```python
 from core.env.base_env import BaseEnv
+from core.env.env_register import register_env
 
+@register_env("my_env")
 class MyEnv(BaseEnv):
 
     def __init__(self, my_param: str = "default", **kwargs):
@@ -64,10 +66,10 @@ class MyEnv(BaseEnv):
 
 ## Step 2 — Register the environment
 
-Registration is handled in two files:
+Registration is handled in two places:
 
 - **`env/registry.py`** — defines a lazy-import function for each environment to avoid loading heavy dependencies at startup.
-- **`env/app.py`** — maps environment names to those import functions in `ENV_CLASS_REGISTRY`.
+- **`env/env_factory.py`** — maps environment names to those import functions in `_ENV_IMPORTERS`.
 
 **`env/registry.py`** — add a lazy-import function:
 
@@ -77,18 +79,18 @@ def _import_my_env() -> Type:
     return MyEnv
 ```
 
-**`env/app.py`** — import the function and add an entry to `ENV_CLASS_REGISTRY`:
+**`env/env_factory.py`** — import the function and add an entry to `_ENV_IMPORTERS`:
 
 ```python
 from env.registry import (..., _import_my_env)
 
-ENV_CLASS_REGISTRY: Dict[str, Callable[[], Type]] = {
+_ENV_IMPORTERS: Dict[str, Callable[[], Type]] = {
     ...
     "my_env": _import_my_env,   # key must match env_name in your YAML
 }
 ```
 
-The environment class is only imported on first use (when a `reset` request arrives for that env name), so adding an entry here has no startup cost.
+The `@register_env("my_env")` decorator lets the class self-register once it is imported, and the lazy importer ensures the module is only imported on first use.
 
 ---
 
@@ -98,7 +100,7 @@ Create `env/mygym/my_config.yaml`:
 
 ```yaml
 environments:
-  - env_name: my_env              # must match the key in ENV_CLASS_REGISTRY
+  - env_name: my_env              # must match the key in env/env_factory.py
     env_image: your_docker_image_url
     env_num: 2                    # number of parallel instances
     dataset: cases.jsonl          # task dataset file
@@ -117,8 +119,10 @@ environments:
 ```bash
 python launcher.py \
   --env-config env/mygym/my_config.yaml \
-  --llm-base-url http://YOUR_LLM/v1 \
-  --llm-model YOUR_MODEL
+  --llm-base-url http://YOUR_LLM_HOST/v1 \
+  --llm-api-key YOUR_API_KEY \
+  --llm-model YOUR_MODEL \
+  --pool-size 1
 ```
 
 ---
@@ -128,4 +132,4 @@ python launcher.py \
 - Keep `env_num` small (e.g. `1`) during development to reduce startup time.
 - Implement `render()` to get a visual GIF log of agent trajectories — useful for debugging.
 - Use `env_params` to pass dataset paths, credentials, or any other per-environment configuration.
-- Check existing environments (e.g. `env/tradinggym/`) for reference implementations.
+- Check existing environments (e.g. `env/androidgym/`, `env/dabstep/`, `env/deepeyes/`) for reference implementations.

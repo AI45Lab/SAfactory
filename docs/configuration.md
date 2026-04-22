@@ -11,6 +11,7 @@ Safactory's configuration is layered: **CLI arguments take precedence over `mana
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--mode` | `local` | `local` (connects to a locally running env service) or `remote` (Ray cluster) |
+| `--env-transport` | `inproc` | Environmental Data Transmission Mode |
 | `--env-config` | — | Path to a single environment YAML |
 | `--env-root` | `env` | Load all env YAMLs found under this directory tree |
 | `--pool-size` | `0` (from YAML) | Number of parallel environment instances |
@@ -103,8 +104,8 @@ Each environment has its own YAML config file. Multiple environments can be list
 
 ```yaml
 environments:
-  - env_name: android_gym       # must match the key in ENV_CLASS_REGISTRY (env/app.py)
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/android-emu-pjlab:and001
+  - env_name: android_gym       # must match a registered env key (see env/env_factory.py)
+    env_image: your_optional_docker_image
     env_num: 1                  # number of parallel instances
     dataset: cases.jsonl        # task dataset (JSON/YAML array or plain text, one task per line)
     env_params:
@@ -112,3 +113,18 @@ environments:
       max_step: 10
       seed: 1234
 ```
+
+Built-in OSS environments in this repository:
+
+| env_name | Environment | Example config / docs |
+|----------|-------------|-----------------------|
+| `android_gym` | Android | `env/androidgym/android_env.yaml` |
+| `os_gym` | OS | `env/osgym/os_config.yaml` |
+| `mc` / `mc_gym` | Minecraft | `env/mc/config/mc_env.yaml` |
+| `robotrustbench` | RoboTrustBench | `env/robotrustbench/README.md` |
+| `embodied_alfred` | Embodied ALFRED | `env/embodiedgym/embodied_config.yaml` |
+| `qa_gym` | QA | `env/qagym/qa_env.yaml` |
+| `dabstepgym` | DABStep | `env/dabstep/dabstep_config.yaml` |
+| `discoveryworld` | DWGym | `env/dwgym/dw_config.yaml` |
+| `deepeyes_env` | DeepEyes | `env/deepeyes/deepeyes_env.yaml` |
+| `geo3k_vl_test` | Geo3K-VL | `env/geo3k_vl_test/geo3k_vl_test_env_configs.yaml` |

@@ -1,6 +1,6 @@
 """
 EmbodiedAlfredGym - Alfred Environment Adapter for AIEvoBox
-完全模仿 trading_env.py 的结构，将 EmbodiedBench 的 Alfred 环境适配到 AIEvoBox 框架
+将 EmbodiedBench 的 Alfred 环境适配到 AIEvoBox 框架
 """
 
 import re
