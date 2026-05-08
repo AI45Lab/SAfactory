@@ -22,21 +22,21 @@ case ":${PATH}:" in
 esac
 export AIEVOBOX_ROOT="${AIEVOBOX_ROOT:-/mnt/shared-storage-user/leishanzhe/repo/AIEvoBox}"
 export STORAGE_TYPE="${STORAGE_TYPE:-sqlite}"
-export AIEVOBOX_DB_URL="${AIEVOBOX_DB_URL:-sqlite:///${AIEVOBOX_ROOT}/rl/examples/math500/rl.db}"
-export AIEVOBOX_MAX_STEPS="${AIEVOBOX_MAX_STEPS:-1}"
+export AIEVOBOX_RUN_ID="${AIEVOBOX_RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
+export AIEVOBOX_DB_URL="${AIEVOBOX_DB_URL:-sqlite:///${AIEVOBOX_ROOT}/rl/examples/dapo_math_17k/rl_${AIEVOBOX_RUN_ID}.db}"
+export AIEVOBOX_MAX_STEPS="${AIEVOBOX_MAX_STEPS:-10}"
 export AIEVOBOX_MESSAGE_CUT="${AIEVOBOX_MESSAGE_CUT:-0}"
-export AIEVOBOX_ENV_CONFIG="${AIEVOBOX_ENV_CONFIG:-${AIEVOBOX_ROOT}/env/math500_text/math500_text_env_configs.yaml}"
+export AIEVOBOX_ENV_CONFIG="${AIEVOBOX_ENV_CONFIG:-${AIEVOBOX_ROOT}/env/dapo_math_17k/dapo_math_17k_env_configs.yaml}"
 export AIEVOBOX_POOL_SIZE="${AIEVOBOX_POOL_SIZE:-256}"
 
 # -------------------------------------------
 # RL Settings
 # -------------------------------------------
 export RL_GROUP_SIZE="${RL_GROUP_SIZE:-8}"
-export RL_EPOCH="${RL_EPOCH:-10}"
+export RL_EPOCH="${RL_EPOCH:-1000}"
 export RL_OFF_BY_N="${RL_OFF_BY_N:-1}"
-# Whether to apply DAPO-style uniform-reward group filtering.
-# Keep framework default behavior as enabled, but disable for math500 by default.
-export DAPO_filter="${DAPO_filter:-false}"
+# DAPO-style uniform-reward group filtering is useful for this dataset.
+export DAPO_filter="${DAPO_filter:-true}"
 
 # -------------------------------------------
 # Buffer Server Settings
@@ -55,7 +55,7 @@ export LLM_TEMPERATURE="${LLM_TEMPERATURE:-1.0}"
 # -------------------------------------------
 # OPD Teacher / RM Settings
 # -------------------------------------------
-export TEACHER_URL="${TEACHER_URL:-http://100.98.94.89:30172/generate}"
+export TEACHER_URL="${TEACHER_URL:-http://100.99.167.210:30172/generate}"
 
 # -------------------------------------------
 # Slime Training Settings

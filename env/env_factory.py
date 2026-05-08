@@ -7,6 +7,7 @@ from core.env import get_env_class, list_registered_envs
 from env.registry import (
     _import_android_gym,
     _import_dab_env,
+    _import_dapo_math_17k_env,
     _import_deepeyes_env,
     _import_dw_env,
     _import_emb_env,
@@ -38,6 +39,8 @@ _ENV_IMPORTERS: Dict[str, EnvImporter] = {
     "math500": _import_math500_text_env,
     "qa_gym": _import_qa_gym,
     "deepeyes_env": _import_deepeyes_env,
+    "dapo_math_17k": _import_dapo_math_17k_env,
+    "dapo_math": _import_dapo_math_17k_env,
     "dabstepgym": _import_dab_env,
     "discoveryworld": _import_dw_env,
     "robotrustbench": _import_robotrustbench_env,

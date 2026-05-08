@@ -34,6 +34,11 @@ def _import_geo3k_vl_test_env() -> Type:
     from env.geo3k_vl_test.geo3k_vl_test_env import Geo3kVLTestEnv
     return Geo3kVLTestEnv
 
+
+def _import_gym_env() -> Type:
+    raise ImportError("git_gym/core_git_env is not available in this checkout")
+
+
 def _import_qa_gym() -> Type:
     from env.qagym.qa_env import QAGym
     return QAGym
@@ -42,6 +47,11 @@ def _import_qa_gym() -> Type:
 def _import_deepeyes_env() -> Type:
     from env.deepeyes.deepeyes_env import DeepEyesEnv
     return DeepEyesEnv
+
+
+def _import_dapo_math_17k_env() -> Type:
+    from env.dapo_math_17k.dapo_math_17k_env import DapoMath17KEnv
+    return DapoMath17KEnv
 
 
 def _import_robotrustbench_env() -> Type:

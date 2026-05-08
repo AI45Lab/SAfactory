@@ -488,7 +488,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
             raw_results = []
 
             while len(raw_results) < fetch_sample_count:
-                await asyncio.sleep(5)
+                await asyncio.sleep(0.1)
                 data, meta_info = await get_rollout_data(api_base_url=base_url)
                 raw_results.extend(data)
                 if meta_info:

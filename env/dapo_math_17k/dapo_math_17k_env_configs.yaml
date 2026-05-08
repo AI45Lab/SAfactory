@@ -1,0 +1,5 @@
+environments:
+  - env_name: dapo_math_17k
+    env_num: 1
+    dataset: /mnt/shared-storage-user/leishanzhe/dataset/dapo-math-17k/dapo-math-17k.jsonl
+    env_params: {}

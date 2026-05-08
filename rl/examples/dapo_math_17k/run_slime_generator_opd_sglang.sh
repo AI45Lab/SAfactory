@@ -22,19 +22,18 @@ if [ -z "${PYTHON_BIN:-}" ]; then
   fi
 fi
 
-# Default to math500 env config when caller does not specify one.
+# Default to dapo_math_17k env config when caller does not specify one.
 AIEVOBOX_ROOT="${AIEVOBOX_ROOT:-/mnt/shared-storage-user/leishanzhe/repo/AIEvoBox}"
 export AIEVOBOX_ROOT
-export AIEVOBOX_ENV_CONFIG="${AIEVOBOX_ENV_CONFIG:-${AIEVOBOX_ROOT}/env/math500_text/math500_text_env_configs.yaml}"
+export AIEVOBOX_ENV_CONFIG="${AIEVOBOX_ENV_CONFIG:-${AIEVOBOX_ROOT}/env/dapo_math_17k/dapo_math_17k_env_configs.yaml}"
 
 # Construct URLs from host and port.
 ROLLOUT_BUFFER_URL="http://${BUFFER_SERVER_HOST}:${BUFFER_SERVER_PORT}"
 LLM_PROXY_URL="http://${LLM_PROXY_HOST}:${LLM_PROXY_PORT}"
 
 # Teacher endpoint used by OPD.
-# Force set to correct SGLang server address
-TEACHER_URL="http://100.98.94.89:30172/generate"
-OPD_KL_COEF="${OPD_KL_COEF:-1.0}"
+TEACHER_URL="${TEACHER_URL:-http://100.99.167.210:30172/generate}"
+OPD_KL_COEF="${OPD_KL_COEF:-0.1}"
 OPD_TEACHER_MAX_CONCURRENCY="${OPD_TEACHER_MAX_CONCURRENCY:-16}"
 OPD_TEACHER_TIMEOUT_SECONDS="${OPD_TEACHER_TIMEOUT_SECONDS:-60}"
 
@@ -44,24 +43,26 @@ echo "[opd] OPD_TEACHER_MAX_CONCURRENCY=${OPD_TEACHER_MAX_CONCURRENCY}"
 
 export PYTHONBUFFERED=16
 NUM_GPUS=${NUM_GPUS:-4}
+ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-2}"
+ROLLOUT_NUM_GPUS="${ROLLOUT_NUM_GPUS:-2}"
 
 SLIME_HOME=${SLIME_HOME:-/root/slime}
 MODEL_PRESET_SCRIPT="${MODEL_PRESET_SCRIPT:-qwen2.5-7B.sh}"
 HF_CKPT_DIR="${HF_CKPT_DIR:-/mnt/shared-storage-user/evobox-share/hf-hub/models--Qwen2.5-Math-7B-Instruct/snapshots/c1d08860689aca85d3fa9402334cac49ecde6037}"
 REF_LOAD_DIR="${REF_LOAD_DIR:-${HF_CKPT_DIR}}"
 LOAD_DIR="${LOAD_DIR:-${HF_CKPT_DIR}}"
-SAVE_DIR="${SAVE_DIR:-/mnt/shared-storage-user/evobox-share-gpfs2/leishanzhe/model/checkpoints/opd/Qwen2.5-Math-7B-Instruct/$(date +%Y%m%d_%H%M)}"
+SAVE_DIR="${SAVE_DIR:-/mnt/shared-storage-user/evobox-share-gpfs2/leishanzhe/model/checkpoints/opd/dapo_math_17k/Qwen2.5-Math-7B-Instruct/$(date +%Y%m%d_%H%M)}"
 
 if [ ! -d "${HF_CKPT_DIR}" ]; then
-  echo "[math500] ERROR: HF_CKPT_DIR does not exist: ${HF_CKPT_DIR}"
+  echo "[dapo_math_17k] ERROR: HF_CKPT_DIR does not exist: ${HF_CKPT_DIR}"
   exit 1
 fi
 if [ ! -d "${REF_LOAD_DIR}" ]; then
-  echo "[math500] WARN: REF_LOAD_DIR does not exist, fallback to HF_CKPT_DIR: ${REF_LOAD_DIR}"
+  echo "[dapo_math_17k] WARN: REF_LOAD_DIR does not exist, fallback to HF_CKPT_DIR: ${REF_LOAD_DIR}"
   REF_LOAD_DIR="${HF_CKPT_DIR}"
 fi
 if [ ! -d "${LOAD_DIR}" ]; then
-  echo "[math500] WARN: LOAD_DIR does not exist, fallback to HF_CKPT_DIR: ${LOAD_DIR}"
+  echo "[dapo_math_17k] WARN: LOAD_DIR does not exist, fallback to HF_CKPT_DIR: ${LOAD_DIR}"
   LOAD_DIR="${HF_CKPT_DIR}"
 fi
 mkdir -p "${SAVE_DIR}"
@@ -119,7 +120,7 @@ TEACHER_ARGS=(
 
 OPTIMIZER_ARGS=(
    --optimizer adam
-   --lr 1e-6
+   --lr 5e-7
    --lr-decay-style constant
    --weight-decay 0.1
    --adam-beta1 0.9
@@ -129,9 +130,10 @@ OPTIMIZER_ARGS=(
 ENABLE_WANDB="${ENABLE_WANDB:-1}"
 WANDB_MODE="${WANDB_MODE:-offline}"
 WANDB_PROJECT="${WANDB_PROJECT:-evobox}"
-WANDB_TEAM="${WANDB_TEAM:-ben}"
-WANDB_GROUP="${WANDB_GROUP:-slime-opd-math500}"
-WANDB_DIR="${WANDB_DIR:-/root/wandb_logs}"
+WANDB_TEAM="${WANDB_TEAM:-sys555-ai}"
+RUN_TAG="${RUN_TAG:-$(date +%Y%m%d_%H%M)}"
+WANDB_GROUP="${WANDB_GROUP:-dapo-qwen2.5-7b-opd-sglang-${RUN_TAG}}"
+WANDB_DIR="${WANDB_DIR:-${SCRIPT_DIR}/db/${WANDB_GROUP}}"
 
 if [ "${ENABLE_WANDB}" = "1" ]; then
   WANDB_ARGS=(
@@ -140,6 +142,7 @@ if [ "${ENABLE_WANDB}" = "1" ]; then
     --wandb-team "${WANDB_TEAM}"
     --wandb-group "${WANDB_GROUP}"
     --wandb-dir "${WANDB_DIR}"
+    --disable-wandb-random-suffix
   )
 else
   WANDB_ARGS=()
@@ -178,6 +181,23 @@ fi
 "${PYTHON_BIN}" -V
 "${RAY_BIN}" --version
 
+VISIBLE_GPUS="$("${PYTHON_BIN}" - <<'PY'
+import torch
+print(torch.cuda.device_count())
+PY
+)"
+REQUIRED_GPUS=$((ACTOR_NUM_GPUS_PER_NODE + ROLLOUT_NUM_GPUS))
+if [ "${VISIBLE_GPUS}" -lt "${NUM_GPUS}" ]; then
+  echo "[dapo_math_17k] ERROR: NUM_GPUS=${NUM_GPUS}, but torch only sees ${VISIBLE_GPUS} GPU(s)."
+  echo "[dapo_math_17k] Set NUM_GPUS to the visible GPU count or fix CUDA_VISIBLE_DEVICES."
+  exit 1
+fi
+if [ "${REQUIRED_GPUS}" -gt "${NUM_GPUS}" ]; then
+  echo "[dapo_math_17k] ERROR: actor + rollout GPUs (${ACTOR_NUM_GPUS_PER_NODE} + ${ROLLOUT_NUM_GPUS}) exceeds NUM_GPUS=${NUM_GPUS}."
+  exit 1
+fi
+echo "[dapo_math_17k] GPUs: visible=${VISIBLE_GPUS}, ray=${NUM_GPUS}, actor=${ACTOR_NUM_GPUS_PER_NODE}, rollout=${ROLLOUT_NUM_GPUS}"
+
 "${RAY_BIN}" start --head --node-ip-address ${MASTER_ADDR} --port ${RAY_PORT} --num-gpus ${NUM_GPUS} --disable-usage-stats
 
 export SGLANG_LOGGING_CONFIG_PATH=${SGLANG_LOGGING_CONFIG_PATH:-"/root/AIEvoBox/rl/sglang_logging.json"}
@@ -200,10 +220,10 @@ RUNTIME_ENV_JSON="{\
 
 "${RAY_BIN}" job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- "${PYTHON_BIN}" "${SLIME_HOME}/train_async.py" \
+   -- "${PYTHON_BIN}" "${SLIME_HOME}/train.py" \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 1 \
-   --rollout-num-gpus 3 \
+   --actor-num-gpus-per-node ${ACTOR_NUM_GPUS_PER_NODE} \
+   --rollout-num-gpus ${ROLLOUT_NUM_GPUS} \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \
