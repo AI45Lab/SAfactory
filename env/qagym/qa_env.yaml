@@ -6,14 +6,19 @@ environments:
     dataset: qa_cases.jsonl
     env_params:
       max_steps: 3
-      attack_method: pair_attack
+      attack_method: separate_pair_attack
+      attack_model_config:
+        api_key: "sk-pxhM1nUxEc0nCDMyMCkhRklp8cJJIT6VFuegNQ1ygNv8WAj9"
+        base_url: "http://35.220.164.252:3888/v1"
+        model_name: "deepseek-chat"
+        temperature: 0.8
       env_model_config:
-        api_key: "sk-XYdTnAfyDo2QFMUaXTOutUxCu2reNXsIXiTMcd2oJZGMOHeR"
+        api_key: "sk-pxhM1nUxEc0nCDMyMCkhRklp8cJJIT6VFuegNQ1ygNv8WAj9"
         base_url: "http://35.220.164.252:3888/v1"
         model_name: "deepseek-chat"
         temperature: 0.8
       judge_model_config:
-        api_key: "sk-XYdTnAfyDo2QFMUaXTOutUxCu2reNXsIXiTMcd2oJZGMOHeR"
+        api_key: "sk-pxhM1nUxEc0nCDMyMCkhRklp8cJJIT6VFuegNQ1ygNv8WAj9"
         base_url: "http://35.220.164.252:3888/v1"
         model_name: "gpt-4o-mini"
         temperature: 0.1

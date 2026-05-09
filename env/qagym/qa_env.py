@@ -19,12 +19,14 @@ class QAGym(BaseEnv):
         self,
         attack_method: str,
         max_steps: int = 5,
+        attack_model_config: Optional[Dict[str, Any]] = None,
         env_model_config: Optional[Dict[str, Any]] = None,
         judge_model_config: Optional[Dict[str, Any]] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.env_model = self._init_env_model(env_model_config=env_model_config)
+        self.attack_model = self._init_attack_model(attack_model_config=attack_model_config)
         self.judge_model = self._init_judge_model(judge_model_config=judge_model_config)
         self.attack_method = attack_method
         self.current_step = 0
@@ -144,6 +146,14 @@ class QAGym(BaseEnv):
         if cfg is None:
             raise ValueError("QAGym requires env_model_config dict.")
         return self._build_openai_model(cfg, "env_model_config")
+
+    def _init_attack_model(
+        self,
+        attack_model_config: Optional[Dict[str, Any]],
+    ) -> OpenAIModel:
+        if not attack_model_config:
+            return self.env_model
+        return self._build_openai_model(attack_model_config, "attack_model_config")
 
     def _init_judge_model(
         self,
