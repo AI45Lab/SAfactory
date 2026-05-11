@@ -75,8 +75,8 @@ llm_proxy_url: str = f"http://{_llm_proxy_host}:{_llm_proxy_port}/v1"
 # Track last served step ID for cursor-based pagination
 last_served_id: int = 0
 
-# Pending items by instance_id (for grouping)
-pending_items_by_instance: Dict[str, List[Dict[str, Any]]] = {}
+# Pending items by policy_id then instance_id (for grouping)
+pending_items_by_policy_instance: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
 
 # Group size (set by /start_rollout)
 group_size: int = 1
@@ -122,20 +122,35 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     env_id = row.get("env_id", "")
     group_id = row.get("group_id", "")
 
-    # 从 env_state 中解析 weight_version
+    # 从 env_state 中解析 multi-agent metadata
     weight_version = 0
+    agent_id = "default"
+    policy_id = "default"
+    policy_version = 0
+    session_id_override = None
     if env_state_raw := row.get("env_state"):
-        weight_version = int(json.loads(env_state_raw)["weight_version"])
+        try:
+            env_state = json.loads(env_state_raw)
+            weight_version = int(env_state.get("weight_version") or 0)
+            policy_version = env_state.get("policy_version", weight_version)
+            agent_id = str(env_state.get("agent_id") or agent_id)
+            policy_id = str(env_state.get("policy_id") or policy_id)
+            session_id_override = env_state.get("session_id")
+        except Exception:
+            logger.warning("Failed to parse env_state metadata: %r", env_state_raw)
 
     extra_info = {
         "timestamp": _parse_timestamp(row.get("session_end_time")) or _parse_timestamp(row.get("timestamp")) or time.time(),
         "steps": row.get("step_id", 0),
         # 注意：finish_reason 与 truncated 不完全等价，finish_reason 仅用于训练侧标记截断状态
         "finish_reason": "length" if row.get("truncated", False) else "stop",
-        "session_id": session_id,
+        "session_id": str(session_id_override or session_id),
         "env_id": env_id,
         "group_id": group_id,
         "weight_version": weight_version,
+        "policy_version": policy_version,
+        "agent_id": agent_id,
+        "policy_id": policy_id,
         "truncated": row.get("truncated", False),
     }
 
@@ -180,9 +195,9 @@ async def fetch_new_items_from_db(limit: Optional[int] = None) -> List[Dict[str,
     return items
 
 
-def accumulate_and_pop_ready_groups(new_items: List[Dict[str, Any]]) -> tuple:
+def accumulate_and_pop_ready_groups(new_items: List[Dict[str, Any]], requested_policy_id: Optional[str] = None) -> tuple:
     """Accumulate items and return ready groups."""
-    global pending_items_by_instance, group_size
+    global pending_items_by_policy_instance, group_size
 
     ready_groups = []
     finished_instance_ids = []
@@ -192,36 +207,59 @@ def accumulate_and_pop_ready_groups(new_items: List[Dict[str, Any]]) -> tuple:
         instance_id = str(item.get("instance_id", ""))
         if not instance_id:
             continue
-        pending_items_by_instance.setdefault(instance_id, []).append(item)
+        extra = item.get("extra_info") or {}
+        policy_id = str(extra.get("policy_id") or "default")
+        policy_bucket = pending_items_by_policy_instance.setdefault(policy_id, {})
+        policy_bucket.setdefault(instance_id, []).append(item)
 
     # Check for complete groups
-    to_delete = []
-    for instance_id, bucket in pending_items_by_instance.items():
-        while len(bucket) >= group_size:
-            group = bucket[:group_size]
-            del bucket[:group_size]
-            ready_groups.append((instance_id, list(group)))
-            finished_instance_ids.append(instance_id)
-        if not bucket:
-            to_delete.append(instance_id)
+    policy_ids = [requested_policy_id] if requested_policy_id else list(pending_items_by_policy_instance.keys())
+    for policy_id in policy_ids:
+        if not policy_id:
+            continue
+        instance_buckets = pending_items_by_policy_instance.get(str(policy_id), {})
+        to_delete = []
+        for instance_id, bucket in instance_buckets.items():
+            while len(bucket) >= group_size:
+                group = bucket[:group_size]
+                del bucket[:group_size]
+                ready_groups.append((instance_id, list(group)))
+                finished_instance_ids.append(instance_id)
+            if not bucket:
+                to_delete.append(instance_id)
 
-    for k in to_delete:
-        pending_items_by_instance.pop(k, None)
+        for k in to_delete:
+            instance_buckets.pop(k, None)
+        if not instance_buckets:
+            pending_items_by_policy_instance.pop(str(policy_id), None)
 
     return ready_groups, finished_instance_ids
 
 
 @app.post("/get_rollout_data", response_model=BufferResponse)
 async def get_rollout_data(request: Request):
-    global pending_items_by_instance
+    global pending_items_by_policy_instance
+    payload = await request.json()
+    requested_policy_id = payload.get("policy_id") if isinstance(payload, dict) else None
+    if requested_policy_id:
+        requested_policy_id = str(requested_policy_id)
 
     # Fetch new items from database and accumulate groups
     new_items = await fetch_new_items_from_db(limit=None)
-    ready_groups, finished_ids = accumulate_and_pop_ready_groups(new_items)
+    ready_groups, finished_ids = accumulate_and_pop_ready_groups(new_items, requested_policy_id=requested_policy_id)
 
     # Log pending status
-    pending_counts = {k: len(v) for k, v in pending_items_by_instance.items()}
-    logger.info(f"new_items={len(new_items)}, ready_groups={len(ready_groups)}, pending={pending_counts}")
+    pending_counts = {
+        policy_id: {instance_id: len(items) for instance_id, items in buckets.items()}
+        for policy_id, buckets in pending_items_by_policy_instance.items()
+    }
+    logger.info(
+        "new_items=%d, ready_groups=%d, requested_policy_id=%s, pending=%s",
+        len(new_items),
+        len(ready_groups),
+        requested_policy_id,
+        pending_counts,
+    )
 
     # Flatten groups to items
     ready_items = [item for _, group in ready_groups for item in group]
@@ -254,6 +292,7 @@ async def get_rollout_data(request: Request):
         "finished_groups": finished_groups,
         "avg_weight_version": mean_wv,
         "max_weight_version": max_wv,
+        "policy_id": requested_policy_id,
     }
 
     if total_samples == 0:
@@ -291,7 +330,7 @@ def start_aievobox_process(data: dict):
     NOTE: LLM Proxy is now hosted in-process by slime_generator.
     It must already be running before this function is called.
     """
-    global aievobox_process, group_size, last_served_id, pending_items_by_instance, data_manager
+    global aievobox_process, group_size, last_served_id, pending_items_by_policy_instance, data_manager
 
     # Set group size (num_repeat_per_sample)
     group_size = int(data.get("num_repeat_per_sample", 16))
@@ -299,7 +338,7 @@ def start_aievobox_process(data: dict):
     # Clear state for new rollout
     restart_training = data.get("restart_training", False)
     if restart_training:
-        pending_items_by_instance.clear()
+        pending_items_by_policy_instance.clear()
         logger.info("restart_training=True, cleared pending items")
 
     # Keep a single job_session for both reader and writer process.

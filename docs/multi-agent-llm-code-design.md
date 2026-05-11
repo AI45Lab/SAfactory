@@ -1,201 +1,144 @@
 # 多 LLM Policy 代码设计
 
-本文档承接 `multi-agent-llm-rollout.md`，说明按新架构落到代码时需要改哪些地方。核心原则保持不变：env 决定当前调用哪些 policy，框架负责调用并记录训练样本。
+本文档只说明代码层面的整改方向，具体字段和实现细节后续再补。
 
-## 1. 基础数据语义
+## 目标
 
-引入三个逻辑对象，不一定需要新建复杂类，MVP 可以先用 dict 表达：
+支持多个 LLM policy 在同一个 env/world 里协作、竞争或分工。一个 env/world 只启动一份 shared rollout；多个可训练 policy 分别由多个 Slime trainer 训练，并从同一个 buffer 中按 `policy_id` 取自己的样本。
 
-- `prompt_dict`: `{agent_id: messages}`，表示当前哪些 agent 需要行动。
-- `action_dict`: `{agent_id: action}`，表示本轮提交给 env 的 action。
-- `reward_dict`: `{agent_id: reward}`，表示本次状态转移后给哪些 agent 结算 reward。
+## 总体设计
 
-兼容规则：
+Env 决定当前应该调用哪些 policy。框架只负责三件事：
 
-- 旧的 `messages` 自动视为 `{"default": messages}`。
-- 旧的 `action` 自动视为 `{"default": action}`。
-- 旧的 `float reward` 自动视为 `{"default": reward}`。
+1. 根据 env 的请求调用对应 policy。
+2. 把 action 一次性提交回 env。
+3. 根据 env 返回的 reward，把样本写到对应 policy 的训练数据里。
 
-## 2. Env 侧改动
+单智能体 env 保持兼容；多智能体 env 才需要返回多个 agent/policy 的调用请求。
 
-`BaseEnv` 先不强制改抽象签名，避免影响现有环境。多智能体 env 只需要遵守约定：
+Interactor 不理解具体任务流程，也不写死任何角色。所有顺序、并行、依赖关系都由 env 决定。框架只执行 env 当前返回的调用请求。
 
-- `get_task_prompt()` 可以返回单个 messages，也可以返回 `prompt_dict`。
-- `step()` 可以接收单个 action，也可以接收 `action_dict`。
-- `StepOutput.reward` 长期应支持 `float | dict[str, float]`。
-
-MVP 可先不改所有 env。单智能体 env 保持原样；只有多智能体 env 返回 dict。
-
-需要注意：当前 `StepOutput.reward` 是 `float`。实现时有两个选择：
-
-1. 短期：reward dict 放进 `StepOutput.info["reward_dict"]`，`reward` 字段保留聚合值。
-2. 长期：将 `StepOutput.reward` 类型扩展为 `float | dict[str, float]`。
-
-建议 MVP 先用方案 1，减少对已有环境和 HTTP 序列化的影响。
-
-## 3. Interactor 改动
-
-`Interactor._run_one_environment()` 是主改动点。
-
-新增几个内部 helper：
-
-- `normalize_prompts(raw_prompt) -> dict[agent_id, messages]`
-- `normalize_rewards(step_output) -> dict[agent_id, reward]`
-- `resolve_policy(agent_id) -> policy_id`
-- `create_or_get_llm(policy_id, session) -> LLM`
-
-主流程从“单 prompt -> 单 LLM -> 单 action -> 单 reward”改为：
-
-1. 从 env 获取 prompt。
-2. 规范化为 `prompt_dict`。
-3. 对每个 `agent_id` 找到 `policy_id`。
-4. 并发调用对应 LLM policy。
-5. 组装 `action_dict`，一次提交给 env。
-6. 规范化 `reward_dict`。
-7. 对有 reward 的 agent 写训练样本；没有 reward 的 generation 先暂存。
-
-## 4. Pending Generation
-
-延迟奖励需要在 `Interactor` 里维护 pending generation。
-
-建议结构：
+Interactor 的“一轮”定义为一次 env 调度周期：
 
 ```text
-pending_generations[agent_id] = [
-  {
-    messages,
-    response,
-    policy_id,
-    policy_version,
-    finish_reason,
-    env_state,
-    step_id
-  }
-]
+env 给出当前要行动的一批 agent/policy
+-> Interactor 调用这些 policy
+-> Interactor 收齐 action
+-> Interactor 一次性提交给 env
+-> env 返回状态更新和 reward
 ```
 
-当 `reward_dict` 返回某个 `agent_id` 的 reward：
+如果这一批里只有一个 agent，就是回合制一轮；如果有多个 agent，就是并行 joint action 一轮。
 
-1. 取出该 agent 最早或最近一条 pending generation。
-2. 将 reward 绑定到这条 generation。
-3. 调用 `DataManager.record_step()` 写入训练数据。
+因此：
 
-默认策略建议用 FIFO，适合 attacker -> defender -> judge 这类顺序流程。
+- 顺序流程：env 每轮只返回当前 agent。
+- 并行流程：env 同一轮返回多个 agent。
+- 混合流程：env 可以先返回一个 agent，后续某轮再返回多个 agent。
+- 延迟奖励：env 可以在任意后续轮次给之前行动过的 agent 返回 reward。
 
-## 5. Session 和 Policy
+## Env 需要表达什么
 
-当前 session 主要绑定 `env_id`。多 policy 后，需要在 metadata 中至少记录：
+多智能体 env 不需要暴露复杂调度器，只需要在每轮明确三件事：
+
+1. 当前哪些 agent 需要行动。
+2. 这些 agent 分别对应哪个 `policy_id`。
+3. 本次状态转移后，哪些 agent/policy 获得 reward。
+
+reward 的语义由 env 定义。框架不判断 reward 是否合理，只负责把 reward 绑定到对应 generation 和 policy 训练数据里。
+
+## 需要整改的模块
+
+### Interactor
+
+Interactor 从“单 LLM 调用器”变成“多 policy 调度器”：
+
+- 识别 env 当前要求哪些 agent 行动。
+- 根据 `agent_id -> policy_id` 找到对应 LLM endpoint。
+- 如果当前只有一个 agent，就只调用这个 agent 的 policy。
+- 如果当前有多个 agent，才并发调用多个 policy。
+- 收齐当前轮次的生成结果后，由 Interactor 组装 action 并提交给 env。
+- 维护未结算 reward 的 generation，等 reward 回来后再写样本。
+
+Interactor 不负责判断“谁先谁后”，也不负责解释 reward 语义。这些都属于 env 的职责。
+
+### Buffer Server
+
+Buffer 需要支持按 `policy_id` 分流数据。
+
+原因是 shared rollout 会同时产生多个 agent/policy 的样本，但每个 Slime trainer 只能训练自己的 policy。Buffer 必须能保证：
+
+- 某个 policy 的 trainer 只拿这个 policy 的样本。
+- 其他 policy、不可训练 agent、工具 agent 的样本不会混进来。
+- reward 未结算的 pending generation 不进入训练。
+
+MVP 仍然使用一个全局 DB cursor 顺序读取数据。Buffer server 读到记录后解析 metadata 里的 `policy_id`，再放入不同 policy bucket。各 trainer 请求数据时，只从自己的 bucket 取样本。
+
+也就是说：
+
+```text
+DB 顺序读取一次
+-> 按 policy_id 分桶
+-> get_rollout_data(policy_id) 返回对应 bucket
+```
+
+第一版不为每个 policy 维护独立 DB cursor，避免重复扫描和同步复杂度。
+
+### Slime Generator
+
+Generator 需要拆成两个职责：
+
+- `rollout_owner`：只有一个 owner 负责启动 shared rollout。
+- `policy_trainer`：每个 trainer 只拉取并训练自己的 `policy_id` 数据。
+
+也就是说，多 agent 不是启动多份 rollout，而是：
+
+```text
+一份 shared rollout -> 产生所有 policy 的样本
+多个 Slime trainer -> 各自消费对应 policy 的样本
+```
+
+这意味着 Slime trainer 不再天然等于 rollout 启动者。只有 `rollout_owner` 负责启动 env；其他 trainer 只等待 buffer 里出现自己的 policy 数据。
+
+### Trajectory Mask
+
+多 agent 后，trajectory mask 最大风险是不同 agent 的生成轨迹混在一起。
+
+整改方向：
+
+- 每次 generation 都要能唯一定位到 `agent_id`、`policy_id` 和 session。
+- reward 延迟返回时，要能把 reward 绑定回正确 generation。
+- 训练样本中的 token、loss mask、reward、policy_id 必须来自同一次 generation。
+
+Mask 逻辑本身不一定重写，但 session 和 generation 的隔离必须做。
+
+### Data / Metadata
+
+MVP 可以先不做 DB migration，把多 agent 信息写入 metadata：
 
 - `agent_id`
 - `policy_id`
-- `policy_version`
-- `episode_id`
-
-MVP 不要求立刻改变 DB schema，可以先写入 `env_state` JSON。
-
-建议 `session_id` 保持唯一，避免不同 agent 的 `llm_proxy` 轨迹混在一起：
-
-```text
-session_id = env_id + ":" + agent_id + ":" + policy_id
-```
-
-如果短期不改 `DataManager.create_session()`，也至少要保证传给 LLM proxy 的 session 后缀包含 agent/policy 信息。
-
-## 6. LLM 选择
-
-新增 policy 配置概念：
-
-```text
-agent_id -> policy_id -> model/base_url/api_key/temperature
-```
-
-MVP 可以先支持两种模式：
-
-- 未配置多 policy：所有 agent 使用现有 `llm_model` 和 `llm_base_url`。
-- 配置多 policy：Interactor 根据 `policy_id` 创建不同 LLM client。
-
-如果多个 trainable policy 都走 Slime 训练，后续再把 `llm_proxy` 扩展成按 `policy_id` 路由。MVP 可以先假设 policy endpoint 已经可访问。
-
-## 7. DataManager 改动
-
-短期不迁移 DB，先把多 agent 信息写进 `env_state`：
-
-```text
-{
-  "weight_version": ...,
-  "agent_id": ...,
-  "policy_id": ...,
-  "policy_version": ...,
-  "episode_id": ...
-}
-```
-
-`record_step()` 调用时仍写 `messages`、`response`、`reward`，但 reward 来自对应 agent 的 `reward_dict`。
-
-长期可以给 `session_steps` 增加列：
-
-- `agent_id`
-- `policy_id`
-- `episode_id`
-
-## 8. Buffer Server 改动
-
-`buffer_server` 组装训练样本时，需要从 `env_state` 或将来的字段中取出：
-
-- `agent_id`
-- `policy_id`
-- `policy_version`
-
-新增按 policy 过滤：
-
-```text
-get_rollout_data(policy_id)
-```
-
-如果没有传 `policy_id`，保持当前行为，返回所有可训练样本。
-
-返回给 Slime 的 `extra_info` 需要包含：
-
-- `agent_id`
-- `policy_id`
-- `policy_version`
+- `policy_version` 或 `weight_version`
 - `session_id`
-- `weight_version`
+- generation id 或等价标识
 
-## 9. Slime Generator 改动
+后续如果跑通，再考虑把这些字段正式迁移到表结构。
 
-每个 trainer 需要知道自己训练哪个 `policy_id`。
+## MVP 范围
 
-启动 rollout 时传入当前 `policy_id`，拉数据时也带上该 `policy_id`：
+第一版只解决必须问题：
 
-```text
-trainer(policy_a) -> buffer_server.get_rollout_data(policy_a)
-trainer(policy_b) -> buffer_server.get_rollout_data(policy_b)
-```
+- 一个 env/world 只有一份 shared rollout。
+- 多个 Slime trainer 按 `policy_id` 各自训练。
+- Buffer 能按 `policy_id` 分流。
+- Generation 和 reward 能正确绑定。
+- Trajectory mask 不串 agent/policy。
 
-版本过滤也应按 policy 做：
+暂时不做：
 
-```text
-current_version[policy_id] - sample.policy_version <= off_by_n
-```
-
-MVP 可以先复用现有 `weight_version` 字段，但 metadata 中要带 `policy_id`。
-
-## 10. 推荐实施顺序
-
-1. 在 `Interactor` 增加 prompt/reward normalization，保证旧 env 不受影响。
-2. 增加 `agent_id -> policy_id` 配置解析和 LLM 选择。
-3. 增加 pending generation，支持延迟奖励。
-4. 将 `agent_id`、`policy_id`、`policy_version` 写入 `env_state`。
-5. 修改 `buffer_server` 支持按 `policy_id` 过滤。
-6. 修改 `slime_generator` 拉取指定 `policy_id` 的数据。
-7. 最后再考虑是否扩展 `StepOutput.reward` 类型和 DB schema。
-
-## 11. MVP 不做
-
-- 不改所有已有 env。
-- 不引入复杂 transaction 或 `state_version`。
-- 不做 centralized critic。
-- 不做 league training。
-- 不强制多 policy proxy runtime。
-- 不要求第一版完成 DB migration。
+- 复杂 transaction 或 `state_version`。
+- episode-level version freeze。
+- centralized critic。
+- league training。
+- 多 policy proxy runtime。
+- 强制 DB migration。

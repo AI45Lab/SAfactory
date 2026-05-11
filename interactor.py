@@ -1,12 +1,14 @@
 import asyncio
 import json
 import logging
+import os
 import random
 import time
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Deque, Dict, List, Optional, Protocol
 
 import aiohttp
 
@@ -92,6 +94,7 @@ class Interactor:
         self.base_url_provider = base_url_provider
         self.api_key = api_key
         self.temperature = float(temperature)
+        self._policy_configs = self._load_policy_configs()
 
         self._worker_count = self._derive_worker_count()
         self._session_routed_llm = isinstance(self.base_url_provider, SessionSuffixBaseURLProvider)
@@ -148,6 +151,26 @@ class Interactor:
             self._session_routed_llm,
         )
 
+    def _load_policy_configs(self) -> Dict[str, Dict[str, Any]]:
+        raw = os.getenv("AIEVOBOX_POLICY_CONFIG") or os.getenv("AIEVOBOX_POLICY_REGISTRY")
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            log.warning("Invalid AIEVOBOX_POLICY_CONFIG JSON; falling back to default LLM config")
+            return {}
+        if not isinstance(data, dict):
+            log.warning("AIEVOBOX_POLICY_CONFIG must be a JSON object; falling back to default LLM config")
+            return {}
+        normalized: Dict[str, Dict[str, Any]] = {}
+        for agent_id, cfg in data.items():
+            if isinstance(cfg, str):
+                normalized[str(agent_id)] = {"policy_id": cfg}
+            elif isinstance(cfg, dict):
+                normalized[str(agent_id)] = dict(cfg)
+        return normalized
+
     def _derive_worker_count(self) -> int:
         worker_count = max(1, int(getattr(self.pool, "pool_size", 1) or 1))
         if self.max_workers is not None:
@@ -167,6 +190,91 @@ class Interactor:
             sock_read_timeout_s=self._llm_sock_read_timeout_s,
             trust_env=self._llm_http_settings.trust_env,
         )
+
+    def _resolve_policy_id(self, agent_id: str) -> str:
+        cfg = self._policy_configs.get(agent_id) or {}
+        return str(cfg.get("policy_id") or agent_id or "default")
+
+    def _create_llm_for_policy_session(self, agent_id: str, policy_id: str, session: SessionContext) -> LLM:
+        cfg = self._policy_configs.get(agent_id) or self._policy_configs.get(policy_id) or {}
+        if cfg.get("base_url"):
+            base_url = str(cfg["base_url"]).rstrip("/")
+            use_session_suffix = bool(cfg.get("session_suffix", self._session_routed_llm))
+            if use_session_suffix:
+                base_url = f"{base_url}/{session.session_id}"
+            return LLM(
+                api_key=str(cfg.get("api_key", self.api_key)),
+                base_url=base_url,
+                model=str(cfg.get("model", cfg.get("model_name", self.model))),
+                temperature=float(cfg.get("temperature", self.temperature)),
+                http_client=self.llm_http,
+                request_timeout_s=self._llm_timeout_s,
+                connect_timeout_s=self._llm_connect_timeout_s,
+                sock_read_timeout_s=self._llm_sock_read_timeout_s,
+                trust_env=self._llm_http_settings.trust_env,
+            )
+        return self._create_llm_for_session(session)
+
+    @staticmethod
+    def _is_messages(value: Any) -> bool:
+        return isinstance(value, list)
+
+    def _normalize_prompts(self, raw_prompt: Any) -> Dict[str, List[Dict[str, Any]]]:
+        if self._is_messages(raw_prompt):
+            return {"default": raw_prompt}
+        if isinstance(raw_prompt, dict):
+            if "messages" in raw_prompt and self._is_messages(raw_prompt.get("messages")):
+                return {"default": raw_prompt["messages"]}
+            prompts: Dict[str, List[Dict[str, Any]]] = {}
+            for agent_id, prompt in raw_prompt.items():
+                if isinstance(prompt, dict) and self._is_messages(prompt.get("messages")):
+                    prompts[str(agent_id)] = prompt["messages"]
+                elif self._is_messages(prompt):
+                    prompts[str(agent_id)] = prompt
+                else:
+                    log.warning("Skip unsupported prompt for agent=%s type=%s", agent_id, type(prompt).__name__)
+            return prompts
+        return {}
+
+    @staticmethod
+    def _normalize_rewards(step_out: Dict[str, Any]) -> Dict[str, float]:
+        info = step_out.get("info") if isinstance(step_out.get("info"), dict) else {}
+        reward_value = info.get("reward_dict") if isinstance(info, dict) and "reward_dict" in info else step_out.get("reward", 0.0)
+        if isinstance(reward_value, dict):
+            rewards: Dict[str, float] = {}
+            for agent_id, value in reward_value.items():
+                try:
+                    rewards[str(agent_id)] = float(value)
+                except (TypeError, ValueError):
+                    log.warning("Ignore non-numeric reward for agent=%s: %r", agent_id, value)
+            return rewards
+        try:
+            return {"default": float(reward_value or 0.0)}
+        except (TypeError, ValueError):
+            return {}
+
+    @staticmethod
+    def _make_agent_session_id(env_id: str, agent_id: str, policy_id: str) -> str:
+        safe_agent = str(agent_id or "default").replace("/", "_")
+        safe_policy = str(policy_id or "default").replace("/", "_")
+        return f"{env_id}:{safe_agent}:{safe_policy}"
+
+    def _agent_env_state(
+        self,
+        *,
+        base_weight_version: Any,
+        agent_id: str,
+        policy_id: str,
+        session_id: str,
+    ) -> str:
+        state = {
+            "weight_version": base_weight_version,
+            "policy_version": base_weight_version,
+            "agent_id": agent_id,
+            "policy_id": policy_id,
+            "session_id": session_id,
+        }
+        return json.dumps(state, ensure_ascii=False)
 
     def _trim_messages(self, prompt: Any) -> List[Dict[str, Any]]:
         """
@@ -297,7 +405,7 @@ class Interactor:
         actor: ActorHandle,
         operation: str,
         *,
-        action: Optional[str] = None,
+        action: Optional[Any] = None,
         ctx: str = "",
     ) -> Any:
         if actor.transport != "inproc" or actor.local_env is None:
@@ -307,7 +415,7 @@ class Interactor:
             if operation == "get_task_prompt":
                 return actor.local_env.get_task_prompt()
             if operation == "step":
-                return actor.local_env.step(str(action or ""))
+                return actor.local_env.step(action)
             raise ValueError(f"Unsupported inproc env operation: {operation}")
 
         t0 = time.perf_counter()
@@ -342,7 +450,7 @@ class Interactor:
         worker_id: int,
         env_key: str,
         step_i: int,
-        action: str,
+        action: Any,
     ) -> Any:
         ctx = f"worker={worker_id} env={env_key} step={step_i} request=step"
         if actor.transport == "inproc":
@@ -358,14 +466,33 @@ class Interactor:
         env_key = f"{actor.env_name}_{actor.env_id}"
         last_info: Optional[Dict[str, Any]] = None
 
-        session = await self.data_manager.create_session(
-            env_id=actor.env_id,
-            env_name=actor.env_name,
-            llm_model=self.model,
-            group_id=actor.group_id,
-        )
+        agent_sessions: Dict[str, SessionContext] = {}
+        agent_llms: Dict[str, LLM] = {}
+        pending_generations: Dict[str, Deque[Dict[str, Any]]] = defaultdict(deque)
 
-        llm = self._create_llm_for_session(session)
+        async def get_agent_session(agent_id: str, policy_id: str) -> SessionContext:
+            key = f"{agent_id}:{policy_id}"
+            session = agent_sessions.get(key)
+            if session is not None:
+                return session
+            session = await self.data_manager.create_session(
+                env_id=actor.env_id,
+                env_name=actor.env_name,
+                llm_model=policy_id,
+                group_id=actor.group_id,
+            )
+            session.session_id = self._make_agent_session_id(actor.env_id, agent_id, policy_id)
+            agent_sessions[key] = session
+            return session
+
+        async def get_agent_llm(agent_id: str, policy_id: str, session: SessionContext) -> LLM:
+            key = f"{agent_id}:{policy_id}"
+            llm = agent_llms.get(key)
+            if llm is not None:
+                return llm
+            llm = self._create_llm_for_policy_session(agent_id, policy_id, session)
+            agent_llms[key] = llm
+            return llm
 
         try:
             for step_i in range(1, self.max_steps + 1):
@@ -380,54 +507,83 @@ class Interactor:
                     log.error("worker=%d env=%s: get_task_prompt FAILED: %s. Aborting episode.", worker_id, env_key, exc)
                     raise
 
-                prompt_raw = await self.episode_handler.handle(actor.env_name, actor.env_id, step_i, prompt_raw)
-
-                prompt = self._trim_messages(prompt_raw)
-                if not prompt:
+                prompt_dict = self._normalize_prompts(prompt_raw)
+                if not prompt_dict:
                     log.info("worker=%d env=%s: empty prompt -> end episode", worker_id, env_key)
                     break
 
-                try:
+                async def generate_for_agent(agent_id: str, messages_raw: List[Dict[str, Any]]) -> tuple[str, Dict[str, Any]]:
+                    policy_id = self._resolve_policy_id(agent_id)
+                    session = await get_agent_session(agent_id, policy_id)
+                    llm = await get_agent_llm(agent_id, policy_id, session)
+                    handled_prompt = await self.episode_handler.handle(actor.env_name, actor.env_id, step_i, messages_raw)
+                    prompt = self._trim_messages(handled_prompt)
+                    if not prompt:
+                        return agent_id, {
+                            "skip": True,
+                            "policy_id": policy_id,
+                            "session": session,
+                            "messages": [],
+                        }
                     llm_result = await self._llm_generate(llm, prompt)
+                    action = llm_result["content"]
+                    finish_reason = llm_result.get("finish_reason", "stop")
+                    weight_version = llm_result.get("weight_version")
+                    if self.log_actions_preview_chars > 0:
+                        preview = str(action).replace("\n", "\\n")[: self.log_actions_preview_chars]
+                        log.debug(
+                            "worker=%d env=%s step=%d agent=%s policy=%s action_preview=%r finish_reason=%s",
+                            worker_id,
+                            env_key,
+                            step_i,
+                            agent_id,
+                            policy_id,
+                            preview,
+                            finish_reason,
+                        )
+                    return agent_id, {
+                        "skip": False,
+                        "policy_id": policy_id,
+                        "session": session,
+                        "messages": prompt,
+                        "action": action,
+                        "finish_reason": finish_reason,
+                        "weight_version": weight_version,
+                        "env_state": self._agent_env_state(
+                            base_weight_version=weight_version,
+                            agent_id=agent_id,
+                            policy_id=policy_id,
+                            session_id=session.session_id,
+                        ),
+                    }
+
+                try:
+                    generated_pairs = await asyncio.gather(
+                        *(generate_for_agent(agent_id, messages) for agent_id, messages in prompt_dict.items())
+                    )
                 except Exception as exc:
                     log.error("worker=%d env=%s: LLM generation FAILED: %s. Aborting episode.", worker_id, env_key, exc)
                     raise
 
-                action = llm_result["content"]
-                finish_reason = llm_result.get("finish_reason", "stop")
-                weight_version = llm_result.get("weight_version")
-
-                env_state = json.dumps({"weight_version": weight_version}) if weight_version is not None else None
-
-                if self.log_actions_preview_chars > 0:
-                    preview = action.replace("\n", "\\n")[: self.log_actions_preview_chars]
-                    log.debug(
-                        "worker=%d env=%s step=%d action_preview=%r finish_reason=%s",
-                        worker_id,
-                        env_key,
-                        step_i,
-                        preview,
-                        finish_reason,
-                    )
-
-                if finish_reason == "length":
-                    log.info("worker=%d env=%s step=%d: LLM output truncated, terminating.", worker_id, env_key, step_i)
-                    reward = 0.0
-                    terminated = True
-                    truncated = True
-                    is_trainable = True
-                    await self.data_manager.record_step(
-                        session=session,
-                        step_id=step_i,
-                        messages=prompt,
-                        response=action,
-                        step_reward=reward,
-                        env_state=env_state,
-                        terminated=terminated,
-                        truncated=truncated,
-                        is_trainable=is_trainable,
-                    )
+                generations = {agent_id: data for agent_id, data in generated_pairs if not data.get("skip")}
+                if not generations:
+                    log.info("worker=%d env=%s: all prompts empty -> end episode", worker_id, env_key)
                     break
+
+                action_dict = {agent_id: data["action"] for agent_id, data in generations.items()}
+
+                # For old single-agent envs, keep passing a string action.
+                env_action: Any = action_dict["default"] if set(action_dict.keys()) == {"default"} else action_dict
+
+                for agent_id, data in generations.items():
+                    pending_generations[agent_id].append({
+                        "session": data["session"],
+                        "messages": data["messages"],
+                        "response": data["action"],
+                        "policy_id": data["policy_id"],
+                        "finish_reason": data["finish_reason"],
+                        "env_state": data["env_state"],
+                    })
 
                 try:
                     out = await self._env_step(
@@ -435,7 +591,7 @@ class Interactor:
                         worker_id=worker_id,
                         env_key=env_key,
                         step_i=step_i,
-                        action=action,
+                        action=env_action,
                     )
                 except Exception as exc:
                     log.error(
@@ -447,7 +603,7 @@ class Interactor:
                     )
                     raise
 
-                reward = float(out.get("reward", 0.0) or 0.0)
+                reward_dict = self._normalize_rewards(out)
                 terminated = bool(out.get("terminated", False))
                 truncated = bool(out.get("truncated", False))
                 raw_info = out.get("info")
@@ -460,17 +616,33 @@ class Interactor:
                 else:
                     is_trainable = False
 
-                await self.data_manager.record_step(
-                    session=session,
-                    step_id=step_i,
-                    messages=prompt,
-                    response=action,
-                    step_reward=reward,
-                    env_state=env_state,
-                    terminated=terminated,
-                    truncated=truncated,
-                    is_trainable=is_trainable,
-                )
+                for reward_agent_id, reward in reward_dict.items():
+                    queue = pending_generations.get(reward_agent_id)
+                    if not queue and reward_agent_id != "default":
+                        queue = pending_generations.get("default")
+                    if not queue:
+                        log.warning(
+                            "worker=%d env=%s step=%d: reward for agent=%s has no pending generation",
+                            worker_id,
+                            env_key,
+                            step_i,
+                            reward_agent_id,
+                        )
+                        continue
+                    generation = queue.popleft()
+                    finish_reason = generation.get("finish_reason", "stop")
+                    sample_truncated = truncated or finish_reason == "length"
+                    await self.data_manager.record_step(
+                        session=generation["session"],
+                        step_id=step_i,
+                        messages=generation["messages"],
+                        response=generation["response"],
+                        step_reward=float(reward),
+                        env_state=generation.get("env_state"),
+                        terminated=terminated,
+                        truncated=sample_truncated,
+                        is_trainable=is_trainable,
+                    )
 
                 if terminated or truncated:
                     log.info("worker=%d env=%s done: terminated=%s truncated=%s", worker_id, env_key, terminated, truncated)
@@ -487,7 +659,7 @@ class Interactor:
             except Exception:
                 log.exception("worker=%d env=%s: episode_handler.on_episode_end failed", worker_id, env_key)
 
-        return session.total_reward
+        return sum(session.total_reward for session in agent_sessions.values())
 
     async def run_all_environments(self) -> Dict[str, float]:
         """

@@ -316,12 +316,26 @@ def group_by_instance_id(results: List[Dict]) -> List[List[Dict]]:
     return list(groups.values())
 
 
-async def get_rollout_data(api_base_url: str) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def _get_policy_id() -> Optional[str]:
+    policy_id = os.environ.get("AIEVOBOX_POLICY_ID") or os.environ.get("RL_POLICY_ID")
+    if policy_id:
+        return str(policy_id)
+    return None
+
+
+def _is_rollout_owner() -> bool:
+    raw = os.environ.get("AIEVOBOX_ROLLOUT_OWNER", "true")
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+async def get_rollout_data(api_base_url: str, policy_id: Optional[str] = None) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     start_time = time.time()
     async with aiohttp.ClientSession() as session:
         while True:
             async with session.post(
-                f"{api_base_url}/get_rollout_data", json={}, timeout=aiohttp.ClientTimeout(total=120)
+                f"{api_base_url}/get_rollout_data",
+                json={"policy_id": policy_id} if policy_id else {},
+                timeout=aiohttp.ClientTimeout(total=120)
             ) as response:
                 response.raise_for_status()
                 resp_json = await response.json()
@@ -356,6 +370,7 @@ def start_rollout(api_base_url: str, args, metadata):
     print(f"metadata: {metadata}")
     finished_groups_instance_id_list = [item for sublist in metadata.values() for item in sublist]
     restart_training = os.environ.get("SLIME_ROLLBUF_RESTART_TRAINING", "True").strip().lower() == "true"
+    policy_id = _get_policy_id()
     payload = {
         "num_process": str(getattr(args, "rollout_num_process", 100)),
         "num_epoch": str(args.num_epoch or 3),
@@ -373,6 +388,8 @@ def start_rollout(api_base_url: str, args, metadata):
         "skip_instance_ids": finished_groups_instance_id_list,
         "restart_training": restart_training,
     }
+    if policy_id:
+        payload["policy_id"] = policy_id
     print("start rollout with payload: ", payload)
 
     while True:
@@ -438,6 +455,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
     metrics = MetricsRecorder()
     print("rollout_id: ", rollout_id)
     current_version = rollout_id + 1
+    policy_id = _get_policy_id()
 
     # 根据weight_version过滤已完成的数据
     off_by_n = int(get_env("RL_OFF_BY_N"))
@@ -489,7 +507,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
 
             while len(raw_results) < fetch_sample_count:
                 await asyncio.sleep(0.1)
-                data, meta_info = await get_rollout_data(api_base_url=base_url)
+                data, meta_info = await get_rollout_data(api_base_url=base_url, policy_id=policy_id)
                 raw_results.extend(data)
                 if meta_info:
                     all_meta_info.append(meta_info)
@@ -677,11 +695,14 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
     # AIEvoBox environments that immediately connect to the HTTP server.
     _init_llm_proxy_server(args)
 
-    if START_ROLLOUT:
+    if START_ROLLOUT and _is_rollout_owner():
         metadata = data_buffer.get_metadata()
         start_inform = start_rollout(args.rollout_buffer_url, args, metadata)
         print(f"start rollout with payload: {start_inform}")
         print(f"start rollout id: {rollout_id}")
+        START_ROLLOUT = False
+    elif START_ROLLOUT:
+        print("skip start_rollout because AIEVOBOX_ROLLOUT_OWNER is false")
         START_ROLLOUT = False
 
     sample_groups = run(generate_rollout_async(args, rollout_id, data_buffer, evaluation))

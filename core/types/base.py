@@ -59,7 +59,7 @@ class StepOutput(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     observation: Dict[str, Any]
-    reward: float
+    reward: Union[float, Dict[str, float]]
     terminated: bool
     truncated: bool
     info: Dict[str, Any]

@@ -113,7 +113,7 @@ class EnvActor:
         )
         return dumps_json_bytes(out)
 
-    def step(self, action: str) -> bytes:
+    def step(self, action: Any) -> bytes:
         out: StepOutput = self.env.step(action)
         return dumps_json_bytes(out)
 
@@ -349,7 +349,7 @@ class ResetRequest(BaseModel):
 
 
 class StepRequest(BaseModel):
-    action: str = Field(..., description="Action string passed into env.step(action).")
+    action: Any = Field(..., description="Action payload passed into env.step(action).")
 
 
 app = FastAPI(
