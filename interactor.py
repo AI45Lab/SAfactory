@@ -265,14 +265,14 @@ class Interactor:
         base_weight_version: Any,
         agent_id: str,
         policy_id: str,
-        session_id: str,
+        agent_session_id: str,
     ) -> str:
         state = {
             "weight_version": base_weight_version,
             "policy_version": base_weight_version,
             "agent_id": agent_id,
             "policy_id": policy_id,
-            "session_id": session_id,
+            "agent_session_id": agent_session_id,
         }
         return json.dumps(state, ensure_ascii=False)
 
@@ -469,6 +469,7 @@ class Interactor:
         agent_sessions: Dict[str, SessionContext] = {}
         agent_llms: Dict[str, LLM] = {}
         pending_generations: Dict[str, Deque[Dict[str, Any]]] = defaultdict(deque)
+        episode_total_reward = 0.0
 
         async def get_agent_session(agent_id: str, policy_id: str) -> SessionContext:
             key = f"{agent_id}:{policy_id}"
@@ -481,7 +482,6 @@ class Interactor:
                 llm_model=policy_id,
                 group_id=actor.group_id,
             )
-            session.session_id = self._make_agent_session_id(actor.env_id, agent_id, policy_id)
             agent_sessions[key] = session
             return session
 
@@ -553,7 +553,7 @@ class Interactor:
                             base_weight_version=weight_version,
                             agent_id=agent_id,
                             policy_id=policy_id,
-                            session_id=session.session_id,
+                            agent_session_id=self._make_agent_session_id(actor.env_id, agent_id, policy_id),
                         ),
                     }
 
@@ -617,6 +617,7 @@ class Interactor:
                     is_trainable = False
 
                 for reward_agent_id, reward in reward_dict.items():
+                    episode_total_reward += float(reward)
                     queue = pending_generations.get(reward_agent_id)
                     if not queue and reward_agent_id != "default":
                         queue = pending_generations.get("default")
@@ -653,13 +654,13 @@ class Interactor:
                 await self.episode_handler.on_episode_end(
                     env_name=actor.env_name,
                     env_id=actor.env_id,
-                    total_reward=session.total_reward,
+                    total_reward=episode_total_reward,
                     info=last_info,
                 )
             except Exception:
                 log.exception("worker=%d env=%s: episode_handler.on_episode_end failed", worker_id, env_key)
 
-        return sum(session.total_reward for session in agent_sessions.values())
+        return episode_total_reward
 
     async def run_all_environments(self) -> Dict[str, float]:
         """

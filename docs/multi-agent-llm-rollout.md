@@ -1,6 +1,6 @@
-# 多 LLM Policy 在同一个 Env 中协作/对抗
+# 多 LLM Policy 在同一个 Env 中训练
 
-目标：支持多个 LLM policy 在同一个 env episode 里协作或对抗，同时保证 env 状态、policy 调用、reward 归属和训练样本能对齐。
+目标：支持多个 LLM policy 在同一个 env episode 里训练，同时保证 env 状态、policy 调用、reward 归属和训练样本能对齐。
 
 ## 需要解决的问题
 
@@ -28,3 +28,34 @@
 4. 异步更新：MVP 允许同一个 episode 内出现版本混杂；每条 generation 只记录 `policy_id` 和可获得的 `policy_version`，用于后续分析或过滤。
 5. Rollout：一个 env group 只启动一份 shared rollout，由它调度所有 agent 和 policy。可以用 `rollout_owner` 避免多个 trainer 重复启动 env。
 6. Slime：每个可训练 policy 对应一个 Slime trainer；trainer 按 `policy_id` 从 buffer 拉取样本，只训练自己的 policy。
+
+## 代码框架设计
+
+可以把整个系统想成四个角色：
+
+1. Env 是世界。它知道现在轮到谁说话，也知道说完以后世界怎么变化。
+2. Interactor 是执行者。它问 Env：“现在谁要说话？”然后去调用对应模型，把模型回复交回给 Env。
+3. Buffer Server 是仓库。它把每个模型产生的数据存起来，并标记这条数据属于哪个 policy。
+4. Slime Trainer 是训练器。每个 policy 启一个 trainer，只从仓库里拿自己的数据训练。
+
+一次交互大概是这样：
+
+1. Env 说：现在需要 `attacker` 生成攻击 prompt。
+2. Interactor 找到 `attacker` 对应的 `attacker_policy`，调用这个模型生成回复。
+3. Interactor 把回复交给 Env。
+4. Env 更新状态，然后说：现在需要 `defender` 回复。
+5. Interactor 再调用 `defender_policy`。
+6. Env 根据攻击和防御结果计算 reward。
+7. Buffer Server 把 attacker 的数据放到 `attacker_policy` 下面，把 defender 的数据放到 `defender_policy` 下面。
+8. 两个 Slime Trainer 分别拉自己的数据，各自训练自己的模型。
+
+这里最重要的是两个名字：
+
+1. `agent_id`：Env 里的角色名，比如 `attacker`、`defender`、`judge`。
+2. `policy_id`：真正要训练的模型名，比如 `attacker_policy`、`defender_policy`。
+
+Env 只关心角色怎么互动；训练系统只关心每条数据属于哪个 policy。这样一个 Env 里可以有多个 agent，也可以让多个 agent 共用同一个 policy。
+
+如果多个 agent 要同时行动，Env 一次性告诉 Interactor：“现在 A 和 B 都要说话。”Interactor 等 A 和 B 都生成完，再一起交给 Env。这样 reward 就是基于同一个世界状态算出来的。
+
+如果 reward 不是马上出来，例如 attacker 先说，defender 后说，最后 judge 才打分，那么 Interactor 先暂存 attacker 和 defender 的回复。等 Env 返回 reward 后，再把 reward 补到对应的数据上，然后写入 Buffer Server。

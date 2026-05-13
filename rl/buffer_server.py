@@ -127,7 +127,7 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     agent_id = "default"
     policy_id = "default"
     policy_version = 0
-    session_id_override = None
+    agent_session_id = None
     if env_state_raw := row.get("env_state"):
         try:
             env_state = json.loads(env_state_raw)
@@ -135,7 +135,7 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
             policy_version = env_state.get("policy_version", weight_version)
             agent_id = str(env_state.get("agent_id") or agent_id)
             policy_id = str(env_state.get("policy_id") or policy_id)
-            session_id_override = env_state.get("session_id")
+            agent_session_id = env_state.get("agent_session_id") or env_state.get("session_id")
         except Exception:
             logger.warning("Failed to parse env_state metadata: %r", env_state_raw)
 
@@ -144,7 +144,10 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "steps": row.get("step_id", 0),
         # 注意：finish_reason 与 truncated 不完全等价，finish_reason 仅用于训练侧标记截断状态
         "finish_reason": "length" if row.get("truncated", False) else "stop",
-        "session_id": str(session_id_override or session_id),
+        # This must stay as the DB/LLM-proxy session id. The trajectory mask
+        # builder uses it to find token-level generation records.
+        "session_id": str(session_id),
+        "agent_session_id": str(agent_session_id or ""),
         "env_id": env_id,
         "group_id": group_id,
         "weight_version": weight_version,
@@ -371,8 +374,9 @@ def start_aievobox_process(data: dict):
     rl_epoch = int(get_env("RL_EPOCH") or 1)
     env_transport = os.environ.get("AIEVOBOX_ENV_TRANSPORT", "http")
 
+    python_bin = os.environ.get("PYTHON_BIN") or sys.executable
     cmd = [
-        "python3", launcher_script,
+        python_bin, launcher_script,
         "--db-path", db_url,
         "--storage-type", storage_type,
         *(["--env-config", env_config] if env_config else ["--env-root", env_root]),

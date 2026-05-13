@@ -44,6 +44,11 @@ def _import_qa_gym() -> Type:
     return QAGym
 
 
+def _import_multi_qagym() -> Type:
+    from env.multi_qagym.multi_qagym_env import MultiQAGym
+    return MultiQAGym
+
+
 def _import_deepeyes_env() -> Type:
     from env.deepeyes.deepeyes_env import DeepEyesEnv
     return DeepEyesEnv
