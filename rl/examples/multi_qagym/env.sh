@@ -34,6 +34,13 @@ export OPENAI_BASE_URL="http://127.0.0.1:18892/v1"
 # -------------------------------------------
 export BUFFER_SERVER_HOST="127.0.0.1"
 export BUFFER_SERVER_PORT="18889"
+export JUDGE_PROXY_HOST="127.0.0.1"
+export JUDGE_PROXY_PORT="18892"
+export JUDGE_PROXY_URL="http://${JUDGE_PROXY_HOST}:${JUDGE_PROXY_PORT}"
+export JUDGE_PROXY_MAX_CONCURRENCY="2"
+export JUDGE_TIMEOUT_S="30"
+export JUDGE_PROXY_DUMP_INPUTS="${JUDGE_PROXY_DUMP_INPUTS:-1}"
+export JUDGE_PROXY_DUMP_DIR="${JUDGE_PROXY_DUMP_DIR:-${AIEVOBOX_ROOT}/logs/judge_proxy_inputs}"
 
 # -------------------------------------------
 # Policy endpoints

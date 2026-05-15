@@ -276,6 +276,23 @@ class Interactor:
         }
         return json.dumps(state, ensure_ascii=False)
 
+    @staticmethod
+    def _merge_env_info_into_state(env_state: Optional[str], env_info: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not env_info:
+            return env_state
+
+        state: Dict[str, Any] = {}
+        if env_state:
+            try:
+                loaded = json.loads(env_state)
+                if isinstance(loaded, dict):
+                    state = loaded
+            except json.JSONDecodeError:
+                state = {"raw_env_state": env_state}
+
+        state["env_info"] = env_info
+        return json.dumps(state, ensure_ascii=False)
+
     def _trim_messages(self, prompt: Any) -> List[Dict[str, Any]]:
         """
         Keep system + last N turns for better LLM cost/control.
@@ -639,7 +656,7 @@ class Interactor:
                         messages=generation["messages"],
                         response=generation["response"],
                         step_reward=float(reward),
-                        env_state=generation.get("env_state"),
+                        env_state=self._merge_env_info_into_state(generation.get("env_state"), last_info),
                         terminated=terminated,
                         truncated=sample_truncated,
                         is_trainable=is_trainable,

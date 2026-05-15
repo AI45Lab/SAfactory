@@ -26,6 +26,12 @@ wait_for_port() {
   return 1
 }
 
+is_port_open() {
+  local host="$1"
+  local port="$2"
+  timeout 1 bash -c ":</dev/tcp/${host}/${port}" >/dev/null 2>&1
+}
+
 cleanup_children() {
   local exit_code=$?
   if [ "${exit_code}" -ne 0 ]; then
@@ -39,6 +45,7 @@ echo "  Run ID: ${AIEVOBOX_RUN_ID}"
 echo "  Logs: ${LOG_DIR}"
 echo "  DB: ${AIEVOBOX_DB_URL}"
 echo "  Buffer server: http://${BUFFER_SERVER_HOST}:${BUFFER_SERVER_PORT}"
+echo "  Judge proxy: ${JUDGE_PROXY_URL}"
 
 echo "Cleaning old Ray/SGLang processes..."
 pkill -9 sglang || true
@@ -59,6 +66,19 @@ echo "Starting shared Ray..."
   --num-gpus "${NUM_GPUS}" \
   --disable-usage-stats
 wait_for_port 127.0.0.1 8265 "Ray dashboard"
+
+if is_port_open "${JUDGE_PROXY_HOST}" "${JUDGE_PROXY_PORT}"; then
+  echo "Judge proxy is already running at ${JUDGE_PROXY_URL}"
+else
+  echo "Starting judge proxy..."
+  (
+    cd "${SCRIPT_DIR}"
+    exec ./run_judge_proxy.sh
+  ) >"${LOG_DIR}/judge_proxy.log" 2>&1 &
+  JUDGE_PROXY_PID=$!
+  echo "  Judge proxy PID: ${JUDGE_PROXY_PID}"
+  wait_for_port "${JUDGE_PROXY_HOST}" "${JUDGE_PROXY_PORT}" "judge proxy"
+fi
 
 wait_for_port "${BUFFER_SERVER_HOST}" "${BUFFER_SERVER_PORT}" "buffer server"
 

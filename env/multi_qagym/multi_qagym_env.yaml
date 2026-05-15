@@ -16,4 +16,6 @@ environments:
         temperature: 0.1
         success_threshold: 5
         target_model_holder: "OpenAI"
+        proxy_url: "http://127.0.0.1:18892"
+        timeout_s: 240
         verbose: false

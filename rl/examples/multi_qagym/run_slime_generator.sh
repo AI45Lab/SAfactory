@@ -30,7 +30,7 @@ LLM_PROXY_URL="http://${LLM_PROXY_HOST}:${LLM_PROXY_PORT}"
 export PYTHONUNBUFFERED=1
 
 SLIME_HOME=${SLIME_HOME:-/root/slime}
-HF_CKPT_DIR=${HF_CKPT_DIR:-/mnt/shared-storage-user/evobox-share/hf-hub/models--Qwen3-1.7B/snapshots/0060bc56d46589041c1048efd1a397421b1142b5}
+HF_CKPT_DIR=${HF_CKPT_DIR:-/mnt/shared-storage-user/evobox-share/hf-hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e}
 SAVE_DIR=${SAVE_DIR:-/mnt/shared-storage-user/evobox-share-gpfs2/leishanzhe/model/checkpoints/rl/multi_qagym/${AIEVOBOX_POLICY_ID}/${AIEVOBOX_RUN_ID}}
 MODEL_SCRIPT=${MODEL_SCRIPT:-${SLIME_HOME}/scripts/models/qwen3-1.7B.sh}
 source "${MODEL_SCRIPT}"
