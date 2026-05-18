@@ -9,7 +9,7 @@ import sys
 import time
 import uuid
 from logging.handlers import RotatingFileHandler
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -128,6 +128,14 @@ class JudgeProxyState:
 STATE = JudgeProxyState()
 
 
+def _write_judge_dump(dump_path: str, payload: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(dump_path), exist_ok=True)
+    tmp_path = f"{dump_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, dump_path)
+
+
 @app.get("/health")
 async def health_check():
     return {
@@ -145,25 +153,24 @@ async def judge(request: JudgeRequest):
         logger.info("judge request dequeued after %.3fs response_chars=%d", wait_s, len(request.response or ""))
         judge_model = STATE.get_judge(request.target_model_holder)
         request_id = uuid.uuid4().hex
+        dump_path = None
+        dump_payload = None
         if STATE.dump_inputs:
             judge_prompt = judge_model._build_judge_prompt(request.query, request.response)
             dump_path = os.path.join(STATE.dump_dir, f"{int(time.time())}-{request_id}.json")
-            with open(dump_path, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "request_id": request_id,
-                        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "query": request.query,
-                        "response": request.response,
-                        "judge_prompt": judge_prompt,
-                        "query_chars": len(request.query or ""),
-                        "response_chars": len(request.response or ""),
-                        "judge_prompt_chars": len(judge_prompt),
-                    },
-                    f,
-                    ensure_ascii=False,
-                    indent=2,
-                )
+            dump_payload = {
+                "request_id": request_id,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "started",
+                "query": request.query,
+                "response": request.response,
+                "target_model_holder": request.target_model_holder,
+                "judge_prompt": judge_prompt,
+                "query_chars": len(request.query or ""),
+                "response_chars": len(request.response or ""),
+                "judge_prompt_chars": len(judge_prompt),
+            }
+            _write_judge_dump(dump_path, dump_payload)
             logger.info("judge input dumped request_id=%s path=%s", request_id, dump_path)
 
         try:
@@ -173,12 +180,43 @@ async def judge(request: JudgeRequest):
                 request.response,
             )
         except Exception as exc:
+            if dump_path and dump_payload is not None:
+                dump_payload.update(
+                    {
+                        "status": "error",
+                        "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "elapsed_s": time.perf_counter() - t0,
+                        "error": repr(exc),
+                    }
+                )
+                try:
+                    _write_judge_dump(dump_path, dump_payload)
+                except Exception:
+                    logger.exception("failed to write judge error dump request_id=%s", request_id)
             logger.exception("judge request failed: %s", exc)
             raise HTTPException(status_code=500, detail=str(exc))
 
         elapsed_s = time.perf_counter() - t0
         logger.info("judge response score=%.1f elapsed=%.3fs reason=%r", score, elapsed_s, reason[:200])
         diagnostics = getattr(judge_model, "last_diagnostics", None)
+        if dump_path and dump_payload is not None:
+            dump_payload.update(
+                {
+                    "status": "ok",
+                    "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "elapsed_s": elapsed_s,
+                    "judge_output": {
+                        "score": float(score),
+                        "reason": str(reason),
+                        "diagnostics": diagnostics,
+                    },
+                }
+            )
+            try:
+                _write_judge_dump(dump_path, dump_payload)
+                logger.info("judge output dumped request_id=%s path=%s", request_id, dump_path)
+            except Exception:
+                logger.exception("failed to write judge output dump request_id=%s", request_id)
         if diagnostics and "Failed to evaluate" in str(reason):
             logger.error("judge fallback diagnostics=%s", json.dumps(diagnostics, ensure_ascii=False)[:4000])
         return JudgeResponse(score=float(score), reason=str(reason), elapsed_s=elapsed_s)

@@ -6,6 +6,7 @@ environments:
     dataset: /mnt/shared-storage-user/leishanzhe/repo/AIEvoBox/env/qagym/qa_cases.jsonl
     env_params:
       max_steps: 3
+      single_turn: true
       attacker_agent_id: attacker
       defender_agent_id: defender
       max_score: 5.0
@@ -16,6 +17,6 @@ environments:
         temperature: 0.1
         success_threshold: 5
         target_model_holder: "OpenAI"
-        proxy_url: "http://127.0.0.1:18892"
+        proxy_url: "http://100.103.249.119:18892"
         timeout_s: 240
         verbose: false

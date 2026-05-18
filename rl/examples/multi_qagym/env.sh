@@ -34,13 +34,13 @@ export OPENAI_BASE_URL="http://127.0.0.1:18892/v1"
 # -------------------------------------------
 export BUFFER_SERVER_HOST="127.0.0.1"
 export BUFFER_SERVER_PORT="18889"
-export JUDGE_PROXY_HOST="127.0.0.1"
+export JUDGE_PROXY_HOST="100.103.249.119"
 export JUDGE_PROXY_PORT="18892"
 export JUDGE_PROXY_URL="http://${JUDGE_PROXY_HOST}:${JUDGE_PROXY_PORT}"
 export JUDGE_PROXY_MAX_CONCURRENCY="2"
 export JUDGE_TIMEOUT_S="30"
-export JUDGE_PROXY_DUMP_INPUTS="${JUDGE_PROXY_DUMP_INPUTS:-1}"
-export JUDGE_PROXY_DUMP_DIR="${JUDGE_PROXY_DUMP_DIR:-${AIEVOBOX_ROOT}/logs/judge_proxy_inputs}"
+export JUDGE_PROXY_DUMP_INPUTS="0"
+export JUDGE_PROXY_DUMP_DIR="${AIEVOBOX_ROOT}/logs/judge_proxy_inputs"
 
 # -------------------------------------------
 # Policy endpoints
@@ -58,7 +58,7 @@ export AIEVOBOX_POLICY_CONFIG="{\"attacker\":{\"policy_id\":\"${ATTACKER_POLICY_
 # -------------------------------------------
 # RL / Slime settings
 # -------------------------------------------
-export RL_GROUP_SIZE="2"
+export RL_GROUP_SIZE="8"
 export RL_EPOCH="1000"
 export RL_OFF_BY_N="0"
 export DAPO_filter="false"
@@ -80,5 +80,5 @@ export CONTEXT_PARALLEL_SIZE="1"
 export MAX_TOKENS_PER_GPU="3000"
 
 export SLIME_N_SAMPLES_PER_PROMPT="${RL_GROUP_SIZE}"
-export SLIME_GLOBAL_BATCH_SIZE="8"
-export SLIME_ROLLOUT_BATCH_SIZE="4"
+export SLIME_GLOBAL_BATCH_SIZE="64"
+export SLIME_ROLLOUT_BATCH_SIZE="8"

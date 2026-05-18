@@ -12,6 +12,14 @@ from .simple_llm_judge import SimpleLLMJudge
 logger = logging.getLogger(__name__)
 
 
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 @register_env("multi_qagym")
 class MultiQAGym(BaseEnv):
     """Two-policy QAGym environment.
@@ -24,6 +32,7 @@ class MultiQAGym(BaseEnv):
     def __init__(
         self,
         max_steps: int = 3,
+        single_turn: bool = False,
         judge_model_config: Optional[Dict[str, Any]] = None,
         attacker_agent_id: str = "attacker",
         defender_agent_id: str = "defender",
@@ -32,6 +41,7 @@ class MultiQAGym(BaseEnv):
     ):
         super().__init__(**kwargs)
         self.max_steps = int(max_steps)
+        self.single_turn = _as_bool(single_turn)
         self.attacker_agent_id = str(attacker_agent_id)
         self.defender_agent_id = str(defender_agent_id)
         self.max_score = float(max_score)
@@ -106,7 +116,7 @@ class MultiQAGym(BaseEnv):
             defender_reward = self.max_score - score
 
             terminated = self.judge_model.is_successful(score)
-            truncated = self.current_step >= self.max_steps
+            truncated = (not terminated) and (self.single_turn or self.current_step >= self.max_steps)
             if not (terminated or truncated):
                 self.phase = self.attacker_agent_id
 
@@ -189,6 +199,7 @@ class MultiQAGym(BaseEnv):
             "instruction": self.instruction,
             "phase": self.phase,
             "step": self.current_step,
+            "single_turn": self.single_turn,
             "attacker_agent_id": self.attacker_agent_id,
             "defender_agent_id": self.defender_agent_id,
         }

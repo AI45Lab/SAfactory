@@ -23,7 +23,7 @@ echo "  Judge base URL: ${JUDGE_BASE_URL}"
 echo "  Judge model: ${JUDGE_MODEL_NAME}"
 echo "  Max concurrency: ${JUDGE_PROXY_MAX_CONCURRENCY}"
 echo "  Timeout: ${JUDGE_TIMEOUT_S}s"
-echo "  Dump inputs: ${JUDGE_PROXY_DUMP_INPUTS:-0}"
+echo "  Dump judge IO: ${JUDGE_PROXY_DUMP_INPUTS:-0}"
 echo "  Dump dir: ${JUDGE_PROXY_DUMP_DIR:-}"
 
 "${PYTHON_BIN}" "${AIEVOBOX_ROOT}/rl/judge_proxy.py"

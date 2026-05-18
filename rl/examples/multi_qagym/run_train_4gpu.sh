@@ -70,14 +70,9 @@ wait_for_port 127.0.0.1 8265 "Ray dashboard"
 if is_port_open "${JUDGE_PROXY_HOST}" "${JUDGE_PROXY_PORT}"; then
   echo "Judge proxy is already running at ${JUDGE_PROXY_URL}"
 else
-  echo "Starting judge proxy..."
-  (
-    cd "${SCRIPT_DIR}"
-    exec ./run_judge_proxy.sh
-  ) >"${LOG_DIR}/judge_proxy.log" 2>&1 &
-  JUDGE_PROXY_PID=$!
-  echo "  Judge proxy PID: ${JUDGE_PROXY_PID}"
-  wait_for_port "${JUDGE_PROXY_HOST}" "${JUDGE_PROXY_PORT}" "judge proxy"
+  echo "Judge proxy is not reachable at ${JUDGE_PROXY_URL}" >&2
+  echo "Start the external judge proxy first, then rerun this script." >&2
+  exit 1
 fi
 
 wait_for_port "${BUFFER_SERVER_HOST}" "${BUFFER_SERVER_PORT}" "buffer server"
