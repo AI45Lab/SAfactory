@@ -18,13 +18,21 @@ per_llm_route_max_concurrency: 256
 per_session_max_inflight: 8
 
 telemetry:
-  mode: best_effort
-  loss_policy: drop_newest
-  capture_payload: failed_only
-  payload_sample_rate: 0.01
+  mode: strict
+  loss_policy: fail_closed
+  capture_payload: full
+  payload_sample_rate: 1.0
   redact_sensitive_fields: true
   batch_size: 200
   flush_interval_ms: 100
+
+request_log:
+  enabled: true
+  path: logs/gateway_requests.jsonl
+  max_bytes: 104857600
+  backup_count: 5
+  # 0 means unlimited body capture so agent prompts and streamed LLM output are not truncated.
+  body_limit_bytes: 0
 
 llm_routes:
   minimax2.5:

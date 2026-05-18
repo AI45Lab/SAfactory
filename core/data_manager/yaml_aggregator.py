@@ -56,7 +56,7 @@ async def _do_bulk_insert(pending_records: list, batch_size: int = 500) -> None:
     """Background coroutine: bulk-insert pending JobEnvironment records into SQLite.
 
     Each batch is committed in its own transaction so records become visible to
-    EnvPoolManager incrementally, rather than only after the entire insert completes.
+    AgentPoolManager incrementally, rather than only after the entire insert completes.
     """
     total = len(pending_records)
     batch_size_raw = os.environ.get("AIEVOBOX_SQLITE_BULK_INSERT_BATCH_SIZE")
@@ -317,7 +317,7 @@ async def _sync_sqlite(
     startup_submit_count = max(0, int(startup_submit_count))
     followup_submit_batch = max(1, int(followup_submit_batch))
 
-    # Commit the first batch synchronously so EnvPoolManager's initial DB query
+    # Commit the first batch synchronously so AgentPoolManager's initial DB query
     # (build_binding_plan) always finds enough rows to warm the pool.
     if pending_records:
         async with in_transaction():

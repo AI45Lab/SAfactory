@@ -20,6 +20,7 @@ from gateway.inference_forwarder import (
 )
 from gateway.llm_router import LLMRouteTarget, LLMRouter
 from gateway.models import GatewayRequestContext, GatewaySessionBinding
+from gateway.request_logger import GatewayRequestLogger
 from gateway.session_resolver import SessionResolver
 from gateway.storage import GatewayStorage
 from gateway.telemetry import StreamTelemetryStats, TelemetryRecorder
@@ -40,6 +41,8 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         app.state.gateway_admission = AdmissionController(cfg)
         app.state.gateway_forwarder = InferenceForwarder(cfg)
         app.state.gateway_resolver = SessionResolver(cfg)
+        app.state.gateway_request_logger = GatewayRequestLogger(cfg)
+        app.state.gateway_request_logger.start()
         app.state.gateway_telemetry = TelemetryRecorder(cfg, app.state.gateway_storage)
         await app.state.gateway_telemetry.start()
         app.state.gateway_ready = True
@@ -52,6 +55,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             await _wait_for_drain(app, cfg.drain_timeout_s)
             await app.state.gateway_telemetry.stop()
             await app.state.gateway_forwarder.close()
+            app.state.gateway_request_logger.close()
             await app.state.gateway_storage.close()
 
     app = FastAPI(
@@ -80,6 +84,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         router: LLMRouter = request.app.state.gateway_router
         forwarder: InferenceForwarder = request.app.state.gateway_forwarder
         telemetry: TelemetryRecorder = request.app.state.gateway_telemetry
+        request_logger: GatewayRequestLogger = request.app.state.gateway_request_logger
 
         try:
             payload = await request.json()
@@ -104,6 +109,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             await router.on_acquire(target.route_model, is_stream=ctx.is_stream)
 
             headers = forwarder.build_upstream_headers(target)
+            await request_logger.log_request(ctx, binding, target, payload)
             if ctx.is_stream:
                 opened = await _open_stream(forwarder, target, endpoint, payload, headers)
                 release_in_finally = False
@@ -117,6 +123,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                         payload=payload,
                         router=router,
                         telemetry=telemetry,
+                        request_logger=request_logger,
                         admission=admission,
                     ),
                     status_code=opened.status_code,
@@ -125,6 +132,15 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
 
             result = await _forward_json(forwarder, target, endpoint, payload, headers)
             latency_ms = (time.perf_counter() - started) * 1000
+            await request_logger.log_response(
+                ctx,
+                binding,
+                target,
+                status_code=result.status_code,
+                response_body=result.body,
+                latency_ms=latency_ms,
+                upstream_latency_ms=result.upstream_latency_ms,
+            )
             await router.mark_route_result(
                 target.route_model,
                 True,
@@ -146,6 +162,18 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             status_code, error_body = forwarder.normalize_error(exc)
             if target is not None:
                 await router.mark_route_result(target.route_model, False, latency_ms, status_code)
+            await request_logger.log_error(
+                endpoint=endpoint,
+                path_session_id=path_session_id,
+                request_body=payload,
+                error_body=error_body,
+                error_text=str(exc),
+                status_code=status_code,
+                latency_ms=latency_ms,
+                ctx=ctx,
+                binding=binding,
+                target=target,
+            )
             if ctx is not None and binding is not None:
                 await telemetry.enqueue_failure(
                     ctx,
@@ -327,6 +355,7 @@ async def _stream_and_finalize(
     payload: dict[str, Any],
     router: LLMRouter,
     telemetry: TelemetryRecorder,
+    request_logger: GatewayRequestLogger,
     admission: AdmissionController,
 ) -> AsyncIterator[bytes]:
     first_chunk_at: float | None = None
@@ -338,10 +367,17 @@ async def _stream_and_finalize(
     upstream_cancelled = False
     stream_response_body: dict[str, Any] = {}
     stream_metadata_buffer = ""
+    stream_choice_states: dict[int, dict[str, Any]] = {}
+    stream_text_parts: list[str] = []
+    stream_total_bytes = 0
+    stream_capture = request_logger.new_stream_capture()
 
     try:
         async for chunk in opened.response.content.iter_any():
             if chunk:
+                stream_capture.append(chunk)
+                stream_total_bytes += len(chunk)
+                stream_text_parts.append(chunk.decode("utf-8", errors="replace"))
                 if first_chunk_at is None:
                     first_chunk_at = time.perf_counter()
                 chunk_count += 1
@@ -350,6 +386,7 @@ async def _stream_and_finalize(
                     chunk,
                     stream_metadata_buffer,
                     stream_response_body,
+                    stream_choice_states,
                 )
             yield chunk
     except asyncio.CancelledError:
@@ -376,13 +413,36 @@ async def _stream_and_finalize(
         ok = status_code < 400
         await router.mark_route_result(target.route_model, ok, latency_ms, status_code)
         try:
+            stream_body = stream_capture.snapshot()
+            telemetry_response_body = _stream_response_body_for_telemetry(
+                summary=stream_response_body,
+                choice_states=stream_choice_states,
+                stream_text="".join(stream_text_parts),
+                stream_total_bytes=stream_total_bytes,
+                stream_truncated=False,
+            )
+            await request_logger.log_stream_response(
+                ctx,
+                binding,
+                target,
+                status_code=status_code,
+                stream_body=stream_body,
+                stream_summary=stream_response_body,
+                latency_ms=latency_ms,
+                upstream_latency_ms=opened.upstream_latency_ms,
+                ttft_ms=ttft_ms,
+                output_chunk_count=chunk_count,
+                client_cancelled=client_cancelled,
+                upstream_cancelled=upstream_cancelled,
+                error_text=error_text,
+            )
             if ok:
                 await telemetry.enqueue_success(
                     ctx,
                     binding,
                     target,
                     payload,
-                    stream_response_body or None,
+                    telemetry_response_body,
                     latency_ms,
                     upstream_latency_ms=opened.upstream_latency_ms,
                     stream_stats=stats,
@@ -398,6 +458,7 @@ async def _stream_and_finalize(
                     latency_ms,
                     upstream_latency_ms=opened.upstream_latency_ms,
                     stream_stats=stats,
+                    response_body=telemetry_response_body,
                 )
         finally:
             await router.on_release(target.route_model, is_stream=ctx.is_stream)
@@ -418,7 +479,12 @@ def _metric_label(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _collect_stream_metadata(chunk: bytes, buffer: str, summary: dict[str, Any]) -> str:
+def _collect_stream_metadata(
+    chunk: bytes,
+    buffer: str,
+    summary: dict[str, Any],
+    choice_states: dict[int, dict[str, Any]],
+) -> str:
     buffer += chunk.decode("utf-8", errors="ignore")
     while "\n" in buffer:
         line, buffer = buffer.split("\n", 1)
@@ -434,13 +500,17 @@ def _collect_stream_metadata(chunk: bytes, buffer: str, summary: dict[str, Any])
         except ValueError:
             continue
         if isinstance(event, dict):
-            _merge_stream_event(summary, event)
+            _merge_stream_event(summary, event, choice_states)
     if len(buffer) > 65536:
         return buffer[-4096:]
     return buffer
 
 
-def _merge_stream_event(summary: dict[str, Any], event: dict[str, Any]) -> None:
+def _merge_stream_event(
+    summary: dict[str, Any],
+    event: dict[str, Any],
+    choice_states: dict[int, dict[str, Any]] | None = None,
+) -> None:
     for key in ("id", "object"):
         value = event.get(key)
         if value is not None:
@@ -453,9 +523,13 @@ def _merge_stream_event(summary: dict[str, Any], event: dict[str, Any]) -> None:
     choices = event.get("choices")
     if isinstance(choices, list):
         for choice in choices:
-            if isinstance(choice, dict) and choice.get("finish_reason"):
-                summary["choices"] = [{"finish_reason": choice["finish_reason"]}]
-                break
+            if not isinstance(choice, dict):
+                continue
+            if choice_states is not None:
+                _merge_chat_completion_choice(choice_states, choice)
+            if choice.get("finish_reason"):
+                index = _choice_index(choice)
+                summary["choices"] = [{"index": index, "finish_reason": choice["finish_reason"]}]
 
     response = event.get("response")
     if isinstance(response, dict):
@@ -474,6 +548,190 @@ def _merge_stream_event(summary: dict[str, Any], event: dict[str, Any]) -> None:
         summary["status"] = "failed"
     elif event_type == "response.cancelled":
         summary["status"] = "cancelled"
+    elif event_type == "response.output_text.delta" and isinstance(event.get("delta"), str):
+        summary.setdefault("output_text_parts", []).append(event["delta"])
+    elif event_type == "response.reasoning_text.delta" and isinstance(event.get("delta"), str):
+        summary.setdefault("reasoning_text_parts", []).append(event["delta"])
+
+
+def _merge_chat_completion_choice(choice_states: dict[int, dict[str, Any]], choice: dict[str, Any]) -> None:
+    index = _choice_index(choice)
+    state = choice_states.setdefault(
+        index,
+        {
+            "index": index,
+            "role": "assistant",
+            "content_parts": [],
+            "reasoning_parts": [],
+            "tool_calls": {},
+            "function_call": {"name_parts": [], "arguments_parts": []},
+            "finish_reason": None,
+        },
+    )
+
+    message = choice.get("message")
+    if isinstance(message, dict):
+        _merge_message_payload(state, message)
+
+    delta = choice.get("delta")
+    if isinstance(delta, dict):
+        _merge_message_payload(state, delta)
+
+    if choice.get("finish_reason"):
+        state["finish_reason"] = choice["finish_reason"]
+
+
+def _merge_message_payload(state: dict[str, Any], payload: dict[str, Any]) -> None:
+    role = payload.get("role")
+    if isinstance(role, str) and role:
+        state["role"] = role
+
+    content = payload.get("content")
+    if isinstance(content, str):
+        state.setdefault("content_parts", []).append(content)
+    elif content is not None:
+        state["content"] = content
+
+    for key in ("reasoning", "reasoning_content"):
+        reasoning = payload.get(key)
+        if isinstance(reasoning, str):
+            state.setdefault("reasoning_parts", []).append(reasoning)
+        elif reasoning is not None:
+            state[key] = reasoning
+
+    tool_calls = payload.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for raw_tool_call in tool_calls:
+            if isinstance(raw_tool_call, dict):
+                _merge_tool_call_delta(state.setdefault("tool_calls", {}), raw_tool_call)
+
+    function_call = payload.get("function_call")
+    if isinstance(function_call, dict):
+        _merge_function_call_delta(state.setdefault("function_call", {}), function_call)
+
+
+def _merge_tool_call_delta(tool_calls: dict[int, dict[str, Any]], delta: dict[str, Any]) -> None:
+    index = _safe_int(delta.get("index"), len(tool_calls))
+    state = tool_calls.setdefault(
+        index,
+        {
+            "index": index,
+            "id_parts": [],
+            "type": None,
+            "function": {"name_parts": [], "arguments_parts": []},
+        },
+    )
+
+    if isinstance(delta.get("id"), str):
+        state.setdefault("id_parts", []).append(delta["id"])
+    if isinstance(delta.get("type"), str):
+        state["type"] = delta["type"]
+
+    function = delta.get("function")
+    if isinstance(function, dict):
+        _merge_function_call_delta(state.setdefault("function", {}), function)
+
+
+def _merge_function_call_delta(state: dict[str, Any], delta: dict[str, Any]) -> None:
+    name = delta.get("name")
+    if isinstance(name, str):
+        state.setdefault("name_parts", []).append(name)
+    arguments = delta.get("arguments")
+    if isinstance(arguments, str):
+        state.setdefault("arguments_parts", []).append(arguments)
+
+
+def _stream_response_body_for_telemetry(
+    *,
+    summary: dict[str, Any],
+    choice_states: dict[int, dict[str, Any]],
+    stream_text: str,
+    stream_total_bytes: int,
+    stream_truncated: bool,
+) -> dict[str, Any]:
+    body = dict(summary)
+    if "output_text_parts" in body:
+        body["output_text"] = "".join(str(part) for part in body.pop("output_text_parts"))
+    if "reasoning_text_parts" in body:
+        body["reasoning_text"] = "".join(str(part) for part in body.pop("reasoning_text_parts"))
+    if choice_states:
+        body["choices"] = [_finalize_choice_state(choice_states[index]) for index in sorted(choice_states)]
+    body["stream_text"] = stream_text
+    body["stream_total_bytes"] = stream_total_bytes
+    body["stream_truncated"] = stream_truncated
+    return body
+
+
+def _finalize_choice_state(state: dict[str, Any]) -> dict[str, Any]:
+    message: dict[str, Any] = {"role": state.get("role") or "assistant"}
+    content_parts = state.get("content_parts") or []
+    if content_parts:
+        message["content"] = "".join(str(part) for part in content_parts)
+    elif "content" in state:
+        message["content"] = state["content"]
+
+    reasoning_parts = state.get("reasoning_parts") or []
+    if reasoning_parts:
+        message["reasoning"] = "".join(str(part) for part in reasoning_parts)
+    elif "reasoning" in state:
+        message["reasoning"] = state["reasoning"]
+    elif "reasoning_content" in state:
+        message["reasoning_content"] = state["reasoning_content"]
+
+    tool_calls = _finalize_tool_calls(state.get("tool_calls") or {})
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+
+    function_call = _finalize_function_call(state.get("function_call") or {})
+    if function_call:
+        message["function_call"] = function_call
+
+    choice = {
+        "index": _safe_int(state.get("index"), 0),
+        "message": message,
+    }
+    if state.get("finish_reason"):
+        choice["finish_reason"] = state["finish_reason"]
+    return choice
+
+
+def _finalize_tool_calls(tool_calls: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+    finalized: list[dict[str, Any]] = []
+    for index in sorted(tool_calls):
+        state = tool_calls[index]
+        item: dict[str, Any] = {"index": index}
+        id_parts = state.get("id_parts") or []
+        if id_parts:
+            item["id"] = "".join(str(part) for part in id_parts)
+        if state.get("type"):
+            item["type"] = state["type"]
+        function = _finalize_function_call(state.get("function") or {})
+        if function:
+            item["function"] = function
+        finalized.append(item)
+    return finalized
+
+
+def _finalize_function_call(state: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    name_parts = state.get("name_parts") or []
+    if name_parts:
+        result["name"] = "".join(str(part) for part in name_parts)
+    argument_parts = state.get("arguments_parts") or []
+    if argument_parts:
+        result["arguments"] = "".join(str(part) for part in argument_parts)
+    return result
+
+
+def _choice_index(choice: dict[str, Any]) -> int:
+    return _safe_int(choice.get("index"), 0)
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
 
 
 app = create_app()

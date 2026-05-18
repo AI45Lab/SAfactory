@@ -101,6 +101,7 @@ class TelemetryRecorder:
         latency_ms: float,
         upstream_latency_ms: float | None = None,
         stream_stats: StreamTelemetryStats | None = None,
+        response_body: dict[str, Any] | None = None,
     ) -> None:
         await self._record_binding(binding, target, error=True)
         record = await self._build_record(
@@ -108,7 +109,7 @@ class TelemetryRecorder:
             binding=binding,
             target=target,
             request_body=request_body,
-            response_body=None,
+            response_body=response_body,
             status_code=status_code,
             latency_ms=latency_ms,
             upstream_latency_ms=upstream_latency_ms,

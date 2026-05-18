@@ -31,13 +31,18 @@ class GatewayConfig:
     upstream_no_proxy: list[str] | str | None = None
     per_llm_route_max_concurrency: int = 256
     per_session_max_inflight: int = 8
-    telemetry_mode: str = "best_effort"
-    telemetry_loss_policy: str = "drop_newest"
-    payload_capture_policy: str = "failed_only"
-    payload_sample_rate: float = 0.01
+    telemetry_mode: str = "strict"
+    telemetry_loss_policy: str = "fail_closed"
+    payload_capture_policy: str = "full"
+    payload_sample_rate: float = 1.0
     redact_sensitive_fields: bool = True
     telemetry_batch_size: int = 200
     telemetry_flush_interval_ms: int = 100
+    request_log_enabled: bool = True
+    request_log_path: str | None = "logs/gateway_requests.jsonl"
+    request_log_max_bytes: int = 100 * 1024 * 1024
+    request_log_backup_count: int = 5
+    request_log_body_limit_bytes: int = 0
     micro_batch_window_ms: int = 0
     session_cache_ttl_s: int = 1800
     close_mode: str = "soft_close"
@@ -61,6 +66,12 @@ class GatewayConfig:
             )
         if self.per_llm_route_max_concurrency <= 0:
             raise ValueError("per_llm_route_max_concurrency must be positive")
+        if self.request_log_max_bytes < 0:
+            raise ValueError("request_log_max_bytes must be non-negative")
+        if self.request_log_backup_count < 0:
+            raise ValueError("request_log_backup_count must be non-negative")
+        if self.request_log_body_limit_bytes < 0:
+            raise ValueError("request_log_body_limit_bytes must be non-negative")
 
 
 def load_gateway_config(path: str | None = None) -> GatewayConfig:
@@ -98,6 +109,14 @@ def _dict_to_config(data: dict[str, Any]) -> GatewayConfig:
         normalized.setdefault("payload_capture_policy", telemetry.get("capture_payload"))
         normalized.setdefault("payload_sample_rate", telemetry.get("payload_sample_rate"))
         normalized.setdefault("redact_sensitive_fields", telemetry.get("redact_sensitive_fields"))
+
+    request_log = normalized.pop("request_log", None)
+    if isinstance(request_log, dict):
+        normalized.setdefault("request_log_enabled", request_log.get("enabled"))
+        normalized.setdefault("request_log_path", request_log.get("path"))
+        normalized.setdefault("request_log_max_bytes", request_log.get("max_bytes"))
+        normalized.setdefault("request_log_backup_count", request_log.get("backup_count"))
+        normalized.setdefault("request_log_body_limit_bytes", request_log.get("body_limit_bytes"))
 
     known = {field.name for field in fields(GatewayConfig)}
     kwargs = {key: value for key, value in normalized.items() if key in known and value is not None}

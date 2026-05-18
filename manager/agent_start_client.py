@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shlex
 import subprocess
 from dataclasses import asdict, is_dataclass
 from typing import Any, Dict, List
@@ -10,6 +11,7 @@ from typing import Any, Dict, List
 from .types import SimulationAgentLease, SimulationStartRequest, SimulationStartResult
 
 log = logging.getLogger("manager.agent_start_client")
+_RUNNER_DIAGNOSTIC_PREFIX = "SAFACTORY_OPENCLAW_DIAGNOSTIC "
 
 
 class AgentStartClient:
@@ -28,9 +30,24 @@ class AgentStartClient:
         if not lease.run_command:
             raise RuntimeError(f"Docker lease missing run_command: {lease.agent_name}/{lease.agent_id}")
 
-        payload = json.dumps(asdict(request), ensure_ascii=False)
+        request_params = asdict(request)
+        payload = json.dumps(request_params, ensure_ascii=False)
         cmd = self._docker_exec_cmd(lease, request)
+        log.info(
+            "OpenClaw docker exec command: agent=%s/%s container=%s command=%s",
+            lease.agent_name,
+            lease.agent_id,
+            lease.container_name or lease.container_id,
+            self._cmd_for_log(cmd),
+        )
+        log.info(
+            "OpenClaw agent start request params: agent=%s/%s params=%s",
+            lease.agent_name,
+            lease.agent_id,
+            self._json_for_log(request_params),
+        )
         result = await asyncio.to_thread(self._run, cmd, payload)
+        self._log_runner_diagnostics(result.stderr, lease)
         if result.returncode != 0:
             raise RuntimeError(
                 "OpenClaw run failed: "
@@ -62,6 +79,21 @@ class AgentStartClient:
             "-lc",
             lease.run_command,
         ]
+
+    @classmethod
+    def _log_runner_diagnostics(cls, stderr: str, lease: SimulationAgentLease) -> None:
+        for raw_line in (stderr or "").splitlines():
+            line = raw_line.strip()
+            if not line.startswith(_RUNNER_DIAGNOSTIC_PREFIX):
+                continue
+            payload = line[len(_RUNNER_DIAGNOSTIC_PREFIX) :].strip()
+            log.info(
+                "OpenClaw agent create params: agent=%s/%s container=%s params=%s",
+                lease.agent_name,
+                lease.agent_id,
+                lease.container_name or lease.container_id,
+                payload,
+            )
 
     def _run(self, cmd: List[str], payload: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -117,6 +149,14 @@ class AgentStartClient:
         if hasattr(result, "model_dump"):
             return result.model_dump(mode="json")
         raise TypeError(f"Unsupported OpenClaw result type: {type(result).__name__}")
+
+    @staticmethod
+    def _cmd_for_log(cmd: List[str]) -> str:
+        return shlex.join([str(part) for part in cmd])
+
+    @staticmethod
+    def _json_for_log(value: Any) -> str:
+        return json.dumps(value, ensure_ascii=False, default=str)
 
     @staticmethod
     def _tail(value: str, limit: int = 1000) -> str:

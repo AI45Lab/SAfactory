@@ -72,10 +72,17 @@ def load_dataset_file(base_dir: str, path: str, load_mode: str = "eager"):
         # 1. JSONL (每行为一个JSON对象)
         if ext == ".jsonl":
             with open(path, "r", encoding="utf-8") as f:
-                for line in f:
+                for line_no, line in enumerate(f, 1):
                     line = line.strip()
-                    if line:
+                    if not line or line.startswith("//"):
+                        continue
+                    try:
                         data_list.append(json.loads(line))
+                    except json.JSONDecodeError as exc:
+                        raise ValueError(
+                            f"JSONL第{line_no}行不是合法JSON: {exc.msg} "
+                            f"(column {exc.colno})"
+                        ) from exc
 
         # 2. JSON (标准列表)
         elif ext == ".json":

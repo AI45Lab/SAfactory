@@ -85,8 +85,6 @@ pypika-tortoise==0.6.2
 python-dateutil==2.9.0.post0
 pytz==2025.2
 PyYAML==6.0.2
-ray==2.49.2
-rayjob_sdk-0.3.11-py3-none-any.whl
 referencing==0.36.2
 requests==2.32.5
 rpds-py==0.27.1
