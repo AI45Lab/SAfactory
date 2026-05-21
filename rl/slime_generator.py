@@ -316,12 +316,16 @@ def group_by_instance_id(results: List[Dict]) -> List[List[Dict]]:
     return list(groups.values())
 
 
-async def get_rollout_data(api_base_url: str) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+async def get_rollout_data(api_base_url: str, max_groups: Optional[int] = None) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
     start_time = time.time()
+    payload = {}
+    if max_groups is not None:
+        payload["max_groups"] = max(1, int(max_groups))
+
     async with aiohttp.ClientSession() as session:
         while True:
             async with session.post(
-                f"{api_base_url}/get_rollout_data", json={}, timeout=aiohttp.ClientTimeout(total=120)
+                f"{api_base_url}/get_rollout_data", json=payload, timeout=aiohttp.ClientTimeout(total=120)
             ) as response:
                 response.raise_for_status()
                 resp_json = await response.json()
@@ -386,50 +390,20 @@ def start_rollout(api_base_url: str, args, metadata):
             print(f"[start_rollout] Failed to send rollout config: {e}")
 
 
-def filter_by_weight_version(data_buffer, current_version: int, off_by_n: int = 0):
-    """根据权重版本过滤 buffer 中的数据。
-
-    过滤掉那些权重版本与当前版本差距超过 off_by_n 的样本。
-
-    Args:
-        data_buffer: 数据 buffer
-        current_version: 当前权重版本（当前 pipeline 中通常是 rollout_id + 1）
-        off_by_n: 允许的最大权重差，默认为 0（只保留当前版本的数据）
-    """
-    buffer_length = data_buffer.get_buffer_length()
-    if buffer_length == 0:
-        return
-
-    # 获取所有样本
-    all_samples = data_buffer.get_samples(buffer_length)
-
-    # 过滤样本
-    filtered_samples = []
-    for sample_group in all_samples:
-        filtered_group = []
-        len_sample_group = len(sample_group)
-        for sample in sample_group:
-            metadata = getattr(sample, "metadata", None) or {}
-            sample_version = metadata.get("weight_version", 0)
-            try:
-                sample_version = int(sample_version)
-            except (ValueError, TypeError):
-                sample_version = 0
-
-            # 检查权重版本差距是否在允许范围内
-            if current_version - sample_version <= off_by_n:
-                filtered_group.append(sample)
-            else:
-                logger.debug(
-                    f"Filtered out sample with weight_version={sample_version}, "
-                    f"current_version={current_version}, off_by_n={off_by_n}"
+def record_used_metrics(metrics: MetricsRecorder, sample_groups: List[List[Sample]]) -> None:
+    for group in sample_groups:
+        for sample in group:
+            if sample.reward is None:
+                raise RuntimeError(
+                    "Encountered reward=None after rollout assembly. "
+                    "The rollout buffer is likely underfilled."
                 )
+            metrics.record("used/reward", float(sample.reward), AggType.MEAN)
+            metrics.record("used/response_length", float(sample.response_length), AggType.MEAN)
+            meta = getattr(sample, "metadata", {}) or {}
+            metrics.record("used/weight_version", float(meta.get("weight_version", 0)), AggType.MEAN)
+    metrics.record("used/count", float(sum(len(g) for g in sample_groups)), AggType.SUM)
 
-        if filtered_group and len(filtered_group) == len_sample_group:
-            filtered_samples.append(filtered_group)
-
-    if filtered_samples:
-        data_buffer.add_samples(filtered_samples)
 
 async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation: bool = False) -> Dict[str, Any]:
     if evaluation:
@@ -442,30 +416,8 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
     # 根据weight_version过滤已完成的数据
     off_by_n = int(get_env("RL_OFF_BY_N"))
     dapo_filter_enabled = os.environ.get("DAPO_filter", "true").strip().lower() in ("1", "true", "yes", "on")
-    filter_by_weight_version(data_buffer, current_version=current_version, off_by_n=off_by_n)
-    buffer_length = data_buffer.get_buffer_length()
-    needed_groups = max(0, args.rollout_batch_size - buffer_length)
-    data_number_to_fetch = needed_groups * args.n_samples_per_prompt
-    print(f"INFO: buffer length: {buffer_length}, data_number_to_fetch: {data_number_to_fetch}")
-    if needed_groups <= 0:
-        print(
-            f"❕buffer length: {data_buffer.get_buffer_length()}, buffer has enough data, return {args.rollout_batch_size} prompts"
-        )
-        final_return_results = data_buffer.get_samples(args.rollout_batch_size)
-        for group in final_return_results:
-            for sample in group:
-                if sample.reward is None:
-                    raise RuntimeError(
-                        "Encountered reward=None after rollout assembly. "
-                        "The rollout buffer is likely underfilled."
-                    )
-                metrics.record("used/reward", float(sample.reward), AggType.MEAN)
-                metrics.record("used/response_length", float(sample.response_length), AggType.MEAN)
-                meta = getattr(sample, "metadata", {}) or {}
-                metrics.record("used/weight_version", float(meta.get("weight_version", 0)), AggType.MEAN)
-        metrics.record("used/count", float(sum(len(g) for g in final_return_results)), AggType.SUM)
-        metrics.push(step=rollout_id)
-        return final_return_results
+    sample_group_buffer: List[List[Sample]] = []
+    print(f"INFO: need rollout groups: {args.rollout_batch_size}")
     base_url = args.rollout_buffer_url
     tokenizer = TOKENIZER
     retry_times = 0
@@ -477,23 +429,27 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
         )
 
     # 持续获取数据，直到 buffer 中有足够的可训练 groups
-    while data_buffer.get_buffer_length() < args.rollout_batch_size and (
+    while len(sample_group_buffer) < args.rollout_batch_size and (
         args.fetch_trajectory_retry_times == -1 or retry_times < args.fetch_trajectory_retry_times
     ):
         retry_times += 1
         try:
-            remaining_groups = args.rollout_batch_size - data_buffer.get_buffer_length()
-            fetch_sample_count = remaining_groups * args.n_samples_per_prompt
-            print(f"need sample count: fetch_sample_count: {fetch_sample_count}")
+            remaining_groups = args.rollout_batch_size - len(sample_group_buffer)
+            print(f"need group count: remaining_groups: {remaining_groups}")
             raw_results = []
+            raw_group_count = 0
 
-            while len(raw_results) < fetch_sample_count:
+            while raw_group_count < remaining_groups:
                 await asyncio.sleep(5)
-                data, meta_info = await get_rollout_data(api_base_url=base_url)
+                data, meta_info = await get_rollout_data(
+                    api_base_url=base_url,
+                    max_groups=remaining_groups - raw_group_count,
+                )
                 raw_results.extend(data)
+                raw_group_count = len(group_by_instance_id(raw_results))
                 if meta_info:
                     all_meta_info.append(meta_info)
-                print(f"get rollout data with length: {len(raw_results)}")
+                print(f"get rollout data with items={len(raw_results)}, groups={raw_group_count}")
 
             # 从 extra_info 中获取 weight_version，记录 fetched metrics
             for record in raw_results:
@@ -509,7 +465,11 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
             # 按 group 过滤：group 中所有 sample 都必须符合版本要求
             valid_groups = []
             for group in grouped_results:
-                rewards = [record.get("reward") for record in group]
+                reward_records = [
+                    record for record in group
+                    if (record.get("extra_info") or {}).get("is_session_completed", False)
+                ] or group
+                rewards = [record.get("reward") for record in reward_records]
                 if dapo_filter_enabled and len(set(rewards)) == 1:
                     logger.info(
                         f"Filtered out group with rewards={rewards}, "
@@ -529,13 +489,13 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
             print(f"✅ Valid groups collected this round: {len(valid_groups)}")
 
             sample_results = []
-            touched_session_ids = set()
+            touched_session_ids = {
+                record["extra_info"].get("session_id", "")
+                for record in raw_results
+                if record.get("extra_info") and record["extra_info"].get("session_id", "")
+            }
             try:
                 flat_records = [record for group_record in valid_groups for record in group_record]
-                for record in flat_records:
-                    session_id = record["extra_info"].get("session_id", "")
-                    if session_id:
-                        touched_session_ids.add(session_id)
 
                 loop = asyncio.get_running_loop()
                 traininfo_executor = _get_traininfo_executor()
@@ -589,8 +549,11 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
                             write_debug_to_file(tokenizer, rollout_id, record, oai_messages, token_ids, loss_mask, response_length)
 
                             metadata = dict(record["extra_info"])
+                            step_id = metadata.get("steps", 0)
+                            sample_index = f"{session_id}:{step_id}" if session_id else record["instance_id"]
                             sample = Sample(
-                                index=record["instance_id"],
+                                group_index=record["instance_id"],
+                                index=sample_index,
                                 prompt=record["uid"],
                                 tokens=token_ids,
                                 response_length=response_length,
@@ -627,10 +590,10 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
                 if TRAJECTORY_MASK_BUILDER is not None:
                     for session_id in touched_session_ids:
                         TRAJECTORY_MASK_BUILDER.clear_session(session_id)
-            data_buffer.add_samples(sample_results)
+            sample_group_buffer.extend(sample_results)
             print(
                 "✅ Trainable groups added this round: "
-                f"{len(sample_results)}, buffer length: {data_buffer.get_buffer_length()}/{args.rollout_batch_size}"
+                f"{len(sample_results)}, buffer length: {len(sample_group_buffer)}/{args.rollout_batch_size}"
             )
 
         except Exception as err:
@@ -641,28 +604,18 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
         for item in all_meta_info:
             finished_groups_instance_id_list.extend(item["finished_groups"])
 
-        data_buffer.update_metadata({str(rollout_id): finished_groups_instance_id_list})
+        if hasattr(data_buffer, "update_metadata"):
+            data_buffer.update_metadata({str(rollout_id): finished_groups_instance_id_list})
 
-    print("finally buffered trainable group count: ", data_buffer.get_buffer_length())
-    if data_buffer.get_buffer_length() < args.rollout_batch_size:
+    print("finally buffered trainable group count: ", len(sample_group_buffer))
+    if len(sample_group_buffer) < args.rollout_batch_size:
         raise RuntimeError(
             "Insufficient trainable rollout groups after filtering and trajectory matching: "
-            f"buffer_length={data_buffer.get_buffer_length()}, required={args.rollout_batch_size}"
+            f"buffer_length={len(sample_group_buffer)}, required={args.rollout_batch_size}"
         )
 
-    final_return_results = data_buffer.get_samples(args.rollout_batch_size)
-    for group in final_return_results:
-        for sample in group:
-            if sample.reward is None:
-                raise RuntimeError(
-                    "Encountered reward=None after rollout assembly. "
-                    "The rollout buffer is likely underfilled."
-                )
-            metrics.record("used/reward", float(sample.reward), AggType.MEAN)
-            metrics.record("used/response_length", float(sample.response_length), AggType.MEAN)
-            meta = getattr(sample, "metadata", {}) or {}
-            metrics.record("used/weight_version", float(meta.get("weight_version", 0)), AggType.MEAN)
-    metrics.record("used/count", float(sum(len(g) for g in final_return_results)), AggType.SUM)
+    final_return_results = sample_group_buffer
+    record_used_metrics(metrics, final_return_results)
     metrics.push(step=rollout_id)
 
     return final_return_results
