@@ -22,6 +22,19 @@ source "${SCRIPT_DIR}/env.sh"
 ROLLOUT_BUFFER_URL="http://${BUFFER_SERVER_HOST}:${BUFFER_SERVER_PORT}"
 LLM_PROXY_URL="http://${LLM_PROXY_HOST}:${LLM_PROXY_PORT}"
 
+if [[ -z "${RL_ROLLOUT_GROUP_BATCH_SIZE:-}" ]]; then
+   RL_ROLLOUT_GROUP_BATCH_SIZE=$((RL_GLOBAL_BATCH_SIZE / RL_GROUP_SIZE))
+fi
+
+if [[ -z "${RL_GLOBAL_BATCH_SIZE:-}" ]]; then
+   RL_GLOBAL_BATCH_SIZE=$((RL_ROLLOUT_GROUP_BATCH_SIZE * RL_GROUP_SIZE))
+fi
+
+if (( RL_ROLLOUT_GROUP_BATCH_SIZE <= 0 || RL_GLOBAL_BATCH_SIZE <= 0 || RL_GROUP_SIZE <= 0 )); then
+   echo "RL_ROLLOUT_GROUP_BATCH_SIZE, RL_GLOBAL_BATCH_SIZE, and RL_GROUP_SIZE must be positive" >&2
+   exit 1
+fi
+
 export PYTHONBUFFERED=16
 NUM_GPUS=${NUM_GPUS:-8}
 
@@ -43,11 +56,12 @@ ROLLOUT_ARGS=(
    --rollout-buffer-url ${ROLLOUT_BUFFER_URL}
    --disable-rollout-global-dataset
    --num-rollout 300
-   --rollout-batch-size ${SLIME_ROLLOUT_BATCH_SIZE}
-   --n-samples-per-prompt ${SLIME_N_SAMPLES_PER_PROMPT}
+   --rollout-batch-size ${RL_ROLLOUT_GROUP_BATCH_SIZE}
+   --n-samples-per-prompt ${RL_GROUP_SIZE}
    --rollout-max-response-len ${LLM_MAX_LENGTH}
    --rollout-temperature ${LLM_TEMPERATURE}
-   --global-batch-size ${SLIME_GLOBAL_BATCH_SIZE}
+   --global-batch-size ${RL_GLOBAL_BATCH_SIZE}
+   --custom-reward-post-process-path rl.variable_group_rewards.post_process_rewards
    --loss-mask-type qwen
 )
 
@@ -71,6 +85,7 @@ MEGATRON_ARGS=(
 
 TRAIN_ARGS=(
    --use-dynamic-batch-size
+   --use-dynamic-global-batch-size
    --max-tokens-per-gpu 5000
    --calculate-per-token-loss
 )
