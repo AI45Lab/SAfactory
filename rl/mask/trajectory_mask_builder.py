@@ -214,6 +214,13 @@ class TrajectoryMaskBuilder:
         return list(input_ids), mm_train_inputs
 
     def _render_message_delta_str(self, model_input_message: Dict[str, Any]) -> str:
+        if model_input_message.get("role") == "system":
+            return self.tokenizer.apply_chat_template(
+                [model_input_message],
+                add_generation_prompt=False,
+                tokenize=False,
+            )
+
         single_message_chat_template_str = self.tokenizer.apply_chat_template(
             BASE_CHAT_HISTORY + [model_input_message],
             add_generation_prompt=False,
