@@ -36,7 +36,7 @@ if AIEVOBOX_ROOT not in sys.path:
     sys.path.insert(0, AIEVOBOX_ROOT)
 
 # Setup logging
-LOG_DIR = os.path.join(AIEVOBOX_ROOT, "logs")
+LOG_DIR = os.environ.get("AIEVOBOX_RUN_DIR") or os.path.join(AIEVOBOX_ROOT, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "llm_proxy.log")
 

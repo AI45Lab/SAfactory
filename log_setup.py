@@ -118,8 +118,22 @@ def build_run_id(run_name: Optional[str] = None) -> str:
 
 
 def build_log_session(log_dir: str, run_name: Optional[str]) -> LauncherLogSession:
-    run_id = build_run_id(run_name)
-    run_dir = os.path.join(log_dir, run_id)
+    os.makedirs(log_dir, exist_ok=True)
+    current_run_path = os.path.join(log_dir, ".current_run")
+    run_dir = ""
+    if os.path.isfile(current_run_path):
+        with open(current_run_path, "r", encoding="utf-8") as f:
+            run_dir = f.read().strip()
+
+    if run_dir:
+        run_dir = run_dir if os.path.isabs(run_dir) else os.path.join(log_dir, run_dir)
+        run_id = os.path.basename(os.path.normpath(run_dir))
+    else:
+        run_id = build_run_id(run_name)
+        run_dir = os.path.join(log_dir, run_id)
+        with open(current_run_path, "w", encoding="utf-8") as f:
+            f.write(run_dir + "\n")
+            
     os.makedirs(run_dir, exist_ok=True)
     return LauncherLogSession(
         run_id=run_id,
