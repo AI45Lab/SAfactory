@@ -136,7 +136,7 @@ def write_debug_to_file(
     response_length: int,
 ):
     """将训练数据的调试信息写入文件。"""
-    debug_dir = os.path.join(get_env("AIEVOBOX_ROOT"), "logs")
+    debug_dir = os.environ.get("AIEVOBOX_RUN_DIR") or os.path.join(get_env("AIEVOBOX_ROOT"), "logs")
     os.makedirs(debug_dir, exist_ok=True)
 
     debug_segments = decode_tokens_with_mask_debug(tokenizer, token_ids, loss_mask)
