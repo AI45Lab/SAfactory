@@ -1,13 +1,13 @@
 # -------------------------------------------
 # AIEvobox (rollout) Settings
 # -------------------------------------------
-export AIEVOBOX_ROOT=/root/AIEvoBox
+export AIEVOBOX_ROOT=/root/Safactory
 export STORAGE_TYPE=sqlite
 export AIEVOBOX_DB_URL=sqlite:///${AIEVOBOX_ROOT}/rl/examples/geo3k_vl/geo3k_vl.db
 export AIEVOBOX_MAX_STEPS=10
-export AIEVOBOX_MESSAGE_CUT=0
+export AIEVOBOX_MESSAGE_CUT=1
 # ENV_CONFIG 指定单个 yaml 文件
-export AIEVOBOX_ENV_CONFIG=/root/AIEvoBox/env/geo3k_vl_test/geo3k_vl_test_env_configs.yaml
+export AIEVOBOX_ENV_CONFIG=${AIEVOBOX_ROOT}/env/geo3k_vl_test/geo3k_vl_test_env_configs.yaml
 # ENV_ROOT 指定读取目录下所有子目录的环境
 # export AIEVOBOX_ENV_ROOT=/root/AIEvoBox/env
 export AIEVOBOX_POOL_SIZE=256
@@ -26,6 +26,10 @@ export AIEVOBOX_SQLITE_BULK_INSERT_PAUSE_S=0.01
 # RL Settings
 # -------------------------------------------
 export RL_GROUP_SIZE=8
+# RL_ROLLOUT_GROUP_BATCH_SIZE has priority. Leave it empty to derive from
+# RL_GLOBAL_BATCH_SIZE / RL_GROUP_SIZE.
+export RL_ROLLOUT_GROUP_BATCH_SIZE=64
+export RL_GLOBAL_BATCH_SIZE=512
 export RL_EPOCH=1000
 export RL_OFF_BY_N=0
 
@@ -61,6 +65,3 @@ export LLM_PROXY_ENABLE_CONSOLE_LOG=0
 # Slime Training Settings (reference RL values)
 # -------------------------------------------
 export SLIME_ROLLBUF_RESTART_TRAINING=True
-export SLIME_N_SAMPLES_PER_PROMPT=$RL_GROUP_SIZE
-export SLIME_GLOBAL_BATCH_SIZE=512
-export SLIME_ROLLOUT_BATCH_SIZE=$((SLIME_GLOBAL_BATCH_SIZE / RL_GROUP_SIZE))
