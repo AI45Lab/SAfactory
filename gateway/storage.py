@@ -33,7 +33,7 @@ class GatewayStorage:
     async def from_config(cls, cfg: GatewayConfig) -> "GatewayStorage":
         storage_config = dict(cfg.storage_config or {})
         if cfg.storage_type == "sqlite" and "db_url" not in storage_config:
-            storage_config["db_url"] = "sqlite://gateway.db"
+            storage_config["db_url"] = "sqlite://env_trajs.db"
         manager = DataManager(
             job_id=GATEWAY_STORAGE_NAMESPACE,
             storage_type=cfg.storage_type,
@@ -82,7 +82,7 @@ class GatewayStorage:
             step_reward=0.0,
             env_state=json.dumps(self._metadata(record), ensure_ascii=False, default=str),
             terminated=False,
-            truncated=False,
+            truncated=record.is_truncated,
             is_trainable=False,
         )
 
@@ -139,6 +139,12 @@ class GatewayStorage:
             "upstream_cancelled": record.upstream_cancelled,
             "redaction_policy": record.redaction_policy,
             "payload_sampled": record.payload_sampled,
+            "llm_step_index": record.llm_step_index,
+            "max_steps": record.max_steps,
+            "is_truncated": record.is_truncated,
+            "is_session_completed": record.is_session_completed,
+            "truncate_reason": record.truncate_reason if record.is_truncated else None,
+            "synthetic_stop": record.synthetic_stop,
             "created_at": record.created_at.isoformat(),
             "completed_at": record.completed_at.isoformat(),
         }

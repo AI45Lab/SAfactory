@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import argparse
 import logging
 import math
 import os
 import uuid
-from collections.abc import Sequence
-from typing import Any, Dict, List, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -15,58 +14,14 @@ from .types import SimulationRunConfig
 log = logging.getLogger("manager.simulation_config")
 
 
-def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Safactory task-level simulation launcher",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument("--job-id", type=str, default="", help="Simulation workflow id")
-    parser.add_argument("--manager-config", type=str, default="./manager/config.yaml")
-    parser.add_argument("--exp-config", type=str, default="./core/exp/config.yaml")
-    parser.add_argument("--mode", choices=["docker"], default="docker")
-
-    parser.add_argument("--agent-config", type=str, default=None, help="Single agent YAML config")
-    parser.add_argument("--agent-root", type=str, default="env", help="Directory scanned for agent YAML configs")
-    parser.add_argument("--storage-type", type=str, default="sqlite", choices=["sqlite", "cloud"])
-    parser.add_argument("--db-path", type=str, default="sqlite://env_trajs.db")
-    parser.add_argument("--rebuild-table", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--disable-buffer", dest="enable_buffer", action="store_false", default=True)
-    parser.add_argument("--buffer-size", type=int, default=100)
-    parser.add_argument("--flush-interval", type=float, default=5.0)
-
-    parser.add_argument("--pool-size", type=int, default=0, help="Override manager pool_size from YAML")
-    parser.add_argument("--multiplier", type=float, default=1.2, help="Warm-pool multiplier")
-    parser.add_argument("--max-workers", type=int, default=0, help="0 means use warm-pool size")
-
-    parser.add_argument("--gateway-base-url", type=str, default="http://127.0.0.1:8080/v1/sessions")
-    parser.add_argument("--agent-start-timeout-s", type=float, default=3600.0)
-    parser.add_argument("--agent-runtime", choices=["agent_start"], default="agent_start")
-    parser.add_argument("--max-steps", type=int, default=1000)
-    parser.add_argument("--llm-model", type=str, default="default")
-    parser.add_argument("--llm-temperature", type=float, default=0.3)
-    parser.add_argument("--rl-group-size", type=int, default=0)
-    parser.add_argument("--rl-epoch", type=int, default=1)
-
-    parser.add_argument("--log-dir", type=str, default="logs")
-    parser.add_argument("--run-name", type=str, default="")
-    parser.add_argument("--console-log-level", type=str, default="INFO")
-    parser.add_argument("--file-log-level", type=str, default="DEBUG")
-    parser.add_argument("--log-max-bytes", type=int, default=50 * 1024 * 1024)
-    parser.add_argument("--log-backup-count", type=int, default=20)
-    parser.add_argument("--debug-log", action="store_true", default=False)
-    return parser.parse_args(argv)
-
-
-def load_simulation_run_config(args: argparse.Namespace) -> SimulationRunConfig:
-    manager_cfg = load_yaml_file(str(args.manager_config))
-    configured_pool_size = int(manager_cfg.get("pool_size", 1) or 1)
+def load_simulation_run_config(args: Any) -> SimulationRunConfig:
     pool_size, warm_pool_size, startup_submit_count, followup_submit_batch = derive_pool_sizing(
-        configured_pool_size=configured_pool_size,
-        pool_size_override=int(args.pool_size),
+        configured_pool_size=int(args.pool_size),
+        pool_size_override=0,
         multiplier=float(args.multiplier),
     )
 
-    mode = str(args.mode or manager_cfg.get("mode") or "docker").strip().lower()
+    mode = str(args.mode or "docker").strip().lower()
     if mode != "docker":
         raise ValueError(f"Only docker mode is supported by the OpenClaw workflow; got {mode!r}")
 
@@ -75,13 +30,14 @@ def load_simulation_run_config(args: argparse.Namespace) -> SimulationRunConfig:
 
     _validate_gateway_route_key(str(args.llm_model))
     agent_config = getattr(args, "agent_config", None)
+    agent_start_config = getattr(args, "agent_start_config", None)
 
     return SimulationRunConfig(
         job_id=job_id,
-        manager_config_path=str(args.manager_config),
         exp_config_path=str(args.exp_config),
         agent_root=str(args.agent_root),
         agent_config=None if agent_config is None else str(agent_config),
+        agent_start_config=None if agent_start_config is None else str(agent_start_config),
         storage_type=str(args.storage_type),
         db_url=str(args.db_path),
         pool_size=pool_size,
@@ -94,6 +50,9 @@ def load_simulation_run_config(args: argparse.Namespace) -> SimulationRunConfig:
         llm_temperature=float(args.llm_temperature),
         max_steps=int(args.max_steps),
         agent_start_timeout_s=float(args.agent_start_timeout_s),
+        docker_bin=str(args.docker_bin or "docker"),
+        docker_pull_policy=str(args.docker_pull_policy or "never").strip().lower(),
+        docker_startup_concurrency=max(1, int(args.docker_startup_concurrency or 1)),
         max_workers=max_workers,
         agent_runtime=str(args.agent_runtime),
         rebuild_table=bool(args.rebuild_table),
@@ -102,6 +61,7 @@ def load_simulation_run_config(args: argparse.Namespace) -> SimulationRunConfig:
         flush_interval=float(args.flush_interval),
         rl_group_size=int(args.rl_group_size),
         rl_epoch=max(1, int(args.rl_epoch)),
+        evaluation_enabled=bool(args.evaluation_enabled),
     )
 
 
@@ -122,13 +82,116 @@ def derive_pool_sizing(
 
 
 def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
-    manager_cfg = load_yaml_file(cfg.manager_config_path)
-    manager_cfg["pool_size"] = int(cfg.warm_pool_size)
-    manager_cfg["mode"] = cfg.mode
-    set_nested(manager_cfg, ["database", "driver"], manager_cfg.get("database", {}).get("driver", "sqlite"))
-    set_nested(manager_cfg, ["database", "sqlite_path"], cfg.db_url)
+    return {
+        "mode": cfg.mode,
+        "pool_size": int(cfg.warm_pool_size),
+        "database": {
+            "driver": cfg.storage_type,
+            "sqlite_path": cfg.db_url,
+        },
+        "cluster": {
+            "docker": {
+                "bin": cfg.docker_bin,
+                "pull_policy": cfg.docker_pull_policy,
+                "startup_concurrency": int(cfg.docker_startup_concurrency),
+            },
+            "env_types": load_agent_start_config(cfg.agent_start_config),
+        },
+    }
 
-    return manager_cfg
+
+def load_agent_start_config(path: Optional[str]) -> Dict[str, Any]:
+    if not path:
+        return {}
+
+    cfg_path = Path(path).expanduser()
+    if not cfg_path.is_absolute():
+        cfg_path = Path.cwd() / cfg_path
+
+    cfg = load_yaml_file(str(cfg_path))
+    if "agents" in cfg:
+        agents = cfg.get("agents")
+        if not isinstance(agents, dict):
+            raise ValueError(f"agents must be a mapping in {cfg_path}")
+        return {
+            str(agent_name): {"docker": _normalize_agent_start_docker(agent_name, spec, cfg_path)}
+            for agent_name, spec in agents.items()
+        }
+
+    agent_name = str(cfg.get("agent_name") or "").strip()
+    if not agent_name:
+        raise ValueError(f"agent start config requires agent_name or agents mapping: {cfg_path}")
+    return {
+        agent_name: {
+            "docker": _normalize_agent_start_docker(agent_name, cfg, cfg_path),
+        }
+    }
+
+
+def _normalize_agent_start_docker(agent_name: Any, spec: Any, cfg_path: Path) -> Dict[str, Any]:
+    if not isinstance(spec, dict):
+        raise ValueError(f"agent start config for {agent_name!r} must be a mapping in {cfg_path}")
+
+    container = spec.get("container")
+    if container is None:
+        container = spec
+    if not isinstance(container, dict):
+        raise ValueError(f"container config for {agent_name!r} must be a mapping in {cfg_path}")
+
+    docker: Dict[str, Any] = {}
+    _copy_non_empty(container, docker, "workdir")
+    _copy_non_empty(container, docker, "idle_command")
+    _copy_non_empty(container, docker, "run_command")
+    _copy_non_empty(container, docker, "network")
+
+    if "env" in container:
+        env = container.get("env") or {}
+        if not isinstance(env, dict):
+            raise ValueError(f"container.env for {agent_name!r} must be a mapping in {cfg_path}")
+        docker["env"] = {str(key): str(value) for key, value in env.items()}
+
+    mounts = container.get("mounts", container.get("volumes", [])) or []
+    if isinstance(mounts, (str, dict)):
+        mounts = [mounts]
+    if not isinstance(mounts, list):
+        raise ValueError(f"container.mounts for {agent_name!r} must be a list in {cfg_path}")
+    docker["volumes"] = [_normalize_mount(mount, cfg_path) for mount in mounts]
+
+    extra_args = container.get("extra_args", []) or []
+    if isinstance(extra_args, str):
+        docker["extra_args"] = extra_args
+    elif isinstance(extra_args, list):
+        docker["extra_args"] = [str(item) for item in extra_args]
+    else:
+        raise ValueError(f"container.extra_args for {agent_name!r} must be a string or list in {cfg_path}")
+
+    if "install_runner_script" in container:
+        docker["install_runner_script"] = bool(container.get("install_runner_script"))
+    else:
+        docker["install_runner_script"] = False
+    return docker
+
+
+def _copy_non_empty(src: Dict[str, Any], dst: Dict[str, Any], key: str) -> None:
+    value = src.get(key)
+    if value is not None and str(value).strip():
+        dst[key] = str(value)
+
+
+def _normalize_mount(mount: Any, cfg_path: Path) -> Any:
+    if isinstance(mount, str):
+        return mount
+    if not isinstance(mount, dict):
+        raise ValueError(f"mount entries must be strings or mappings in {cfg_path}")
+
+    normalized = dict(mount)
+    source = normalized.get("source") or normalized.get("hostPath") or normalized.get("host_path")
+    if source:
+        source_path = Path(str(source)).expanduser()
+        if not source_path.is_absolute():
+            source_path = (Path.cwd() / source_path).resolve(strict=False)
+        normalized["source"] = str(source_path)
+    return normalized
 
 
 def expand_rl_group_size(yaml_config_list: List[Dict[str, Any]], group_size: int) -> List[Dict[str, Any]]:

@@ -6,6 +6,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -98,13 +99,41 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             )
             binding = await resolver.get_or_create_binding(ctx)
             if binding.status == "closed":
+                if binding.truncated:
+                    ctx = replace(ctx, synthetic_stop=True)
+                    reason = binding.truncate_reason or "max_steps_reached"
+                    return await _return_synthetic_stop(
+                        ctx=ctx,
+                        binding=binding,
+                        payload=payload,
+                        reason=reason,
+                        cfg=request.app.state.gateway_config,
+                        request_logger=request_logger,
+                        telemetry=telemetry,
+                    )
                 raise SessionClosedError(f"session {ctx.session_id} is closed")
-            if telemetry.should_reject_new_requests():
-                raise AdmissionRejected("telemetry queue is full", 503)
 
-            await admission.acquire_request(ctx, binding)
-            target = await router.select_target(ctx, binding)
-            await admission.acquire_llm_route(ctx, target)
+            if cfg.max_steps < 0 or binding.llm_step_count < cfg.max_steps:
+                if telemetry.should_reject_new_requests():
+                    raise AdmissionRejected("telemetry queue is full", 503)
+                target = await router.select_target(ctx, binding)
+
+            decision = await admission.acquire_request(ctx, binding, target)
+            if decision.action == "stop":
+                ctx = replace(ctx, synthetic_stop=True)
+                return await _return_synthetic_stop(
+                    ctx=ctx,
+                    binding=binding,
+                    payload=payload,
+                    reason=decision.stop_reason or "max_steps_reached",
+                    cfg=request.app.state.gateway_config,
+                    request_logger=request_logger,
+                    telemetry=telemetry,
+                )
+            ctx = replace(ctx, llm_step_index=decision.llm_step_index)
+
+            if target is None:
+                target = await router.select_target(ctx, binding)
             route_reserved = True
             await router.on_acquire(target.route_model, is_stream=ctx.is_stream)
 
@@ -255,7 +284,14 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
     async def readyz() -> Response:
         if not app.state.gateway_ready:
             return JSONResponse({"status": "draining" if app.state.gateway_draining else "starting"}, status_code=503)
-        return JSONResponse({"status": "ready"})
+        return JSONResponse(
+            {
+                "status": "ready",
+                "storage_type": cfg.storage_type,
+                "storage_config": _ready_storage_config(cfg),
+                "max_steps": cfg.max_steps,
+            }
+        )
 
     @app.get("/metrics")
     async def metrics() -> Response:
@@ -270,6 +306,8 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             f"gateway_inflight_requests {admission_snapshot['inflight_requests']}",
             "# TYPE gateway_active_streams gauge",
             f"gateway_active_streams {admission_snapshot['active_streams']}",
+            "# TYPE gateway_max_steps gauge",
+            f"gateway_max_steps {cfg.max_steps}",
             "# TYPE gateway_telemetry_queue_depth gauge",
             f"gateway_telemetry_queue_depth {telemetry.queue_depth()}",
             "# TYPE gateway_telemetry_dropped_total counter",
@@ -279,6 +317,20 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 lines.append(f'gateway_telemetry_dropped_total{{reason="{_metric_label(reason)}"}} {count}')
         else:
             lines.append('gateway_telemetry_dropped_total{reason="none"} 0')
+
+        lines.append("# TYPE gateway_session_truncated_total counter")
+        if telemetry_snapshot["session_truncated_total"]:
+            for reason, count in telemetry_snapshot["session_truncated_total"].items():
+                lines.append(f'gateway_session_truncated_total{{reason="{_metric_label(reason)}"}} {count}')
+        else:
+            lines.append('gateway_session_truncated_total{reason="none"} 0')
+
+        lines.append("# TYPE gateway_synthetic_stop_total counter")
+        if telemetry_snapshot["synthetic_stop_total"]:
+            for reason, count in telemetry_snapshot["synthetic_stop_total"].items():
+                lines.append(f'gateway_synthetic_stop_total{{reason="{_metric_label(reason)}"}} {count}')
+        else:
+            lines.append('gateway_synthetic_stop_total{reason="none"} 0')
 
         lines.extend(
             [
@@ -343,6 +395,130 @@ async def _open_stream(
     if endpoint == "responses":
         return await forwarder.open_responses_stream(target, payload, headers)
     raise ValueError(f"unsupported endpoint {endpoint}")
+
+
+async def _return_synthetic_stop(
+    *,
+    ctx: GatewayRequestContext,
+    binding: GatewaySessionBinding,
+    payload: dict[str, Any],
+    reason: str,
+    cfg: GatewayConfig,
+    request_logger: GatewayRequestLogger,
+    telemetry: TelemetryRecorder,
+) -> Response:
+    binding.stop_response_sent = True
+    await telemetry.record_synthetic_stop(ctx, binding, reason)
+    await request_logger.log_stop_request(ctx, binding, payload, reason)
+    return build_synthetic_stop_response(
+        endpoint=ctx.endpoint,
+        model=ctx.requested_model,
+        session_id=ctx.session_id,
+        reason=reason,
+        max_steps=cfg.max_steps,
+        llm_step_count=binding.llm_step_count,
+        is_stream=ctx.is_stream,
+    )
+
+
+def build_synthetic_stop_response(
+    *,
+    endpoint: str,
+    model: str,
+    session_id: str,
+    reason: str,
+    max_steps: int,
+    llm_step_count: int,
+    is_stream: bool = False,
+) -> Response:
+    message = (
+        f"SAFACTORY_STOP: {reason}. Session {session_id} has reached max_steps={max_steps} "
+        f"after {llm_step_count} real LLM request(s). "
+        "Stop the task and return final status."
+    )
+    created = int(time.time())
+
+    if endpoint == "chat/completions":
+        body = {
+            "id": "safactory-stop-session",
+            "object": "chat.completion",
+            "created": created,
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": message},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
+        if is_stream:
+            return StreamingResponse(
+                _chat_stop_events(body, message),
+                status_code=200,
+                media_type="text/event-stream",
+            )
+        return JSONResponse(body, status_code=200)
+
+    if endpoint == "responses":
+        body = {
+            "id": "safactory-stop-session",
+            "object": "response",
+            "created_at": created,
+            "status": "completed",
+            "model": model,
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": message}],
+                }
+            ],
+            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        }
+        if is_stream:
+            return StreamingResponse(
+                _responses_stop_events(body, message),
+                status_code=200,
+                media_type="text/event-stream",
+            )
+        return JSONResponse(body, status_code=200)
+
+    raise ValueError(f"unsupported endpoint {endpoint}")
+
+
+async def _chat_stop_events(body: dict[str, Any], message: str) -> AsyncIterator[bytes]:
+    chunk_base = {
+        "id": body["id"],
+        "object": "chat.completion.chunk",
+        "created": body["created"],
+        "model": body["model"],
+    }
+    yield _sse_data(
+        {
+            **chunk_base,
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": message}}],
+        }
+    )
+    yield _sse_data(
+        {
+            **chunk_base,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": body["usage"],
+        }
+    )
+    yield b"data: [DONE]\n\n"
+
+
+async def _responses_stop_events(body: dict[str, Any], message: str) -> AsyncIterator[bytes]:
+    yield _sse_data({"type": "response.output_text.delta", "delta": message})
+    yield _sse_data({"type": "response.completed", "response": body})
+    yield b"data: [DONE]\n\n"
+
+
+def _sse_data(payload: dict[str, Any]) -> bytes:
+    return f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n".encode("utf-8")
 
 
 async def _stream_and_finalize(
@@ -473,6 +649,14 @@ async def _wait_for_drain(app: FastAPI, drain_timeout_s: int) -> None:
         if snapshot["inflight_requests"] <= 0 and snapshot["active_streams"] <= 0:
             return
         await asyncio.sleep(0.05)
+
+
+def _ready_storage_config(cfg: GatewayConfig) -> dict[str, Any]:
+    storage_config = dict(cfg.storage_config or {})
+    public: dict[str, Any] = {}
+    if "db_url" in storage_config:
+        public["db_url"] = storage_config["db_url"]
+    return public
 
 
 def _metric_label(value: str) -> str:

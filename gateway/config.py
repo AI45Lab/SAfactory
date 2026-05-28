@@ -20,6 +20,7 @@ class GatewayConfig:
     listen_host: str = "0.0.0.0"
     listen_port: int = 8080
     base_session_path: str = "/v1/sessions"
+    max_steps: int = -1
     max_inflight_requests: int = 2048
     max_active_streams: int = 1024
     max_queue_size: int = 4096
@@ -54,6 +55,8 @@ class GatewayConfig:
     def __post_init__(self) -> None:
         if not self.base_session_path.startswith("/"):
             raise ValueError("base_session_path must start with '/'")
+        if self.max_steps < -1:
+            raise ValueError("max_steps must be -1 or a non-negative integer")
         if self.telemetry_mode == "durable_async":
             raise ValueError(
                 "telemetry_mode='durable_async' requires a durable outbox and is not implemented yet"
@@ -123,6 +126,9 @@ def _dict_to_config(data: dict[str, Any]) -> GatewayConfig:
 
     if "base_session_path" in kwargs:
         kwargs["base_session_path"] = str(kwargs["base_session_path"]).rstrip("/")
+
+    if "max_steps" in kwargs:
+        kwargs["max_steps"] = int(kwargs["max_steps"])
 
     if "llm_routes" in kwargs:
         kwargs["llm_routes"] = _routes_from_mapping(kwargs["llm_routes"])

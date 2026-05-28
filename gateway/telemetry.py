@@ -47,6 +47,9 @@ class TelemetryRecorder:
         self._duration_count: defaultdict[tuple[str, str], int] = defaultdict(int)
         self._ttft_sum_ms: defaultdict[str, float] = defaultdict(float)
         self._ttft_count: defaultdict[str, int] = defaultdict(int)
+        self._session_truncated_total: defaultdict[str, int] = defaultdict(int)
+        self._synthetic_stop_total: defaultdict[str, int] = defaultdict(int)
+        self._truncated_sessions: set[str] = set()
 
     async def start(self) -> None:
         if self._running:
@@ -155,8 +158,21 @@ class TelemetryRecorder:
             response=binding.close_reason or "gateway_close",
             created_at=now,
             completed_at=now,
+            max_steps=self.cfg.max_steps,
         )
         await self._enqueue(binding, record)
+
+    async def record_synthetic_stop(
+        self,
+        ctx: GatewayRequestContext,
+        binding: GatewaySessionBinding,
+        reason: str,
+    ) -> None:
+        async with self._lock:
+            self._synthetic_stop_total[reason] += 1
+            if binding.truncated and ctx.session_id not in self._truncated_sessions:
+                self._truncated_sessions.add(ctx.session_id)
+                self._session_truncated_total[binding.truncate_reason or reason] += 1
 
     async def flush_loop(self) -> None:
         interval_s = max(0.001, self.cfg.telemetry_flush_interval_ms / 1000)
@@ -205,6 +221,8 @@ class TelemetryRecorder:
                 "ttft_sum_ms": dict(self._ttft_sum_ms),
                 "ttft_count": dict(self._ttft_count),
                 "dropped_by_reason": dict(self.dropped_by_reason),
+                "session_truncated_total": dict(self._session_truncated_total),
+                "synthetic_stop_total": dict(self._synthetic_stop_total),
             }
 
     async def _record_binding(
@@ -310,6 +328,10 @@ class TelemetryRecorder:
         output_bytes = stream_stats.output_bytes if stream_stats else None
         client_cancelled = stream_stats.client_cancelled if stream_stats else False
         upstream_cancelled = stream_stats.upstream_cancelled if stream_stats else False
+        is_truncated = self.cfg.max_steps >= 0 and ctx.llm_step_index == self.cfg.max_steps
+        if is_truncated:
+            binding.mark_truncated("max_steps_reached", completed_at)
+            await self._record_truncated_session(ctx.session_id, "max_steps_reached")
 
         return GatewayTelemetryRecord(
             event_type="gateway_inference",
@@ -344,6 +366,12 @@ class TelemetryRecorder:
             response=_response_for_record(safe_response_body, error_text, payload_sampled),
             created_at=ctx.created_at,
             completed_at=completed_at,
+            llm_step_index=ctx.llm_step_index,
+            max_steps=self.cfg.max_steps,
+            is_truncated=is_truncated,
+            is_session_completed=is_truncated,
+            truncate_reason="max_steps_reached" if is_truncated else None,
+            synthetic_stop=ctx.synthetic_stop,
         )
 
     def _should_capture_payload(self, failed: bool) -> bool:
@@ -355,6 +383,13 @@ class TelemetryRecorder:
         if policy == "sampled":
             return random.random() < self.cfg.payload_sample_rate
         return False
+
+    async def _record_truncated_session(self, session_id: str, reason: str) -> None:
+        async with self._lock:
+            if session_id in self._truncated_sessions:
+                return
+            self._truncated_sessions.add(session_id)
+            self._session_truncated_total[reason] += 1
 
 
 def _status_error_type(status_code: int) -> str:

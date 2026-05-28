@@ -22,6 +22,7 @@ class PoolEntry:
     container_id: str = ""
     container_name: str = ""
     docker_bin: str = "docker"
+    workdir: str = ""
     run_command: str = "node /tmp/safactory-openclaw-runner.mjs"
     cleanup_command: str = ""
     healthcheck_command: str = ""
@@ -31,10 +32,10 @@ class PoolEntry:
 @dataclass(frozen=True, slots=True)
 class SimulationRunConfig:
     job_id: str
-    manager_config_path: str
     exp_config_path: str
     agent_root: str
     agent_config: Optional[str]
+    agent_start_config: Optional[str]
     storage_type: str
     db_url: str
     pool_size: int
@@ -47,6 +48,9 @@ class SimulationRunConfig:
     llm_temperature: float
     max_steps: int
     agent_start_timeout_s: float
+    docker_bin: str
+    docker_pull_policy: str
+    docker_startup_concurrency: int
     max_workers: Optional[int] = None
     agent_runtime: str = "agent_start"
     rebuild_table: bool = False
@@ -55,6 +59,8 @@ class SimulationRunConfig:
     flush_interval: float = 5.0
     rl_group_size: int = 0
     rl_epoch: int = 1
+    evaluation_enabled: bool = False
+    evaluation_config: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +74,7 @@ class SimulationAgentLease:
     container_id: str = ""
     container_name: str = ""
     docker_bin: str = "docker"
+    workdir: str = ""
     run_command: str = "node /tmp/safactory-openclaw-runner.mjs"
     cleanup_command: str = ""
     healthcheck_command: str = ""
@@ -77,7 +84,6 @@ class SimulationAgentLease:
 @dataclass(frozen=True, slots=True)
 class SimulationStartRequest:
     job_id: str
-    task_id: str
     session_id: str
     agent_name: str
     agent_id: str

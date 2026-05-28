@@ -6,6 +6,18 @@ database:
 
 pool_size: 2
 
+evaluation:
+  enabled: true
+  mode: inline
+  max_concurrency: 64
+  fail_policy: zero_reward
+  default_specs: []
+
+reward:
+  scale: 10
+  trainable_policy: all_steps_after_eval
+  commit_target: terminal_step
+
 cluster:
   docker:
     bin: "docker"

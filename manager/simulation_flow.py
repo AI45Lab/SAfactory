@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
+from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
 
@@ -15,6 +17,11 @@ from core.data_manager.yaml_aggregator import (
     sync_configs_to_db,
     wait_for_pending_inserts,
 )
+from evaluator.factory import EvaluationRuntime, build_evaluation_runtime
+from evaluator.gateway_client import GatewayClient
+from evaluator.reward_committer import RewardCommitter
+from evaluator.run_registry import InMemoryRunRegistry
+from evaluator.trajectory_reader import TrajectoryReader
 from .agent_start_client import AgentStartClient
 from .manager import AgentPoolManager
 from .simulation_config import (
@@ -40,6 +47,10 @@ class SimulationFlow:
         self.lease_pool: Optional[SimulationLeasePool] = None
         self.agent_start_client: Optional[AgentStartClient] = None
         self.worker_group: Optional[SimulationWorkerGroup] = None
+        self.run_registry: Optional[InMemoryRunRegistry] = None
+        self.gateway_client: Optional[GatewayClient] = None
+        self.evaluation_runtime: Optional[EvaluationRuntime] = None
+        self.reward_committer: Optional[RewardCommitter] = None
         self._shutdown_started = False
 
     async def run(self) -> SimulationRunSummary:
@@ -96,6 +107,7 @@ class SimulationFlow:
 
         if status_code != 200:
             raise RuntimeError(f"gateway is not ready at {ready_url}: status={status_code} body={body[:500]}")
+        self._validate_gateway_storage(body, ready_url)
         await self.check_gateway_model_route()
         log.info("gateway ready: %s", ready_url)
 
@@ -150,11 +162,27 @@ class SimulationFlow:
         self.agent_start_client = AgentStartClient(
             timeout_s=self.cfg.agent_start_timeout_s,
         )
+        self.run_registry = InMemoryRunRegistry()
+        self.gateway_client = GatewayClient(gateway_base_url=self.cfg.gateway_base_url)
+        evaluation_service = None
+        if self.cfg.evaluation_enabled:
+            self.evaluation_runtime = build_evaluation_runtime(
+                config=self.cfg.evaluation_config,
+                trajectory_reader=TrajectoryReader(db_url=self.cfg.db_url, storage_type=self.cfg.storage_type),
+                registry=self.run_registry,
+            )
+            await self.evaluation_runtime.start()
+            evaluation_service = self.evaluation_runtime.service
+            self.reward_committer = RewardCommitter(db_url=self.cfg.db_url)
         self.worker_group = SimulationWorkerGroup(
             lease_pool=self.lease_pool,
             data_manager=self.data_manager,
             agent_start_client=self.agent_start_client,
             cfg=self.cfg,
+            registry=self.run_registry,
+            gateway_client=self.gateway_client,
+            evaluation_service=evaluation_service,
+            reward_committer=self.reward_committer,
         )
         return await self.worker_group.run_all()
 
@@ -174,6 +202,12 @@ class SimulationFlow:
                 await self.agent_start_client.close()
             except Exception:
                 log.exception("agent start client close failed (ignored)")
+
+        if self.evaluation_runtime is not None:
+            try:
+                await self.evaluation_runtime.stop()
+            except Exception:
+                log.exception("evaluation runtime stop failed (ignored)")
 
         try:
             await wait_for_pending_inserts()
@@ -197,3 +231,56 @@ class SimulationFlow:
         if not parsed.scheme or not parsed.netloc:
             raise ValueError(f"gateway_base_url must be absolute: {self.cfg.gateway_base_url!r}")
         return f"{parsed.scheme}://{parsed.netloc}"
+
+    def _validate_gateway_storage(self, ready_body: str, ready_url: str) -> None:
+        try:
+            payload = json.loads(ready_body)
+        except json.JSONDecodeError:
+            log.warning("gateway ready response is not JSON; cannot validate shared trajectory DB: %s", ready_url)
+            return
+        if not isinstance(payload, dict):
+            log.warning("gateway ready response is not an object; cannot validate shared trajectory DB: %s", ready_url)
+            return
+
+        gateway_storage_type = str(payload.get("storage_type") or "").strip()
+        if not gateway_storage_type:
+            log.warning("gateway ready response has no storage_type; cannot validate shared trajectory DB")
+            return
+        if gateway_storage_type != self.cfg.storage_type:
+            raise RuntimeError(
+                "gateway storage_type does not match launcher storage_type: "
+                f"gateway={gateway_storage_type!r} launcher={self.cfg.storage_type!r}. "
+                "Start gateway with the same storage backend used by launcher."
+            )
+
+        if self.cfg.storage_type != "sqlite":
+            return
+
+        storage_config = payload.get("storage_config")
+        storage_config = storage_config if isinstance(storage_config, dict) else {}
+        gateway_db_url = str(storage_config.get("db_url") or "").strip()
+        if not gateway_db_url:
+            raise RuntimeError(
+                "gateway ready response does not expose storage_config.db_url. "
+                "Use a gateway build that reports its SQLite DB so evaluator can verify trajectory storage."
+            )
+
+        gateway_db = _normalize_sqlite_db_path(gateway_db_url)
+        launcher_db = _normalize_sqlite_db_path(self.cfg.db_url)
+        if gateway_db != launcher_db:
+            raise RuntimeError(
+                "gateway SQLite DB does not match launcher --db-path; evaluator would read an empty or partial "
+                f"trajectory. gateway={gateway_db} launcher={launcher_db}. "
+                "Set gateway storage_config.db_url to the same value as launcher --db-path."
+            )
+
+
+def _normalize_sqlite_db_path(db_url: str) -> str:
+    value = str(db_url or "").strip()
+    if value.startswith("sqlite://"):
+        value = value[len("sqlite://") :]
+    value = value.split("?", 1)[0]
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return str(path.resolve(strict=False))

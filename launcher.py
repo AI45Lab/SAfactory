@@ -4,8 +4,9 @@ import asyncio
 import logging
 from collections.abc import Sequence
 
+from args import parse_simulation_args
 from log_setup import setup_launcher_logging
-from manager.simulation_config import load_simulation_run_config, parse_simulation_args
+from manager.simulation_config import load_simulation_run_config
 from manager.simulation_flow import SimulationFlow
 
 log = logging.getLogger("launcher")

@@ -1,0 +1,12 @@
+environments:
+  - env_name: openclaw
+    env_image: ghcr.io/openclaw/openclaw:latest
+    env_num: 1
+    dataset: ./datasets/openclaw_tasks.jsonl
+
+    env_params:
+      task_family: real_task_concurrency
+      workload:
+        total_tasks: 1
+        expected_parallelism: 1
+        purpose: Verify OpenClaw can complete small real file and content creation tasks.

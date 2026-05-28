@@ -185,6 +185,24 @@ class GatewayRequestLogger:
             }
         )
 
+    async def log_stop_request(
+        self,
+        ctx: GatewayRequestContext,
+        binding: GatewaySessionBinding,
+        request_body: dict[str, Any],
+        reason: str,
+    ) -> None:
+        await self._write(
+            {
+                "event": "gateway_stop_response",
+                **self._base_fields(ctx, binding, None),
+                "reason": reason,
+                "max_steps": self.cfg.max_steps,
+                "llm_step_count": binding.llm_step_count,
+                "request": self._safe_body(request_body),
+            }
+        )
+
     async def log_error(
         self,
         *,
@@ -242,6 +260,11 @@ class GatewayRequestLogger:
             "upstream_url": _upstream_url(target, ctx.endpoint),
             "session_status": binding.status if binding else None,
             "session_request_count": binding.request_count if binding else None,
+            "llm_step_index": ctx.llm_step_index,
+            "synthetic_stop": ctx.synthetic_stop,
+            "llm_step_count": binding.llm_step_count if binding else None,
+            "truncated": binding.truncated if binding else None,
+            "truncate_reason": binding.truncate_reason if binding else None,
         }
 
     def _safe_body(self, body: Any) -> Any:

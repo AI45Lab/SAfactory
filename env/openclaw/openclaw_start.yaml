@@ -1,0 +1,19 @@
+agent_name: openclaw
+
+container:
+  workdir: /workspace
+
+  mounts:
+    - source: ./env/openclaw/workspace
+      target: /workspace
+      mode: rw
+
+    - source: ./clusters/openclaw_safactory_runner.mjs
+      target: /tmp/safactory-openclaw-runner.mjs
+      mode: ro
+
+  env:
+    NO_COLOR: "1"
+
+  idle_command: "tail -f /dev/null"
+  run_command: "node /tmp/safactory-openclaw-runner.mjs"

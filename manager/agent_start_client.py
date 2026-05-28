@@ -62,10 +62,14 @@ class AgentStartClient:
         return
 
     def _docker_exec_cmd(self, lease: SimulationAgentLease, request: SimulationStartRequest) -> List[str]:
-        return [
+        cmd = [
             lease.docker_bin or "docker",
             "exec",
             "-i",
+        ]
+        if lease.workdir:
+            cmd.extend(["-w", lease.workdir])
+        cmd.extend([
             "-e",
             f"SAFACTORY_JOB_ID={request.job_id}",
             "-e",
@@ -78,7 +82,8 @@ class AgentStartClient:
             "sh",
             "-lc",
             lease.run_command,
-        ]
+        ])
+        return cmd
 
     @classmethod
     def _log_runner_diagnostics(cls, stderr: str, lease: SimulationAgentLease) -> None:
@@ -130,7 +135,7 @@ class AgentStartClient:
         if not isinstance(metrics, dict):
             metrics = {}
         return SimulationStartResult(
-            session_id=str(body.get("session_id") or session_id),
+            session_id=str(session_id),
             status=str(body.get("status") or "succeeded"),
             total_reward=float(body.get("total_reward", 0.0) or 0.0),
             step_count=int(body.get("step_count", 0) or 0),

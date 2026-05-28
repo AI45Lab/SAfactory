@@ -9,6 +9,11 @@ from dataclasses import asdict
 from typing import Any, Dict, Optional
 
 from core.data_manager.manager import DataManager, SessionContext
+from evaluator.eval_types import EvalRequest, parse_eval_specs
+from evaluator.gateway_client import GatewayClient
+from evaluator.reward_committer import RewardCommitter
+from evaluator.run_registry import InMemoryRunRegistry
+from evaluator.service import EvaluationService
 
 from .agent_start_client import AgentStartClient
 from .simulation_lease_pool import SimulationLeasePool
@@ -30,11 +35,19 @@ class SimulationWorkerGroup:
         data_manager: DataManager,
         agent_start_client: AgentStartClient,
         cfg: SimulationRunConfig,
+        registry: InMemoryRunRegistry | None = None,
+        gateway_client: GatewayClient | None = None,
+        evaluation_service: EvaluationService | None = None,
+        reward_committer: RewardCommitter | None = None,
     ) -> None:
         self.lease_pool = lease_pool
         self.data_manager = data_manager
         self.agent_start_client = agent_start_client
         self.cfg = cfg
+        self.registry = registry
+        self.gateway_client = gateway_client
+        self.evaluation_service = evaluation_service
+        self.reward_committer = reward_committer
         self.worker_count = self._derive_worker_count()
         self._results: Dict[str, SimulationStartResult] = {}
         self._results_lock = asyncio.Lock()
@@ -100,6 +113,10 @@ class SimulationWorkerGroup:
 
             agent_key = f"{lease.agent_name}_{lease.agent_id}"
             started = time.perf_counter()
+            session: SessionContext | None = None
+            result: SimulationStartResult | None = None
+            release_reusable: bool | None = None
+            run_failed = False
             try:
                 log.info(
                     "worker=%d acquired agent=%s container=%s reuse=%s",
@@ -108,28 +125,105 @@ class SimulationWorkerGroup:
                     lease.container_name or lease.container_id,
                     lease.reuse_container,
                 )
-                result = await self._run_one_episode(lease, worker_id)
+                session = await self._create_session(lease)
+                request = self._build_start_request(lease, session, worker_id)
+                if self.registry is not None:
+                    await self.registry.create_run(
+                        job_id=self.cfg.job_id,
+                        session_id=session.session_id,
+                        metadata={
+                            "agent_name": lease.agent_name,
+                            "agent_id": lease.agent_id,
+                            "group_id": lease.group_id,
+                            "row_id": lease.row_id,
+                            "image": lease.image,
+                            "container_id": lease.container_id,
+                            "container_name": lease.container_name,
+                        },
+                    )
+                    await self.registry.mark_running(session.session_id)
+
+                result = await self._run_one_episode(lease, session, request, worker_id)
+                if self.registry is not None:
+                    await self.registry.mark_rollout_finished(session.session_id, result)
+
+                if self.gateway_client is not None:
+                    await self.gateway_client.close_session(result.session_id, reason="rollout_finished")
+                    await self.gateway_client.wait_telemetry_flush(result.session_id)
+
+                if self.evaluation_service is None or self.reward_committer is None:
+                    release_reusable = False
+                else:
+                    eval_specs = parse_eval_specs(
+                        lease.env_params,
+                        default_specs=getattr(self.evaluation_service, "default_specs", []),
+                    )
+                    if eval_specs:
+                        eval_request = EvalRequest(
+                            job_id=self.cfg.job_id,
+                            session_id=result.session_id,
+                            lease=lease,
+                            start_result=result,
+                            env_params=dict(lease.env_params or {}),
+                            eval_specs=eval_specs,
+                        )
+                        if self.registry is not None:
+                            await self.registry.mark_awaiting_eval(result.session_id, eval_request)
+                        eval_result = await self.evaluation_service.evaluate(eval_request)
+                        if eval_result.status == "succeeded":
+                            await self.reward_committer.commit(
+                                session_id=result.session_id,
+                                eval_result=eval_result,
+                            )
+                            if self.registry is not None:
+                                await self.registry.mark_reward_committed(
+                                    result.session_id,
+                                    eval_result.normalized_score_10,
+                                )
+                            result.total_reward = eval_result.normalized_score_10
+                        else:
+                            result.total_reward = 0.0
+                            result.status = "failed"
+                            result.error_text = eval_result.error_text or eval_result.reason
+                        release_reusable = result.status == "succeeded" and eval_result.status == "succeeded"
+                    else:
+                        log.debug("worker=%d agent=%s has no eval specs; skip evaluation", worker_id, agent_key)
+
                 async with self._results_lock:
                     self._results[agent_key] = result
             except Exception as exc:
+                run_failed = True
                 log.warning("worker=%d agent=%s failed before summary: %s", worker_id, agent_key, exc, exc_info=True)
-                result = SimulationStartResult(
-                    session_id=lease.agent_id,
-                    status="failed",
-                    total_reward=0.0,
-                    step_count=0,
-                    terminated=True,
-                    truncated=False,
-                    error_text=str(exc),
-                    metrics={},
-                )
+                if result is None:
+                    result = SimulationStartResult(
+                        session_id=session.session_id if session is not None else lease.agent_id,
+                        status="failed",
+                        total_reward=0.0,
+                        step_count=0,
+                        terminated=True,
+                        truncated=False,
+                        error_text=str(exc),
+                        metrics={},
+                    )
+                else:
+                    result.status = "failed"
+                    result.error_text = str(exc)
+                release_reusable = False
+                if self.registry is not None and session is not None:
+                    await self.registry.mark_failed(session.session_id, str(exc))
                 async with self._results_lock:
                     self._results[agent_key] = result
             finally:
                 try:
-                    await self.lease_pool.done(lease, result)
-                except Exception:
+                    if self.registry is not None and session is not None and not run_failed:
+                        await self.registry.mark_releasing_container(session.session_id)
+                    await self.lease_pool.done(lease, result, reusable=release_reusable)
+                    if self.registry is not None and session is not None and not run_failed:
+                        await self.registry.mark_done(session.session_id)
+                except Exception as exc:
                     log.exception("worker=%d agent=%s critical error in lease_pool.done()", worker_id, agent_key)
+                    if self.registry is not None and session is not None:
+                        await self.registry.mark_failed(session.session_id, f"container release failed: {exc}")
 
             elapsed = time.perf_counter() - started
             log.info(
@@ -141,9 +235,13 @@ class SimulationWorkerGroup:
                 elapsed,
             )
 
-    async def _run_one_episode(self, lease: SimulationAgentLease, worker_id: int) -> SimulationStartResult:
-        session = await self._create_session(lease)
-        request = self._build_start_request(lease, session, worker_id)
+    async def _run_one_episode(
+        self,
+        lease: SimulationAgentLease,
+        session: SessionContext,
+        request: SimulationStartRequest,
+        worker_id: int,
+    ) -> SimulationStartResult:
         try:
             result = await self.agent_start_client.start(lease, request)
         except Exception as exc:
@@ -184,10 +282,8 @@ class SimulationWorkerGroup:
         session: SessionContext,
         worker_id: int,
     ) -> SimulationStartRequest:
-        task_id = str(lease.row_id if lease.row_id is not None else lease.group_id or lease.agent_id)
         return SimulationStartRequest(
             job_id=self.cfg.job_id,
-            task_id=task_id,
             session_id=session.session_id,
             group_id=lease.group_id,
             gateway_base_url=self.cfg.gateway_base_url,
@@ -207,6 +303,7 @@ class SimulationWorkerGroup:
                 "image": lease.image,
                 "container_id": lease.container_id,
                 "container_name": lease.container_name,
+                "workdir": lease.workdir,
                 "reuse_container": lease.reuse_container,
                 "agent_name": lease.agent_name,
                 "agent_id": lease.agent_id,

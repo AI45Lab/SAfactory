@@ -153,6 +153,7 @@ class DockerAgentPool:
             container_id=container.container_id,
             container_name=container.container_name,
             docker_bin=self._docker.docker_bin,
+            workdir=container.workdir,
             run_command=container.run_command,
             cleanup_command=container.cleanup_command,
             healthcheck_command=container.healthcheck_command,

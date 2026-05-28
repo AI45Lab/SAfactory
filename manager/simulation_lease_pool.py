@@ -99,7 +99,6 @@ class SimulationLeasePool:
         self.mgr = mgr
         self.pool_size = max(1, int(pool_size or 1))
         self._runtime = _LeaseRuntimeState()
-        self._bg_refill_tasks: Set[asyncio.Task] = set()
         self._lifecycle_lock = asyncio.Lock()
         self._closing = False
         self._closed = False
@@ -128,7 +127,12 @@ class SimulationLeasePool:
             log.debug("acquire(): got %s/%s", lease.agent_name, lease.agent_id)
         return lease
 
-    async def done(self, lease: SimulationAgentLease, result: Optional[SimulationStartResult] = None) -> None:
+    async def done(
+        self,
+        lease: SimulationAgentLease,
+        result: Optional[SimulationStartResult] = None,
+        reusable: Optional[bool] = None,
+    ) -> None:
         old_key = (str(lease.agent_name), str(lease.agent_id))
         async with self._lifecycle_lock:
             if self._closing or self._closed:
@@ -137,15 +141,10 @@ class SimulationLeasePool:
                 return
 
             await self._runtime.begin_refill(old_key)
-            try:
-                task = asyncio.create_task(
-                    self._bg_done(lease, old_key, result),
-                    name=f"simulation-close-and-refill:{lease.agent_name}:{lease.agent_id}",
-                )
-            except Exception:
+            ok = await self._close_and_refill(lease, old_key, result, reusable)
+            if not ok:
                 await self._runtime.fail_refill(old_key)
-                raise
-            self._register_bg_task(task)
+                raise RuntimeError(f"close_and_refill failed for {lease.agent_name}/{lease.agent_id}")
 
     async def aclose(self) -> None:
         async with self._lifecycle_lock:
@@ -153,8 +152,6 @@ class SimulationLeasePool:
                 log.info("SimulationLeasePool.aclose(): already closed")
                 return
             self._closing = True
-
-        await self._wait_for_bg_refill_tasks()
 
         async with self._lifecycle_lock:
             if self._closed:
@@ -167,37 +164,37 @@ class SimulationLeasePool:
         await self._runtime.begin_refill(old_key)
         await self._runtime.fail_refill(old_key)
 
-    async def _bg_done(
+    async def _close_and_refill(
         self,
         lease: SimulationAgentLease,
         old_key: Tuple[str, str],
         result: Optional[SimulationStartResult],
-    ) -> None:
+        reusable: Optional[bool],
+    ) -> bool:
         try:
-            succeeded = result is not None and result.status == "succeeded"
+            succeeded = bool(reusable) if reusable is not None else result is not None and result.status == "succeeded"
             replacement = await self.mgr.close_and_refill(lease.agent_name, lease.agent_id, succeeded=succeeded)
         except asyncio.CancelledError:
             await self._runtime.fail_refill(old_key)
             raise
         except Exception:
             log.exception("close_and_refill failed for %s/%s", lease.agent_name, lease.agent_id)
-            await self._runtime.fail_refill(old_key)
-            return
+            return False
 
         if replacement is None:
             await self._runtime.finish_refill(old_key)
-            return
+            return True
 
         new_lease = self._entry_to_agent_lease(replacement)
         if new_lease is None:
             log.error("replacement agent instance could not be converted for %s/%s", replacement.env_name, replacement.env_id)
-            await self._runtime.fail_refill(old_key)
-            return
+            return False
 
         new_key = (new_lease.agent_name, new_lease.agent_id)
         added = await self._runtime.finish_refill(old_key, new_key, new_lease)
         if added:
             log.debug("registered replacement agent lease: %s/%s", new_key[0], new_key[1])
+        return True
 
     def _entry_to_agent_lease(self, entry: PoolEntry) -> Optional[SimulationAgentLease]:
         agent_name = str(entry.env_name)
@@ -213,36 +210,9 @@ class SimulationLeasePool:
             container_id=str(getattr(entry, "container_id", "") or ""),
             container_name=str(getattr(entry, "container_name", "") or ""),
             docker_bin=str(getattr(entry, "docker_bin", "docker") or "docker"),
+            workdir=str(getattr(entry, "workdir", "") or ""),
             run_command=str(getattr(entry, "run_command", "") or ""),
             cleanup_command=str(getattr(entry, "cleanup_command", "") or ""),
             healthcheck_command=str(getattr(entry, "healthcheck_command", "") or ""),
             reuse_container=bool(getattr(entry, "reuse_container", False)),
         )
-
-    def _register_bg_task(self, task: asyncio.Task) -> None:
-        self._bg_refill_tasks.add(task)
-        task.add_done_callback(self._on_bg_task_done)
-
-    def _on_bg_task_done(self, task: asyncio.Task) -> None:
-        self._bg_refill_tasks.discard(task)
-        try:
-            task.exception()
-        except asyncio.CancelledError:
-            log.debug("background refill task cancelled: %s", task.get_name())
-        except Exception:
-            log.exception("background refill task failed unexpectedly: %s", task.get_name())
-
-    async def _wait_for_bg_refill_tasks(self) -> None:
-        while True:
-            async with self._lifecycle_lock:
-                tasks = list(self._bg_refill_tasks)
-            if not tasks:
-                return
-            log.info("waiting for %d background refill task(s)", len(tasks))
-            try:
-                await asyncio.gather(*tasks, return_exceptions=True)
-            except asyncio.CancelledError:
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-                raise
