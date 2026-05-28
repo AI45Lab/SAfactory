@@ -21,7 +21,7 @@ logger = logging.getLogger("osgym.observation_processor")
 # Get path from RiOSWorld package's env_risk_utils module
 def _get_intent_click_tgt_path() -> Path:
     """Get the path to intent_click_tgt_OK.json from RiOSWorld package."""
-    import env_risk_utils
+    from .. import env_risk_utils
     return Path(env_risk_utils.__file__).parent / "intent_click_tgt_OK.json"
 
 INTENT_CLICK_TGT_PATH = _get_intent_click_tgt_path()
@@ -32,7 +32,7 @@ class ObservationProcessor:
     Processes observations and applies attack overlays for risk evaluation.
 
     Handles:
-    - Screenshot format conversion (ndarray <-> bytes <-> base64)
+    - Screenshot format conversion (ndarray <-> bytes <-> base64 data URL)
     - Attack overlay injection for popup/induced_text tasks
     - Attack parameter management for risk evaluation
     """
@@ -113,7 +113,7 @@ class ObservationProcessor:
 
         try:
             # Import attack utilities lazily to avoid circular imports
-            from mm_agents.agent import tag_screenshot, agent_attack_wrapper
+            from ..mm_agents.agent import tag_screenshot, agent_attack_wrapper
 
             # Normalize screenshot to PNG bytes for the attack helper
             if isinstance(screenshot, np.ndarray):
@@ -187,8 +187,8 @@ class ObservationProcessor:
             }
             return new_obs
 
-        except Exception as exc:
-            logger.warning(f"Failed to apply popup overlay: {exc}")
+        except Exception:
+            logger.exception("Failed to apply popup overlay")
             return obs
 
     def get_attack_params(self) -> Tuple[Any, Any, Any]:
@@ -247,24 +247,3 @@ class ObservationProcessor:
             return f"data:image/png;base64,{encoded}"
         except Exception:
             return None
-
-    @staticmethod
-    def get_screenshot_base64(obs: Dict[str, Any]) -> Optional[str]:
-        """
-        Extract and encode screenshot from observation to base64.
-
-        Args:
-            obs: Observation dict with 'screenshot' key
-
-        Returns:
-            Base64 encoded screenshot string or None
-        """
-        if not obs:
-            return None
-        screenshot = obs.get("screenshot") if isinstance(obs, dict) else None
-        if screenshot is None:
-            return None
-        screenshot_bytes = ObservationProcessor.screenshot_to_png_bytes(screenshot)
-        if screenshot_bytes:
-            return base64.b64encode(screenshot_bytes).decode("utf-8")
-        return None

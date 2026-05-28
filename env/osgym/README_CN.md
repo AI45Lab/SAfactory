@@ -32,17 +32,15 @@ cd env/osgym && pip install -r requirements.txt
 | `eval_mode` | 评估模式 (`standard` / `safety`) | `standard` |
 | `provider_name` | 后端提供商 (`docker` / `containerd`) | `docker` |
 | `vm_path` | 显式指定 VM 镜像路径；支持相对 `env/osgym` 的路径 | `None` |
-| `capture_observation_type` | 环境采集模态 (`screenshot`, `a11y_tree`, `screenshot_a11y_tree`) | `screenshot_a11y_tree` |
 | `prompt_observation_type` | 提示词模态 (`screenshot`, `a11y_tree`, `screenshot_a11y_tree`) | `screenshot` |
-| `prompt_format` | 提示词协议格式 (`kimi`, `qwen`) | `kimi` |
+| `prompt_format` | 提示词协议格式 (`kimi`, `qwen`) | `qwen` |
 | `action_space` | 动作空间 | `pyautogui` |
 | `screen_width/height` | 屏幕分辨率 | `1920x1080` |
 | `max_steps` | 每个任务的最大允许步数 | `30` |
-| `message_cut` | 消息历史裁剪 (OOM 保护)，保留最近 N 轮对话 | `-1` (不裁剪) |
-| `result_dir` | 结果目录（支持相对路径，相对于 `env/osgym` 目录） | `results` |
+| `repeated_click_distance_threshold` | 连续 click 坐标距离小于该像素阈值时视为同一点击 | `10.0` |
+| `repeated_click_limit` | 连续重复 click 达到该次数后截断任务；设为 `0` 可关闭 | `2` |
 
-当 `capture_observation_type` 和 `prompt_observation_type` 不同时，结果目录会使用
-`capture_<capture>__prompt_<prompt>` 作为 observation 标签，避免不同实验混淆。
+OSGym 自动决定是否采集 accessibility tree：a11y 提示词模式会开启，safety 的 `popup` / `induced_text` 任务也会开启。
 
 ## 4. 运行示例
 
@@ -79,10 +77,4 @@ python launcher.py \
   --llm-api-key your_key \
   --llm-model model_name \
   --pool-size 2
-```
-
-### 统计结果：
-
-```bash
-python aggregate_results.py --result-dir /path/to/results
 ```

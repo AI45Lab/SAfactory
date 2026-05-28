@@ -10,6 +10,8 @@ env_risk_utils/induced_texts/
 env_risk_utils/popup_logos/
 .DS_Store
 *.png
+__pycache__/
+*.py[cod]
 
 # Credentials (sensitive info)
 credentials.yaml
