@@ -5,14 +5,14 @@ This package contains core functionality modules extracted from os_env.py
 for better code organization and maintainability.
 """
 
-from .action_parser import ActionParser
+from .action_flow import ActionFlow
 from .observation_processor import ObservationProcessor
-from .result_persistence import ResultPersistence
-from .prompt_builder import PromptBuilder
+from .prompt_session import PromptSession
+from .repeated_action_detector import RepeatedActionDetector
 
 __all__ = [
-    "ActionParser",
+    "ActionFlow",
     "ObservationProcessor",
-    "ResultPersistence",
-    "PromptBuilder",
+    "PromptSession",
+    "RepeatedActionDetector",
 ]

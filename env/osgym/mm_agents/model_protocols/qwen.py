@@ -1,103 +1,16 @@
-import logging
-import textwrap
+"""Qwen XML-tool-call OSGym prompt and action protocol."""
+
 import json
-import xml.etree.ElementTree as ET
-from typing import Optional, Dict, Any, List, Union
+import re
+from typing import Dict, List
 
-logger = logging.getLogger("osgym.prompt_builder")
+from .base import ModelProtocol
 
 
-class PromptBuilder:
-    """
-    Builds system and user prompts for environment interaction.
-    Supports Kimi-style and Qwen-XML-style formatting.
-    """
+class QwenProtocol(ModelProtocol):
+    """Protocol using `<tool_call>` XML blocks with 1000x1000 coordinates."""
 
-    SUPPORTED_OBSERVATION_TYPES = {"screenshot", "a11y_tree", "screenshot_a11y_tree"}
-    SUPPORTED_PROMPT_FORMATS = {"kimi", "qwen"}
-
-    def __init__(
-        self,
-        prompt_observation_type: str,
-        action_space_type: str,
-        a11y_tree_max_nodes: int = 250,
-        a11y_tree_max_chars: int = 12000,
-        prompt_format: str = "kimi",
-        screen_width: int = 1920,
-        screen_height: int = 1080,
-    ):
-        """
-        Initialize PromptBuilder.
-        """
-        if prompt_observation_type not in self.SUPPORTED_OBSERVATION_TYPES:
-            raise ValueError(
-                f"Unsupported prompt_observation_type: {prompt_observation_type}. "
-                f"Expected one of {sorted(self.SUPPORTED_OBSERVATION_TYPES)}."
-            )
-        
-        if prompt_format not in self.SUPPORTED_PROMPT_FORMATS:
-            logger.warning(f"Unknown prompt_format: {prompt_format}. Defaulting to 'kimi'.")
-            prompt_format = "kimi"
-
-        self.prompt_observation_type = prompt_observation_type
-        self.action_space_type = action_space_type
-        self.a11y_tree_max_nodes = max(1, int(a11y_tree_max_nodes))
-        self.a11y_tree_max_chars = max(200, int(a11y_tree_max_chars))
-        self.prompt_format = prompt_format
-        self.screen_width = screen_width
-        self.screen_height = screen_height
-
-    def build_system_prompt(self, instruction: str) -> str:
-        """Build system prompt based on format."""
-        observation_description = {
-            "screenshot": "You will receive the latest screenshot of the desktop.",
-            "a11y_tree": "You will receive the latest accessibility tree of the desktop.",
-            "screenshot_a11y_tree": (
-                "You will receive the latest screenshot of the desktop and a summarized accessibility tree."
-            ),
-        }[self.prompt_observation_type]
-
-        if self.prompt_format == "qwen":
-            return self._build_qwen_system_prompt(instruction, observation_description)
-        
-        return self._build_kimi_system_prompt(instruction, observation_description)
-
-    def _build_kimi_system_prompt(self, instruction: str, observation_description: str) -> str:
-        return textwrap.dedent(
-            f"""
-            You are a GUI agent operating a desktop computer.
-            {observation_description}
-            The computer password is "osworld-public-evaluation". Use it when sudo rights are required.
-
-            Your goal is to finish the task exactly as instructed. If the task is still running, a page is still loading,
-            or a command / installation has not finished yet, use `computer.wait()`. If the task is fully completed, use
-            `computer.terminate(status="success")`. If the task is impossible, blocked, or not fully completed, use
-            `computer.terminate(status="failure")`.
-
-            For each step, respond in exactly this format and do not add any extra sections:
-
-            ## Action:
-            <one concise sentence describing the next step>
-            ## Code:
-            ```python
-            <pyautogui code or a single computer.* call>
-            ```
-
-            Requirements:
-            - Do not output `Thought`, `Observation`, `Reflection`, or any other section.
-            - The `Action` must be concise and grounded in visible UI elements or the accessibility tree when provided.
-            - The `Code` must be either valid `pyautogui` code, `computer.wait()`, or `computer.terminate(...)`.
-            - Do not call `pyautogui.screenshot()` or `pyautogui.locateCenterOnScreen(...)`.
-            - Each step must be self-contained. Do not rely on variables or helper functions from previous steps.
-            - Prefer normalized coordinates in the range [0, 1] when using `pyautogui` mouse actions.
-            - When typing text, include the exact target text in the `Action` and the corresponding code in `Code`.
-
-            You are asked to complete the following task:
-            {instruction}
-            """
-        ).strip()
-
-    def _build_qwen_system_prompt(self, instruction: str, observation_description: str) -> str:
+    def build_system_prompt(self) -> str:
         description_prompt_lines = [
             "Use a mouse and keyboard to interact with a computer, and take screenshots.",
             "* This is an interface to a desktop GUI. You do not have access to a terminal or applications menu. You must click on desktop icons to start applications.",
@@ -172,7 +85,7 @@ class PromptBuilder:
             },
         }
 
-        system_prompt = (
+        return (
             "You are a multi-purpose intelligent assistant. Based on my requests, you can use tools to help me complete various tasks.\n\n"
             "# Tools\n\n"
             "You have access to the following functions:\n\n"
@@ -205,38 +118,124 @@ class PromptBuilder:
             "Rules:\n"
             "- Output exactly in the order: Action, <tool_call>.\n"
             "- Be brief: one sentence for Action.\n"
-            "- If finishing, use action=terminate in the tool call.\n"
-            f"\nTask: {instruction}"
+            "- Do not output Code, Python, pyautogui, markdown code fences, or any extra text after </tool_call>.\n"
+            "- If finishing, use action=terminate in the tool call."
         )
-        return system_prompt
 
-    def build_user_content(
+    def user_instruction_hint(self, instruction: str) -> str:
+        return f"""
+Please generate the next move according to the UI screenshot, instruction and previous actions.
+
+Instruction: {instruction}"""
+
+    def format_action_history_entry(
         self,
-        current_obs: Dict[str, Any],
-        task_id: str = "",
-        screenshot_to_bytes_func=None,
-        encode_image_func=None,
-    ) -> Union[str, List[Dict[str, Any]]]:
-        if self.prompt_format == "qwen":
-            instruction_hint = "Review the latest desktop state and return the next action using the `<tool_call>` format."
-        else:
-            instruction_hint = "Review the latest desktop state and return only the next step in the required `## Action` and `## Code` format."
-            
-        user_sections: List[str] = [instruction_hint]
+        idx: int,
+        description: str,
+        actions: List[str],
+        raw_content: str = "",
+    ) -> str:
+        tool_call = self._extract_tool_call(raw_content)
+        code = tool_call or "(no tool_call)"
+        return f"{idx}. Description: {description}\nCode:\n{code}"
 
-        screenshot_bytes = None
-        if current_obs.get("screenshot") is not None and screenshot_to_bytes_func:
-            screenshot_bytes = screenshot_to_bytes_func(current_obs.get("screenshot"))
-            user_sections.append("The latest screenshot is attached.")
+    def parse_actions(self, action_str: str) -> List[str]:
+        if not action_str or not action_str.strip():
+            return []
+        if "<tool_call>" not in action_str:
+            return []
 
-        user_text = "\n\n".join(section.strip() for section in user_sections if section).strip()
+        pyautogui_commands = []
+        function_pattern = re.compile(r"<function=(?P<name>.*?)>(?P<body>.*?)</function>", re.DOTALL)
+        parameter_pattern = re.compile(r"<parameter=(?P<name>.*?)>(?P<value>.*?)</parameter>", re.DOTALL)
 
-        if screenshot_bytes and encode_image_func:
-            screenshot_url = encode_image_func(screenshot_bytes)
-            if screenshot_url:
-                return [
-                    {"type": "text", "text": user_text},
-                    {"type": "image_url", "image_url": {"url": screenshot_url, "detail": "high"}},
-                ]
+        for func_match in function_pattern.finditer(action_str):
+            params = {}
+            for param_match in parameter_pattern.finditer(func_match.group("body")):
+                params[param_match.group("name").strip()] = param_match.group("value").strip()
+            pyautogui_commands.extend(self._process_xml_params_to_pyautogui(params))
 
-        return user_text
+        return pyautogui_commands
+
+    @staticmethod
+    def _extract_tool_call(content: str) -> str:
+        if not content:
+            return ""
+        match = re.search(r"<tool_call>.*?</tool_call>", content, re.DOTALL)
+        return match.group(0).strip() if match else ""
+
+    def _process_xml_params_to_pyautogui(self, params: Dict) -> List[str]:
+        action = params.get("action")
+        if not action:
+            return []
+
+        coordinate = self._parse_coordinate(params.get("coordinate"))
+        text = params.get("text", "")
+        keys = self._parse_keys(params.get("keys", []))
+
+        def py_str(value):
+            return json.dumps(str(value), ensure_ascii=False)
+
+        commands = []
+        action_map = {
+            "left_click": "click",
+            "right_click": "rightClick",
+            "middle_click": "middleClick",
+            "double_click": "doubleClick",
+            "triple_click": "doubleClick",
+            "mouse_move": "moveTo",
+            "left_click_drag": "dragTo",
+        }
+
+        if action in action_map:
+            func_name = action_map[action]
+            if coordinate:
+                commands.append(f"pyautogui.{func_name}({coordinate[0]}, {coordinate[1]})")
+            else:
+                commands.append(f"pyautogui.{func_name}()")
+        elif action == "type":
+            commands.append(f"pyautogui.typewrite({py_str(text)})")
+        elif action == "key":
+            if len(keys) > 1:
+                commands.append(f"pyautogui.hotkey({', '.join(py_str(k) for k in keys)})")
+            elif keys:
+                commands.append(f"pyautogui.press({py_str(keys[0])})")
+        elif action == "wait":
+            commands.append("WAIT")
+        elif action in {"terminate", "answer"}:
+            status = params.get("status", "success")
+            commands.append("DONE" if status == "success" else "FAIL")
+        elif action in {"scroll", "hscroll"}:
+            commands.append(f"pyautogui.scroll({self._parse_pixels(params.get('pixels', 0))})")
+
+        return commands
+
+    def _parse_coordinate(self, raw_coord):
+        if not isinstance(raw_coord, str):
+            return None
+        try:
+            cleaned_coord = raw_coord.strip("[]() ")
+            parts = [part.strip() for part in cleaned_coord.split(",")]
+            if len(parts) < 2:
+                return None
+            x = int(float(parts[0]) * (self.screen_width / 999.0))
+            y = int(float(parts[1]) * (self.screen_height / 999.0))
+            return x, y
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _parse_keys(keys):
+        if not isinstance(keys, str):
+            return keys
+        try:
+            return json.loads(keys) if keys.startswith(("[", "{")) else [keys]
+        except Exception:
+            return [keys]
+
+    @staticmethod
+    def _parse_pixels(pixels) -> int:
+        try:
+            return int(float(pixels))
+        except (ValueError, TypeError):
+            return 0

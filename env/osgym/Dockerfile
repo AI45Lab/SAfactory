@@ -47,7 +47,7 @@ ENV CONDA_DIR=/home/ray/anaconda3
 ENV PATH=$CONDA_DIR/bin:$PATH
 
 # 4. 配置 Python 环境
-WORKDIR /root/AIEvoBox
+WORKDIR /root/Safactory
 
 # 复制项目依赖
 COPY requirements.txt ./
@@ -62,11 +62,11 @@ RUN pip install --no-cache-dir \
         fastapi \
         uvicorn \
         pytesseract \
-        -r /root/AIEvoBox/requirements.txt \
-        -r /root/AIEvoBox/env/osgym/requirements.txt
+        -r /root/Safactory/requirements.txt \
+        -r /root/Safactory/env/osgym/requirements.txt
 
 # 5. 配置 Shell 环境
 RUN echo "export PATH=$CONDA_DIR/bin:\$PATH" >> /root/.bashrc && \
-    echo "cd /root/AIEvoBox" >> /root/.bashrc
+    echo "cd /root/Safactory" >> /root/.bashrc
 
 CMD ["/bin/bash"]

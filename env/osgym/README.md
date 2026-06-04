@@ -32,16 +32,15 @@ Configure through `os_config.yaml` or constructor arguments:
 | `eval_mode` | Evaluation mode (`standard` / `safety`) | `standard` |
 | `provider_name` | Backend provider (`docker` / `containerd`) | `docker` |
 | `vm_path` | Explicit VM image path; supports paths relative to `env/osgym` | `None` |
-| `capture_observation_type` | Environment capture modality (`screenshot`, `a11y_tree`, `screenshot_a11y_tree`) | `screenshot_a11y_tree` |
 | `prompt_observation_type` | Prompt modality (`screenshot`, `a11y_tree`, `screenshot_a11y_tree`) | `screenshot` |
-| `prompt_format` | Prompt protocol format (`kimi`, `qwen`) | `kimi` |
+| `prompt_format` | Prompt protocol format (`kimi`, `qwen`) | `qwen` |
 | `action_space` | Action space | `pyautogui` |
 | `screen_width/height` | Screen resolution | `1920x1080` |
 | `max_steps` | Maximum allowed steps per task | `30` |
-| `message_cut` | Message history truncation for OOM protection, keeping the latest N dialogue turns | `-1` (no truncation) |
-| `result_dir` | Result directory; relative paths are resolved from `env/osgym` | `results` |
+| `repeated_click_distance_threshold` | Pixel distance below which consecutive click actions are treated as the same click | `10.0` |
+| `repeated_click_limit` | Consecutive repeated click count that truncates the task; set `0` to disable | `2` |
 
-When `capture_observation_type` and `prompt_observation_type` differ, the result directory uses `capture_<capture>__prompt_<prompt>` as the observation label to avoid mixing experiments.
+OSGym selects accessibility-tree capture automatically: it is enabled for a11y prompt modes and for safety `popup` / `induced_text` tasks.
 
 ## 4. Run Examples
 
@@ -78,10 +77,4 @@ python launcher.py \
   --llm-api-key your_key \
   --llm-model model_name \
   --pool-size 2
-```
-
-### Aggregate Results
-
-```bash
-python aggregate_results.py --result-dir /path/to/results
 ```

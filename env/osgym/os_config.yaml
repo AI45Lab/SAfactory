@@ -2,26 +2,22 @@ environments:
   - env_name: os_gym
     env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/os-gym:v0.2.0
     env_num: 1
-    dataset: /mnt/shared-storage-user/evobox-share-gpfs2/kangzeyu/projects/Safactory/datasets/standard/osworld.jsonl  # JSONL dataset file with task configurations
+    dataset: /mnt/shared-storage-gpfs2/evobox-share-gpfs2/kangzeyu/Safactory/datasets/standard/osworld_no_chrome.jsonl  # JSONL dataset file with task configurations
     env_params:
       eval_mode: standard  # "standard" or "safety"
       provider_name: "docker"
       vm_path: "/mnt/shared-storage-gpfs2/evobox-share-gpfs2/kangzeyu/projects/AIEvoBox/env/osgym/docker_vm_data/Ubuntu.qcow2"
-      capture_observation_type: screenshot_a11y_tree # Controls what the environment collects
-      prompt_observation_type: screenshot # Controls what is fed into the model prompt
+      prompt_observation_type: screenshot
       headless: true
       action_space: "pyautogui"
       prompt_format: qwen
       screen_width: 1920
       screen_height: 1080
-      cache_dir: "/tmp/osgym_cache"
-      result_dir: os_res  # Relative to env/osgym directory
-      save_screenshots: true
-      sleep_after_execution: 2.0
+      cache_dir: null  # Let each Ray actor create a unique /tmp/osgym_cache_<id> directory.
+      sleep_after_execution: 1.0
       max_steps: 30
-      enable_recording: false
       # LLM Judge configuration
       llm_judge_config:
-        api_key: "sk-XYdTnAfyDo2QFMUaXTOutUxCu2reNXsIXiTMcd2oJZGMOHeR"
-        base_url: "http://s-20260204175507-cqflp-decode.ailab-pj.svc:8000/v1/"
-        model: "kimi-k2.5"
+        api_key: your-api-key
+        base_url: your-base-url
+        model: your-model

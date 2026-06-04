@@ -12,7 +12,7 @@ cluster:
     port: 36663
     timeout_s: 300         # Connection timeouts from manager to env clusters
     concurrency: 200       # Max concurrent HTTP calls from manager when prewarming actors
-    startup_concurrency: 8  # Max concurrent cold starts / reset attempts during prewarm
+    startup_concurrency: 32  # Max concurrent cold starts / reset attempts during prewarm
   env_types:
     mc:
       quotagroup: "evobox_cpu_task"
@@ -24,18 +24,18 @@ cluster:
       limit: 1
     os_gym:
       quotagroup: "evobox_proxy"
-      entrypoint: "bash -lc 'cd /mnt/shared-storage-gpfs2/evobox-share-gpfs2/kangzeyu/projects/AIEvoBox && export PYTHONPATH=/mnt/shared-storage-gpfs2/evobox-share-gpfs2/kangzeyu/projects/AIEvoBox:$PYTHONPATHb && bash /mnt/shared-storage-gpfs2/evobox-share-gpfs2/kangzeyu/projects/scripts/run.sh'"
+      entrypoint: "bash /mnt/shared-storage-gpfs2/evobox-share-gpfs2/kangzeyu/Safactory/env/osgym/run.sh"
       volumes:
         - fsType: "mount.brainpp.cn/gpfs"
           endpoint: "gpfs://gpfs2/evobox-share-gpfs2"
           containerPath: "/mnt/shared-storage-gpfs2/evobox-share-gpfs2"
       resources:
         head:
-          cpu: 48
+          cpu: 25
           gpu: 0
-          memory: 192Gi
+          memory: 150Gi
           privileged: true
-      limit: 32
+      limit: 40
     android_gym:
       quotagroup: "evobox_cpu_task"
       entrypoint: "bash /mnt/shared-storage-user/chenxinquan/AIEvoBox/env/androidgym/run.sh"
