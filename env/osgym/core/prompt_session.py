@@ -23,6 +23,7 @@ class PromptSession:
         self.action_history.append({
             "description": self._extract_action_description(content),
             "actions": list(parsed_actions),
+            "raw_content": content,
         })
 
     def add_user_observation(
@@ -49,8 +50,14 @@ class PromptSession:
         for idx, item in enumerate(self.action_history, start=1):
             description = item.get("description") or "(no action description)"
             actions = item.get("actions") or []
-            action_lines = "\n".join(f"  - {action}" for action in actions) or "  - (no executable action)"
-            entries.append(f"{idx}. Description: {description}\nCode:\n{action_lines}")
+            entries.append(
+                self.model_protocol.format_action_history_entry(
+                    idx=idx,
+                    description=description,
+                    actions=actions,
+                    raw_content=item.get("raw_content") or "",
+                )
+            )
         return "\n\n".join(entries)
 
     @staticmethod

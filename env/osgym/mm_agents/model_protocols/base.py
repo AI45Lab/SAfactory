@@ -109,6 +109,16 @@ class ModelProtocol:
             sections.append(f"Previous Actions:\n{previous_actions}")
         return "\n\n".join(sections)
 
+    def format_action_history_entry(
+        self,
+        idx: int,
+        description: str,
+        actions: List[str],
+        raw_content: str = "",
+    ) -> str:
+        action_lines = "\n".join(f"  - {action}" for action in actions) or "  - (no executable action)"
+        return f"{idx}. Description: {description}\nCode:\n{action_lines}"
+
     def parse_actions(self, action_str: str) -> List[str]:
         raise NotImplementedError
 

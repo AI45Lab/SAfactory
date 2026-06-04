@@ -118,6 +118,7 @@ class QwenProtocol(ModelProtocol):
             "Rules:\n"
             "- Output exactly in the order: Action, <tool_call>.\n"
             "- Be brief: one sentence for Action.\n"
+            "- Do not output Code, Python, pyautogui, markdown code fences, or any extra text after </tool_call>.\n"
             "- If finishing, use action=terminate in the tool call."
         )
 
@@ -127,17 +128,22 @@ Please generate the next move according to the UI screenshot, instruction and pr
 
 Instruction: {instruction}"""
 
+    def format_action_history_entry(
+        self,
+        idx: int,
+        description: str,
+        actions: List[str],
+        raw_content: str = "",
+    ) -> str:
+        tool_call = self._extract_tool_call(raw_content)
+        code = tool_call or "(no tool_call)"
+        return f"{idx}. Description: {description}\nCode:\n{code}"
+
     def parse_actions(self, action_str: str) -> List[str]:
         if not action_str or not action_str.strip():
             return []
         if "<tool_call>" not in action_str:
-            from .kimi import KimiProtocol
-
-            return KimiProtocol(
-                self.prompt_observation_type,
-                self.screen_width,
-                self.screen_height,
-            ).parse_actions(action_str)
+            return []
 
         pyautogui_commands = []
         function_pattern = re.compile(r"<function=(?P<name>.*?)>(?P<body>.*?)</function>", re.DOTALL)
@@ -150,6 +156,13 @@ Instruction: {instruction}"""
             pyautogui_commands.extend(self._process_xml_params_to_pyautogui(params))
 
         return pyautogui_commands
+
+    @staticmethod
+    def _extract_tool_call(content: str) -> str:
+        if not content:
+            return ""
+        match = re.search(r"<tool_call>.*?</tool_call>", content, re.DOTALL)
+        return match.group(0).strip() if match else ""
 
     def _process_xml_params_to_pyautogui(self, params: Dict) -> List[str]:
         action = params.get("action")
