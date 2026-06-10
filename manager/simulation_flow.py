@@ -132,12 +132,16 @@ class SimulationFlow:
         if not available:
             log.debug("gateway metrics exposed no llm route labels; skip route-key preflight")
             return
-        if self.cfg.llm_model not in available:
+        required_models = [self.cfg.llm_model]
+        if self.cfg.evaluation_model:
+            required_models.append(self.cfg.evaluation_model)
+        missing = [model for model in required_models if model not in available]
+        if missing:
             raise RuntimeError(
-                f"--llm-model {self.cfg.llm_model!r} is not configured in gateway llm_routes; "
+                f"gateway model route(s) are not configured: {missing}; "
                 f"available={available}"
             )
-        log.info("gateway model route ready: model=%s available=%s", self.cfg.llm_model, available)
+        log.info("gateway model routes ready: models=%s available=%s", required_models, available)
 
     async def start_agent_scheduler(self) -> None:
         if self.manager_cfg is None:
@@ -166,14 +170,24 @@ class SimulationFlow:
         self.gateway_client = GatewayClient(gateway_base_url=self.cfg.gateway_base_url)
         evaluation_service = None
         if self.cfg.evaluation_enabled:
+            log.info(
+                "EVAL FLOW enabled: eval_task_dir_name=%s strict_eval_tasks=%s",
+                self.cfg.eval_task_dir_name,
+                self.cfg.strict_eval_tasks,
+            )
             self.evaluation_runtime = build_evaluation_runtime(
                 config=self.cfg.evaluation_config,
+                gateway_base_url=self.cfg.gateway_base_url,
+                evaluation_model=self.cfg.evaluation_model,
                 trajectory_reader=TrajectoryReader(db_url=self.cfg.db_url, storage_type=self.cfg.storage_type),
                 registry=self.run_registry,
             )
             await self.evaluation_runtime.start()
+            log.info("EVAL FLOW runtime started")
             evaluation_service = self.evaluation_runtime.service
             self.reward_committer = RewardCommitter(db_url=self.cfg.db_url)
+        else:
+            log.info("EVAL FLOW disabled: launcher was not started with --enable-evaluation")
         self.worker_group = SimulationWorkerGroup(
             lease_pool=self.lease_pool,
             data_manager=self.data_manager,

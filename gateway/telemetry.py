@@ -35,7 +35,7 @@ class TelemetryRecorder:
         self._queue: asyncio.Queue[tuple[GatewaySessionBinding, GatewayTelemetryRecord]] = asyncio.Queue(
             maxsize=cfg.max_queue_size
         )
-        self._seq_by_session: dict[str, int] = {}
+        self._seq_by_session_model: dict[tuple[str, str], int] = {}
         self._lock = asyncio.Lock()
         self._flush_task: asyncio.Task | None = None
         self._running = False
@@ -49,7 +49,7 @@ class TelemetryRecorder:
         self._ttft_count: defaultdict[str, int] = defaultdict(int)
         self._session_truncated_total: defaultdict[str, int] = defaultdict(int)
         self._synthetic_stop_total: defaultdict[str, int] = defaultdict(int)
-        self._truncated_sessions: set[str] = set()
+        self._truncated_sessions: set[tuple[str, str]] = set()
 
     async def start(self) -> None:
         if self._running:
@@ -124,7 +124,7 @@ class TelemetryRecorder:
 
     async def enqueue_session_close(self, binding: GatewaySessionBinding) -> None:
         now = datetime.now(timezone.utc)
-        seq_id = await self._next_seq(binding.session_id)
+        seq_id = await self._next_seq(binding.session_id, binding.model or "")
         record = GatewayTelemetryRecord(
             event_type="gateway_session_close",
             request_id=f"close_{binding.session_id}_{seq_id}",
@@ -159,6 +159,9 @@ class TelemetryRecorder:
             created_at=now,
             completed_at=now,
             max_steps=self.cfg.max_steps,
+            is_truncated=binding.truncated,
+            is_session_completed=True,
+            truncate_reason=binding.truncate_reason,
         )
         await self._enqueue(binding, record)
 
@@ -170,9 +173,10 @@ class TelemetryRecorder:
     ) -> None:
         async with self._lock:
             self._synthetic_stop_total[reason] += 1
-            if binding.truncated and ctx.session_id not in self._truncated_sessions:
-                self._truncated_sessions.add(ctx.session_id)
-                self._session_truncated_total[binding.truncate_reason or reason] += 1
+            truncated_key = (ctx.session_id, ctx.requested_model)
+            if binding.is_model_truncated(ctx.requested_model) and truncated_key not in self._truncated_sessions:
+                self._truncated_sessions.add(truncated_key)
+                self._session_truncated_total[binding.model_truncate_reason(ctx.requested_model) or reason] += 1
 
     async def flush_loop(self) -> None:
         interval_s = max(0.001, self.cfg.telemetry_flush_interval_ms / 1000)
@@ -240,10 +244,11 @@ class TelemetryRecorder:
             binding.upstream_base_url = target.base_url
         binding.last_seen_at = datetime.now(timezone.utc)
 
-    async def _next_seq(self, session_id: str) -> int:
+    async def _next_seq(self, session_id: str, model: str) -> int:
         async with self._lock:
-            next_seq = self._seq_by_session.get(session_id, 0) + 1
-            self._seq_by_session[session_id] = next_seq
+            key = (session_id, model)
+            next_seq = self._seq_by_session_model.get(key, 0) + 1
+            self._seq_by_session_model[key] = next_seq
             return next_seq
 
     async def _enqueue(
@@ -330,14 +335,18 @@ class TelemetryRecorder:
         upstream_cancelled = stream_stats.upstream_cancelled if stream_stats else False
         is_truncated = self.cfg.max_steps >= 0 and ctx.llm_step_index == self.cfg.max_steps
         if is_truncated:
-            binding.mark_truncated("max_steps_reached", completed_at)
-            await self._record_truncated_session(ctx.session_id, "max_steps_reached")
+            binding.mark_model_truncated(ctx.requested_model, "max_steps_reached", completed_at)
+            await self._record_truncated_session(
+                ctx.session_id,
+                ctx.requested_model,
+                "max_steps_reached",
+            )
 
         return GatewayTelemetryRecord(
             event_type="gateway_inference",
             request_id=ctx.request_id,
             session_id=ctx.session_id,
-            seq_id=await self._next_seq(ctx.session_id),
+            seq_id=await self._next_seq(ctx.session_id, ctx.requested_model),
             endpoint=ctx.endpoint,
             requested_model=ctx.requested_model,
             upstream_base_url=target.base_url if target else None,
@@ -384,11 +393,12 @@ class TelemetryRecorder:
             return random.random() < self.cfg.payload_sample_rate
         return False
 
-    async def _record_truncated_session(self, session_id: str, reason: str) -> None:
+    async def _record_truncated_session(self, session_id: str, model: str, reason: str) -> None:
         async with self._lock:
-            if session_id in self._truncated_sessions:
+            key = (session_id, model)
+            if key in self._truncated_sessions:
                 return
-            self._truncated_sessions.add(session_id)
+            self._truncated_sessions.add(key)
             self._session_truncated_total[reason] += 1
 
 

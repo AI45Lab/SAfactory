@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
 import logging
 import time
-from dataclasses import asdict
 from typing import Any, Dict, Optional
 
 from core.data_manager.manager import DataManager, SessionContext
+from core.runtime_metadata import strip_internal_env_params
 from evaluator.eval_types import EvalRequest, parse_eval_specs
 from evaluator.gateway_client import GatewayClient
+from evaluator.markdown_eval_resolver import MarkdownEvalTaskResolver
 from evaluator.reward_committer import RewardCommitter
+from evaluator.rule_eval_resolver import resolve_rule_eval_specs
 from evaluator.run_registry import InMemoryRunRegistry
 from evaluator.service import EvaluationService
 
@@ -48,6 +49,10 @@ class SimulationWorkerGroup:
         self.gateway_client = gateway_client
         self.evaluation_service = evaluation_service
         self.reward_committer = reward_committer
+        self.markdown_eval_resolver = MarkdownEvalTaskResolver(
+            eval_task_dir_name=self.cfg.eval_task_dir_name,
+            strict=self.cfg.strict_eval_tasks,
+        )
         self.worker_count = self._derive_worker_count()
         self._results: Dict[str, SimulationStartResult] = {}
         self._results_lock = asyncio.Lock()
@@ -119,10 +124,11 @@ class SimulationWorkerGroup:
             run_failed = False
             try:
                 log.info(
-                    "worker=%d acquired agent=%s container=%s reuse=%s",
+                    "worker=%d acquired agent=%s runtime=%s resource=%s reuse=%s",
                     worker_id,
                     agent_key,
-                    lease.container_name or lease.container_id,
+                    lease.runtime,
+                    lease.resource_name or lease.container_name or lease.container_id,
                     lease.reuse_container,
                 )
                 session = await self._create_session(lease)
@@ -137,6 +143,9 @@ class SimulationWorkerGroup:
                             "group_id": lease.group_id,
                             "row_id": lease.row_id,
                             "image": lease.image,
+                            "runtime": lease.runtime,
+                            "resource_id": lease.resource_id,
+                            "resource_name": lease.resource_name,
                             "container_id": lease.container_id,
                             "container_name": lease.container_name,
                         },
@@ -154,27 +163,45 @@ class SimulationWorkerGroup:
                 if self.evaluation_service is None or self.reward_committer is None:
                     release_reusable = False
                 else:
-                    eval_specs = parse_eval_specs(
-                        lease.env_params,
-                        default_specs=getattr(self.evaluation_service, "default_specs", []),
-                    )
+                    public_env_params = strip_internal_env_params(lease.env_params)
+                    eval_specs = self.markdown_eval_resolver.resolve_specs(lease.env_params)
+                    if not eval_specs:
+                        eval_specs = parse_eval_specs(
+                            public_env_params,
+                            default_specs=getattr(self.evaluation_service, "default_specs", []),
+                        )
+                    if not eval_specs:
+                        eval_specs = resolve_rule_eval_specs(
+                            lease.env_params,
+                            agent_name=lease.agent_name,
+                        )
+                    if eval_specs:
+                        log.info(
+                            "worker=%d agent=%s evaluation specs resolved: %s",
+                            worker_id,
+                            agent_key,
+                            [spec.eval_id for spec in eval_specs],
+                        )
+                    else:
+                        log.debug("worker=%d agent=%s has no eval specs; skip evaluation", worker_id, agent_key)
+
                     if eval_specs:
                         eval_request = EvalRequest(
                             job_id=self.cfg.job_id,
                             session_id=result.session_id,
                             lease=lease,
                             start_result=result,
-                            env_params=dict(lease.env_params or {}),
+                            env_params=public_env_params,
                             eval_specs=eval_specs,
                         )
                         if self.registry is not None:
                             await self.registry.mark_awaiting_eval(result.session_id, eval_request)
                         eval_result = await self.evaluation_service.evaluate(eval_request)
+                        await self.reward_committer.commit(
+                            session_id=result.session_id,
+                            eval_result=eval_result,
+                        )
                         if eval_result.status == "succeeded":
-                            await self.reward_committer.commit(
-                                session_id=result.session_id,
-                                eval_result=eval_result,
-                            )
                             if self.registry is not None:
                                 await self.registry.mark_reward_committed(
                                     result.session_id,
@@ -187,7 +214,7 @@ class SimulationWorkerGroup:
                             result.error_text = eval_result.error_text or eval_result.reason
                         release_reusable = result.status == "succeeded" and eval_result.status == "succeeded"
                     else:
-                        log.debug("worker=%d agent=%s has no eval specs; skip evaluation", worker_id, agent_key)
+                        release_reusable = None
 
                 async with self._results_lock:
                     self._results[agent_key] = result
@@ -273,7 +300,6 @@ class SimulationWorkerGroup:
                 self._tail(result.error_text or ""),
             )
 
-        await self._record_episode_summary(lease, session, result, worker_id)
         return result
 
     def _build_start_request(
@@ -291,7 +317,7 @@ class SimulationWorkerGroup:
             temperature=self.cfg.llm_temperature,
             max_steps=self.cfg.max_steps,
             storage_type=self.cfg.storage_type,
-            env_params=dict(lease.env_params or {}),
+            env_params=strip_internal_env_params(lease.env_params),
             storage_config={"db_url": self.cfg.db_url},
             agent_start_timeout_s=self.cfg.agent_start_timeout_s,
             record_mode="agent_runtime",
@@ -301,47 +327,18 @@ class SimulationWorkerGroup:
                 "worker_id": worker_id,
                 "row_id": lease.row_id,
                 "image": lease.image,
+                "runtime": lease.runtime,
+                "resource_id": lease.resource_id,
+                "resource_name": lease.resource_name,
                 "container_id": lease.container_id,
                 "container_name": lease.container_name,
                 "workdir": lease.workdir,
                 "reuse_container": lease.reuse_container,
                 "agent_name": lease.agent_name,
                 "agent_id": lease.agent_id,
-                "env_params": lease.env_params,
+                "env_params": strip_internal_env_params(lease.env_params),
             },
         )
-
-    async def _record_episode_summary(
-        self,
-        lease: SimulationAgentLease,
-        session: SessionContext,
-        result: SimulationStartResult,
-        worker_id: int,
-    ) -> None:
-        env_state = {
-            "event_type": "episode_summary",
-            "job_id": self.cfg.job_id,
-            "worker_id": worker_id,
-            "agent_name": lease.agent_name,
-            "agent_id": lease.agent_id,
-            "group_id": lease.group_id,
-            "row_id": lease.row_id,
-            "start_result": asdict(result),
-        }
-        try:
-            await self.data_manager.record_step(
-                session=session,
-                step_id=max(1, int(result.step_count or 0) + 1),
-                messages=[],
-                response=result.error_text or result.status,
-                step_reward=0.0,
-                env_state=json.dumps(env_state, ensure_ascii=False, default=str),
-                terminated=result.terminated,
-                truncated=result.truncated,
-                is_trainable=False,
-            )
-        except Exception:
-            log.exception("failed to record episode summary for %s/%s", lease.agent_name, lease.agent_id)
 
     async def _create_session(self, lease: SimulationAgentLease) -> SessionContext:
         maybe_session = self.data_manager.create_session(

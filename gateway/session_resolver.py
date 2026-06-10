@@ -111,9 +111,12 @@ class SessionResolver:
                 "error_count": binding.error_count,
                 "max_steps": self.cfg.max_steps,
                 "llm_step_count": binding.llm_step_count,
+                "llm_step_count_by_model": dict(binding.llm_step_count_by_model),
                 "truncated": binding.truncated,
                 "truncate_reason": binding.truncate_reason,
                 "stop_response_sent": binding.stop_response_sent,
+                "truncated_models": dict(binding.truncated_models),
+                "stop_response_sent_models": sorted(binding.stop_response_sent_models),
             }
 
     async def _evict_expired(self) -> None:

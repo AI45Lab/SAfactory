@@ -65,6 +65,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         lifespan=lifespan,
     )
     session_root = cfg.base_session_path.rstrip("/")
+    standard_openai_root = _standard_openai_root(session_root)
 
     async def handle_inference_request(
         request: Request,
@@ -99,9 +100,9 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             )
             binding = await resolver.get_or_create_binding(ctx)
             if binding.status == "closed":
-                if binding.truncated:
+                if binding.is_model_truncated(ctx.requested_model):
                     ctx = replace(ctx, synthetic_stop=True)
-                    reason = binding.truncate_reason or "max_steps_reached"
+                    reason = binding.model_truncate_reason(ctx.requested_model) or "max_steps_reached"
                     return await _return_synthetic_stop(
                         ctx=ctx,
                         binding=binding,
@@ -112,8 +113,20 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                         telemetry=telemetry,
                     )
                 raise SessionClosedError(f"session {ctx.session_id} is closed")
+            if binding.is_model_truncated(ctx.requested_model):
+                ctx = replace(ctx, synthetic_stop=True)
+                reason = binding.model_truncate_reason(ctx.requested_model) or "max_steps_reached"
+                return await _return_synthetic_stop(
+                    ctx=ctx,
+                    binding=binding,
+                    payload=payload,
+                    reason=reason,
+                    cfg=request.app.state.gateway_config,
+                    request_logger=request_logger,
+                    telemetry=telemetry,
+                )
 
-            if cfg.max_steps < 0 or binding.llm_step_count < cfg.max_steps:
+            if cfg.max_steps < 0 or binding.step_count_for(ctx.requested_model) < cfg.max_steps:
                 if telemetry.should_reject_new_requests():
                     raise AdmissionRejected("telemetry queue is full", 503)
                 target = await router.select_target(ctx, binding)
@@ -234,6 +247,84 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             path_session_id=session_id,
         )
 
+    async def handle_standard_chat_completions(request: Request) -> Response:
+        return await handle_standard_inference_request(
+            request,
+            endpoint="chat/completions",
+        )
+
+    async def handle_standard_responses(request: Request) -> Response:
+        return await handle_standard_inference_request(
+            request,
+            endpoint="responses",
+        )
+
+    async def handle_standard_inference_request(
+        request: Request,
+        *,
+        endpoint: str,
+    ) -> Response:
+        started = time.perf_counter()
+        payload: dict[str, Any] = {}
+        target: LLMRouteTarget | None = None
+        route_reserved = False
+        release_in_finally = True
+        is_stream = False
+
+        router: LLMRouter = request.app.state.gateway_router
+        forwarder: InferenceForwarder = request.app.state.gateway_forwarder
+
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("request body must be a JSON object")
+
+            requested_model = payload.get("model")
+            if not isinstance(requested_model, str) or not requested_model:
+                raise ValueError("request body requires a non-empty model field")
+
+            is_stream = bool(payload.get("stream", False))
+            target = await router.select_standard_target(
+                requested_model=requested_model,
+                is_stream=is_stream,
+            )
+            route_reserved = True
+            await router.on_acquire(target.route_model, is_stream=is_stream)
+
+            headers = forwarder.build_upstream_headers(target)
+            if is_stream:
+                opened = await _open_stream(forwarder, target, endpoint, payload, headers)
+                release_in_finally = False
+                return StreamingResponse(
+                    _standard_stream_and_finalize(
+                        opened=opened,
+                        started=started,
+                        target=target,
+                        router=router,
+                        is_stream=is_stream,
+                    ),
+                    status_code=opened.status_code,
+                    media_type=opened.media_type,
+                )
+
+            result = await _forward_json(forwarder, target, endpoint, payload, headers)
+            await router.mark_route_result(
+                target.route_model,
+                True,
+                result.upstream_latency_ms,
+                result.status_code,
+            )
+            return JSONResponse(result.body, status_code=result.status_code)
+        except Exception as exc:
+            latency_ms = (time.perf_counter() - started) * 1000
+            status_code, error_body = forwarder.normalize_error(exc)
+            if target is not None:
+                await router.mark_route_result(target.route_model, False, latency_ms, status_code)
+            return JSONResponse(error_body, status_code=status_code)
+        finally:
+            if release_in_finally and route_reserved and target is not None:
+                await router.on_release(target.route_model, is_stream=is_stream)
+
     async def get_session_status(session_id: str) -> Response:
         resolver: SessionResolver = app.state.gateway_resolver
         status = await resolver.get_status(session_id)
@@ -263,6 +354,16 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
     app.add_api_route(
         f"{session_root}/{{session_id}}/responses",
         handle_session_responses,
+        methods=["POST"],
+    )
+    app.add_api_route(
+        f"{standard_openai_root}/chat/completions",
+        handle_standard_chat_completions,
+        methods=["POST"],
+    )
+    app.add_api_route(
+        f"{standard_openai_root}/responses",
+        handle_standard_responses,
         methods=["POST"],
     )
     app.add_api_route(
@@ -407,7 +508,7 @@ async def _return_synthetic_stop(
     request_logger: GatewayRequestLogger,
     telemetry: TelemetryRecorder,
 ) -> Response:
-    binding.stop_response_sent = True
+    binding.mark_model_stop_response_sent(ctx.requested_model)
     await telemetry.record_synthetic_stop(ctx, binding, reason)
     await request_logger.log_stop_request(ctx, binding, payload, reason)
     return build_synthetic_stop_response(
@@ -416,7 +517,7 @@ async def _return_synthetic_stop(
         session_id=ctx.session_id,
         reason=reason,
         max_steps=cfg.max_steps,
-        llm_step_count=binding.llm_step_count,
+        llm_step_count=binding.step_count_for(ctx.requested_model),
         is_stream=ctx.is_stream,
     )
 
@@ -432,7 +533,7 @@ def build_synthetic_stop_response(
     is_stream: bool = False,
 ) -> Response:
     message = (
-        f"SAFACTORY_STOP: {reason}. Session {session_id} has reached max_steps={max_steps} "
+        f"SAFACTORY_STOP: {reason}. Session {session_id} model {model} has reached max_steps={max_steps} "
         f"after {llm_step_count} real LLM request(s). "
         "Stop the task and return final status."
     )
@@ -639,6 +740,38 @@ async def _stream_and_finalize(
         finally:
             await router.on_release(target.route_model, is_stream=ctx.is_stream)
             await admission.release(ctx, binding, target)
+
+
+async def _standard_stream_and_finalize(
+    *,
+    opened: StreamForwardContext,
+    started: float,
+    target: LLMRouteTarget,
+    router: LLMRouter,
+    is_stream: bool,
+) -> AsyncIterator[bytes]:
+    status_code = opened.status_code
+    try:
+        async for chunk in opened.response.content.iter_any():
+            yield chunk
+    except asyncio.CancelledError:
+        status_code = 499
+        raise
+    except Exception:
+        status_code = 502
+        raise
+    finally:
+        opened.response.close()
+        latency_ms = (time.perf_counter() - started) * 1000
+        await router.mark_route_result(target.route_model, status_code < 400, latency_ms, status_code)
+        await router.on_release(target.route_model, is_stream=is_stream)
+
+
+def _standard_openai_root(session_root: str) -> str:
+    if session_root.endswith("/sessions"):
+        parent = session_root[: -len("/sessions")]
+        return parent or "/v1"
+    return "/v1"
 
 
 async def _wait_for_drain(app: FastAPI, drain_timeout_s: int) -> None:

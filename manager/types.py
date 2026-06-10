@@ -9,7 +9,7 @@ AgentKey = Tuple[str, str]     # (agent_name, agent_id)
 @dataclass(slots=True)
 class PoolEntry:
     """
-    Local record of one DB row assigned to a Docker container.
+    Local record of one DB row assigned to a runtime resource.
     """
     env_name: str
     env_id: str
@@ -19,11 +19,16 @@ class PoolEntry:
     env_params: Dict[str, Any] = field(default_factory=dict)
     group_id: str = ""
     status: str = "ready"
+    runtime: str = "docker"
+    runtime_config: Dict[str, Any] = field(default_factory=dict)
+    resource_id: str = ""
+    resource_name: str = ""
     container_id: str = ""
     container_name: str = ""
     docker_bin: str = "docker"
     workdir: str = ""
     run_command: str = "node /tmp/safactory-openclaw-runner.mjs"
+    result_mode: str = "json"
     cleanup_command: str = ""
     healthcheck_command: str = ""
     reuse_container: bool = False
@@ -46,11 +51,28 @@ class SimulationRunConfig:
     gateway_base_url: str
     llm_model: str
     llm_temperature: float
+    evaluation_model: str
     max_steps: int
     agent_start_timeout_s: float
     docker_bin: str
     docker_pull_policy: str
     docker_startup_concurrency: int
+    rjob_cluster_entry: str = ""
+    rjob_namespace: str = ""
+    rjob_access_key: str = ""
+    rjob_secret_key: str = ""
+    rjob_verifyssl: bool = True
+    rjob_retries: int = 3
+    rjob_poll_interval_s: float = 5.0
+    rjob_cleanup_on_finish: bool = True
+    rjob_gateway_base_url: str = ""
+    rjob_name_prefix: str = "safactory"
+    rjob_no_packaging: bool = True
+    rjob_charged_group: str = ""
+    rjob_auto_delete_duration: str = ""
+    rjob_keep_failed_jobs: bool = False
+    rjob_submit_concurrency: int = 0
+    cleanup_docker_container: bool = True
     max_workers: Optional[int] = None
     agent_runtime: str = "agent_start"
     rebuild_table: bool = False
@@ -61,6 +83,8 @@ class SimulationRunConfig:
     rl_epoch: int = 1
     evaluation_enabled: bool = False
     evaluation_config: Dict[str, Any] = field(default_factory=dict)
+    eval_task_dir_name: str = "eval_tasks"
+    strict_eval_tasks: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,11 +95,16 @@ class SimulationAgentLease:
     image: str
     row_id: Optional[int]
     env_params: Dict[str, Any] = field(default_factory=dict)
+    runtime: str = "docker"
+    runtime_config: Dict[str, Any] = field(default_factory=dict)
+    resource_id: str = ""
+    resource_name: str = ""
     container_id: str = ""
     container_name: str = ""
     docker_bin: str = "docker"
     workdir: str = ""
     run_command: str = "node /tmp/safactory-openclaw-runner.mjs"
+    result_mode: str = "json"
     cleanup_command: str = ""
     healthcheck_command: str = ""
     reuse_container: bool = False

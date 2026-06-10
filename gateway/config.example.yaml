@@ -17,7 +17,7 @@ upstream_no_proxy:
   - 127.0.0.1
   - localhost
 per_llm_route_max_concurrency: 256
-per_session_max_inflight: 8
+per_session_max_inflight: 64
 
 telemetry:
   mode: strict
@@ -42,8 +42,18 @@ llm_routes:
     api_key: null
     supports_stream: true
     max_concurrency: 256
-  dsv4:
-    base_url: http://10.140.158.149:14007/v1/
+  dsv4pro:
+    base_url: http://10.140.158.149:8182/v1/
+    api_key: null
+    supports_stream: true
+    max_concurrency: 256
+  kimi-k26-w4a8:
+    base_url: http://10.140.158.149:8180/v1/
+    api_key: null
+    supports_stream: true
+    max_concurrency: 256
+  glm51:
+    base_url: http://10.140.158.149:8200/v1/
     api_key: null
     supports_stream: true
     max_concurrency: 256

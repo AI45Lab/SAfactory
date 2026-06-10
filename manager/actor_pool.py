@@ -5,31 +5,31 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from clusters.docker_clusters import DockerContainerBackend, DockerContainerRecord
-
+from .runtime_allocator import RuntimeLeaseAllocator
 from .types import AgentKey, PoolEntry
 
-log = logging.getLogger("manager.docker_agent_pool")
+log = logging.getLogger("manager.runtime_agent_pool")
 
 
-class DockerAgentPool:
+class RuntimeAgentPool:
     """
-    Assigns DB rows to OpenClaw Docker containers.
+    Assigns DB rows to runtime leases.
 
-    A lease is ready once a container has been allocated. The actual OpenClaw
-    episode runs later through docker exec.
+    Docker mode allocates a real container before the lease becomes ready.
+    RJob mode only reserves the row and attaches RJob runtime config; the actual
+    remote job is submitted later by the episode runner.
     """
 
     def __init__(
         self,
         *,
         repo,
-        docker: DockerContainerBackend,
+        allocator: RuntimeLeaseAllocator,
         pool_size: int,
         startup_concurrency: int,
     ) -> None:
         self._repo = repo
-        self._docker = docker
+        self._allocator = allocator
         self._pool_size = max(0, int(pool_size))
         self._fill_sem = asyncio.Semaphore(max(1, int(startup_concurrency or 1)))
         self._lock = asyncio.Lock()
@@ -45,7 +45,7 @@ class DockerAgentPool:
             self._pool.clear()
             self._repo.reset_cursor()
         await asyncio.gather(
-            *[self._docker.remove(entry.container_id) for entry in entries if entry.container_id],
+            *[self._allocator.remove(entry) for entry in entries],
             return_exceptions=True,
         )
 
@@ -55,7 +55,7 @@ class DockerAgentPool:
 
     async def prewarm(self, rows: Optional[List[Dict[str, Any]]] = None) -> None:
         if self._pool_size <= 0:
-            log.info("pool_size <= 0, skip Docker prewarm")
+            log.info("pool_size <= 0, skip %s prewarm", self._allocator.runtime)
             return
 
         if rows is None:
@@ -64,11 +64,16 @@ class DockerAgentPool:
                 fetch_batch_size=self._repo_fetch_batch_size(self._pool_size),
             )
         if not rows:
-            log.info("no active rows, skip Docker prewarm")
+            log.info("no active rows, skip %s prewarm", self._allocator.runtime)
             return
 
         self._image_by_env = self._repo.get_env_image_map()
-        log.info("Docker prewarm start: target_pool_size=%d initial_rows=%d", self._pool_size, len(rows))
+        log.info(
+            "%s prewarm start: target_pool_size=%d initial_rows=%d",
+            self._allocator.runtime,
+            self._pool_size,
+            len(rows),
+        )
         tasks = [asyncio.create_task(self._fill_slot(row)) for row in rows]
         await asyncio.gather(*tasks, return_exceptions=True)
         await self.ensure_capacity()
@@ -82,7 +87,10 @@ class DockerAgentPool:
 
             rows = await self._repo.reserve_rows(deficit, fetch_batch_size=self._repo_fetch_batch_size(deficit))
             if not rows:
-                log.info("ensure_capacity: no DB rows currently available to fill Docker pool")
+                log.info(
+                    "ensure_capacity: no DB rows currently available to fill %s pool",
+                    self._allocator.runtime,
+                )
                 return
             tasks = [asyncio.create_task(self._fill_slot(row)) for row in rows]
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -99,11 +107,11 @@ class DockerAgentPool:
             old_entry = self._pool.pop(key, None)
 
         if old_entry is not None:
-            await self._docker.release(old_entry.container_id, succeeded=succeeded)
+            await self._allocator.release(old_entry, succeeded=succeeded)
 
         next_row = await self._repo.reserve_one(fetch_batch_size=self._repo_fetch_batch_size())
         if not next_row:
-            log.info("close_and_refill: no DB row currently available to refill Docker pool")
+            log.info("close_and_refill: no DB row currently available to refill %s pool", self._allocator.runtime)
             return None
         return await self._fill_slot(next_row)
 
@@ -116,49 +124,42 @@ class DockerAgentPool:
         env_id = str(row.get("env_id", "")).strip()
         image = self._resolve_image(row, env_name)
         if not env_name or not env_id or not image:
-            log.error("Invalid DB row for Docker lease: %s", row)
+            log.error("Invalid DB row for %s lease: %s", self._allocator.runtime, row)
             return None
 
         try:
-            container = await self._docker.acquire(env_name=env_name, image=image)
+            entry = await self._allocator.allocate(
+                row_id=row.get("id"),
+                env_name=env_name,
+                env_id=env_id,
+                image=image,
+                env_params=self._normalize_env_params(row.get("env_params")),
+                group_id=str(row.get("group_id") or ""),
+            )
         except Exception:
-            log.error("failed to allocate Docker container for %s/%s", env_name, env_id, exc_info=True)
+            log.error(
+                "failed to allocate %s lease for %s/%s",
+                self._allocator.runtime,
+                env_name,
+                env_id,
+                exc_info=True,
+            )
             return None
 
-        entry = self._build_pool_entry(row=row, container=container)
         async with self._lock:
             self._pool[(env_name, env_id)] = entry
         log.info(
-            "allocated Docker lease: agent=%s/%s container=%s reuse=%s",
+            "allocated %s lease: agent=%s/%s resource=%s reuse=%s",
+            entry.runtime,
             env_name,
             env_id,
-            container.container_name,
-            container.reuse_container,
+            entry.resource_name or entry.container_name or entry.job_name,
+            entry.reuse_container,
         )
         return entry
 
     def _resolve_image(self, row: Dict[str, Any], env_name: str) -> str:
         return str(row.get("image") or row.get("env_image") or self._image_by_env.get(env_name) or "").strip()
-
-    def _build_pool_entry(self, *, row: Dict[str, Any], container: DockerContainerRecord) -> PoolEntry:
-        return PoolEntry(
-            env_name=str(row.get("env_name") or container.env_name),
-            env_id=str(row.get("env_id") or ""),
-            row_id=row.get("id"),
-            image=container.image,
-            job_name=container.container_name,
-            env_params=self._normalize_env_params(row.get("env_params")),
-            group_id=str(row.get("group_id") or ""),
-            status="ready",
-            container_id=container.container_id,
-            container_name=container.container_name,
-            docker_bin=self._docker.docker_bin,
-            workdir=container.workdir,
-            run_command=container.run_command,
-            cleanup_command=container.cleanup_command,
-            healthcheck_command=container.healthcheck_command,
-            reuse_container=container.reuse_container,
-        )
 
     @staticmethod
     def _normalize_env_params(value: Any) -> Dict[str, Any]:
@@ -171,3 +172,78 @@ class DockerAgentPool:
                 return {"raw": value}
             return dict(parsed) if isinstance(parsed, dict) else {"value": parsed}
         return {}
+
+
+class _LegacyDockerAllocator:
+    runtime = "docker"
+
+    def __init__(self, docker: Any, startup_concurrency: int) -> None:
+        self._docker = docker
+        self.startup_concurrency = max(1, int(startup_concurrency or 1))
+
+    async def start(self, _plan) -> None:
+        return
+
+    async def allocate(
+        self,
+        *,
+        row_id: Any,
+        env_name: str,
+        env_id: str,
+        image: str,
+        env_params: Dict[str, Any],
+        group_id: str,
+    ) -> PoolEntry:
+        container = await self._docker.acquire(env_name=env_name, image=image)
+        return PoolEntry(
+            env_name=str(env_name),
+            env_id=str(env_id),
+            row_id=row_id,
+            image=container.image,
+            job_name=container.container_name,
+            env_params=dict(env_params or {}),
+            group_id=str(group_id or ""),
+            status="ready",
+            runtime="docker",
+            resource_id=container.container_id,
+            resource_name=container.container_name,
+            container_id=container.container_id,
+            container_name=container.container_name,
+            docker_bin=self._docker.docker_bin,
+            workdir=container.workdir,
+            run_command=container.run_command,
+            result_mode=container.result_mode,
+            cleanup_command=container.cleanup_command,
+            healthcheck_command=container.healthcheck_command,
+            reuse_container=container.reuse_container,
+        )
+
+    async def release(self, entry: PoolEntry, *, succeeded: bool) -> None:
+        if entry.container_id:
+            await self._docker.release(entry.container_id, succeeded=succeeded)
+
+    async def remove(self, entry: PoolEntry) -> None:
+        if entry.container_id:
+            await self._docker.remove(entry.container_id)
+
+    async def close(self) -> None:
+        return
+
+
+class DockerAgentPool(RuntimeAgentPool):
+    """Backward-compatible DockerAgentPool wrapper."""
+
+    def __init__(
+        self,
+        *,
+        repo,
+        docker: Any,
+        pool_size: int,
+        startup_concurrency: int,
+    ) -> None:
+        super().__init__(
+            repo=repo,
+            allocator=_LegacyDockerAllocator(docker, startup_concurrency),
+            pool_size=pool_size,
+            startup_concurrency=startup_concurrency,
+        )

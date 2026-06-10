@@ -1,0 +1,19 @@
+environments:
+  - env_name: wildclawbench
+    env_image: "60eec8752cb5"
+    env_num: 1
+    dataset: ./datasets/wildclawbench_tasks.jsonl
+
+    env_params:
+      task_family: wildclawbench
+      wildclawbench_root: /Users/bin-mac/CodeX/WildClawBench
+      provider_id: safactory
+      route_model: dsv4pro
+      model_ref: safactory/dsv4pro
+      judge_model: dsv4pro
+      native_parallel: 1
+      output_subdir: output/safactory
+      workload:
+        total_tasks: 60
+        expected_parallelism: controlled_by_safactory_pool_size
+        purpose: Run WildClawBench OpenClaw tasks through Safactory gateway sessions.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -26,7 +27,7 @@ class GatewayStorage:
     def __init__(self, cfg: GatewayConfig, data_manager: DataManager):
         self.cfg = cfg
         self.data_manager = data_manager
-        self._sessions: dict[str, _CachedSession] = {}
+        self._sessions: dict[tuple[str, str], _CachedSession] = {}
         self._lock = asyncio.Lock()
 
     @classmethod
@@ -49,8 +50,9 @@ class GatewayStorage:
     ) -> SessionContext:
         await self._evict_expired()
         now = time.monotonic()
+        cache_key = (binding.session_id, requested_model)
         async with self._lock:
-            cached = self._sessions.get(binding.session_id)
+            cached = self._sessions.get(cache_key)
             if cached is not None:
                 cached.last_access_monotonic = now
                 return cached.session
@@ -62,7 +64,7 @@ class GatewayStorage:
                 group_id="",
             )
             session = await maybe_session if inspect.isawaitable(maybe_session) else maybe_session
-            self._sessions[binding.session_id] = _CachedSession(
+            self._sessions[cache_key] = _CachedSession(
                 session=session,
                 last_access_monotonic=now,
             )
@@ -77,8 +79,8 @@ class GatewayStorage:
         await self.data_manager.record_step(
             session=session,
             step_id=record.seq_id,
-            messages=record.messages,
-            response=record.response,
+            messages=_trajectory_messages(record),
+            response="",
             step_reward=0.0,
             env_state=json.dumps(self._metadata(record), ensure_ascii=False, default=str),
             terminated=False,
@@ -91,10 +93,37 @@ class GatewayStorage:
         binding: GatewaySessionBinding,
         record: GatewayTelemetryRecord,
     ) -> None:
-        await self.record_inference_step(binding, record)
+        models = await self._models_for_session(binding)
+        if not models:
+            await self.data_manager.mark_latest_session_completed(session_id=binding.session_id)
+            return
+
+        updated_count = 0
+        for model in models:
+            updated_count += await self.data_manager.mark_latest_session_completed(
+                session_id=binding.session_id,
+                llm_model=model,
+            )
+
+        if updated_count == 0:
+            await self.data_manager.mark_latest_session_completed(session_id=binding.session_id)
 
     async def close(self) -> None:
         await self.data_manager.close()
+
+    async def _models_for_session(self, binding: GatewaySessionBinding) -> list[str]:
+        models = set(binding.llm_step_count_by_model)
+        if binding.model:
+            models.add(binding.model)
+
+        async with self._lock:
+            models.update(
+                model
+                for session_id, model in self._sessions
+                if session_id == binding.session_id and model
+            )
+
+        return sorted(models)
 
     async def _evict_expired(self) -> None:
         if self.cfg.session_cache_ttl_s <= 0:
@@ -102,12 +131,12 @@ class GatewayStorage:
         cutoff = time.monotonic() - self.cfg.session_cache_ttl_s
         async with self._lock:
             expired = [
-                session_id
-                for session_id, cached in self._sessions.items()
+                cache_key
+                for cache_key, cached in self._sessions.items()
                 if cached.last_access_monotonic < cutoff
             ]
-            for session_id in expired:
-                self._sessions.pop(session_id, None)
+            for cache_key in expired:
+                self._sessions.pop(cache_key, None)
 
     @staticmethod
     def _metadata(record: GatewayTelemetryRecord) -> dict[str, Any]:
@@ -148,3 +177,233 @@ class GatewayStorage:
             "created_at": record.created_at.isoformat(),
             "completed_at": record.completed_at.isoformat(),
         }
+
+
+THINK_TAG_RE = re.compile(r"<think>(.*?)</think>", re.IGNORECASE | re.DOTALL)
+
+
+def _trajectory_messages(record: GatewayTelemetryRecord) -> list[dict[str, Any]]:
+    messages = [dict(message) for message in record.messages]
+    if record.error_text:
+        return messages
+    messages.extend(_assistant_messages_from_response(record.response))
+    return messages
+
+
+def _assistant_messages_from_response(response: str) -> list[dict[str, Any]]:
+    if not response:
+        return []
+
+    parsed = _json_loads(response)
+    if isinstance(parsed, dict):
+        return _assistant_messages_from_payload(parsed)
+    if isinstance(parsed, list):
+        message = _assistant_message_from_stream(parsed)
+        return [message] if message else []
+
+    if isinstance(response, str):
+        if response.lstrip().startswith("data:"):
+            message = _assistant_message_from_stream(response)
+            return [message] if message else []
+        message = _assistant_message_from_parts(response)
+        return [message] if message else []
+    return []
+
+
+def _assistant_messages_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+
+    choices = payload.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            raw_message = choice.get("message")
+            if isinstance(raw_message, dict):
+                message = _assistant_message_from_chat_message(raw_message)
+                if message:
+                    messages.append(message)
+                    continue
+            raw_delta = choice.get("delta")
+            if isinstance(raw_delta, dict):
+                message = _assistant_message_from_chat_message(raw_delta)
+                if message:
+                    messages.append(message)
+        if messages:
+            return messages
+
+    message = _assistant_message_from_response_payload(payload)
+    if message:
+        return [message]
+
+    stream_message = _assistant_message_from_stream(payload.get("stream_text"))
+    return [stream_message] if stream_message else []
+
+
+def _assistant_message_from_chat_message(raw_message: dict[str, Any]) -> dict[str, Any] | None:
+    content = raw_message.get("content")
+    reasoning = _first_string(raw_message, ("think", "reasoning", "reasoning_content"))
+    message = _assistant_message_from_parts(content if isinstance(content, str) else None, reasoning)
+
+    if message is None:
+        message = {"role": "assistant"}
+    if content is not None and not isinstance(content, str):
+        message["content"] = content
+
+    tool_calls = raw_message.get("tool_calls")
+    if isinstance(tool_calls, list) and tool_calls:
+        message["tool_calls"] = tool_calls
+
+    function_call = raw_message.get("function_call")
+    if isinstance(function_call, dict) and function_call:
+        message["function_call"] = function_call
+
+    return message if len(message) > 1 else None
+
+
+def _assistant_message_from_response_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    content = _first_string(payload, ("output_text", "text", "content"))
+    reasoning = _first_string(payload, ("think", "reasoning_text", "reasoning", "reasoning_content"))
+    output_content, output_reasoning = _extract_responses_output(payload.get("output"))
+
+    if output_content:
+        content = (content or "") + output_content
+    if output_reasoning:
+        reasoning = "\n\n".join(part for part in (reasoning, output_reasoning) if part)
+
+    return _assistant_message_from_parts(content, reasoning)
+
+
+def _assistant_message_from_stream(stream_text: Any) -> dict[str, Any] | None:
+    if isinstance(stream_text, str):
+        events = _iter_sse_events(stream_text)
+    elif isinstance(stream_text, list):
+        events = (event for event in stream_text if isinstance(event, dict))
+    else:
+        return None
+
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    for event in events:
+        _collect_event_text(event, content_parts, reasoning_parts)
+    return _assistant_message_from_parts("".join(content_parts), "\n\n".join(reasoning_parts))
+
+
+def _collect_event_text(
+    event: dict[str, Any],
+    content_parts: list[str],
+    reasoning_parts: list[str],
+) -> None:
+    choices = event.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            for key in ("message", "delta"):
+                payload = choice.get(key)
+                if isinstance(payload, dict):
+                    _collect_message_text(payload, content_parts, reasoning_parts)
+
+    event_type = event.get("type")
+    delta = event.get("delta")
+    if event_type == "response.output_text.delta" and isinstance(delta, str):
+        content_parts.append(delta)
+    elif event_type == "response.reasoning_text.delta" and isinstance(delta, str):
+        reasoning_parts.append(delta)
+
+
+def _collect_message_text(
+    payload: dict[str, Any],
+    content_parts: list[str],
+    reasoning_parts: list[str],
+) -> None:
+    content = payload.get("content")
+    if isinstance(content, str):
+        content_parts.append(content)
+    reasoning = _first_string(payload, ("think", "reasoning", "reasoning_content"))
+    if reasoning:
+        reasoning_parts.append(reasoning)
+
+
+def _extract_responses_output(output: Any) -> tuple[str, str]:
+    if not isinstance(output, list):
+        return "", ""
+
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type == "reasoning":
+            reasoning = _first_string(item, ("text", "content", "summary"))
+            if reasoning:
+                reasoning_parts.append(reasoning)
+            continue
+        if item_type == "message":
+            content = item.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        text = _first_string(part, ("text", "content"))
+                        if text:
+                            content_parts.append(text)
+            else:
+                text = _first_string(item, ("text", "content"))
+                if text:
+                    content_parts.append(text)
+    return "".join(content_parts), "\n\n".join(reasoning_parts)
+
+
+def _assistant_message_from_parts(
+    content: str | None = None,
+    reasoning: str | None = None,
+) -> dict[str, Any] | None:
+    content = content or ""
+    tag_think, clean_content = _split_think_tags(content)
+    think = "\n\n".join(part.strip() for part in (reasoning, tag_think) if part and part.strip())
+
+    message: dict[str, Any] = {"role": "assistant"}
+    if clean_content.strip():
+        message["content"] = clean_content.strip()
+    elif content or think:
+        message["content"] = ""
+    if think:
+        message["think"] = think
+    return message if len(message) > 1 else None
+
+
+def _split_think_tags(content: str) -> tuple[str, str]:
+    matches = [match.group(1).strip() for match in THINK_TAG_RE.finditer(content)]
+    if not matches:
+        return "", content
+    clean_content = THINK_TAG_RE.sub("", content)
+    return "\n\n".join(match for match in matches if match), clean_content
+
+
+def _iter_sse_events(stream_text: str):
+    for raw_line in stream_text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[len("data:") :].strip()
+        if not data or data == "[DONE]":
+            continue
+        parsed = _json_loads(data)
+        if isinstance(parsed, dict):
+            yield parsed
+
+
+def _json_loads(value: str) -> Any:
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+
+def _first_string(payload: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str):
+            return value
+    return ""

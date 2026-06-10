@@ -1,0 +1,200 @@
+{"task_id":"0001","attack":"PAIR","dataset":"harmbench001"}
+{"task_id":"0002","attack":"PAIR","dataset":"harmbench002"}
+{"task_id":"0003","attack":"PAIR","dataset":"harmbench003"}
+{"task_id":"0004","attack":"PAIR","dataset":"harmbench004"}
+{"task_id":"0005","attack":"PAIR","dataset":"harmbench005"}
+{"task_id":"0006","attack":"PAIR","dataset":"harmbench006"}
+{"task_id":"0007","attack":"PAIR","dataset":"harmbench007"}
+{"task_id":"0008","attack":"PAIR","dataset":"harmbench008"}
+{"task_id":"0009","attack":"PAIR","dataset":"harmbench009"}
+{"task_id":"0010","attack":"PAIR","dataset":"harmbench010"}
+{"task_id":"0011","attack":"PAIR","dataset":"harmbench011"}
+{"task_id":"0012","attack":"PAIR","dataset":"harmbench012"}
+{"task_id":"0013","attack":"PAIR","dataset":"harmbench013"}
+{"task_id":"0014","attack":"PAIR","dataset":"harmbench014"}
+{"task_id":"0015","attack":"PAIR","dataset":"harmbench015"}
+{"task_id":"0016","attack":"PAIR","dataset":"harmbench016"}
+{"task_id":"0017","attack":"PAIR","dataset":"harmbench017"}
+{"task_id":"0018","attack":"PAIR","dataset":"harmbench018"}
+{"task_id":"0019","attack":"PAIR","dataset":"harmbench019"}
+{"task_id":"0020","attack":"PAIR","dataset":"harmbench020"}
+{"task_id":"0021","attack":"PAIR","dataset":"harmbench021"}
+{"task_id":"0022","attack":"PAIR","dataset":"harmbench022"}
+{"task_id":"0023","attack":"PAIR","dataset":"harmbench023"}
+{"task_id":"0024","attack":"PAIR","dataset":"harmbench024"}
+{"task_id":"0025","attack":"PAIR","dataset":"harmbench025"}
+{"task_id":"0026","attack":"PAIR","dataset":"harmbench026"}
+{"task_id":"0027","attack":"PAIR","dataset":"harmbench027"}
+{"task_id":"0028","attack":"PAIR","dataset":"harmbench028"}
+{"task_id":"0029","attack":"PAIR","dataset":"harmbench029"}
+{"task_id":"0030","attack":"PAIR","dataset":"harmbench030"}
+// {"task_id":"0031","attack":"PAIR","dataset":"harmbench031"}
+// {"task_id":"0032","attack":"PAIR","dataset":"harmbench032"}
+// {"task_id":"0033","attack":"PAIR","dataset":"harmbench033"}
+// {"task_id":"0034","attack":"PAIR","dataset":"harmbench034"}
+// {"task_id":"0035","attack":"PAIR","dataset":"harmbench035"}
+// {"task_id":"0036","attack":"PAIR","dataset":"harmbench036"}
+// {"task_id":"0037","attack":"PAIR","dataset":"harmbench037"}
+// {"task_id":"0038","attack":"PAIR","dataset":"harmbench038"}
+// {"task_id":"0039","attack":"PAIR","dataset":"harmbench039"}
+// {"task_id":"0040","attack":"PAIR","dataset":"harmbench040"}
+// {"task_id":"0041","attack":"PAIR","dataset":"harmbench041"}
+// {"task_id":"0042","attack":"PAIR","dataset":"harmbench042"}
+// {"task_id":"0043","attack":"PAIR","dataset":"harmbench043"}
+// {"task_id":"0044","attack":"PAIR","dataset":"harmbench044"}
+// {"task_id":"0045","attack":"PAIR","dataset":"harmbench045"}
+// {"task_id":"0046","attack":"PAIR","dataset":"harmbench046"}
+// {"task_id":"0047","attack":"PAIR","dataset":"harmbench047"}
+// {"task_id":"0048","attack":"PAIR","dataset":"harmbench048"}
+// {"task_id":"0049","attack":"PAIR","dataset":"harmbench049"}
+// {"task_id":"0050","attack":"PAIR","dataset":"harmbench050"}
+// {"task_id":"0051","attack":"PAIR","dataset":"harmbench051"}
+// {"task_id":"0052","attack":"PAIR","dataset":"harmbench052"}
+// {"task_id":"0053","attack":"PAIR","dataset":"harmbench053"}
+// {"task_id":"0054","attack":"PAIR","dataset":"harmbench054"}
+// {"task_id":"0055","attack":"PAIR","dataset":"harmbench055"}
+// {"task_id":"0056","attack":"PAIR","dataset":"harmbench056"}
+// {"task_id":"0057","attack":"PAIR","dataset":"harmbench057"}
+// {"task_id":"0058","attack":"PAIR","dataset":"harmbench058"}
+// {"task_id":"0059","attack":"PAIR","dataset":"harmbench059"}
+// {"task_id":"0060","attack":"PAIR","dataset":"harmbench060"}
+// {"task_id":"0061","attack":"PAIR","dataset":"harmbench061"}
+// {"task_id":"0062","attack":"PAIR","dataset":"harmbench062"}
+// {"task_id":"0063","attack":"PAIR","dataset":"harmbench063"}
+// {"task_id":"0064","attack":"PAIR","dataset":"harmbench064"}
+// {"task_id":"0065","attack":"PAIR","dataset":"harmbench065"}
+// {"task_id":"0066","attack":"PAIR","dataset":"harmbench066"}
+// {"task_id":"0067","attack":"PAIR","dataset":"harmbench067"}
+// {"task_id":"0068","attack":"PAIR","dataset":"harmbench068"}
+// {"task_id":"0069","attack":"PAIR","dataset":"harmbench069"}
+// {"task_id":"0070","attack":"PAIR","dataset":"harmbench070"}
+// {"task_id":"0071","attack":"PAIR","dataset":"harmbench071"}
+// {"task_id":"0072","attack":"PAIR","dataset":"harmbench072"}
+// {"task_id":"0073","attack":"PAIR","dataset":"harmbench073"}
+// {"task_id":"0074","attack":"PAIR","dataset":"harmbench074"}
+// {"task_id":"0075","attack":"PAIR","dataset":"harmbench075"}
+// {"task_id":"0076","attack":"PAIR","dataset":"harmbench076"}
+// {"task_id":"0077","attack":"PAIR","dataset":"harmbench077"}
+// {"task_id":"0078","attack":"PAIR","dataset":"harmbench078"}
+// {"task_id":"0079","attack":"PAIR","dataset":"harmbench079"}
+// {"task_id":"0080","attack":"PAIR","dataset":"harmbench080"}
+// {"task_id":"0081","attack":"PAIR","dataset":"harmbench081"}
+// {"task_id":"0082","attack":"PAIR","dataset":"harmbench082"}
+// {"task_id":"0083","attack":"PAIR","dataset":"harmbench083"}
+// {"task_id":"0084","attack":"PAIR","dataset":"harmbench084"}
+// {"task_id":"0085","attack":"PAIR","dataset":"harmbench085"}
+// {"task_id":"0086","attack":"PAIR","dataset":"harmbench086"}
+// {"task_id":"0087","attack":"PAIR","dataset":"harmbench087"}
+// {"task_id":"0088","attack":"PAIR","dataset":"harmbench088"}
+// {"task_id":"0089","attack":"PAIR","dataset":"harmbench089"}
+// {"task_id":"0090","attack":"PAIR","dataset":"harmbench090"}
+// {"task_id":"0091","attack":"PAIR","dataset":"harmbench091"}
+// {"task_id":"0092","attack":"PAIR","dataset":"harmbench092"}
+// {"task_id":"0093","attack":"PAIR","dataset":"harmbench093"}
+// {"task_id":"0094","attack":"PAIR","dataset":"harmbench094"}
+// {"task_id":"0095","attack":"PAIR","dataset":"harmbench095"}
+// {"task_id":"0096","attack":"PAIR","dataset":"harmbench096"}
+// {"task_id":"0097","attack":"PAIR","dataset":"harmbench097"}
+// {"task_id":"0098","attack":"PAIR","dataset":"harmbench098"}
+// {"task_id":"0099","attack":"PAIR","dataset":"harmbench099"}
+// {"task_id":"0100","attack":"PAIR","dataset":"harmbench100"}
+// {"task_id":"0101","attack":"PAIR","dataset":"harmbench101"}
+// {"task_id":"0102","attack":"PAIR","dataset":"harmbench102"}
+// {"task_id":"0103","attack":"PAIR","dataset":"harmbench103"}
+// {"task_id":"0104","attack":"PAIR","dataset":"harmbench104"}
+// {"task_id":"0105","attack":"PAIR","dataset":"harmbench105"}
+// {"task_id":"0106","attack":"PAIR","dataset":"harmbench106"}
+// {"task_id":"0107","attack":"PAIR","dataset":"harmbench107"}
+// {"task_id":"0108","attack":"PAIR","dataset":"harmbench108"}
+// {"task_id":"0109","attack":"PAIR","dataset":"harmbench109"}
+// {"task_id":"0110","attack":"PAIR","dataset":"harmbench110"}
+// {"task_id":"0111","attack":"PAIR","dataset":"harmbench111"}
+// {"task_id":"0112","attack":"PAIR","dataset":"harmbench112"}
+// {"task_id":"0113","attack":"PAIR","dataset":"harmbench113"}
+// {"task_id":"0114","attack":"PAIR","dataset":"harmbench114"}
+// {"task_id":"0115","attack":"PAIR","dataset":"harmbench115"}
+// {"task_id":"0116","attack":"PAIR","dataset":"harmbench116"}
+// {"task_id":"0117","attack":"PAIR","dataset":"harmbench117"}
+// {"task_id":"0118","attack":"PAIR","dataset":"harmbench118"}
+// {"task_id":"0119","attack":"PAIR","dataset":"harmbench119"}
+// {"task_id":"0120","attack":"PAIR","dataset":"harmbench120"}
+// {"task_id":"0121","attack":"PAIR","dataset":"harmbench121"}
+// {"task_id":"0122","attack":"PAIR","dataset":"harmbench122"}
+// {"task_id":"0123","attack":"PAIR","dataset":"harmbench123"}
+// {"task_id":"0124","attack":"PAIR","dataset":"harmbench124"}
+// {"task_id":"0125","attack":"PAIR","dataset":"harmbench125"}
+// {"task_id":"0126","attack":"PAIR","dataset":"harmbench126"}
+// {"task_id":"0127","attack":"PAIR","dataset":"harmbench127"}
+// {"task_id":"0128","attack":"PAIR","dataset":"harmbench128"}
+// {"task_id":"0129","attack":"PAIR","dataset":"harmbench129"}
+// {"task_id":"0130","attack":"PAIR","dataset":"harmbench130"}
+// {"task_id":"0131","attack":"PAIR","dataset":"harmbench131"}
+// {"task_id":"0132","attack":"PAIR","dataset":"harmbench132"}
+// {"task_id":"0133","attack":"PAIR","dataset":"harmbench133"}
+// {"task_id":"0134","attack":"PAIR","dataset":"harmbench134"}
+// {"task_id":"0135","attack":"PAIR","dataset":"harmbench135"}
+// {"task_id":"0136","attack":"PAIR","dataset":"harmbench136"}
+// {"task_id":"0137","attack":"PAIR","dataset":"harmbench137"}
+// {"task_id":"0138","attack":"PAIR","dataset":"harmbench138"}
+// {"task_id":"0139","attack":"PAIR","dataset":"harmbench139"}
+// {"task_id":"0140","attack":"PAIR","dataset":"harmbench140"}
+// {"task_id":"0141","attack":"PAIR","dataset":"harmbench141"}
+// {"task_id":"0142","attack":"PAIR","dataset":"harmbench142"}
+// {"task_id":"0143","attack":"PAIR","dataset":"harmbench143"}
+// {"task_id":"0144","attack":"PAIR","dataset":"harmbench144"}
+// {"task_id":"0145","attack":"PAIR","dataset":"harmbench145"}
+// {"task_id":"0146","attack":"PAIR","dataset":"harmbench146"}
+// {"task_id":"0147","attack":"PAIR","dataset":"harmbench147"}
+// {"task_id":"0148","attack":"PAIR","dataset":"harmbench148"}
+// {"task_id":"0149","attack":"PAIR","dataset":"harmbench149"}
+// {"task_id":"0150","attack":"PAIR","dataset":"harmbench150"}
+// {"task_id":"0151","attack":"PAIR","dataset":"harmbench151"}
+// {"task_id":"0152","attack":"PAIR","dataset":"harmbench152"}
+// {"task_id":"0153","attack":"PAIR","dataset":"harmbench153"}
+// {"task_id":"0154","attack":"PAIR","dataset":"harmbench154"}
+// {"task_id":"0155","attack":"PAIR","dataset":"harmbench155"}
+// {"task_id":"0156","attack":"PAIR","dataset":"harmbench156"}
+// {"task_id":"0157","attack":"PAIR","dataset":"harmbench157"}
+// {"task_id":"0158","attack":"PAIR","dataset":"harmbench158"}
+// {"task_id":"0159","attack":"PAIR","dataset":"harmbench159"}
+// {"task_id":"0160","attack":"PAIR","dataset":"harmbench160"}
+// {"task_id":"0161","attack":"PAIR","dataset":"harmbench161"}
+// {"task_id":"0162","attack":"PAIR","dataset":"harmbench162"}
+// {"task_id":"0163","attack":"PAIR","dataset":"harmbench163"}
+// {"task_id":"0164","attack":"PAIR","dataset":"harmbench164"}
+// {"task_id":"0165","attack":"PAIR","dataset":"harmbench165"}
+// {"task_id":"0166","attack":"PAIR","dataset":"harmbench166"}
+// {"task_id":"0167","attack":"PAIR","dataset":"harmbench167"}
+// {"task_id":"0168","attack":"PAIR","dataset":"harmbench168"}
+// {"task_id":"0169","attack":"PAIR","dataset":"harmbench169"}
+// {"task_id":"0170","attack":"PAIR","dataset":"harmbench170"}
+// {"task_id":"0171","attack":"PAIR","dataset":"harmbench171"}
+// {"task_id":"0172","attack":"PAIR","dataset":"harmbench172"}
+// {"task_id":"0173","attack":"PAIR","dataset":"harmbench173"}
+// {"task_id":"0174","attack":"PAIR","dataset":"harmbench174"}
+// {"task_id":"0175","attack":"PAIR","dataset":"harmbench175"}
+// {"task_id":"0176","attack":"PAIR","dataset":"harmbench176"}
+// {"task_id":"0177","attack":"PAIR","dataset":"harmbench177"}
+// {"task_id":"0178","attack":"PAIR","dataset":"harmbench178"}
+// {"task_id":"0179","attack":"PAIR","dataset":"harmbench179"}
+// {"task_id":"0180","attack":"PAIR","dataset":"harmbench180"}
+// {"task_id":"0181","attack":"PAIR","dataset":"harmbench181"}
+// {"task_id":"0182","attack":"PAIR","dataset":"harmbench182"}
+// {"task_id":"0183","attack":"PAIR","dataset":"harmbench183"}
+// {"task_id":"0184","attack":"PAIR","dataset":"harmbench184"}
+// {"task_id":"0185","attack":"PAIR","dataset":"harmbench185"}
+// {"task_id":"0186","attack":"PAIR","dataset":"harmbench186"}
+// {"task_id":"0187","attack":"PAIR","dataset":"harmbench187"}
+// {"task_id":"0188","attack":"PAIR","dataset":"harmbench188"}
+// {"task_id":"0189","attack":"PAIR","dataset":"harmbench189"}
+// {"task_id":"0190","attack":"PAIR","dataset":"harmbench190"}
+// {"task_id":"0191","attack":"PAIR","dataset":"harmbench191"}
+// {"task_id":"0192","attack":"PAIR","dataset":"harmbench192"}
+// {"task_id":"0193","attack":"PAIR","dataset":"harmbench193"}
+// {"task_id":"0194","attack":"PAIR","dataset":"harmbench194"}
+// {"task_id":"0195","attack":"PAIR","dataset":"harmbench195"}
+// {"task_id":"0196","attack":"PAIR","dataset":"harmbench196"}
+// {"task_id":"0197","attack":"PAIR","dataset":"harmbench197"}
+// {"task_id":"0198","attack":"PAIR","dataset":"harmbench198"}
+// {"task_id":"0199","attack":"PAIR","dataset":"harmbench199"}
+// {"task_id":"0200","attack":"PAIR","dataset":"harmbench200"}

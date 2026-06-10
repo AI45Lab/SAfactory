@@ -1,0 +1,46 @@
+agent_name: wildclawbench
+
+container:
+  workdir: /Users/bin-mac/CodeX/WildClawBench
+  platform: linux/amd64
+
+  mounts:
+    - source: /Users/bin-mac/CodeX/WildClawBench
+      target: /Users/bin-mac/CodeX/WildClawBench
+      mode: rw
+
+    - source: ./clusters/wildclawbench_safactory_runner.py
+      target: /tmp/wildclawbench_safactory_runner.py
+      mode: ro
+
+  env:
+    WILDCLAWBENCH_ROOT: /Users/bin-mac/CodeX/WildClawBench
+    DOCKER_IMAGE: "60eec8752cb5"
+    DOCKER_DEFAULT_PLATFORM: linux/amd64
+    GATEWAY_PORT: "18789"
+    TMP_WORKSPACE: /tmp_workspace
+    TASKS_SUBDIR: tasks
+    OUTPUT_SUBDIR: output/safactory
+    DEFAULT_MODEL: safactory/dsv4pro
+    DEFAULT_PARALLEL: "1"
+    HTTP_PROXY: ""
+    HTTPS_PROXY: ""
+    ALL_PROXY: ""
+    http_proxy: ""
+    https_proxy: ""
+    all_proxy: ""
+    HTTP_PROXY_INNER: ""
+    HTTPS_PROXY_INNER: ""
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
+    no_proxy: host.docker.internal,localhost,127.0.0.1,::1
+    NO_PROXY_INNER: host.docker.internal,localhost,127.0.0.1,::1
+    OPENROUTER_API_KEY: hello
+    MY_PROXY_API_KEY: hello
+    BRAVE_API_KEY: dummy
+    JUDGE_MODEL: dsv4pro
+
+  extra_args:
+    - --add-host=host.docker.internal:host-gateway
+
+  idle_command: "tail -f /dev/null"
+  run_command: "python3 /tmp/wildclawbench_safactory_runner.py"

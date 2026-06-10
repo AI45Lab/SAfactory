@@ -198,7 +198,7 @@ class GatewayRequestLogger:
                 **self._base_fields(ctx, binding, None),
                 "reason": reason,
                 "max_steps": self.cfg.max_steps,
-                "llm_step_count": binding.llm_step_count,
+                "llm_step_count": binding.step_count_for(ctx.requested_model),
                 "request": self._safe_body(request_body),
             }
         )
@@ -262,9 +262,13 @@ class GatewayRequestLogger:
             "session_request_count": binding.request_count if binding else None,
             "llm_step_index": ctx.llm_step_index,
             "synthetic_stop": ctx.synthetic_stop,
-            "llm_step_count": binding.llm_step_count if binding else None,
-            "truncated": binding.truncated if binding else None,
-            "truncate_reason": binding.truncate_reason if binding else None,
+            "llm_step_count": binding.step_count_for(ctx.requested_model) if binding else None,
+            "session_llm_step_count": binding.llm_step_count if binding else None,
+            "llm_step_count_by_model": dict(binding.llm_step_count_by_model) if binding else None,
+            "truncated": binding.is_model_truncated(ctx.requested_model) if binding else None,
+            "session_truncated": binding.truncated if binding else None,
+            "truncate_reason": binding.model_truncate_reason(ctx.requested_model) if binding else None,
+            "truncated_models": dict(binding.truncated_models) if binding else None,
         }
 
     def _safe_body(self, body: Any) -> Any:

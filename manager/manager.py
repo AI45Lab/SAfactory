@@ -5,11 +5,10 @@ import logging
 import sqlite3
 from typing import Callable, Dict, List, Optional
 
-from clusters.docker_clusters import DockerContainerBackend
-
-from .actor_pool import DockerAgentPool
+from .actor_pool import RuntimeAgentPool
 from .binding_plan import build_binding_plan
 from .repository import AgentDataRepository
+from .runtime_allocator import DockerLeaseAllocator, RJobLeaseAllocator, RuntimeLeaseAllocator
 from .types import PoolEntry
 
 log = logging.getLogger("manager")
@@ -17,10 +16,11 @@ log = logging.getLogger("manager")
 
 class AgentPoolManager:
     """
-    OpenClaw Docker scheduler facade.
+    OpenClaw scheduler facade.
 
-    It warms Docker containers, exposes ready leases, and refills from the DB
-    after each episode. No agent HTTP service is involved.
+    It exposes ready runtime leases and refills from the DB after each episode.
+    Docker mode warms containers; RJob mode reserves rows and submits the remote
+    job later in the episode runner.
     """
 
     def __init__(
@@ -40,17 +40,16 @@ class AgentPoolManager:
         )
         self._pool_size = int(self.cfg.get("pool_size", 0) or 0)
         self._mode = str(self.cfg.get("mode", "docker") or "docker").strip().lower()
-        if self._mode != "docker":
-            raise ValueError(f"Only docker mode is supported by the OpenClaw workflow; got {self._mode!r}")
+        if self._mode not in {"docker", "rjob"}:
+            raise ValueError(f"Unsupported OpenClaw workflow mode: {self._mode!r}")
 
         cluster_cfg: Dict = dict(self.cfg.get("cluster", {}) or {})
-        docker_cfg: Dict = dict(cluster_cfg.get("docker", {}) or {})
-        startup_concurrency = int(docker_cfg.get("startup_concurrency", 8) or 8)
+        self._allocator: RuntimeLeaseAllocator = self._build_allocator(cluster_cfg)
+        startup_concurrency = int(getattr(self._allocator, "startup_concurrency", 8) or 8)
 
-        self._backend = DockerContainerBackend(cluster_cfg=cluster_cfg)
-        self._pool = DockerAgentPool(
+        self._pool = RuntimeAgentPool(
             repo=self._repo,
-            docker=self._backend,
+            allocator=self._allocator,
             pool_size=self._pool_size,
             startup_concurrency=startup_concurrency,
         )
@@ -71,12 +70,13 @@ class AgentPoolManager:
                 return
 
             prewarm_rows = await self._repo.prime(self._pool_size) if self._pool_size > 0 else []
-            await self._backend.start(plan)
+            await self._allocator.start(plan)
             await self._pool.prewarm(rows=prewarm_rows)
 
             self._initialized = True
             log.info(
-                "OpenClaw Docker scheduler started: pool_size=%d job_id=%s",
+                "OpenClaw %s scheduler started: pool_size=%d job_id=%s",
+                self._mode,
                 self._pool_size,
                 self._job_id or "<all>",
             )
@@ -91,9 +91,9 @@ class AgentPoolManager:
             await self._pool.reset()
 
         try:
-            await self._backend.close()
+            await self._allocator.close()
         except Exception:
-            log.warning("Docker backend close failed (ignored)", exc_info=True)
+            log.warning("%s allocator close failed (ignored)", self._mode, exc_info=True)
 
     async def list_pool_instances(self) -> List[PoolEntry]:
         return await self._pool.list_instances()
@@ -108,3 +108,10 @@ class AgentPoolManager:
         if not self._initialized:
             raise RuntimeError("AgentPoolManager not started. Call await start() first.")
         return await self._pool.close_and_refill(env=str(agent), env_id=str(id_), succeeded=bool(succeeded))
+
+    def _build_allocator(self, cluster_cfg: Dict) -> RuntimeLeaseAllocator:
+        if self._mode == "docker":
+            return DockerLeaseAllocator(cluster_cfg=cluster_cfg)
+        if self._mode == "rjob":
+            return RJobLeaseAllocator(cluster_cfg=cluster_cfg)
+        raise ValueError(f"Unsupported OpenClaw workflow mode: {self._mode!r}")

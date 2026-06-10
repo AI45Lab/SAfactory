@@ -22,13 +22,19 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
     )
 
     mode = str(args.mode or "docker").strip().lower()
-    if mode != "docker":
-        raise ValueError(f"Only docker mode is supported by the OpenClaw workflow; got {mode!r}")
+    if mode not in {"docker", "rjob"}:
+        raise ValueError(f"Unsupported simulation mode: {mode!r}")
 
     job_id = str(args.job_id or "").strip() or uuid.uuid4().hex
     max_workers = int(args.max_workers) if int(args.max_workers or 0) > 0 else None
 
-    _validate_gateway_route_key(str(args.llm_model))
+    evaluation_config = load_evaluation_runtime_config(str(getattr(args, "evaluation_config", "") or ""))
+    evaluation_model = str(
+        getattr(args, "evaluation_model", "") or evaluation_config.get("evaluation_model") or ""
+    ).strip()
+    _validate_gateway_route_key(str(args.llm_model), arg_name="--llm-model")
+    if evaluation_model:
+        _validate_gateway_route_key(evaluation_model, arg_name="--evaluation-model")
     agent_config = getattr(args, "agent_config", None)
     agent_start_config = getattr(args, "agent_start_config", None)
 
@@ -48,11 +54,28 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         gateway_base_url=str(args.gateway_base_url).rstrip("/"),
         llm_model=str(args.llm_model),
         llm_temperature=float(args.llm_temperature),
+        evaluation_model=evaluation_model,
         max_steps=int(args.max_steps),
         agent_start_timeout_s=float(args.agent_start_timeout_s),
         docker_bin=str(args.docker_bin or "docker"),
         docker_pull_policy=str(args.docker_pull_policy or "never").strip().lower(),
         docker_startup_concurrency=max(1, int(args.docker_startup_concurrency or 1)),
+        rjob_cluster_entry=str(getattr(args, "rjob_cluster_entry", "") or "").strip(),
+        rjob_namespace=str(getattr(args, "rjob_namespace", "") or "").strip(),
+        rjob_access_key=str(getattr(args, "rjob_access_key", "") or "").strip(),
+        rjob_secret_key=str(getattr(args, "rjob_secret_key", "") or "").strip(),
+        rjob_verifyssl=bool(getattr(args, "rjob_verifyssl", True)),
+        rjob_retries=max(0, int(getattr(args, "rjob_retries", 3) or 0)),
+        rjob_poll_interval_s=max(0.1, float(getattr(args, "rjob_poll_interval_s", 5.0) or 5.0)),
+        rjob_cleanup_on_finish=bool(getattr(args, "rjob_cleanup_on_finish", True)),
+        rjob_gateway_base_url=str(getattr(args, "rjob_gateway_base_url", "") or "").rstrip("/"),
+        rjob_name_prefix=str(getattr(args, "rjob_name_prefix", "safactory") or "safactory").strip(),
+        rjob_no_packaging=bool(getattr(args, "rjob_no_packaging", True)),
+        rjob_charged_group=str(getattr(args, "rjob_charged_group", "") or "").strip(),
+        rjob_auto_delete_duration=str(getattr(args, "rjob_auto_delete_duration", "") or "").strip(),
+        rjob_keep_failed_jobs=bool(getattr(args, "rjob_keep_failed_jobs", False)),
+        rjob_submit_concurrency=max(0, int(getattr(args, "rjob_submit_concurrency", 0) or 0)),
+        cleanup_docker_container=bool(getattr(args, "cleanup_docker_container", True)),
         max_workers=max_workers,
         agent_runtime=str(args.agent_runtime),
         rebuild_table=bool(args.rebuild_table),
@@ -62,6 +85,9 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         rl_group_size=int(args.rl_group_size),
         rl_epoch=max(1, int(args.rl_epoch)),
         evaluation_enabled=bool(args.evaluation_enabled),
+        evaluation_config=evaluation_config,
+        eval_task_dir_name=str(args.eval_task_dir_name or "eval_tasks").strip() or "eval_tasks",
+        strict_eval_tasks=bool(args.strict_eval_tasks),
     )
 
 
@@ -94,6 +120,25 @@ def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
                 "bin": cfg.docker_bin,
                 "pull_policy": cfg.docker_pull_policy,
                 "startup_concurrency": int(cfg.docker_startup_concurrency),
+                "cleanup_container_on_finish": bool(cfg.cleanup_docker_container),
+                "remove_on_close": bool(cfg.cleanup_docker_container),
+            },
+            "rjob": {
+                "cluster_entry": cfg.rjob_cluster_entry,
+                "namespace": cfg.rjob_namespace,
+                "access_key": cfg.rjob_access_key,
+                "secret_key": cfg.rjob_secret_key,
+                "verifyssl": bool(cfg.rjob_verifyssl),
+                "retries": int(cfg.rjob_retries),
+                "poll_interval_s": float(cfg.rjob_poll_interval_s),
+                "cleanup_on_finish": bool(cfg.rjob_cleanup_on_finish),
+                "gateway_base_url": cfg.rjob_gateway_base_url,
+                "name_prefix": cfg.rjob_name_prefix,
+                "no_packaging": bool(cfg.rjob_no_packaging),
+                "charged_group": cfg.rjob_charged_group,
+                "auto_delete_duration": cfg.rjob_auto_delete_duration,
+                "keep_failed_jobs": bool(cfg.rjob_keep_failed_jobs),
+                "submit_concurrency": int(cfg.rjob_submit_concurrency),
             },
             "env_types": load_agent_start_config(cfg.agent_start_config),
         },
@@ -113,18 +158,35 @@ def load_agent_start_config(path: Optional[str]) -> Dict[str, Any]:
         agents = cfg.get("agents")
         if not isinstance(agents, dict):
             raise ValueError(f"agents must be a mapping in {cfg_path}")
-        return {
-            str(agent_name): {"docker": _normalize_agent_start_docker(agent_name, spec, cfg_path)}
-            for agent_name, spec in agents.items()
-        }
+        return {str(agent_name): _normalize_agent_start_entry(agent_name, spec, cfg_path) for agent_name, spec in agents.items()}
 
     agent_name = str(cfg.get("agent_name") or "").strip()
     if not agent_name:
         raise ValueError(f"agent start config requires agent_name or agents mapping: {cfg_path}")
     return {
-        agent_name: {
-            "docker": _normalize_agent_start_docker(agent_name, cfg, cfg_path),
-        }
+        agent_name: _normalize_agent_start_entry(agent_name, cfg, cfg_path)
+    }
+
+
+def load_evaluation_runtime_config(path: str) -> Dict[str, Any]:
+    path = str(path or "").strip()
+    if not path:
+        return {}
+
+    cfg_path = Path(path).expanduser()
+    if not cfg_path.is_absolute():
+        cfg_path = Path.cwd() / cfg_path
+    cfg = load_yaml_file(str(cfg_path))
+    data = cfg.get("evaluation") if isinstance(cfg.get("evaluation"), dict) else cfg
+    if not isinstance(data, dict):
+        raise ValueError(f"evaluation config root must be a mapping: {cfg_path}")
+    return dict(data)
+
+
+def _normalize_agent_start_entry(agent_name: Any, spec: Any, cfg_path: Path) -> Dict[str, Any]:
+    return {
+        "docker": _normalize_agent_start_docker(agent_name, spec, cfg_path),
+        "rjob": _normalize_agent_start_rjob(agent_name, spec, cfg_path),
     }
 
 
@@ -142,7 +204,10 @@ def _normalize_agent_start_docker(agent_name: Any, spec: Any, cfg_path: Path) ->
     _copy_non_empty(container, docker, "workdir")
     _copy_non_empty(container, docker, "idle_command")
     _copy_non_empty(container, docker, "run_command")
+    _copy_non_empty(container, docker, "result_mode")
+    _copy_non_empty(container, docker, "run_result_mode")
     _copy_non_empty(container, docker, "network")
+    _copy_non_empty(container, docker, "platform")
 
     if "env" in container:
         env = container.get("env") or {}
@@ -170,6 +235,77 @@ def _normalize_agent_start_docker(agent_name: Any, spec: Any, cfg_path: Path) ->
     else:
         docker["install_runner_script"] = False
     return docker
+
+
+def _normalize_agent_start_rjob(agent_name: Any, spec: Any, cfg_path: Path) -> Dict[str, Any]:
+    if not isinstance(spec, dict):
+        raise ValueError(f"agent start config for {agent_name!r} must be a mapping in {cfg_path}")
+
+    rjob_raw = spec.get("rjob", {}) or {}
+    if not isinstance(rjob_raw, dict):
+        raise ValueError(f"rjob config for {agent_name!r} must be a mapping in {cfg_path}")
+
+    rjob: Dict[str, Any] = {}
+    for key in (
+        "charged_group",
+        "private_machine",
+        "image_pull_policy",
+        "auto_delete_duration",
+        "packaging_dir",
+        "yaml_file_dump_path",
+        "gateway_base_url",
+        "name_prefix",
+        "task_name",
+        "container_name",
+        "user",
+        "preemptible",
+        "topo_group",
+        "max_wait_duration",
+        "max_running_duration",
+    ):
+        _copy_non_empty(rjob_raw, rjob, key)
+
+    for key in (
+        "cleanup_on_finish",
+        "cleanup_on_failure",
+        "keep_failed_jobs",
+        "no_packaging",
+        "dry_run",
+        "predict_only",
+        "top",
+        "host_network",
+        "enable_sshd",
+        "gang_start",
+        "share_host_shm",
+        "privileged",
+        "daemon",
+    ):
+        if key in rjob_raw:
+            rjob[key] = bool(rjob_raw.get(key))
+
+    for key in ("replicas", "poll_interval_s", "termination_grace_period_seconds", "local_storage_in_mb"):
+        if key in rjob_raw and rjob_raw.get(key) is not None:
+            value = rjob_raw.get(key)
+            rjob[key] = float(value) if key == "poll_interval_s" else int(value)
+
+    for key in ("env", "labels", "annotations", "resources", "requests", "affinity"):
+        if key in rjob_raw:
+            value = rjob_raw.get(key) or {}
+            if not isinstance(value, dict):
+                raise ValueError(f"rjob.{key} for {agent_name!r} must be a mapping in {cfg_path}")
+            rjob[key] = {str(k): v for k, v in value.items()}
+
+    for key in ("mount_config", "mount", "before_script", "depends_on"):
+        if key in rjob_raw:
+            value = rjob_raw.get(key) or []
+            if isinstance(value, str):
+                rjob[key] = [value]
+            elif isinstance(value, list):
+                rjob[key] = [str(item) for item in value]
+            else:
+                raise ValueError(f"rjob.{key} for {agent_name!r} must be a string or list in {cfg_path}")
+
+    return rjob
 
 
 def _copy_non_empty(src: Dict[str, Any], dst: Dict[str, Any], key: str) -> None:
@@ -249,17 +385,18 @@ def rebuild_sqlite_db(db_url: str) -> None:
         log.info("Removed existing SQLite DB for rebuild: %s", file_path)
 
 
-def _validate_gateway_route_key(model: str) -> None:
+def _validate_gateway_route_key(model: str, *, arg_name: str = "--llm-model") -> None:
     normalized_model = str(model or "").strip()
     placeholder_models = {
         "YOUR_ROUTE",
         "YOUR_MODEL",
         "YOUR_GATEWAY_ROUTE_KEY",
         "YOUR_LLM_MODEL",
+        "YOUR_EVALUATION_MODEL",
     }
     if normalized_model.upper() in placeholder_models:
         raise ValueError(
-            f"--llm-model must be a real gateway llm_routes key, got placeholder {model!r}"
+            f"{arg_name} must be a real gateway llm_routes key, got placeholder {model!r}"
         )
 
     gateway_config_path = os.environ.get("AIEVOBOX_GATEWAY_CONFIG")
@@ -282,5 +419,5 @@ def _validate_gateway_route_key(model: str) -> None:
     routes = gateway_cfg.llm_routes or {}
     if routes and model not in routes:
         raise ValueError(
-            f"--llm-model must be a gateway llm_routes key; got {model!r}, available={sorted(routes)}"
+            f"{arg_name} must be a gateway llm_routes key; got {model!r}, available={sorted(routes)}"
         )
