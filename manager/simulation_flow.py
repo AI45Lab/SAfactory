@@ -1,0 +1,300 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+from pathlib import Path
+from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
+
+import requests
+
+from core.data_manager.manager import DataManager
+from core.data_manager.yaml_aggregator import (
+    all_env_yaml_load,
+    is_job_db_processing_done,
+    sync_configs_to_db,
+    wait_for_pending_inserts,
+)
+from evaluator.factory import EvaluationRuntime, build_evaluation_runtime
+from evaluator.gateway_client import GatewayClient
+from evaluator.reward_committer import RewardCommitter
+from evaluator.run_registry import InMemoryRunRegistry
+from evaluator.trajectory_reader import TrajectoryReader
+from .agent_start_client import AgentStartClient
+from .manager import AgentPoolManager
+from .simulation_config import (
+    build_manager_runtime_config,
+    expand_rl_epoch,
+    expand_rl_group_size,
+    rebuild_sqlite_db,
+)
+from .simulation_lease_pool import SimulationLeasePool
+from .simulation_worker import SimulationWorkerGroup
+from .types import SimulationRunConfig, SimulationRunSummary
+
+log = logging.getLogger("manager.simulation_flow")
+
+
+class SimulationFlow:
+    def __init__(self, cfg: SimulationRunConfig) -> None:
+        self.cfg = cfg
+        self.data_manager: Optional[DataManager] = None
+        self.conn: Any = None
+        self.manager_cfg: Optional[Dict[str, Any]] = None
+        self.agent_pool_manager: Optional[AgentPoolManager] = None
+        self.lease_pool: Optional[SimulationLeasePool] = None
+        self.agent_start_client: Optional[AgentStartClient] = None
+        self.worker_group: Optional[SimulationWorkerGroup] = None
+        self.run_registry: Optional[InMemoryRunRegistry] = None
+        self.gateway_client: Optional[GatewayClient] = None
+        self.evaluation_runtime: Optional[EvaluationRuntime] = None
+        self.reward_committer: Optional[RewardCommitter] = None
+        self._shutdown_started = False
+
+    async def run(self) -> SimulationRunSummary:
+        await self.prepare_storage()
+        await self.check_gateway_ready()
+        await self.start_agent_scheduler()
+        return await self.run_workers()
+
+    async def prepare_storage(self) -> None:
+        if self.cfg.rebuild_table and self.cfg.storage_type == "sqlite":
+            rebuild_sqlite_db(self.cfg.db_url)
+
+        self.data_manager = DataManager(
+            job_id=self.cfg.job_id,
+            storage_type=self.cfg.storage_type,
+            db_url=self.cfg.db_url,
+            enable_buffer=self.cfg.enable_buffer,
+            buffer_size=self.cfg.buffer_size,
+            flush_interval=self.cfg.flush_interval,
+        )
+
+        yaml_config_list = all_env_yaml_load(env_root=self.cfg.agent_root, env_config=self.cfg.agent_config)
+        yaml_config_list = expand_rl_group_size(yaml_config_list, self.cfg.rl_group_size)
+        yaml_config_list = expand_rl_epoch(yaml_config_list, self.cfg.rl_epoch)
+
+        self.conn = await sync_configs_to_db(
+            self.data_manager,
+            yaml_config_list,
+            self.cfg.storage_type,
+            self.cfg.startup_submit_count,
+            self.cfg.followup_submit_batch,
+        )
+        self.manager_cfg = build_manager_runtime_config(self.cfg)
+        log.info(
+            "storage prepared: job_id=%s base_pool_size=%d warm_pool_size=%d startup_submit_count=%d followup_submit_batch=%d",
+            self.cfg.job_id,
+            self.cfg.pool_size,
+            self.cfg.warm_pool_size,
+            self.cfg.startup_submit_count,
+            self.cfg.followup_submit_batch,
+        )
+
+    async def check_gateway_ready(self) -> None:
+        ready_url = self._gateway_origin() + "/readyz"
+
+        def _probe() -> tuple[int, str]:
+            response = requests.get(ready_url, timeout=5.0)
+            return response.status_code, response.text
+
+        try:
+            status_code, body = await asyncio.to_thread(_probe)
+        except Exception as exc:
+            raise RuntimeError(f"gateway is not reachable at {ready_url}: {exc}") from exc
+
+        if status_code != 200:
+            raise RuntimeError(f"gateway is not ready at {ready_url}: status={status_code} body={body[:500]}")
+        self._validate_gateway_storage(body, ready_url)
+        await self.check_gateway_model_route()
+        log.info("gateway ready: %s", ready_url)
+
+    async def check_gateway_model_route(self) -> None:
+        metrics_url = self._gateway_origin() + "/metrics"
+
+        def _fetch_metrics() -> tuple[int, str]:
+            response = requests.get(metrics_url, timeout=5.0)
+            return response.status_code, response.text
+
+        try:
+            status_code, body = await asyncio.to_thread(_fetch_metrics)
+        except Exception:
+            log.debug("gateway metrics are not reachable at %s; skip route-key preflight", metrics_url, exc_info=True)
+            return
+
+        if status_code != 200:
+            log.debug("gateway metrics returned status=%s; skip route-key preflight", status_code)
+            return
+
+        available = sorted(set(re.findall(r'gateway_llm_route_inflight\{model="([^"]+)"\}', body)))
+        if not available:
+            log.debug("gateway metrics exposed no llm route labels; skip route-key preflight")
+            return
+        required_models = [self.cfg.llm_model]
+        if self.cfg.evaluation_model:
+            required_models.append(self.cfg.evaluation_model)
+        missing = [model for model in required_models if model not in available]
+        if missing:
+            raise RuntimeError(
+                f"gateway model route(s) are not configured: {missing}; "
+                f"available={available}"
+            )
+        log.info("gateway model routes ready: models=%s available=%s", required_models, available)
+
+    async def start_agent_scheduler(self) -> None:
+        if self.manager_cfg is None:
+            self.manager_cfg = build_manager_runtime_config(self.cfg)
+        self.agent_pool_manager = AgentPoolManager(
+            self.manager_cfg,
+            self.conn,
+            job_id=self.cfg.job_id,
+            db_processing_done_checker=lambda: is_job_db_processing_done(self.cfg.job_id),
+        )
+        self.lease_pool = SimulationLeasePool(self.agent_pool_manager, pool_size=self.cfg.warm_pool_size)
+        await self.lease_pool.start()
+
+    async def run_workers(self) -> SimulationRunSummary:
+        if self.lease_pool is None:
+            raise RuntimeError("lease pool is not started")
+        if self.data_manager is None:
+            raise RuntimeError("data manager is not prepared")
+        if self.cfg.agent_runtime != "agent_start":
+            raise ValueError(f"Unsupported agent_runtime for this build: {self.cfg.agent_runtime!r}")
+
+        self.agent_start_client = AgentStartClient(
+            timeout_s=self.cfg.agent_start_timeout_s,
+        )
+        self.run_registry = InMemoryRunRegistry()
+        self.gateway_client = GatewayClient(gateway_base_url=self.cfg.gateway_base_url)
+        evaluation_service = None
+        if self.cfg.evaluation_enabled:
+            log.info(
+                "EVAL FLOW enabled: eval_task_dir_name=%s strict_eval_tasks=%s",
+                self.cfg.eval_task_dir_name,
+                self.cfg.strict_eval_tasks,
+            )
+            self.evaluation_runtime = build_evaluation_runtime(
+                config=self.cfg.evaluation_config,
+                gateway_base_url=self.cfg.gateway_base_url,
+                evaluation_model=self.cfg.evaluation_model,
+                trajectory_reader=TrajectoryReader(db_url=self.cfg.db_url, storage_type=self.cfg.storage_type),
+                registry=self.run_registry,
+            )
+            await self.evaluation_runtime.start()
+            log.info("EVAL FLOW runtime started")
+            evaluation_service = self.evaluation_runtime.service
+            self.reward_committer = RewardCommitter(db_url=self.cfg.db_url)
+        else:
+            log.info("EVAL FLOW disabled: launcher was not started with --enable-evaluation")
+        self.worker_group = SimulationWorkerGroup(
+            lease_pool=self.lease_pool,
+            data_manager=self.data_manager,
+            agent_start_client=self.agent_start_client,
+            cfg=self.cfg,
+            registry=self.run_registry,
+            gateway_client=self.gateway_client,
+            evaluation_service=evaluation_service,
+            reward_committer=self.reward_committer,
+        )
+        return await self.worker_group.run_all()
+
+    async def shutdown(self) -> None:
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
+
+        if self.lease_pool is not None:
+            try:
+                await self.lease_pool.aclose()
+            except Exception:
+                log.exception("lease pool close failed (ignored)")
+
+        if self.agent_start_client is not None:
+            try:
+                await self.agent_start_client.close()
+            except Exception:
+                log.exception("agent start client close failed (ignored)")
+
+        if self.evaluation_runtime is not None:
+            try:
+                await self.evaluation_runtime.stop()
+            except Exception:
+                log.exception("evaluation runtime stop failed (ignored)")
+
+        try:
+            await wait_for_pending_inserts()
+        except Exception:
+            log.exception("wait_for_pending_inserts failed (ignored)")
+
+        if self.data_manager is not None:
+            try:
+                await self.data_manager.close()
+            except Exception:
+                log.exception("data manager close failed (ignored)")
+
+        if self.conn is not None:
+            try:
+                self.conn.close()
+            except Exception:
+                log.exception("manager DB connection close failed (ignored)")
+
+    def _gateway_origin(self) -> str:
+        parsed = urlsplit(self.cfg.gateway_base_url)
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(f"gateway_base_url must be absolute: {self.cfg.gateway_base_url!r}")
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    def _validate_gateway_storage(self, ready_body: str, ready_url: str) -> None:
+        try:
+            payload = json.loads(ready_body)
+        except json.JSONDecodeError:
+            log.warning("gateway ready response is not JSON; cannot validate shared trajectory DB: %s", ready_url)
+            return
+        if not isinstance(payload, dict):
+            log.warning("gateway ready response is not an object; cannot validate shared trajectory DB: %s", ready_url)
+            return
+
+        gateway_storage_type = str(payload.get("storage_type") or "").strip()
+        if not gateway_storage_type:
+            log.warning("gateway ready response has no storage_type; cannot validate shared trajectory DB")
+            return
+        if gateway_storage_type != self.cfg.storage_type:
+            raise RuntimeError(
+                "gateway storage_type does not match launcher storage_type: "
+                f"gateway={gateway_storage_type!r} launcher={self.cfg.storage_type!r}. "
+                "Start gateway with the same storage backend used by launcher."
+            )
+
+        if self.cfg.storage_type != "sqlite":
+            return
+
+        storage_config = payload.get("storage_config")
+        storage_config = storage_config if isinstance(storage_config, dict) else {}
+        gateway_db_url = str(storage_config.get("db_url") or "").strip()
+        if not gateway_db_url:
+            raise RuntimeError(
+                "gateway ready response does not expose storage_config.db_url. "
+                "Use a gateway build that reports its SQLite DB so evaluator can verify trajectory storage."
+            )
+
+        gateway_db = _normalize_sqlite_db_path(gateway_db_url)
+        launcher_db = _normalize_sqlite_db_path(self.cfg.db_url)
+        if gateway_db != launcher_db:
+            raise RuntimeError(
+                "gateway SQLite DB does not match launcher --db-path; evaluator would read an empty or partial "
+                f"trajectory. gateway={gateway_db} launcher={launcher_db}. "
+                "Set gateway storage_config.db_url to the same value as launcher --db-path."
+            )
+
+
+def _normalize_sqlite_db_path(db_url: str) -> str:
+    value = str(db_url or "").strip()
+    if value.startswith("sqlite://"):
+        value = value[len("sqlite://") :]
+    value = value.split("?", 1)[0]
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return str(path.resolve(strict=False))

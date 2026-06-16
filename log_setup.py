@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Optional, Sequence, Set
 
 
-DEFAULT_INFO_LOGGERS = ("launcher", "manager", "interactor")
+DEFAULT_INFO_LOGGERS = ("launcher", "manager", "evaluator", "interactor")
 DEFAULT_SUPPRESS_PREFIXES = ("core.llm", "httpx", "urllib3", "aiosqlite", "tortoise")
 DEPENDENCY_WARNING_LOGGERS = (
     "httpx",

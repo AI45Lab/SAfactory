@@ -1,10 +1,12 @@
 listen_host: 0.0.0.0
-listen_port: 8000
+listen_port: 8080
 base_session_path: /v1/sessions
+# -1 means unlimited. 0 returns Stop immediately. N allows N real LLM requests per session.
+max_steps: -1
 
 storage_type: sqlite
 storage_config:
-  db_url: sqlite://gateway.db
+  db_url: sqlite://env_trajs.db
 
 max_inflight_requests: 2048
 max_active_streams: 1024
@@ -15,16 +17,24 @@ upstream_no_proxy:
   - 127.0.0.1
   - localhost
 per_llm_route_max_concurrency: 256
-per_session_max_inflight: 8
+per_session_max_inflight: 64
 
 telemetry:
-  mode: best_effort
-  loss_policy: drop_newest
-  capture_payload: failed_only
-  payload_sample_rate: 0.01
+  mode: strict
+  loss_policy: fail_closed
+  capture_payload: full
+  payload_sample_rate: 1.0
   redact_sensitive_fields: true
   batch_size: 200
   flush_interval_ms: 100
+
+request_log:
+  enabled: true
+  path: logs/gateway_requests.jsonl
+  max_bytes: 104857600
+  backup_count: 5
+  # 0 means unlimited body capture so agent prompts and streamed LLM output are not truncated.
+  body_limit_bytes: 0
 
 llm_routes:
   minimax2.5:
@@ -32,8 +42,18 @@ llm_routes:
     api_key: null
     supports_stream: true
     max_concurrency: 256
-  MiniMax-2.7-w8a8:
-    base_url: http://10.140.158.149:15002/v1/
+  dsv4pro:
+    base_url: http://10.140.158.149:8182/v1/
+    api_key: null
+    supports_stream: true
+    max_concurrency: 256
+  kimi-k26-w4a8:
+    base_url: http://10.140.158.149:8180/v1/
+    api_key: null
+    supports_stream: true
+    max_concurrency: 256
+  glm51:
+    base_url: http://10.140.158.149:8200/v1/
     api_key: null
     supports_stream: true
     max_concurrency: 256

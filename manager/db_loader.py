@@ -183,7 +183,7 @@ def get_active_data(
     offset: int,
     job_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Return a paginated slice of active (non-deleted) environment rows."""
+    """Return a paginated slice of active agent rows from the legacy table."""
     if isinstance(conn, sqlite3.Connection):
         filters = ["is_deleted = 0"]
         params: List[Any] = []
@@ -214,7 +214,7 @@ def get_active_data_after_id(
     after_id: int,
     job_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Return active rows whose primary key is greater than ``after_id``."""
+    """Return active agent rows whose primary key is greater than ``after_id``."""
     if isinstance(conn, sqlite3.Connection):
         filters = ["is_deleted = 0", "id > ?"]
         params: List[Any] = [after_id]
@@ -251,7 +251,7 @@ def get_active_data_after_id(
 
 
 def get_env_image_map(conn: Optional[sqlite3.Connection], job_id: Optional[str] = None) -> Dict[str, Any]:
-    """Return a mapping of env_name -> image for all active environments."""
+    """Return a mapping of legacy env_name -> image for all active agents."""
     if isinstance(conn, sqlite3.Connection):
         filters = ["is_deleted = 0"]
         params: List[Any] = []
@@ -286,7 +286,7 @@ def get_env_image_map(conn: Optional[sqlite3.Connection], job_id: Optional[str] 
 
 
 def get_all_image(conn: Optional[sqlite3.Connection], job_id: Optional[str] = None) -> Dict[str, str]:
-    """Return a mapping of image -> env_name for all active environments."""
+    """Return a mapping of image -> legacy env_name for all active agents."""
     if isinstance(conn, sqlite3.Connection):
         filters = [
             "is_deleted = 0",

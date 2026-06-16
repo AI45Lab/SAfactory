@@ -1,0 +1,198 @@
+evaluation:
+  max_concurrency: 1
+  fail_policy: zero_reward
+  start_real_evaluator_containers: true
+
+  evaluator_agent_pools:
+    - pool_id: claw-instruction-agent-eval
+      selection_policy: least_busy
+      members:
+        - evaluator_agent_id: openclaw-safety-evaluator
+          agent_type: docker_container
+          image: ghcr.io/openclaw/openclaw:latest
+          base_agent: codex
+          pool_size: 1
+          max_concurrency_per_container: 1
+          workdir: /workspace
+          input_mode: prompt_file
+          task_input_path: /tmp/agent_eval_task.json
+          prompt_path: /tmp/agent_eval_prompt.md
+          result_path: /tmp/eval_result.json
+          command_template: |
+            TASK_INPUT_PATH="{{ task_input_path }}" PROMPT_PATH="{{ prompt_path }}" RESULT_PATH="{{ result_path }}" EVAL_MODEL="{{ model }}" GATEWAY_BASE_URL="{{ gateway_base_url }}" node <<'NODE'
+            const fs = require("fs");
+            const path = require("path");
+            const { spawnSync } = require("child_process");
+
+            const taskInputPath = process.env.TASK_INPUT_PATH;
+            const promptPath = process.env.PROMPT_PATH;
+            const resultPath = process.env.RESULT_PATH;
+            const routeModel = String(process.env.EVAL_MODEL || "").trim();
+            const gatewayBaseUrl = String(process.env.GATEWAY_BASE_URL || "").trim();
+
+            function writeResult(result) {
+              fs.mkdirSync(path.dirname(resultPath), { recursive: true });
+              fs.writeFileSync(resultPath, JSON.stringify(result, null, 2));
+              console.log(JSON.stringify(result));
+            }
+
+            if (!routeModel || !gatewayBaseUrl) {
+              writeResult({
+                score: 0,
+                scale: { min: 0, max: 10 },
+                passed: false,
+                reason: "agent evaluator missing evaluation model or gateway base URL",
+                findings: [{ type: "configuration_error", routeModel, gatewayBaseUrl }],
+                artifacts: { source_case_id: "JailBreakBench-001", safety: "Unknown", verdict: "ConfigError" },
+              });
+              process.exit(0);
+            }
+
+            const task = JSON.parse(fs.readFileSync(taskInputPath, "utf8"));
+            const renderedPrompt = fs.readFileSync(promptPath, "utf8");
+            const evalSessionId = `eval-${String(task.eval_task_id || task.session_id || Date.now()).replace(/[^A-Za-z0-9_-]+/g, "-").slice(0, 96)}`;
+            const providerId = process.env.SAFACTORY_OPENCLAW_PROVIDER_ID || "safactory";
+            const hostGateway = process.env.SAFACTORY_DOCKER_HOST_GATEWAY || "host.docker.internal";
+            const modelRef = `${providerId}/${routeModel}`;
+            const timeoutSeconds = Math.max(1, Number(task.timeout_s || 600));
+
+            function gatewaySessionBase(rawBaseUrl, sessionId) {
+              const url = new URL(rawBaseUrl);
+              const host = url.hostname.toLowerCase();
+              if (host === "127.0.0.1" || host === "localhost" || host === "0.0.0.0" || host === "::1") {
+                url.hostname = hostGateway;
+              }
+              url.pathname = `${url.pathname.replace(/\/+$/, "")}/${encodeURIComponent(sessionId)}`;
+              url.search = "";
+              url.hash = "";
+              return url.toString().replace(/\/+$/, "");
+            }
+
+            const stateDir = path.join("/tmp", "safactory-openclaw-evaluator", evalSessionId);
+            const configPath = path.join(stateDir, "openclaw.json");
+            fs.mkdirSync(stateDir, { recursive: true });
+            fs.writeFileSync(configPath, JSON.stringify({
+              env: { shellEnv: { enabled: false, timeoutMs: 1000 } },
+              agents: { defaults: { model: { primary: modelRef, timeoutMs: timeoutSeconds * 1000 } } },
+              models: {
+                pricing: { enabled: false },
+                providers: {
+                  [providerId]: {
+                    baseUrl: gatewaySessionBase(gatewayBaseUrl, evalSessionId),
+                    apiKey: process.env.SAFACTORY_GATEWAY_API_KEY || "safactory",
+                    api: "openai-completions",
+                    request: { allowPrivateNetwork: true },
+                    timeoutSeconds,
+                    models: [{
+                      id: routeModel,
+                      name: `Safactory Evaluator ${routeModel}`,
+                      api: "openai-completions",
+                      reasoning: false,
+                      input: ["text", "image"],
+                      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                      contextWindow: 128000,
+                      maxTokens: 8192,
+                    }],
+                  },
+                },
+              },
+            }, null, 2));
+
+            const run = spawnSync("openclaw", [
+              "agent",
+              "--local",
+              "--json",
+              "--session-id",
+              evalSessionId,
+              "--message",
+              renderedPrompt,
+              "--model",
+              modelRef,
+              "--timeout",
+              String(timeoutSeconds),
+            ], {
+              env: {
+                ...process.env,
+                NO_COLOR: "1",
+                OPENCLAW_CONFIG_PATH: configPath,
+                OPENCLAW_STATE_DIR: stateDir,
+                OPENCLAW_PROFILE: "",
+              },
+              encoding: "utf8",
+              timeout: (timeoutSeconds + 10) * 1000,
+            });
+
+            function parseJsonFromText(text) {
+              const body = String(text || "").trim();
+              if (!body) return undefined;
+              try {
+                return JSON.parse(body);
+              } catch (_) {
+                for (const line of body.split(/\r?\n/).reverse()) {
+                  const trimmed = line.trim();
+                  if (!trimmed) continue;
+                  try {
+                    return JSON.parse(trimmed);
+                  } catch (_) {}
+                }
+              }
+              return undefined;
+            }
+
+            function payloadTextFromResult(parsed) {
+              if (!parsed || typeof parsed !== "object") return "";
+              if (Array.isArray(parsed.payloads)) {
+                return parsed.payloads
+                  .map((payload) => payload && typeof payload === "object" ? String(payload.text || "") : "")
+                  .filter(Boolean)
+                  .join("\n");
+              }
+              if (typeof parsed.text === "string") return parsed.text;
+              if (typeof parsed.content === "string") return parsed.content;
+              return "";
+            }
+
+            function extractJsonObject(text) {
+              const body = String(text || "").trim();
+              try {
+                const parsed = JSON.parse(body);
+                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+              } catch (_) {}
+              const start = body.indexOf("{");
+              const end = body.lastIndexOf("}");
+              if (start >= 0 && end > start) {
+                const parsed = JSON.parse(body.slice(start, end + 1));
+                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+              }
+              throw new Error("evaluator agent output did not contain a JSON object");
+            }
+
+            try {
+              const parsedRun = parseJsonFromText(run.stdout);
+              const evaluatorText = payloadTextFromResult(parsedRun) || String(run.stdout || "");
+              const result = extractJsonObject(evaluatorText);
+              result.artifacts = {
+                ...(result.artifacts || {}),
+                evaluator_session_id: evalSessionId,
+                evaluator_exit_code: run.status,
+              };
+              writeResult(result);
+            } catch (error) {
+              writeResult({
+                score: 0,
+                scale: { min: 0, max: 10 },
+                passed: false,
+                reason: `failed to parse evaluator agent output: ${error.message}`,
+                findings: [{ type: "parse_error", message: error.message }],
+                artifacts: {
+                  source_case_id: "JailBreakBench-001",
+                  safety: "Unknown",
+                  verdict: "EvaluatorParseError",
+                  evaluator_session_id: evalSessionId,
+                  evaluator_exit_code: run.status,
+                  stdout_tail: String(run.stdout || "").slice(-4000),
+                  stderr_tail: String(run.stderr || "").slice(-4000),
+                },
+              });
+            }
+            NODE

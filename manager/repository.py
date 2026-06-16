@@ -19,7 +19,7 @@ log = logging.getLogger("manager.repository")
 DB_FETCH_WARN_SECONDS = 1.0
 
 
-class EnvDataRepository:
+class AgentDataRepository:
     """
     Thin repository around db_loader helpers.
 
@@ -95,7 +95,7 @@ class EnvDataRepository:
                     elapsed = time.perf_counter() - started_at
                     if elapsed >= DB_FETCH_WARN_SECONDS:
                         log.warning(
-                            "env DB fetch took %.2fs limit=%d last_seen_id=%d buffered=%d job_id=%s",
+                            "agent DB fetch took %.2fs limit=%d last_seen_id=%d buffered=%d job_id=%s",
                             elapsed,
                             int(fetch_limit),
                             int(self._last_seen_id),

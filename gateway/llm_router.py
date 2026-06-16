@@ -48,17 +48,28 @@ class LLMRouter:
         ctx: GatewayRequestContext,
         binding: GatewaySessionBinding,
     ) -> LLMRouteTarget:
-        route = self._routes.get(ctx.requested_model)
+        return await self.select_standard_target(
+            requested_model=ctx.requested_model,
+            is_stream=ctx.is_stream,
+        )
+
+    async def select_standard_target(
+        self,
+        *,
+        requested_model: str,
+        is_stream: bool,
+    ) -> LLMRouteTarget:
+        route = self._routes.get(requested_model)
         if route is None:
-            raise ModelNotFoundError(f"model {ctx.requested_model!r} is not configured")
+            raise ModelNotFoundError(f"model {requested_model!r} is not configured")
 
         async with self._lock:
-            state = self._states[ctx.requested_model]
+            state = self._states[requested_model]
             if not state.healthy:
-                raise LLMRouteUnavailableError(f"model route {ctx.requested_model!r} is unhealthy")
+                raise LLMRouteUnavailableError(f"model route {requested_model!r} is unhealthy")
 
-        if ctx.is_stream and not route.supports_stream:
-            raise LLMRouteUnavailableError(f"model route {ctx.requested_model!r} does not support streaming")
+        if is_stream and not route.supports_stream:
+            raise LLMRouteUnavailableError(f"model route {requested_model!r} does not support streaming")
 
         max_concurrency = (
             route.max_concurrency
@@ -66,7 +77,7 @@ class LLMRouter:
             else self.cfg.per_llm_route_max_concurrency
         )
         return LLMRouteTarget(
-            route_model=ctx.requested_model,
+            route_model=requested_model,
             base_url=route.base_url,
             api_key=route.api_key,
             supports_stream=route.supports_stream,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Literal
 
 from gateway.config import GatewayConfig
 from gateway.llm_router import LLMRouteTarget
@@ -12,6 +14,13 @@ from gateway.models import GatewayRequestContext, GatewaySessionBinding
 class AdmissionRejected(Exception):
     reason: str
     status_code: int
+
+
+@dataclass(frozen=True)
+class AdmissionDecision:
+    action: Literal["forward", "stop"]
+    llm_step_index: int | None = None
+    stop_reason: str | None = None
 
 
 class AdmissionController:
@@ -32,11 +41,21 @@ class AdmissionController:
         self,
         ctx: GatewayRequestContext,
         binding: GatewaySessionBinding,
-    ) -> None:
+        target: LLMRouteTarget | None = None,
+    ) -> AdmissionDecision:
         async with self._lock:
             if self.draining:
                 self.rejected_total += 1
                 raise AdmissionRejected("gateway is draining", 503)
+
+            if self.cfg.max_steps >= 0 and binding.step_count_for(ctx.requested_model) >= self.cfg.max_steps:
+                binding.mark_model_truncated(
+                    ctx.requested_model,
+                    "max_steps_reached",
+                    datetime.now(timezone.utc),
+                )
+                self.accepted_total += 1
+                return AdmissionDecision(action="stop", stop_reason="max_steps_reached")
 
             if self._inflight_requests >= self.cfg.max_inflight_requests:
                 self.rejected_total += 1
@@ -51,6 +70,14 @@ class AdmissionController:
                 self.rejected_total += 1
                 raise AdmissionRejected("per-session inflight limit reached", 429)
 
+            if target is not None:
+                route_inflight = self._per_route_inflight.get(target.route_model, 0)
+                if route_inflight >= target.max_concurrency:
+                    self.rejected_total += 1
+                    raise AdmissionRejected("LLM route concurrency limit reached", 503)
+                self._per_route_inflight[target.route_model] = route_inflight + 1
+                self._route_acquired.add((ctx.request_id, target.route_model))
+
             self._inflight_requests += 1
             if ctx.is_stream:
                 self._active_streams += 1
@@ -59,15 +86,8 @@ class AdmissionController:
             self._per_session_inflight[ctx.session_id] = session_inflight + 1
             self._request_acquired.add(ctx.request_id)
             self.accepted_total += 1
-
-    async def acquire_llm_route(self, ctx: GatewayRequestContext, target: LLMRouteTarget) -> None:
-        async with self._lock:
-            route_inflight = self._per_route_inflight.get(target.route_model, 0)
-            if route_inflight >= target.max_concurrency:
-                self.rejected_total += 1
-                raise AdmissionRejected("LLM route concurrency limit reached", 503)
-            self._per_route_inflight[target.route_model] = route_inflight + 1
-            self._route_acquired.add((ctx.request_id, target.route_model))
+            llm_step_index = binding.increment_step_count(ctx.requested_model)
+            return AdmissionDecision(action="forward", llm_step_index=llm_step_index)
 
     async def release(
         self,

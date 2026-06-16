@@ -88,10 +88,7 @@ class SessionResolver:
                 )
                 self._bindings[session_id] = binding
             else:
-                binding.status = "closed"
-                binding.closed_at = now
-                binding.close_reason = reason
-                binding.last_seen_at = now
+                binding.close(reason, now)
             return binding
 
     async def get_status(self, session_id: str) -> dict[str, Any] | None:
@@ -112,6 +109,14 @@ class SessionResolver:
                 "active_stream_count": binding.active_stream_count,
                 "request_count": binding.request_count,
                 "error_count": binding.error_count,
+                "max_steps": self.cfg.max_steps,
+                "llm_step_count": binding.llm_step_count,
+                "llm_step_count_by_model": dict(binding.llm_step_count_by_model),
+                "truncated": binding.truncated,
+                "truncate_reason": binding.truncate_reason,
+                "stop_response_sent": binding.stop_response_sent,
+                "truncated_models": dict(binding.truncated_models),
+                "stop_response_sent_models": sorted(binding.stop_response_sent_models),
             }
 
     async def _evict_expired(self) -> None:

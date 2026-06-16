@@ -1,67 +1,86 @@
-mode: remote
+mode: docker
 
 database:
   driver: "sqlite"
-  sqlite_path: "AIEvoBox/test_envs.db"    # Change this to your actual DB path
+  sqlite_path: "env_trajs.db"
 
 pool_size: 2
 
-cluster:
-  base_image: "AAAA" # TODO the base image should be deleted, we will have distinguished image for each env
-  http:                    #shared, all the env services export the same port for connection
-    port: 36663
-    timeout_s: 100         # Connection timeouts from manager to env clusters
-    concurrency: 200       # Max concurrent HTTP calls from manager when prewarming actors
-    startup_concurrency: 16  # Max concurrent cold starts / reset attempts during prewarm
-  env_types:
-    mc:
-      quotagroup: "evobox_cpu_task"
-      entrypoint: "python /app/app.py"
-      limit: 1
-    emb:
-      quotagroup: "evobox_gpu"
-      entrypoint: "bash run.sh"
-      limit: 1
-    os_gym:
-      quotagroup: "evobox_proxy"
-      entrypoint: "bash -lc 'cd /mnt/shared-storage-gpfs2/evobox-share-gpfs2/kangzeyu/projects/AIEvoBox && export PYTHONPATH=/mnt/shared-storage-gpfs2/evobox-share-gpfs2/kangzeyu/projects/AIEvoBox:$PYTHONPATHb && bash /mnt/shared-storage-gpfs2/evobox-share-gpfs2/kangzeyu/projects/scripts/run.sh'"
-      volumes:
-        - fsType: "mount.brainpp.cn/gpfs"
-          endpoint: "gpfs://gpfs2/evobox-share-gpfs2"
-          containerPath: "/mnt/shared-storage-gpfs2/evobox-share-gpfs2"
-      resources:
-        head:
-          cpu: 18
-          gpu: 0
-          memory: 72Gi
-          privileged: true
-      limit: 12
-    android_gym:
-      quotagroup: "evobox_cpu_task"
-      entrypoint: "bash /mnt/shared-storage-user/chenxinquan/AIEvoBox/env/androidgym/run.sh"
-      volumes:
-        - fsType: "mount.brainpp.cn/gpfs"
-          endpoint: "gpfs://gpfs1/chenxinquan"
-          containerPath: "/mnt/shared-storage-user/chenxinquan"
-      limit: 1
-    qa_gym:
-      quotagroup: "evobox_proxy"
-      entrypoint: >-
-        bash -lc 'source /opt/openrt-venv/bin/activate &&
-        python env/app.py'
-      limit: 16
-      volumes:
-        - fsType: "mount.brainpp.cn/gpfs"
-          endpoint: "gpfs://gpfs1/evobox-share"
-          containerPath: "/mnt/shared-storage-user/evobox-share"
+evaluation:
+  enabled: true
+  mode: inline
+  max_concurrency: 64
+  fail_policy: zero_reward
+  default_specs: []
 
-rayjob:
-  domain: "https://h.pjlab.org.cn"
-  tenant: "ailab"
-  access_key: "0190c46827d4f2cd6632607bc1c2a0ca"
-  secret_key: "8cf77e57dd77c977f4a59d43a507ebd1"
-  token: ""
-  verify: false                        # Whether to verify TLS certificates (set true in production)
-  quotagroup: "evobox_cpu_task"        # Default quotagroup for all envs
-  project: "ailab-evobox"              # Logical project name used on the RayJob platform
-  description: "RL env Ray cluster"
+reward:
+  scale: 10
+  trainable_policy: all_steps_after_eval
+  commit_target: terminal_step
+
+cluster:
+  docker:
+    bin: "docker"
+    name_prefix: "safactory-openclaw"
+    pull_policy: "never"              # never | always
+    startup_concurrency: 8
+    cleanup_container_on_finish: true # false keeps containers after rollout/evaluation for debugging
+    remove_on_close: true
+    idle_command: "tail -f /dev/null"
+
+    # Container reuse is opt-in by default. A reusable container is kept only
+    # after the run succeeds, cleanup succeeds, and healthcheck succeeds.
+    reuse_policy: "explicit"          # explicit | always | never
+    default_reuse_container: false
+    max_runs_per_container: 0         # 0 means unlimited when reuse is enabled
+
+    # Safactory copies clusters/openclaw_safactory_runner.mjs into each
+    # container. The runner reads one SimulationStartRequest JSON document from
+    # stdin, configures OpenClaw to use the Safactory gateway session URL, runs
+    # a real `openclaw agent --local` turn, and writes one
+    # SimulationStartResult-compatible JSON document to stdout.
+    runner_container_path: "/tmp/safactory-openclaw-runner.mjs"
+    install_runner_script: true
+    run_command: "node /tmp/safactory-openclaw-runner.mjs"
+    cleanup_command: ""
+    healthcheck_command: ""
+
+  rjob:
+    # Switch top-level mode to "rjob" to run each episode as one RJob job.
+    # cluster_entry/namespace/access keys may also come from the RJobClient
+    # environment or auth files.
+    cluster_entry: ""
+    namespace: ""
+    access_key: ""
+    secret_key: ""
+    verifyssl: true
+    retries: 3
+    charged_group: ""
+    poll_interval_s: 5
+    cleanup_on_finish: true
+    keep_failed_jobs: false
+    no_packaging: true
+    name_prefix: "safactory"
+    auto_delete_duration: "12h"
+    gateway_base_url: ""              # must be reachable from RJob containers
+    default_resources:
+      cpu: 1
+      gpu: 0
+      memory_in_mb: 1024
+
+  env_types:
+    openclaw:
+      docker:
+        reuse_container: false
+        run_command: "node /tmp/safactory-openclaw-runner.mjs"
+        cleanup_command: ""
+        healthcheck_command: ""
+        volumes: []
+        env: {}
+        extra_args: []
+      rjob:
+        resources:
+          cpu: 1
+          gpu: 0
+          memory_in_mb: 1024
+        mount_config: []
