@@ -1,0 +1,43 @@
+agent_name: dtap
+
+container:
+  workdir: /workspace/DecodingTrust-Agent
+  network: host
+
+  mounts:
+    - source: ../DecodingTrust-Agent
+      target: /workspace/DecodingTrust-Agent
+      mode: rw
+
+    - source: ./results
+      target: /workspace/Safactory/results
+      mode: rw
+
+    - source: ./clusters/dtap_safactory_runner.py
+      target: /tmp/dtap_safactory_runner.py
+      mode: ro
+
+    - source: /var/run/docker.sock
+      target: /var/run/docker.sock
+      mode: rw
+
+  env:
+    DTAP_ROOT: /workspace/DecodingTrust-Agent
+    DTAP_DATASET_ROOT: /workspace/DecodingTrust-Agent/dataset
+    OPENAI_API_KEY: EMPTY
+    DOCKER_HOST: unix:///var/run/docker.sock
+    PYTHONDONTWRITEBYTECODE: "1"
+    HTTP_PROXY: ""
+    HTTPS_PROXY: ""
+    ALL_PROXY: ""
+    http_proxy: ""
+    https_proxy: ""
+    all_proxy: ""
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
+    no_proxy: host.docker.internal,localhost,127.0.0.1,::1
+
+  extra_args:
+    - --add-host=host.docker.internal:host-gateway
+
+  idle_command: "tail -f /dev/null"
+  run_command: "python /tmp/dtap_safactory_runner.py"
