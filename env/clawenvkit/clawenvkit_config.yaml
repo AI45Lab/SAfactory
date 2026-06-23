@@ -1,0 +1,22 @@
+environments:
+  - env_name: clawenvkit
+    env_image: clawenvkit:openclaw-trajectoryfix6-20260612-012055
+    env_num: 1
+    dataset: ./datasets/clawenvkit_tasks.jsonl
+    dataset_load_mode: eager
+
+    env_params:
+      task_family: clawenvkit
+      dataset_root: /datasets/Auto-ClawEval-mini
+      results_root: /workspace/Safactory/results/clawenvkit
+
+      clawenvkit_root: /opt/clawenvkit
+      harness_entrypoint: /opt/clawenvkit/entrypoint_openclaw.sh
+      harness: openclaw
+      route_model: dsv4pro
+      model_ref: openai/dsv4pro
+      api_key: dummy
+      timeout_s: 600
+      error_rate: "0.25"
+
+      keep_container_logs: true
