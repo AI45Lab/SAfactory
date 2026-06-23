@@ -1,0 +1,36 @@
+agent_name: clawenvkit
+
+container:
+  workdir: /workspace
+
+  mounts:
+    - source: ../ClawEnvKit/Auto-ClawEval-mini
+      target: /datasets/Auto-ClawEval-mini
+      mode: ro
+
+    - source: ./results
+      target: /workspace/Safactory/results
+      mode: rw
+
+    - source: ./clusters/clawenvkit_safactory_runner.py
+      target: /tmp/clawenvkit_safactory_runner.py
+      mode: ro
+
+  env:
+    OPENAI_API_KEY: dummy
+    HTTP_PROXY: ""
+    HTTPS_PROXY: ""
+    ALL_PROXY: ""
+    http_proxy: ""
+    https_proxy: ""
+    all_proxy: ""
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
+    no_proxy: host.docker.internal,localhost,127.0.0.1,::1
+
+  extra_args:
+    - --entrypoint=
+    - --user=0
+    - --add-host=host.docker.internal:host-gateway
+
+  idle_command: "tail -f /dev/null"
+  run_command: "python3 /tmp/clawenvkit_safactory_runner.py"

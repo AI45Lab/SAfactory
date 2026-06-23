@@ -1,0 +1,35 @@
+environments:
+  - env_name: dtap
+    env_image: openclawbench-dtap:local
+    env_num: 1
+    dataset: ./datasets/dtap_tasks.jsonl
+    dataset_load_mode: eager
+
+    env_params:
+      task_family: dtap
+      dtap_root: /workspace/DecodingTrust-Agent
+      dataset_root: /workspace/DecodingTrust-Agent/dataset
+      benchmark_root: /workspace/DecodingTrust-Agent/benchmark
+      results_root: /workspace/Safactory/results/dtap
+
+      agent_type: openclaw
+      route_model: dsv4pro
+      model_ref: bailian/dsv4pro
+      api_key: dummy
+      native_parallel: 1
+      max_parallel: 1
+      port_range: "30000-40000"
+      prefer_default_ports: false
+      project_prefix: ""
+      timeout_s: 3600
+
+      direct_prompt: false
+      skip_mcp: false
+      skip_judge: false
+      debug: false
+      verbose: true
+      keep_envs: false
+      skip_existing: false
+      allow_partial_dataset: false
+      thinking_level: "off"
+      disallowed_tools: []
