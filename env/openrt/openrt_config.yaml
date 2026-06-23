@@ -2,7 +2,7 @@ environments:
   - env_name: openrt
     env_image: b65104033c5d
     env_num: 1
-    dataset: ./datasets/openrt_attacks.jsonl
+    dataset: ./datasets/openrt_attacks_thin.jsonl
     dataset_load_mode: eager
 
     env_params:

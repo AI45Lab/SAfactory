@@ -1,6 +1,0 @@
-environments:
-  - env_name: geo3k_vl_test
-    env_num: 1
-    dataset: path/to/geo3k_vl_train.parquet
-    env_params: {}
-    # Runtime options are loaded from geo3k_vl_test_env_runtime.yaml by default.

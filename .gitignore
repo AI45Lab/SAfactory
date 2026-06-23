@@ -1,0 +1,19 @@
+/ai-gen
+
+# Python/runtime artifacts
+__pycache__/
+*.py[cod]
+
+# Local IDE state
+.idea/
+
+# Gateway local storage
+gateway.db
+gateway.db-shm
+gateway.db-wal
+
+# Local scratch exports
+tmp/
+/archievd 
+
+/ai-cc

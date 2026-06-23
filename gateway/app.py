@@ -86,6 +86,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         router: LLMRouter = request.app.state.gateway_router
         forwarder: InferenceForwarder = request.app.state.gateway_forwarder
         telemetry: TelemetryRecorder = request.app.state.gateway_telemetry
+        storage: GatewayStorage = request.app.state.gateway_storage
         request_logger: GatewayRequestLogger = request.app.state.gateway_request_logger
 
         try:
@@ -99,6 +100,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 path_session_id=path_session_id,
             )
             binding = await resolver.get_or_create_binding(ctx)
+            await storage.bind_session_environment(binding)
             if binding.status == "closed":
                 if binding.is_model_truncated(ctx.requested_model):
                     ctx = replace(ctx, synthetic_stop=True)

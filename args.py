@@ -18,6 +18,15 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
         help="Optional evaluator runtime YAML for judge endpoints, evaluator pools, and default specs.",
     )
     parser.add_argument("--mode", choices=["docker", "rjob"], default="docker")
+    parser.add_argument(
+        "--rjob-config",
+        type=str,
+        default="",
+        help=(
+            "YAML file for global RJob connection/auth settings shared by all environments "
+            "(cluster_entry, namespace, access_key, secret_key, charged_group, etc.)."
+        ),
+    )
 
     parser.add_argument("--agent-config", type=str, default=None, help="Single agent YAML config")
     parser.add_argument("--agent-start-config", type=str, default=None, help="Agent container startup YAML config")

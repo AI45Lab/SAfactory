@@ -24,6 +24,29 @@ RUNTIME_INDEX_SQL = (
     """,
 )
 
+NON_TRAJECTORY_EVENT_TYPES = {
+    "gateway_session_close",
+    "episode_summary",
+    "evaluation_summary",
+}
+
+
+def _json_object(value: Any) -> Dict[str, Any]:
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return {"previous_env_state": value}
+    return parsed if isinstance(parsed, dict) else {"previous_env_state": parsed}
+
+
+def _is_trajectory_env_state(value: Any) -> bool:
+    event_type = _json_object(value).get("event_type")
+    return event_type not in NON_TRAJECTORY_EVENT_TYPES
+
 
 class SqliteStrategy(StorageStrategy):
     """
@@ -226,7 +249,7 @@ class SqliteStrategy(StorageStrategy):
             step_reward=step_reward,
             reward=session.total_reward,
             env_state=env_state,
-            is_terminal=terminated,
+            is_terminal=terminated or truncated,
             is_truncated=truncated,
             is_session_completed=terminated or truncated,
             is_trainable=is_trainable,
@@ -242,6 +265,83 @@ class SqliteStrategy(StorageStrategy):
             "Recorded step %d for session %s: reward=%.4f total=%.4f",
             step_id, session.session_id, step_reward, session.total_reward
         )
+
+    async def update_session_step(
+        self,
+        session_id: str,
+        step_id: int,
+        updates: Dict[str, Any],
+    ) -> int:
+        """Update one session_steps row by session_id and step_id."""
+        await self.init()
+
+        normalized_updates = self._normalize_session_step_updates(updates)
+        if not normalized_updates:
+            return 0
+
+        # Make pending buffered creates visible before applying a direct query update.
+        if self._write_buffer:
+            await self._write_buffer.flush_model(SessionStep, operation="create")
+
+        return await SessionStep.filter(
+            session_id=session_id,
+            step_id=step_id,
+        ).update(**normalized_updates)
+
+    async def mark_latest_session_completed(
+        self,
+        session_id: str,
+        llm_model: Optional[str] = None,
+    ) -> int:
+        """Mark the latest trajectory row for a session as completed."""
+        await self.init()
+
+        # Make pending buffered creates visible before selecting the latest row.
+        if self._write_buffer:
+            await self._write_buffer.flush_model(SessionStep, operation="create")
+
+        query = SessionStep.filter(session_id=session_id)
+        if llm_model:
+            query = query.filter(llm_model=llm_model)
+
+        candidates = await query.order_by("-step_id", "-id").limit(50)
+        if not candidates:
+            return 0
+
+        latest = next(
+            (step for step in candidates if _is_trajectory_env_state(step.env_state)),
+            candidates[0],
+        )
+        if latest.is_session_completed and latest.is_terminal:
+            return 0
+
+        return await SessionStep.filter(id=latest.id).update(
+            is_session_completed=True,
+            is_terminal=True,
+        )
+
+    def _normalize_session_step_updates(self, updates: Dict[str, Any]) -> Dict[str, Any]:
+        if not updates:
+            return {}
+
+        valid_fields = set(SessionStep._meta.fields_map.keys())
+        blocked_fields = {"id", "created_at"}
+        normalized: Dict[str, Any] = {}
+
+        for field, value in updates.items():
+            if field not in valid_fields:
+                raise ValueError(f"Unknown SessionStep field for update: {field}")
+            if field in blocked_fields:
+                raise ValueError(f"SessionStep field cannot be updated: {field}")
+
+            if field == "messages" and not isinstance(value, str):
+                value = json.dumps(value, ensure_ascii=False)
+            elif field == "env_state" and isinstance(value, (dict, list)):
+                value = json.dumps(value, ensure_ascii=False)
+
+            normalized[field] = value
+
+        return normalized
 
     async def close(self) -> None:
         """Clean up resources"""

@@ -131,6 +131,36 @@ class StorageStrategy(ABC):
         pass
 
     @abstractmethod
+    async def update_session_step(
+        self,
+        session_id: str,
+        step_id: int,
+        updates: Dict[str, Any],
+    ) -> int:
+        """
+        Update fields for one persisted session step identified by session_id and step_id.
+
+        Returns:
+            Number of matched records.
+        """
+        pass
+
+    @abstractmethod
+    async def mark_latest_session_completed(
+        self,
+        session_id: str,
+        llm_model: Optional[str] = None,
+    ) -> int:
+        """
+        Mark the latest persisted trajectory row for a session as completed.
+        When llm_model is provided, only rows for that model are considered.
+
+        Returns:
+            Number of updated records.
+        """
+        pass
+
+    @abstractmethod
     async def close(self) -> None:
         """Clean up resources (DB connections, clients, buffers)"""
         pass

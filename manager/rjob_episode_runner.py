@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import inspect
 import json
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 from urllib.parse import urlsplit
 
@@ -26,6 +28,7 @@ _INVALID_NAME_CHARS = re.compile(r"[^a-z0-9.-]+")
 _RUNNING_STATUSES = {"Created", "Pending", "Starting", "Running", "Inqueue", "Restarting", "Killing", "Deleting"}
 _SUCCEEDED_STATUSES = {"Succeeded"}
 _FAILED_STATUSES = {"Failed", "Stopped", "Killed"}
+_MAX_RJOB_NAME_LEN = 49
 
 
 class RJobEpisodeRunner:
@@ -184,11 +187,12 @@ class RJobEpisodeRunner:
         resources = self._build_resources(symbols, resources_cfg)
         requests = self._build_resources(symbols, requests_cfg) if requests_cfg else None
         image_pull_policy = self._coerce_enum(symbols.get("ImagePullPolicy"), cfg.get("image_pull_policy"))
+        run_command = self._command_with_embedded_files(cfg, lease.run_command)
 
         container_kwargs: Dict[str, Any] = {
             "name": str(cfg.get("container_name") or "main"),
             "image": lease.image,
-            "command": ["sh", "-lc", lease.run_command],
+            "command": ["sh", "-lc", run_command],
             "environments": env,
         }
         if lease.workdir:
@@ -290,6 +294,36 @@ class RJobEpisodeRunner:
             if key in cfg and cfg.get(key) is not None:
                 kwargs[key] = cfg.get(key)
         return _make(symbols["Resources"], **kwargs) if kwargs else None
+
+    def _command_with_embedded_files(self, cfg: Dict[str, Any], run_command: str) -> str:
+        files = [
+            item for item in (cfg.get("embedded_files") or [])
+            if isinstance(item, dict) and str(item.get("source") or "").strip() and str(item.get("target") or "").strip()
+        ]
+        if not files:
+            return run_command
+
+        writes = []
+        for item in files:
+            source = Path(str(item.get("source") or "")).expanduser()
+            target = str(item.get("target") or "").strip()
+            if not source.is_file():
+                raise RuntimeError(f"RJob embedded file source does not exist: {source}")
+            writes.append((target, base64.b64encode(source.read_bytes()).decode("ascii")))
+
+        python_bin = str(cfg.get("embed_python_bin") or cfg.get("python_bin") or "python").strip() or "python"
+        lines = [
+            "set -eu",
+            f"{python_bin} - <<'PY'",
+            "import base64",
+            "from pathlib import Path",
+        ]
+        for target, content in writes:
+            lines.append(f"_p = Path({target!r})")
+            lines.append("_p.parent.mkdir(parents=True, exist_ok=True)")
+            lines.append(f"_p.write_bytes(base64.b64decode({content!r}))")
+        lines.extend(["PY", f"exec {run_command}"])
+        return "\n".join(lines)
 
     async def _wait_terminal(
         self,
@@ -537,11 +571,11 @@ class RJobEpisodeRunner:
         lease: SimulationAgentLease,
         request: SimulationStartRequest,
     ) -> str:
-        prefix = _safe_name(str(cfg.get("name_prefix") or "safactory"), max_len=24)
-        agent = _safe_name(lease.agent_name, max_len=24)
+        prefix = _safe_name(str(cfg.get("name_prefix") or "safactory"), max_len=12)
+        agent = _safe_name(lease.agent_name, max_len=8)
         job = _safe_name(request.job_id, max_len=10)
-        session = _safe_name(request.session_id, max_len=12)
-        return f"{prefix}-{job}-{agent}-{session}".strip("-")[:63].strip("-") or "safactory-rjob"
+        session = _safe_name(request.session_id, max_len=10)
+        return f"{prefix}-{job}-{agent}-{session}".strip("-")[:_MAX_RJOB_NAME_LEN].strip("-") or "safactory-rjob"
 
     @staticmethod
     def _safe_json_for_log(value: Any) -> str:

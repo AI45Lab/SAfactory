@@ -1,9 +1,0 @@
-max_turns: 5
-allow_rotate_tool: false
-http_timeout_s: 30.0
-judge_base_url: ""
-judge_model: ""
-judge_api_key: "EMPTY"
-judge_timeout_s: 60.0
-cleanup_temp_dir_on_close: false
-crop_root: "runtime/deepeyes_crops"

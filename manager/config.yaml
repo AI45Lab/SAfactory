@@ -34,7 +34,7 @@ cluster:
     default_reuse_container: false
     max_runs_per_container: 0         # 0 means unlimited when reuse is enabled
 
-    # Safactory copies clusters/openclaw_safactory_runner.mjs into each
+    # Safactory copies env/openclaw/runner.mjs into each
     # container. The runner reads one SimulationStartRequest JSON document from
     # stdin, configures OpenClaw to use the Safactory gateway session URL, runs
     # a real `openclaw agent --local` turn, and writes one

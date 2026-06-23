@@ -462,7 +462,7 @@ class DockerContainerBackend(ClusterBackend):
     @staticmethod
     def _resolve_runner_host_path(value: Any) -> Optional[Path]:
         if value is None or str(value).strip() == "":
-            return Path(__file__).with_name("openclaw_safactory_runner.mjs")
+            return Path(__file__).resolve().parents[1] / "env" / "openclaw" / "runner.mjs"
         path = Path(str(value)).expanduser()
         if not path.is_absolute():
             path = Path.cwd() / path
