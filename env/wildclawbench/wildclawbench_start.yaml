@@ -9,8 +9,8 @@ container:
       target: /Users/bin-mac/CodeX/WildClawBench
       mode: rw
 
-    - source: ./clusters/wildclawbench_safactory_runner.py
-      target: /tmp/wildclawbench_safactory_runner.py
+    - source: ./env/wildclawbench/runner.py
+      target: /tmp/safactory-wildclawbench-runner.py
       mode: ro
 
   env:
@@ -43,4 +43,4 @@ container:
     - --add-host=host.docker.internal:host-gateway
 
   idle_command: "tail -f /dev/null"
-  run_command: "python3 /tmp/wildclawbench_safactory_runner.py"
+  run_command: "python3 /tmp/safactory-wildclawbench-runner.py"

@@ -12,6 +12,9 @@ class GatewaySessionBinding:
     upstream_base_url: str | None
     status: str
     last_seen_at: datetime
+    job_id: str | None = None
+    env_name: str | None = None
+    group_id: str | None = None
     request_count: int = 0
     error_count: int = 0
     active_request_count: int = 0

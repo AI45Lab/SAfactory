@@ -5,6 +5,8 @@ from typing import Any, Dict, List
 
 import numpy as np
 
+from core.runtime_metadata import SAFACTORY_INTERNAL_ENV_KEY
+
 
 def _convert_numpy_types(obj: Any) -> Any:
     """递归转换 numpy 类型为 Python 原生类型"""
@@ -128,7 +130,8 @@ def load_yaml_configs(yaml_path: str) -> List[Dict]:
     """加载YAML配置并验证格式"""
     if not os.path.exists(yaml_path):
         raise FileNotFoundError(f"环境配置YAML不存在：{yaml_path}")
-    base_dir = os.path.dirname(os.path.abspath(yaml_path))
+    yaml_abs_path = os.path.abspath(yaml_path)
+    base_dir = os.path.dirname(yaml_abs_path)
 
     with open(yaml_path, "r", encoding="utf-8") as f:
         config_data = yaml.safe_load(f)
@@ -150,6 +153,12 @@ def load_yaml_configs(yaml_path: str) -> List[Dict]:
         
         dataset_path = env.get("dataset")
         dataset_load_mode = str(env.get("dataset_load_mode", "eager")).strip() or "eager"
+        dataset_abs_path = ""
+        dataset_name = ""
+        if dataset_path:
+            dataset_abs_path = dataset_path if os.path.isabs(dataset_path) else os.path.join(base_dir, dataset_path)
+            dataset_abs_path = os.path.abspath(dataset_abs_path)
+            dataset_name = os.path.splitext(os.path.basename(dataset_abs_path))[0]
         
         # 2. 加载 Dataset 数据
         dataset_items = []
@@ -170,6 +179,13 @@ def load_yaml_configs(yaml_path: str) -> List[Dict]:
                 # 合并参数：dataset中的行数据 覆盖/追加到 env_params
                 current_params = base_params.copy()
                 current_params['dataset'] = item
+                current_params[SAFACTORY_INTERNAL_ENV_KEY] = {
+                    "config_path": yaml_abs_path,
+                    "config_dir": base_dir,
+                    "dataset_path": dataset_abs_path,
+                    "dataset_name": dataset_name,
+                    "dataset_load_mode": dataset_load_mode,
+                }
 
                 # 构造最终配置对象
                 config = {
@@ -183,6 +199,13 @@ def load_yaml_configs(yaml_path: str) -> List[Dict]:
         else:
             current_params = base_params.copy()
             current_params['dataset'] = {}
+            current_params[SAFACTORY_INTERNAL_ENV_KEY] = {
+                "config_path": yaml_abs_path,
+                "config_dir": base_dir,
+                "dataset_path": dataset_abs_path,
+                "dataset_name": dataset_name,
+                "dataset_load_mode": dataset_load_mode,
+            }
             config = {
                 "env_name": env_name,
                 "env_num": env_num,

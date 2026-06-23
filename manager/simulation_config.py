@@ -14,7 +14,54 @@ from .types import SimulationRunConfig
 log = logging.getLogger("manager.simulation_config")
 
 
+def load_rjob_global_config(path: str) -> tuple[Dict[str, Any], str]:
+    path = str(path or "").strip()
+    if not path:
+        return {}, ""
+    cfg_path = Path(path).expanduser()
+    if not cfg_path.is_absolute():
+        cfg_path = (Path.cwd() / cfg_path).resolve(strict=False)
+    cfg = load_yaml_file(str(cfg_path))
+    return _rjob_config_section(cfg), str(cfg_path)
+
+
+def _rjob_config_section(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    cluster = cfg.get("cluster") if isinstance(cfg.get("cluster"), dict) else {}
+    merged: Dict[str, Any] = {}
+    if isinstance(cluster.get("rjob"), dict):
+        merged.update(cluster.get("rjob") or {})
+    if isinstance(cfg.get("rjob"), dict):
+        merged.update(cfg.get("rjob") or {})
+    for key in (
+        "cluster_entry",
+        "namespace",
+        "access_key",
+        "secret_key",
+        "verifyssl",
+        "retries",
+        "charged_group",
+        "poll_interval_s",
+        "cleanup_on_finish",
+        "gateway_base_url",
+        "name_prefix",
+        "no_packaging",
+        "auto_delete_duration",
+        "keep_failed_jobs",
+        "submit_concurrency",
+    ):
+        if key in cfg and cfg.get(key) is not None:
+            merged[key] = cfg.get(key)
+    return merged
+
+
+def _config_or_default(section: Dict[str, Any], key: str, default: Any = None) -> Any:
+    return section.get(key, default) if key in section and section.get(key) is not None else default
+
+
 def load_simulation_run_config(args: Any) -> SimulationRunConfig:
+    rjob_config_path = str(getattr(args, "rjob_config", "") or "").strip()
+    rjob_section, rjob_config_path = load_rjob_global_config(rjob_config_path)
+
     pool_size, warm_pool_size, startup_submit_count, followup_submit_batch = derive_pool_sizing(
         configured_pool_size=int(args.pool_size),
         pool_size_override=0,
@@ -60,21 +107,23 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         docker_bin=str(args.docker_bin or "docker"),
         docker_pull_policy=str(args.docker_pull_policy or "never").strip().lower(),
         docker_startup_concurrency=max(1, int(args.docker_startup_concurrency or 1)),
-        rjob_cluster_entry=str(getattr(args, "rjob_cluster_entry", "") or "").strip(),
-        rjob_namespace=str(getattr(args, "rjob_namespace", "") or "").strip(),
-        rjob_access_key=str(getattr(args, "rjob_access_key", "") or "").strip(),
-        rjob_secret_key=str(getattr(args, "rjob_secret_key", "") or "").strip(),
-        rjob_verifyssl=bool(getattr(args, "rjob_verifyssl", True)),
-        rjob_retries=max(0, int(getattr(args, "rjob_retries", 3) or 0)),
-        rjob_poll_interval_s=max(0.1, float(getattr(args, "rjob_poll_interval_s", 5.0) or 5.0)),
-        rjob_cleanup_on_finish=bool(getattr(args, "rjob_cleanup_on_finish", True)),
-        rjob_gateway_base_url=str(getattr(args, "rjob_gateway_base_url", "") or "").rstrip("/"),
-        rjob_name_prefix=str(getattr(args, "rjob_name_prefix", "safactory") or "safactory").strip(),
-        rjob_no_packaging=bool(getattr(args, "rjob_no_packaging", True)),
-        rjob_charged_group=str(getattr(args, "rjob_charged_group", "") or "").strip(),
-        rjob_auto_delete_duration=str(getattr(args, "rjob_auto_delete_duration", "") or "").strip(),
-        rjob_keep_failed_jobs=bool(getattr(args, "rjob_keep_failed_jobs", False)),
-        rjob_submit_concurrency=max(0, int(getattr(args, "rjob_submit_concurrency", 0) or 0)),
+        rjob_cluster_entry=str(_config_or_default(rjob_section, "cluster_entry", getattr(args, "rjob_cluster_entry", "")) or "").strip(),
+        rjob_namespace=str(_config_or_default(rjob_section, "namespace", getattr(args, "rjob_namespace", "")) or "").strip(),
+        rjob_access_key=str(_config_or_default(rjob_section, "access_key", getattr(args, "rjob_access_key", "")) or "").strip(),
+        rjob_secret_key=str(_config_or_default(rjob_section, "secret_key", getattr(args, "rjob_secret_key", "")) or "").strip(),
+        rjob_verifyssl=bool(_config_or_default(rjob_section, "verifyssl", getattr(args, "rjob_verifyssl", True))),
+        rjob_retries=max(0, int(_config_or_default(rjob_section, "retries", getattr(args, "rjob_retries", 3)) or 0)),
+        rjob_poll_interval_s=max(0.1, float(_config_or_default(rjob_section, "poll_interval_s", getattr(args, "rjob_poll_interval_s", 5.0)) or 5.0)),
+        rjob_cleanup_on_finish=bool(_config_or_default(rjob_section, "cleanup_on_finish", getattr(args, "rjob_cleanup_on_finish", True))),
+        rjob_gateway_base_url=str(_config_or_default(rjob_section, "gateway_base_url", getattr(args, "rjob_gateway_base_url", "")) or "").rstrip("/"),
+        rjob_name_prefix=str(_config_or_default(rjob_section, "name_prefix", getattr(args, "rjob_name_prefix", "safactory") or "safactory") or "safactory").strip(),
+        rjob_no_packaging=bool(_config_or_default(rjob_section, "no_packaging", getattr(args, "rjob_no_packaging", True))),
+        rjob_charged_group=str(_config_or_default(rjob_section, "charged_group", getattr(args, "rjob_charged_group", "")) or "").strip(),
+        rjob_auto_delete_duration=str(_config_or_default(rjob_section, "auto_delete_duration", getattr(args, "rjob_auto_delete_duration", "")) or "").strip(),
+        rjob_keep_failed_jobs=bool(_config_or_default(rjob_section, "keep_failed_jobs", getattr(args, "rjob_keep_failed_jobs", False))),
+        rjob_submit_concurrency=max(0, int(_config_or_default(rjob_section, "submit_concurrency", getattr(args, "rjob_submit_concurrency", 0)) or 0)),
+        rjob_config_path=rjob_config_path,
+        rjob_config=rjob_section,
         cleanup_docker_container=bool(getattr(args, "cleanup_docker_container", True)),
         max_workers=max_workers,
         agent_runtime=str(args.agent_runtime),
@@ -108,6 +157,27 @@ def derive_pool_sizing(
 
 
 def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
+    rjob_cfg = dict(cfg.rjob_config or {})
+    rjob_cfg.update(
+        {
+            "cluster_entry": cfg.rjob_cluster_entry,
+            "namespace": cfg.rjob_namespace,
+            "access_key": cfg.rjob_access_key,
+            "secret_key": cfg.rjob_secret_key,
+            "verifyssl": bool(cfg.rjob_verifyssl),
+            "retries": int(cfg.rjob_retries),
+            "poll_interval_s": float(cfg.rjob_poll_interval_s),
+            "cleanup_on_finish": bool(cfg.rjob_cleanup_on_finish),
+            "gateway_base_url": cfg.rjob_gateway_base_url,
+            "name_prefix": cfg.rjob_name_prefix,
+            "no_packaging": bool(cfg.rjob_no_packaging),
+            "charged_group": cfg.rjob_charged_group,
+            "auto_delete_duration": cfg.rjob_auto_delete_duration,
+            "keep_failed_jobs": bool(cfg.rjob_keep_failed_jobs),
+            "submit_concurrency": int(cfg.rjob_submit_concurrency),
+        }
+    )
+    env_types = load_agent_start_config(cfg.agent_start_config)
     return {
         "mode": cfg.mode,
         "pool_size": int(cfg.warm_pool_size),
@@ -123,24 +193,8 @@ def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
                 "cleanup_container_on_finish": bool(cfg.cleanup_docker_container),
                 "remove_on_close": bool(cfg.cleanup_docker_container),
             },
-            "rjob": {
-                "cluster_entry": cfg.rjob_cluster_entry,
-                "namespace": cfg.rjob_namespace,
-                "access_key": cfg.rjob_access_key,
-                "secret_key": cfg.rjob_secret_key,
-                "verifyssl": bool(cfg.rjob_verifyssl),
-                "retries": int(cfg.rjob_retries),
-                "poll_interval_s": float(cfg.rjob_poll_interval_s),
-                "cleanup_on_finish": bool(cfg.rjob_cleanup_on_finish),
-                "gateway_base_url": cfg.rjob_gateway_base_url,
-                "name_prefix": cfg.rjob_name_prefix,
-                "no_packaging": bool(cfg.rjob_no_packaging),
-                "charged_group": cfg.rjob_charged_group,
-                "auto_delete_duration": cfg.rjob_auto_delete_duration,
-                "keep_failed_jobs": bool(cfg.rjob_keep_failed_jobs),
-                "submit_concurrency": int(cfg.rjob_submit_concurrency),
-            },
-            "env_types": load_agent_start_config(cfg.agent_start_config),
+            "rjob": rjob_cfg,
+            "env_types": env_types,
         },
     }
 
@@ -262,6 +316,8 @@ def _normalize_agent_start_rjob(agent_name: Any, spec: Any, cfg_path: Path) -> D
         "topo_group",
         "max_wait_duration",
         "max_running_duration",
+        "embed_python_bin",
+        "python_bin",
     ):
         _copy_non_empty(rjob_raw, rjob, key)
 
@@ -305,6 +361,12 @@ def _normalize_agent_start_rjob(agent_name: Any, spec: Any, cfg_path: Path) -> D
             else:
                 raise ValueError(f"rjob.{key} for {agent_name!r} must be a string or list in {cfg_path}")
 
+    if "embedded_files" in rjob_raw:
+        value = rjob_raw.get("embedded_files") or []
+        if not isinstance(value, list):
+            raise ValueError(f"rjob.embedded_files for {agent_name!r} must be a list in {cfg_path}")
+        rjob["embedded_files"] = [_normalize_embedded_file(item, cfg_path) for item in value]
+
     return rjob
 
 
@@ -328,6 +390,19 @@ def _normalize_mount(mount: Any, cfg_path: Path) -> Any:
             source_path = (Path.cwd() / source_path).resolve(strict=False)
         normalized["source"] = str(source_path)
     return normalized
+
+
+def _normalize_embedded_file(item: Any, cfg_path: Path) -> Dict[str, str]:
+    if not isinstance(item, dict):
+        raise ValueError(f"embedded_files entries must be mappings in {cfg_path}")
+    source = item.get("source") or item.get("hostPath") or item.get("host_path")
+    target = item.get("target") or item.get("containerPath") or item.get("container_path")
+    if not source or not target:
+        raise ValueError(f"embedded_files entries require source and target in {cfg_path}")
+    source_path = Path(str(source)).expanduser()
+    if not source_path.is_absolute():
+        source_path = (cfg_path.parent / source_path).resolve(strict=False)
+    return {"source": str(source_path), "target": str(target)}
 
 
 def expand_rl_group_size(yaml_config_list: List[Dict[str, Any]], group_size: int) -> List[Dict[str, Any]]:

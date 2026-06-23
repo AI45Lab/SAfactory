@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Protocol
 
 from clusters.docker_clusters import DockerContainerBackend, DockerContainerRecord
@@ -170,6 +171,7 @@ class RJobLeaseAllocator:
         runtime_config = dict(rjob_cfg)
         runtime_config["env"] = env
         runtime_config["docker_volumes"] = list(docker_cfg.get("volumes", []) or [])
+        runtime_config["embedded_files"] = _merge_embedded_files(docker_cfg, rjob_cfg)
 
         pending_name = f"rjob-pending-{str(env_id).replace('-', '')[:12]}"
         return PoolEntry(
@@ -212,6 +214,10 @@ class RJobLeaseAllocator:
     @staticmethod
     def _validate_mounts(env_name: str, docker_cfg: Dict[str, Any], rjob_cfg: Dict[str, Any]) -> None:
         docker_volumes = docker_cfg.get("volumes", docker_cfg.get("mounts", [])) or []
+        docker_volumes = [
+            volume for volume in docker_volumes
+            if not _is_embeddable_file_mount(volume)
+        ]
         rjob_mounts = rjob_cfg.get("mount_config") or rjob_cfg.get("mount") or []
         if docker_volumes and not rjob_mounts:
             raise RuntimeError(
@@ -226,3 +232,48 @@ def _merge_dicts(*values: Any) -> Dict[str, Any]:
         if isinstance(value, dict):
             merged.update(value)
     return merged
+
+
+def _merge_embedded_files(docker_cfg: Dict[str, Any], rjob_cfg: Dict[str, Any]) -> List[Dict[str, str]]:
+    files: List[Dict[str, str]] = []
+    for item in rjob_cfg.get("embedded_files") or []:
+        normalized = _normalize_embedded_file(item)
+        if normalized:
+            files.append(normalized)
+    for volume in docker_cfg.get("volumes", docker_cfg.get("mounts", [])) or []:
+        normalized = _embedded_file_from_mount(volume)
+        if normalized and normalized not in files:
+            files.append(normalized)
+    return files
+
+
+def _is_embeddable_file_mount(value: Any) -> bool:
+    return _embedded_file_from_mount(value) is not None
+
+
+def _embedded_file_from_mount(value: Any) -> Dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    source = str(value.get("source") or value.get("hostPath") or value.get("host_path") or "").strip()
+    target = str(value.get("target") or value.get("containerPath") or value.get("container_path") or "").strip()
+    if not source or not target:
+        return None
+    source_path = Path(source).expanduser()
+    if not source_path.is_file():
+        return None
+    return {"source": str(source_path), "target": target}
+
+
+def _normalize_embedded_file(value: Any) -> Dict[str, str] | None:
+    if isinstance(value, str):
+        return None
+    if not isinstance(value, dict):
+        return None
+    source = str(value.get("source") or value.get("hostPath") or value.get("host_path") or "").strip()
+    target = str(value.get("target") or value.get("containerPath") or value.get("container_path") or "").strip()
+    if not source or not target:
+        return None
+    source_path = Path(source).expanduser()
+    if not source_path.is_absolute():
+        source_path = (Path.cwd() / source_path).resolve(strict=False)
+    return {"source": str(source_path), "target": target}

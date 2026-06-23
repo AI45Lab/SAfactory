@@ -72,6 +72,8 @@ class SimulationRunConfig:
     rjob_auto_delete_duration: str = ""
     rjob_keep_failed_jobs: bool = False
     rjob_submit_concurrency: int = 0
+    rjob_config_path: str = ""
+    rjob_config: Dict[str, Any] = field(default_factory=dict)
     cleanup_docker_container: bool = True
     max_workers: Optional[int] = None
     agent_runtime: str = "agent_start"

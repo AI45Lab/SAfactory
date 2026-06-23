@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from gateway.config import GatewayConfig
 from gateway.models import GatewaySessionBinding, GatewayTelemetryRecord
 
 GATEWAY_STORAGE_NAMESPACE = "gateway"
+log = logging.getLogger("gateway.storage")
 
 
 @dataclass
@@ -23,11 +25,27 @@ class _CachedSession:
     last_access_monotonic: float
 
 
+@dataclass(frozen=True)
+class _SessionEnvironment:
+    job_id: str
+    env_name: str
+    group_id: str | None = None
+
+
+def _row_value(row: Any, key: str, index: int) -> Any:
+    keys = row.keys() if hasattr(row, "keys") else ()
+    if key in keys:
+        return row[key]
+    return row[index]
+
+
 class GatewayStorage:
     def __init__(self, cfg: GatewayConfig, data_manager: DataManager):
         self.cfg = cfg
         self.data_manager = data_manager
         self._sessions: dict[tuple[str, str], _CachedSession] = {}
+        self._environments: dict[str, _SessionEnvironment] = {}
+        self._patched_environment_sessions: set[str] = set()
         self._lock = asyncio.Lock()
 
     @classmethod
@@ -48,20 +66,23 @@ class GatewayStorage:
         binding: GatewaySessionBinding,
         requested_model: str,
     ) -> SessionContext:
+        await self.bind_session_environment(binding)
         await self._evict_expired()
         now = time.monotonic()
         cache_key = (binding.session_id, requested_model)
         async with self._lock:
             cached = self._sessions.get(cache_key)
             if cached is not None:
+                self._apply_binding_to_session(cached.session, binding)
                 cached.last_access_monotonic = now
                 return cached.session
 
             maybe_session = self.data_manager.create_session(
                 env_id=binding.session_id,
-                env_name="gateway",
+                env_name=binding.env_name or "gateway",
                 llm_model=requested_model,
-                group_id="",
+                group_id=binding.group_id or "",
+                job_id=binding.job_id or GATEWAY_STORAGE_NAMESPACE,
             )
             session = await maybe_session if inspect.isawaitable(maybe_session) else maybe_session
             self._sessions[cache_key] = _CachedSession(
@@ -69,6 +90,172 @@ class GatewayStorage:
                 last_access_monotonic=now,
             )
             return session
+
+    async def bind_session_environment(self, binding: GatewaySessionBinding) -> None:
+        if binding.job_id and binding.env_name:
+            return
+
+        environment = await self._resolve_session_environment(binding.session_id)
+        if environment is None:
+            return
+
+        binding.job_id = environment.job_id
+        binding.env_name = environment.env_name
+        binding.group_id = environment.group_id
+
+        async with self._lock:
+            for (session_id, _model), cached in self._sessions.items():
+                if session_id == binding.session_id:
+                    self._apply_binding_to_session(cached.session, binding)
+        await self._patch_session_steps_environment_once(binding.session_id, environment)
+
+    async def _resolve_session_environment(self, session_id: str) -> _SessionEnvironment | None:
+        async with self._lock:
+            cached = self._environments.get(session_id)
+        if cached is not None:
+            return cached
+
+        environment = await asyncio.to_thread(self._query_session_environment, session_id)
+        if environment is None:
+            return None
+
+        async with self._lock:
+            self._environments[session_id] = environment
+        return environment
+
+    def _query_session_environment(self, session_id: str) -> _SessionEnvironment | None:
+        try:
+            conn = self.data_manager.get_sync_connection()
+        except Exception as exc:
+            log.debug("Cannot open sync storage connection for session environment lookup: %s", exc)
+            return None
+
+        if conn is None:
+            return None
+
+        try:
+            cursor = conn.execute(
+                """
+                SELECT job_id, env_name, group_id
+                FROM job_environments
+                WHERE env_id = ? AND is_deleted = 0
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (session_id,),
+            )
+            row = cursor.fetchone()
+        except Exception as exc:
+            log.warning("Failed to resolve gateway session environment for session_id=%s: %s", session_id, exc)
+            return None
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        if row is None:
+            return None
+
+        job_id = str(_row_value(row, "job_id", 0))
+        env_name = str(_row_value(row, "env_name", 1))
+        group_id = _row_value(row, "group_id", 2)
+        return _SessionEnvironment(
+            job_id=job_id,
+            env_name=env_name,
+            group_id=str(group_id) if group_id is not None else None,
+        )
+
+    async def _patch_session_steps_environment_once(
+        self,
+        session_id: str,
+        environment: _SessionEnvironment,
+    ) -> None:
+        async with self._lock:
+            if session_id in self._patched_environment_sessions:
+                return
+            self._patched_environment_sessions.add(session_id)
+
+        try:
+            await asyncio.to_thread(self._patch_session_steps_environment, session_id, environment)
+        except Exception:
+            async with self._lock:
+                self._patched_environment_sessions.discard(session_id)
+            raise
+
+    def _patch_session_steps_environment(
+        self,
+        session_id: str,
+        environment: _SessionEnvironment,
+    ) -> None:
+        try:
+            conn = self.data_manager.get_sync_connection()
+        except Exception as exc:
+            log.debug("Cannot open sync storage connection for session step environment patch: %s", exc)
+            return
+
+        if conn is None:
+            return
+
+        try:
+            if environment.group_id is None:
+                conn.execute(
+                    """
+                    UPDATE session_steps
+                    SET job_id = ?, env_name = ?
+                    WHERE session_id = ?
+                      AND (
+                        job_id IS NULL OR job_id != ?
+                        OR env_name IS NULL OR env_name != ?
+                      )
+                    """,
+                    (
+                        environment.job_id,
+                        environment.env_name,
+                        session_id,
+                        environment.job_id,
+                        environment.env_name,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE session_steps
+                    SET job_id = ?, env_name = ?, group_id = ?
+                    WHERE session_id = ?
+                      AND (
+                        job_id IS NULL OR job_id != ?
+                        OR env_name IS NULL OR env_name != ?
+                        OR group_id IS NULL OR group_id != ?
+                      )
+                    """,
+                    (
+                        environment.job_id,
+                        environment.env_name,
+                        environment.group_id,
+                        session_id,
+                        environment.job_id,
+                        environment.env_name,
+                        environment.group_id,
+                    ),
+                )
+            conn.commit()
+        except Exception as exc:
+            log.warning("Failed to patch session_steps environment for session_id=%s: %s", session_id, exc)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _apply_binding_to_session(session: SessionContext, binding: GatewaySessionBinding) -> None:
+        if binding.job_id:
+            session.job_id = binding.job_id
+        if binding.env_name:
+            session.env_name = binding.env_name
+        if binding.group_id:
+            session.group_id = binding.group_id
 
     async def record_inference_step(
         self,

@@ -8,7 +8,7 @@ container:
       target: /workspace
       mode: rw
 
-    - source: ./clusters/openclaw_safactory_runner.mjs
+    - source: ./env/openclaw/runner.mjs
       target: /tmp/safactory-openclaw-runner.mjs
       mode: ro
 

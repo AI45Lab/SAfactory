@@ -125,6 +125,39 @@ class DataManager:
             is_trainable=is_trainable,
         )
 
+    async def update_session_step(
+        self,
+        session_id: str,
+        step_id: int,
+        updates: Dict[str, Any],
+    ) -> int:
+        """
+        Update one session step by session_id and step_id.
+
+        Returns the number of matched records.
+        """
+        return await self.strategy.update_session_step(
+            session_id=session_id,
+            step_id=step_id,
+            updates=updates,
+        )
+
+    async def mark_latest_session_completed(
+        self,
+        session_id: str,
+        llm_model: Optional[str] = None,
+    ) -> int:
+        """
+        Mark the latest persisted trajectory row for a session as completed.
+        When llm_model is provided, only rows for that model are considered.
+
+        Returns the number of updated records.
+        """
+        return await self.strategy.mark_latest_session_completed(
+            session_id=session_id,
+            llm_model=llm_model,
+        )
+
     async def close(self) -> None:
         """Close the storage strategy"""
         await self.strategy.close()

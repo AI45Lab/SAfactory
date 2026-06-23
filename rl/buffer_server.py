@@ -322,38 +322,35 @@ def start_aievobox_process(data: dict):
     # Build launcher.py command line arguments
     aievobox_root = os.environ.get("AIEVOBOX_ROOT", "/root/AIEvoBox")
     launcher_script = os.path.join(aievobox_root, "launcher.py")
-    env_root = get_env("AIEVOBOX_ENV_ROOT")
-    env_config = os.environ.get("AIEVOBOX_ENV_CONFIG")
+    agent_root = get_env("AIEVOBOX_AGENT_ROOT") or "env"
+    agent_config = os.environ.get("AIEVOBOX_AGENT_CONFIG")
     max_steps = int(get_env("AIEVOBOX_MAX_STEPS") or 10)
-    message_cut = int(get_env("AIEVOBOX_MESSAGE_CUT") or 0)
     llm_model = get_env("RL_MODEL") or "default"
     llm_temperature = float(get_env("LLM_TEMPERATURE") or 1.0)
     pool_size = int(get_env("AIEVOBOX_POOL_SIZE") or 16)
     rl_epoch = int(get_env("RL_EPOCH") or 1)
-    env_transport = os.environ.get("AIEVOBOX_ENV_TRANSPORT", "http")
+    gateway_base_url = os.environ.get("AIEVOBOX_GATEWAY_BASE_URL", llm_proxy_url).rstrip("/")
 
     cmd = [
         "python3", launcher_script,
+        "--mode", "docker",
         "--db-path", db_url,
         "--storage-type", storage_type,
-        *(["--env-config", env_config] if env_config else ["--env-root", env_root]),
-        "--llm-base-url", llm_proxy_url,
+        *(["--agent-config", agent_config] if agent_config else ["--agent-root", agent_root]),
+        "--gateway-base-url", gateway_base_url,
         "--llm-model", llm_model,
         "--llm-temperature", str(llm_temperature),
         "--max-steps", str(max_steps),
-        "--message-cut", str(message_cut),
         "--pool-size", str(pool_size),
         "--job-id", job_session,
         "--no-rebuild-table",
-        "--rl-use-session-suffix-url",
         "--rl-group-size", str(group_size),
         "--rl-epoch", str(rl_epoch),
-        "--env-transport", env_transport,
     ]
 
     logger.info(f"Starting launcher.py: {' '.join(cmd)}")
     logger.info(f"Config: group_size={group_size}, db_url={db_url}")
-    logger.info(f"LLM Proxy URL: {llm_proxy_url}")
+    logger.info(f"Gateway base URL: {gateway_base_url}")
 
     try:
         aievobox_process = subprocess.Popen(

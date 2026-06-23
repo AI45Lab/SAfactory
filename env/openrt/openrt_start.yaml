@@ -12,8 +12,8 @@ container:
       target: /app/results
       mode: rw
 
-    - source: ./clusters/openrt_safactory_runner.py
-      target: /tmp/openrt_safactory_runner.py
+    - source: ./env/openrt/runner.py
+      target: /tmp/safactory-openrt-runner.py
       mode: ro
 
   env:
@@ -31,4 +31,4 @@ container:
     - --add-host=host.docker.internal:host-gateway
 
   idle_command: "tail -f /dev/null"
-  run_command: "python /tmp/openrt_safactory_runner.py"
+  run_command: "python /tmp/safactory-openrt-runner.py"
