@@ -56,23 +56,3 @@ llm_routes:
     api_key: null
     supports_stream: true
     max_concurrency: 256
-  yinlian_v5_1_2_5e-6_32k:
-    base_url: http://10.140.158.149:21002/v1
-    api_key: sk-d-dev
-    supports_stream: true
-    max_concurrency: 256
-  deepseek-ai/DeepSeek-V3:
-    base_url: http://35.220.164.252:3888/v1/
-    api_key: sk-Qdt1nxa9tx6FdbJCVA5zWePXFxJ6cELzuC7aeQjl3RuYqnqO
-    supports_stream: true
-    max_concurrency: 256
-  gpt-4o-mini:
-    base_url: http://35.220.164.252:3888/v1/
-    api_key: sk-Qdt1nxa9tx6FdbJCVA5zWePXFxJ6cELzuC7aeQjl3RuYqnqO
-    supports_stream: true
-    max_concurrency: 256
-  yinlian_qwen_base_0617_num_1_2_32k_gspo140:
-    base_url: http://10.140.158.149:21002/v1
-    api_key: sk-d-dev
-    supports_stream: true
-    max_concurrency: 256
