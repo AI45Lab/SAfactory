@@ -19,7 +19,6 @@ async def main(argv: Sequence[str] | None = None) -> int:
         run_name=args.run_name,
         console_level=args.console_log_level,
         file_level=args.file_log_level,
-        max_bytes=args.log_max_bytes,
         backup_count=args.log_backup_count,
         debug_loggers=["sqlite_strategy", "yaml_aggregator"] if args.debug_log else None,
     )

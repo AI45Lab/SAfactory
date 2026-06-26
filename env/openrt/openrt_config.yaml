@@ -9,9 +9,9 @@ environments:
       task_family: openrt
       api_key: EMPTY
       default_openrt_dataset: harmbench
-      default_attacker_model: kimi-k26-w4a8
-      default_judge_model: glm51
+      default_attacker_model:  dsv4pro
+      default_judge_model: dsv4pro
       default_target_models:
-        - dsv4pro
+        - yinlian_qwen_base_0617_num_1_2_32k_gspo140
       max_workers: 50
       evaluator_workers: 32

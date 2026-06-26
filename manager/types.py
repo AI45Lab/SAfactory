@@ -37,7 +37,6 @@ class PoolEntry:
 @dataclass(frozen=True, slots=True)
 class SimulationRunConfig:
     job_id: str
-    exp_config_path: str
     agent_root: str
     agent_config: Optional[str]
     agent_start_config: Optional[str]
@@ -57,26 +56,9 @@ class SimulationRunConfig:
     docker_bin: str
     docker_pull_policy: str
     docker_startup_concurrency: int
-    rjob_cluster_entry: str = ""
-    rjob_namespace: str = ""
-    rjob_access_key: str = ""
-    rjob_secret_key: str = ""
-    rjob_verifyssl: bool = True
-    rjob_retries: int = 3
-    rjob_poll_interval_s: float = 5.0
-    rjob_cleanup_on_finish: bool = True
-    rjob_gateway_base_url: str = ""
-    rjob_name_prefix: str = "safactory"
-    rjob_no_packaging: bool = True
-    rjob_charged_group: str = ""
-    rjob_auto_delete_duration: str = ""
-    rjob_keep_failed_jobs: bool = False
-    rjob_submit_concurrency: int = 0
-    rjob_config_path: str = ""
     rjob_config: Dict[str, Any] = field(default_factory=dict)
     cleanup_docker_container: bool = True
     max_workers: Optional[int] = None
-    agent_runtime: str = "agent_start"
     rebuild_table: bool = False
     enable_buffer: bool = True
     buffer_size: int = 100
@@ -85,7 +67,6 @@ class SimulationRunConfig:
     rl_epoch: int = 1
     evaluation_enabled: bool = False
     evaluation_config: Dict[str, Any] = field(default_factory=dict)
-    eval_task_dir_name: str = "eval_tasks"
     strict_eval_tasks: bool = False
 
 

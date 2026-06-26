@@ -13,16 +13,36 @@ from .types import SimulationRunConfig
 
 log = logging.getLogger("manager.simulation_config")
 
+DEFAULT_SQLITE_DB_URL = "sqlite://env_trajs.db"
 
-def load_rjob_global_config(path: str) -> tuple[Dict[str, Any], str]:
+_RJOB_DEFAULT_CONFIG: Dict[str, Any] = {
+    "cluster_entry": "",
+    "namespace": "",
+    "access_key": "",
+    "secret_key": "",
+    "verifyssl": True,
+    "retries": 3,
+    "charged_group": "",
+    "poll_interval_s": 5.0,
+    "cleanup_on_finish": True,
+    "gateway_base_url": "",
+    "name_prefix": "safactory",
+    "no_packaging": True,
+    "auto_delete_duration": "",
+    "keep_failed_jobs": False,
+    "submit_concurrency": 0,
+}
+
+
+def load_rjob_global_config(path: str) -> Dict[str, Any]:
     path = str(path or "").strip()
     if not path:
-        return {}, ""
+        return _normalize_rjob_config({})
     cfg_path = Path(path).expanduser()
     if not cfg_path.is_absolute():
         cfg_path = (Path.cwd() / cfg_path).resolve(strict=False)
     cfg = load_yaml_file(str(cfg_path))
-    return _rjob_config_section(cfg), str(cfg_path)
+    return _normalize_rjob_config(_rjob_config_section(cfg))
 
 
 def _rjob_config_section(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -32,35 +52,57 @@ def _rjob_config_section(cfg: Dict[str, Any]) -> Dict[str, Any]:
         merged.update(cluster.get("rjob") or {})
     if isinstance(cfg.get("rjob"), dict):
         merged.update(cfg.get("rjob") or {})
-    for key in (
-        "cluster_entry",
-        "namespace",
-        "access_key",
-        "secret_key",
-        "verifyssl",
-        "retries",
-        "charged_group",
-        "poll_interval_s",
-        "cleanup_on_finish",
-        "gateway_base_url",
-        "name_prefix",
-        "no_packaging",
-        "auto_delete_duration",
-        "keep_failed_jobs",
-        "submit_concurrency",
-    ):
+    for key in _RJOB_DEFAULT_CONFIG:
         if key in cfg and cfg.get(key) is not None:
             merged[key] = cfg.get(key)
     return merged
 
 
-def _config_or_default(section: Dict[str, Any], key: str, default: Any = None) -> Any:
-    return section.get(key, default) if key in section and section.get(key) is not None else default
+def _normalize_rjob_config(section: Dict[str, Any]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = dict(_RJOB_DEFAULT_CONFIG)
+    if isinstance(section, dict):
+        merged.update(section)
+
+    for key in (
+        "cluster_entry",
+        "namespace",
+        "access_key",
+        "secret_key",
+        "charged_group",
+        "gateway_base_url",
+        "name_prefix",
+        "auto_delete_duration",
+    ):
+        merged[key] = str(merged.get(key) or "").strip()
+
+    merged["verifyssl"] = _as_bool(merged.get("verifyssl"), default=True)
+    merged["cleanup_on_finish"] = _as_bool(merged.get("cleanup_on_finish"), default=True)
+    merged["no_packaging"] = _as_bool(merged.get("no_packaging"), default=True)
+    merged["keep_failed_jobs"] = _as_bool(merged.get("keep_failed_jobs"), default=False)
+    merged["retries"] = max(0, int(merged.get("retries") or 0))
+    merged["poll_interval_s"] = max(0.1, float(merged.get("poll_interval_s") or 5.0))
+    merged["submit_concurrency"] = max(0, int(merged.get("submit_concurrency") or 0))
+    merged["name_prefix"] = merged["name_prefix"] or "safactory"
+    return merged
+
+
+def _as_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+    return bool(value)
 
 
 def load_simulation_run_config(args: Any) -> SimulationRunConfig:
-    rjob_config_path = str(getattr(args, "rjob_config", "") or "").strip()
-    rjob_section, rjob_config_path = load_rjob_global_config(rjob_config_path)
+    rjob_config_arg = str(getattr(args, "rjob_config", "") or "").strip()
+    rjob_section = load_rjob_global_config(rjob_config_arg)
 
     pool_size, warm_pool_size, startup_submit_count, followup_submit_batch = derive_pool_sizing(
         configured_pool_size=int(args.pool_size),
@@ -85,14 +127,17 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
     agent_config = getattr(args, "agent_config", None)
     agent_start_config = getattr(args, "agent_start_config", None)
 
+    storage_type = str(args.storage_type or "sqlite").strip().lower()
+    db_url = _db_url_for_storage(storage_type, getattr(args, "db_path", None))
+    _validate_storage_db_url(storage_type, db_url)
+
     return SimulationRunConfig(
         job_id=job_id,
-        exp_config_path=str(args.exp_config),
         agent_root=str(args.agent_root),
         agent_config=None if agent_config is None else str(agent_config),
         agent_start_config=None if agent_start_config is None else str(agent_start_config),
-        storage_type=str(args.storage_type),
-        db_url=str(args.db_path),
+        storage_type=storage_type,
+        db_url=db_url,
         pool_size=pool_size,
         warm_pool_size=warm_pool_size,
         startup_submit_count=startup_submit_count,
@@ -107,26 +152,9 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         docker_bin=str(args.docker_bin or "docker"),
         docker_pull_policy=str(args.docker_pull_policy or "never").strip().lower(),
         docker_startup_concurrency=max(1, int(args.docker_startup_concurrency or 1)),
-        rjob_cluster_entry=str(_config_or_default(rjob_section, "cluster_entry", getattr(args, "rjob_cluster_entry", "")) or "").strip(),
-        rjob_namespace=str(_config_or_default(rjob_section, "namespace", getattr(args, "rjob_namespace", "")) or "").strip(),
-        rjob_access_key=str(_config_or_default(rjob_section, "access_key", getattr(args, "rjob_access_key", "")) or "").strip(),
-        rjob_secret_key=str(_config_or_default(rjob_section, "secret_key", getattr(args, "rjob_secret_key", "")) or "").strip(),
-        rjob_verifyssl=bool(_config_or_default(rjob_section, "verifyssl", getattr(args, "rjob_verifyssl", True))),
-        rjob_retries=max(0, int(_config_or_default(rjob_section, "retries", getattr(args, "rjob_retries", 3)) or 0)),
-        rjob_poll_interval_s=max(0.1, float(_config_or_default(rjob_section, "poll_interval_s", getattr(args, "rjob_poll_interval_s", 5.0)) or 5.0)),
-        rjob_cleanup_on_finish=bool(_config_or_default(rjob_section, "cleanup_on_finish", getattr(args, "rjob_cleanup_on_finish", True))),
-        rjob_gateway_base_url=str(_config_or_default(rjob_section, "gateway_base_url", getattr(args, "rjob_gateway_base_url", "")) or "").rstrip("/"),
-        rjob_name_prefix=str(_config_or_default(rjob_section, "name_prefix", getattr(args, "rjob_name_prefix", "safactory") or "safactory") or "safactory").strip(),
-        rjob_no_packaging=bool(_config_or_default(rjob_section, "no_packaging", getattr(args, "rjob_no_packaging", True))),
-        rjob_charged_group=str(_config_or_default(rjob_section, "charged_group", getattr(args, "rjob_charged_group", "")) or "").strip(),
-        rjob_auto_delete_duration=str(_config_or_default(rjob_section, "auto_delete_duration", getattr(args, "rjob_auto_delete_duration", "")) or "").strip(),
-        rjob_keep_failed_jobs=bool(_config_or_default(rjob_section, "keep_failed_jobs", getattr(args, "rjob_keep_failed_jobs", False))),
-        rjob_submit_concurrency=max(0, int(_config_or_default(rjob_section, "submit_concurrency", getattr(args, "rjob_submit_concurrency", 0)) or 0)),
-        rjob_config_path=rjob_config_path,
         rjob_config=rjob_section,
         cleanup_docker_container=bool(getattr(args, "cleanup_docker_container", True)),
         max_workers=max_workers,
-        agent_runtime=str(args.agent_runtime),
         rebuild_table=bool(args.rebuild_table),
         enable_buffer=bool(args.enable_buffer),
         buffer_size=int(args.buffer_size),
@@ -135,9 +163,25 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         rl_epoch=max(1, int(args.rl_epoch)),
         evaluation_enabled=bool(args.evaluation_enabled),
         evaluation_config=evaluation_config,
-        eval_task_dir_name=str(args.eval_task_dir_name or "eval_tasks").strip() or "eval_tasks",
         strict_eval_tasks=bool(args.strict_eval_tasks),
     )
+
+
+def _db_url_for_storage(storage_type: str, raw_db_path: Any) -> str:
+    if storage_type == "sqlite":
+        return str(raw_db_path or DEFAULT_SQLITE_DB_URL).strip()
+    if storage_type == "cloud":
+        if raw_db_path:
+            log.warning("cloud storage ignores --db-path and uses wt-data-gateway default database URIs")
+        return ""
+    raise ValueError(f"Unsupported storage type: {storage_type!r}")
+
+
+def _validate_storage_db_url(storage_type: str, db_url: str) -> None:
+    if db_url.startswith("--db-path"):
+        raise ValueError("--db-path value must be a URI only, for example sqlite://env_trajs.db")
+    if storage_type == "sqlite" and not db_url.startswith("sqlite://"):
+        raise ValueError(f"sqlite storage requires a sqlite:// db path, got {db_url!r}")
 
 
 def derive_pool_sizing(
@@ -158,33 +202,15 @@ def derive_pool_sizing(
 
 def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
     rjob_cfg = dict(cfg.rjob_config or {})
-    rjob_cfg.update(
-        {
-            "cluster_entry": cfg.rjob_cluster_entry,
-            "namespace": cfg.rjob_namespace,
-            "access_key": cfg.rjob_access_key,
-            "secret_key": cfg.rjob_secret_key,
-            "verifyssl": bool(cfg.rjob_verifyssl),
-            "retries": int(cfg.rjob_retries),
-            "poll_interval_s": float(cfg.rjob_poll_interval_s),
-            "cleanup_on_finish": bool(cfg.rjob_cleanup_on_finish),
-            "gateway_base_url": cfg.rjob_gateway_base_url,
-            "name_prefix": cfg.rjob_name_prefix,
-            "no_packaging": bool(cfg.rjob_no_packaging),
-            "charged_group": cfg.rjob_charged_group,
-            "auto_delete_duration": cfg.rjob_auto_delete_duration,
-            "keep_failed_jobs": bool(cfg.rjob_keep_failed_jobs),
-            "submit_concurrency": int(cfg.rjob_submit_concurrency),
-        }
-    )
     env_types = load_agent_start_config(cfg.agent_start_config)
+    database_cfg: Dict[str, Any] = {"driver": cfg.storage_type}
+    if cfg.storage_type == "sqlite":
+        database_cfg["sqlite_path"] = cfg.db_url
+
     return {
         "mode": cfg.mode,
         "pool_size": int(cfg.warm_pool_size),
-        "database": {
-            "driver": cfg.storage_type,
-            "sqlite_path": cfg.db_url,
-        },
+        "database": database_cfg,
         "cluster": {
             "docker": {
                 "bin": cfg.docker_bin,

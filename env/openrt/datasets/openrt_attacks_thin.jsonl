@@ -1,96 +1,96 @@
 {"task_id":"0001","attack":"CodeAttack","dataset":"harmbench045"}
 {"task_id":"0002","attack":"CodeAttack","dataset":"harmbench081"}
-{"task_id":"0003","attack":"CodeAttack","dataset":"harmbench087"}
-{"task_id":"0004","attack":"CodeAttack","dataset":"harmbench090"}
-{"task_id":"0005","attack":"CodeAttack","dataset":"harmbench107"}
-{"task_id":"0006","attack":"CodeAttack","dataset":"harmbench191"}
-{"task_id":"0007","attack":"AutoDANTurbo","dataset":"harmbench014"}
-{"task_id":"0008","attack":"AutoDANTurbo","dataset":"harmbench020"}
-{"task_id":"0009","attack":"AutoDANTurbo","dataset":"harmbench024"}
-{"task_id":"0010","attack":"AutoDANTurbo","dataset":"harmbench036"}
-{"task_id":"0011","attack":"AutoDANTurbo","dataset":"harmbench166"}
-{"task_id":"0012","attack":"AutoDANTurbo","dataset":"harmbench194"}
-{"task_id":"0013","attack":"CipherChat","dataset":"harmbench016"}
-{"task_id":"0014","attack":"CipherChat","dataset":"harmbench099"}
-{"task_id":"0015","attack":"CipherChat","dataset":"harmbench129"}
-{"task_id":"0016","attack":"CipherChat","dataset":"harmbench155"}
-{"task_id":"0017","attack":"CipherChat","dataset":"harmbench156"}
-{"task_id":"0018","attack":"CipherChat","dataset":"harmbench183"}
-{"task_id":"0019","attack":"CoA","dataset":"harmbench001"}
-{"task_id":"0020","attack":"CoA","dataset":"harmbench068"}
-{"task_id":"0021","attack":"CoA","dataset":"harmbench102"}
-{"task_id":"0022","attack":"CoA","dataset":"harmbench127"}
-{"task_id":"0023","attack":"CoA","dataset":"harmbench144"}
-{"task_id":"0024","attack":"CoA","dataset":"harmbench175"}
-{"task_id":"0025","attack":"Crescendo","dataset":"harmbench042"}
-{"task_id":"0026","attack":"Crescendo","dataset":"harmbench074"}
-{"task_id":"0027","attack":"Crescendo","dataset":"harmbench086"}
-{"task_id":"0028","attack":"Crescendo","dataset":"harmbench172"}
-{"task_id":"0029","attack":"Crescendo","dataset":"harmbench173"}
-{"task_id":"0030","attack":"Crescendo","dataset":"harmbench178"}
-{"task_id":"0031","attack":"DeepInception","dataset":"harmbench006"}
-{"task_id":"0032","attack":"DeepInception","dataset":"harmbench044"}
-{"task_id":"0033","attack":"DeepInception","dataset":"harmbench088"}
-{"task_id":"0034","attack":"DeepInception","dataset":"harmbench126"}
-{"task_id":"0035","attack":"DeepInception","dataset":"harmbench148"}
-{"task_id":"0036","attack":"DeepInception","dataset":"harmbench161"}
-{"task_id":"0037","attack":"FlipAttack","dataset":"harmbench025"}
-{"task_id":"0038","attack":"FlipAttack","dataset":"harmbench065"}
-{"task_id":"0039","attack":"FlipAttack","dataset":"harmbench069"}
-{"task_id":"0040","attack":"FlipAttack","dataset":"harmbench075"}
-{"task_id":"0041","attack":"FlipAttack","dataset":"harmbench110"}
-{"task_id":"0042","attack":"FlipAttack","dataset":"harmbench141"}
-{"task_id":"0043","attack":"ICA","dataset":"harmbench015"}
-{"task_id":"0044","attack":"ICA","dataset":"harmbench034"}
-{"task_id":"0045","attack":"ICA","dataset":"harmbench083"}
-{"task_id":"0046","attack":"ICA","dataset":"harmbench091"}
-{"task_id":"0047","attack":"ICA","dataset":"harmbench169"}
-{"task_id":"0048","attack":"ICA","dataset":"harmbench174"}
-{"task_id":"0049","attack":"JailBroken","dataset":"harmbench058"}
-{"task_id":"0050","attack":"JailBroken","dataset":"harmbench076"}
-{"task_id":"0051","attack":"JailBroken","dataset":"harmbench114"}
-{"task_id":"0052","attack":"JailBroken","dataset":"harmbench150"}
-{"task_id":"0053","attack":"JailBroken","dataset":"harmbench177"}
-{"task_id":"0054","attack":"JailBroken","dataset":"harmbench184"}
-{"task_id":"0055","attack":"Mousetrap","dataset":"harmbench043"}
-{"task_id":"0056","attack":"Mousetrap","dataset":"harmbench078"}
-{"task_id":"0057","attack":"Mousetrap","dataset":"harmbench094"}
-{"task_id":"0058","attack":"Mousetrap","dataset":"harmbench159"}
-{"task_id":"0059","attack":"Mousetrap","dataset":"harmbench189"}
-{"task_id":"0060","attack":"Mousetrap","dataset":"harmbench192"}
-{"task_id":"0061","attack":"Multilingual","dataset":"harmbench041"}
-{"task_id":"0062","attack":"Multilingual","dataset":"harmbench066"}
-{"task_id":"0063","attack":"Multilingual","dataset":"harmbench092"}
-{"task_id":"0064","attack":"Multilingual","dataset":"harmbench095"}
-{"task_id":"0065","attack":"Multilingual","dataset":"harmbench096"}
-{"task_id":"0066","attack":"Multilingual","dataset":"harmbench142"}
-{"task_id":"0067","attack":"PAIR","dataset":"harmbench021"}
-{"task_id":"0068","attack":"PAIR","dataset":"harmbench077"}
-{"task_id":"0069","attack":"PAIR","dataset":"harmbench082"}
-{"task_id":"0070","attack":"PAIR","dataset":"harmbench089"}
-{"task_id":"0071","attack":"PAIR","dataset":"harmbench101"}
-{"task_id":"0072","attack":"PAIR","dataset":"harmbench123"}
-{"task_id":"0073","attack":"Prefill","dataset":"harmbench106"}
-{"task_id":"0074","attack":"Prefill","dataset":"harmbench111"}
-{"task_id":"0075","attack":"Prefill","dataset":"harmbench152"}
-{"task_id":"0076","attack":"Prefill","dataset":"harmbench196"}
-{"task_id":"0077","attack":"Prefill","dataset":"harmbench198"}
-{"task_id":"0078","attack":"Prefill","dataset":"harmbench199"}
-{"task_id":"0079","attack":"ReNeLLM","dataset":"harmbench035"}
-{"task_id":"0080","attack":"ReNeLLM","dataset":"harmbench053"}
-{"task_id":"0081","attack":"ReNeLLM","dataset":"harmbench097"}
-{"task_id":"0082","attack":"ReNeLLM","dataset":"harmbench098"}
-{"task_id":"0083","attack":"ReNeLLM","dataset":"harmbench125"}
-{"task_id":"0084","attack":"ReNeLLM","dataset":"harmbench136"}
-{"task_id":"0085","attack":"SeqAR","dataset":"harmbench027"}
-{"task_id":"0086","attack":"SeqAR","dataset":"harmbench079"}
-{"task_id":"0087","attack":"SeqAR","dataset":"harmbench109"}
-{"task_id":"0088","attack":"SeqAR","dataset":"harmbench112"}
-{"task_id":"0089","attack":"SeqAR","dataset":"harmbench122"}
-{"task_id":"0090","attack":"SeqAR","dataset":"harmbench164"}
-{"task_id":"0091","attack":"TreeAttack","dataset":"harmbench023"}
-{"task_id":"0092","attack":"TreeAttack","dataset":"harmbench037"}
-{"task_id":"0093","attack":"TreeAttack","dataset":"harmbench046"}
-{"task_id":"0094","attack":"TreeAttack","dataset":"harmbench100"}
-{"task_id":"0095","attack":"TreeAttack","dataset":"harmbench135"}
-{"task_id":"0096","attack":"TreeAttack","dataset":"harmbench154"}
+// {"task_id":"0003","attack":"CodeAttack","dataset":"harmbench087"}
+// {"task_id":"0004","attack":"CodeAttack","dataset":"harmbench090"}
+// {"task_id":"0005","attack":"CodeAttack","dataset":"harmbench107"}
+// {"task_id":"0006","attack":"CodeAttack","dataset":"harmbench191"}
+// {"task_id":"0007","attack":"AutoDANTurbo","dataset":"harmbench014"}
+// {"task_id":"0008","attack":"AutoDANTurbo","dataset":"harmbench020"}
+// {"task_id":"0009","attack":"AutoDANTurbo","dataset":"harmbench024"}
+// {"task_id":"0010","attack":"AutoDANTurbo","dataset":"harmbench036"}
+// {"task_id":"0011","attack":"AutoDANTurbo","dataset":"harmbench166"}
+// {"task_id":"0012","attack":"AutoDANTurbo","dataset":"harmbench194"}
+// {"task_id":"0013","attack":"CipherChat","dataset":"harmbench016"}
+// {"task_id":"0014","attack":"CipherChat","dataset":"harmbench099"}
+// {"task_id":"0015","attack":"CipherChat","dataset":"harmbench129"}
+// {"task_id":"0016","attack":"CipherChat","dataset":"harmbench155"}
+// {"task_id":"0017","attack":"CipherChat","dataset":"harmbench156"}
+// {"task_id":"0018","attack":"CipherChat","dataset":"harmbench183"}
+// {"task_id":"0019","attack":"CoA","dataset":"harmbench001"}
+// {"task_id":"0020","attack":"CoA","dataset":"harmbench068"}
+// {"task_id":"0021","attack":"CoA","dataset":"harmbench102"}
+// {"task_id":"0022","attack":"CoA","dataset":"harmbench127"}
+// {"task_id":"0023","attack":"CoA","dataset":"harmbench144"}
+// {"task_id":"0024","attack":"CoA","dataset":"harmbench175"}
+// {"task_id":"0025","attack":"Crescendo","dataset":"harmbench042"}
+// {"task_id":"0026","attack":"Crescendo","dataset":"harmbench074"}
+// {"task_id":"0027","attack":"Crescendo","dataset":"harmbench086"}
+// {"task_id":"0028","attack":"Crescendo","dataset":"harmbench172"}
+// {"task_id":"0029","attack":"Crescendo","dataset":"harmbench173"}
+// {"task_id":"0030","attack":"Crescendo","dataset":"harmbench178"}
+// {"task_id":"0031","attack":"DeepInception","dataset":"harmbench006"}
+// {"task_id":"0032","attack":"DeepInception","dataset":"harmbench044"}
+// {"task_id":"0033","attack":"DeepInception","dataset":"harmbench088"}
+// {"task_id":"0034","attack":"DeepInception","dataset":"harmbench126"}
+// {"task_id":"0035","attack":"DeepInception","dataset":"harmbench148"}
+// {"task_id":"0036","attack":"DeepInception","dataset":"harmbench161"}
+// {"task_id":"0037","attack":"FlipAttack","dataset":"harmbench025"}
+// {"task_id":"0038","attack":"FlipAttack","dataset":"harmbench065"}
+// {"task_id":"0039","attack":"FlipAttack","dataset":"harmbench069"}
+// {"task_id":"0040","attack":"FlipAttack","dataset":"harmbench075"}
+// {"task_id":"0041","attack":"FlipAttack","dataset":"harmbench110"}
+// {"task_id":"0042","attack":"FlipAttack","dataset":"harmbench141"}
+// {"task_id":"0043","attack":"ICA","dataset":"harmbench015"}
+// {"task_id":"0044","attack":"ICA","dataset":"harmbench034"}
+// {"task_id":"0045","attack":"ICA","dataset":"harmbench083"}
+// {"task_id":"0046","attack":"ICA","dataset":"harmbench091"}
+// {"task_id":"0047","attack":"ICA","dataset":"harmbench169"}
+// {"task_id":"0048","attack":"ICA","dataset":"harmbench174"}
+// {"task_id":"0049","attack":"JailBroken","dataset":"harmbench058"}
+// {"task_id":"0050","attack":"JailBroken","dataset":"harmbench076"}
+// {"task_id":"0051","attack":"JailBroken","dataset":"harmbench114"}
+// {"task_id":"0052","attack":"JailBroken","dataset":"harmbench150"}
+// {"task_id":"0053","attack":"JailBroken","dataset":"harmbench177"}
+// {"task_id":"0054","attack":"JailBroken","dataset":"harmbench184"}
+// {"task_id":"0055","attack":"Mousetrap","dataset":"harmbench043"}
+// {"task_id":"0056","attack":"Mousetrap","dataset":"harmbench078"}
+// {"task_id":"0057","attack":"Mousetrap","dataset":"harmbench094"}
+// {"task_id":"0058","attack":"Mousetrap","dataset":"harmbench159"}
+// {"task_id":"0059","attack":"Mousetrap","dataset":"harmbench189"}
+// {"task_id":"0060","attack":"Mousetrap","dataset":"harmbench192"}
+// {"task_id":"0061","attack":"Multilingual","dataset":"harmbench041"}
+// {"task_id":"0062","attack":"Multilingual","dataset":"harmbench066"}
+// {"task_id":"0063","attack":"Multilingual","dataset":"harmbench092"}
+// {"task_id":"0064","attack":"Multilingual","dataset":"harmbench095"}
+// {"task_id":"0065","attack":"Multilingual","dataset":"harmbench096"}
+// {"task_id":"0066","attack":"Multilingual","dataset":"harmbench142"}
+// {"task_id":"0067","attack":"PAIR","dataset":"harmbench021"}
+// {"task_id":"0068","attack":"PAIR","dataset":"harmbench077"}
+// {"task_id":"0069","attack":"PAIR","dataset":"harmbench082"}
+// {"task_id":"0070","attack":"PAIR","dataset":"harmbench089"}
+// {"task_id":"0071","attack":"PAIR","dataset":"harmbench101"}
+// {"task_id":"0072","attack":"PAIR","dataset":"harmbench123"}
+// {"task_id":"0073","attack":"Prefill","dataset":"harmbench106"}
+// {"task_id":"0074","attack":"Prefill","dataset":"harmbench111"}
+// {"task_id":"0075","attack":"Prefill","dataset":"harmbench152"}
+// {"task_id":"0076","attack":"Prefill","dataset":"harmbench196"}
+// {"task_id":"0077","attack":"Prefill","dataset":"harmbench198"}
+// {"task_id":"0078","attack":"Prefill","dataset":"harmbench199"}
+// {"task_id":"0079","attack":"ReNeLLM","dataset":"harmbench035"}
+// {"task_id":"0080","attack":"ReNeLLM","dataset":"harmbench053"}
+// {"task_id":"0081","attack":"ReNeLLM","dataset":"harmbench097"}
+// {"task_id":"0082","attack":"ReNeLLM","dataset":"harmbench098"}
+// {"task_id":"0083","attack":"ReNeLLM","dataset":"harmbench125"}
+// {"task_id":"0084","attack":"ReNeLLM","dataset":"harmbench136"}
+// {"task_id":"0085","attack":"SeqAR","dataset":"harmbench027"}
+// {"task_id":"0086","attack":"SeqAR","dataset":"harmbench079"}
+// {"task_id":"0087","attack":"SeqAR","dataset":"harmbench109"}
+// {"task_id":"0088","attack":"SeqAR","dataset":"harmbench112"}
+// {"task_id":"0089","attack":"SeqAR","dataset":"harmbench122"}
+// {"task_id":"0090","attack":"SeqAR","dataset":"harmbench164"}
+// {"task_id":"0091","attack":"TreeAttack","dataset":"harmbench023"}
+// {"task_id":"0092","attack":"TreeAttack","dataset":"harmbench037"}
+// {"task_id":"0093","attack":"TreeAttack","dataset":"harmbench046"}
+// {"task_id":"0094","attack":"TreeAttack","dataset":"harmbench100"}
+// {"task_id":"0095","attack":"TreeAttack","dataset":"harmbench135"}
+// {"task_id":"0096","attack":"TreeAttack","dataset":"harmbench154"}

@@ -32,13 +32,6 @@ class _SessionEnvironment:
     group_id: str | None = None
 
 
-def _row_value(row: Any, key: str, index: int) -> Any:
-    keys = row.keys() if hasattr(row, "keys") else ()
-    if key in keys:
-        return row[key]
-    return row[index]
-
-
 class GatewayStorage:
     def __init__(self, cfg: GatewayConfig, data_manager: DataManager):
         self.cfg = cfg
@@ -51,14 +44,18 @@ class GatewayStorage:
     @classmethod
     async def from_config(cls, cfg: GatewayConfig) -> "GatewayStorage":
         storage_config = dict(cfg.storage_config or {})
-        if cfg.storage_type == "sqlite" and "db_url" not in storage_config:
-            storage_config["db_url"] = "sqlite://env_trajs.db"
+        log.info(
+            "Gateway storage from_config begin: storage_type=%s storage_config_keys=%s",
+            cfg.storage_type,
+            sorted(storage_config.keys()),
+        )
         manager = DataManager(
             job_id=GATEWAY_STORAGE_NAMESPACE,
             storage_type=cfg.storage_type,
             **storage_config,
         )
         await manager.init()
+        log.info("Gateway storage from_config complete: strategy=%s", manager.strategy.__class__.__name__)
         return cls(cfg, manager)
 
     async def get_or_create_session(
@@ -75,8 +72,23 @@ class GatewayStorage:
             if cached is not None:
                 self._apply_binding_to_session(cached.session, binding)
                 cached.last_access_monotonic = now
+                log.debug(
+                    "Gateway storage session cache hit: session_id=%s model=%s job_id=%s env_name=%s",
+                    binding.session_id,
+                    requested_model,
+                    cached.session.job_id,
+                    cached.session.env_name,
+                )
                 return cached.session
 
+            log.debug(
+                "Gateway storage create session begin: session_id=%s model=%s job_id=%s env_name=%s group_id=%s",
+                binding.session_id,
+                requested_model,
+                binding.job_id or GATEWAY_STORAGE_NAMESPACE,
+                binding.env_name or "gateway",
+                binding.group_id or "",
+            )
             maybe_session = self.data_manager.create_session(
                 env_id=binding.session_id,
                 env_name=binding.env_name or "gateway",
@@ -89,19 +101,41 @@ class GatewayStorage:
                 session=session,
                 last_access_monotonic=now,
             )
+            log.debug(
+                "Gateway storage create session complete: session_id=%s model=%s job_id=%s env_name=%s",
+                session.session_id,
+                requested_model,
+                session.job_id,
+                session.env_name,
+            )
             return session
 
     async def bind_session_environment(self, binding: GatewaySessionBinding) -> None:
         if binding.job_id and binding.env_name:
+            log.debug(
+                "Gateway storage bind environment skipped: session_id=%s job_id=%s env_name=%s",
+                binding.session_id,
+                binding.job_id,
+                binding.env_name,
+            )
             return
 
+        log.info("Gateway storage resolve environment begin: session_id=%s", binding.session_id)
         environment = await self._resolve_session_environment(binding.session_id)
         if environment is None:
+            log.info("Gateway storage resolve environment miss: session_id=%s", binding.session_id)
             return
 
         binding.job_id = environment.job_id
         binding.env_name = environment.env_name
         binding.group_id = environment.group_id
+        log.info(
+            "Gateway storage resolved environment: session_id=%s job_id=%s env_name=%s group_id=%s",
+            binding.session_id,
+            binding.job_id,
+            binding.env_name,
+            binding.group_id,
+        )
 
         async with self._lock:
             for (session_id, _model), cached in self._sessions.items():
@@ -115,7 +149,7 @@ class GatewayStorage:
         if cached is not None:
             return cached
 
-        environment = await asyncio.to_thread(self._query_session_environment, session_id)
+        environment = await self._query_session_environment(session_id)
         if environment is None:
             return None
 
@@ -123,47 +157,62 @@ class GatewayStorage:
             self._environments[session_id] = environment
         return environment
 
-    def _query_session_environment(self, session_id: str) -> _SessionEnvironment | None:
+    async def _query_session_environment(self, session_id: str) -> _SessionEnvironment | None:
         try:
-            conn = self.data_manager.get_sync_connection()
-        except Exception as exc:
-            log.debug("Cannot open sync storage connection for session environment lookup: %s", exc)
-            return None
-
-        if conn is None:
-            return None
-
-        try:
-            cursor = conn.execute(
-                """
-                SELECT job_id, env_name, group_id
-                FROM job_environments
-                WHERE env_id = ? AND is_deleted = 0
-                ORDER BY id DESC
-                LIMIT 1
-                """,
-                (session_id,),
-            )
-            row = cursor.fetchone()
+            log.debug("Gateway storage environment lookup begin: env_id=%s", session_id)
+            environment = await self._load_environment_config(session_id)
         except Exception as exc:
             log.warning("Failed to resolve gateway session environment for session_id=%s: %s", session_id, exc)
             return None
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
-        if row is None:
+        resolved = self._environment_from_mapping(environment)
+        if resolved is not None:
+            log.debug(
+                "Gateway storage environment lookup complete: env_id=%s job_id=%s env_name=%s",
+                session_id,
+                resolved.job_id,
+                resolved.env_name,
+            )
+        return resolved
+
+    async def _load_environment_config(self, env_id: str) -> dict[str, Any] | None:
+        lookup = getattr(self.data_manager, "get_environment_by_env_id", None)
+        if callable(lookup):
+            maybe_environment = lookup(env_id)
+            environment = await maybe_environment if inspect.isawaitable(maybe_environment) else maybe_environment
+            return environment if isinstance(environment, dict) else None
+
+        get_all = getattr(self.data_manager, "get_all_environments", None)
+        if not callable(get_all):
             return None
 
-        job_id = str(_row_value(row, "job_id", 0))
-        env_name = str(_row_value(row, "env_name", 1))
-        group_id = _row_value(row, "group_id", 2)
+        maybe_environments = get_all()
+        environments = await maybe_environments if inspect.isawaitable(maybe_environments) else maybe_environments
+        if not isinstance(environments, list):
+            return None
+
+        for environment in environments:
+            if not isinstance(environment, dict):
+                continue
+            if str(environment.get("env_id") or "") == env_id:
+                return environment
+        return None
+
+    @staticmethod
+    def _environment_from_mapping(environment: dict[str, Any] | None) -> _SessionEnvironment | None:
+        if not environment:
+            return None
+
+        job_id = str(environment.get("job_id") or "").strip()
+        env_name = str(environment.get("env_name") or "").strip()
+        if not job_id or not env_name:
+            return None
+
+        group_id = environment.get("group_id")
         return _SessionEnvironment(
             job_id=job_id,
             env_name=env_name,
-            group_id=str(group_id) if group_id is not None else None,
+            group_id=str(group_id) if group_id not in (None, "") else None,
         )
 
     async def _patch_session_steps_environment_once(
@@ -177,76 +226,23 @@ class GatewayStorage:
             self._patched_environment_sessions.add(session_id)
 
         try:
-            await asyncio.to_thread(self._patch_session_steps_environment, session_id, environment)
-        except Exception:
+            log.debug(
+                "Gateway storage patch session environment begin: session_id=%s job_id=%s env_name=%s",
+                session_id,
+                environment.job_id,
+                environment.env_name,
+            )
+            await self.data_manager.patch_session_environment(
+                session_id=session_id,
+                job_id=environment.job_id,
+                env_name=environment.env_name,
+                group_id=environment.group_id,
+            )
+            log.debug("Gateway storage patch session environment complete: session_id=%s", session_id)
+        except Exception as exc:
             async with self._lock:
                 self._patched_environment_sessions.discard(session_id)
-            raise
-
-    def _patch_session_steps_environment(
-        self,
-        session_id: str,
-        environment: _SessionEnvironment,
-    ) -> None:
-        try:
-            conn = self.data_manager.get_sync_connection()
-        except Exception as exc:
-            log.debug("Cannot open sync storage connection for session step environment patch: %s", exc)
-            return
-
-        if conn is None:
-            return
-
-        try:
-            if environment.group_id is None:
-                conn.execute(
-                    """
-                    UPDATE session_steps
-                    SET job_id = ?, env_name = ?
-                    WHERE session_id = ?
-                      AND (
-                        job_id IS NULL OR job_id != ?
-                        OR env_name IS NULL OR env_name != ?
-                      )
-                    """,
-                    (
-                        environment.job_id,
-                        environment.env_name,
-                        session_id,
-                        environment.job_id,
-                        environment.env_name,
-                    ),
-                )
-            else:
-                conn.execute(
-                    """
-                    UPDATE session_steps
-                    SET job_id = ?, env_name = ?, group_id = ?
-                    WHERE session_id = ?
-                      AND (
-                        job_id IS NULL OR job_id != ?
-                        OR env_name IS NULL OR env_name != ?
-                        OR group_id IS NULL OR group_id != ?
-                      )
-                    """,
-                    (
-                        environment.job_id,
-                        environment.env_name,
-                        environment.group_id,
-                        session_id,
-                        environment.job_id,
-                        environment.env_name,
-                        environment.group_id,
-                    ),
-                )
-            conn.commit()
-        except Exception as exc:
-            log.warning("Failed to patch session_steps environment for session_id=%s: %s", session_id, exc)
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            log.warning("Failed to patch session environment for session_id=%s: %s", session_id, exc)
 
     @staticmethod
     def _apply_binding_to_session(session: SessionContext, binding: GatewaySessionBinding) -> None:
@@ -262,6 +258,15 @@ class GatewayStorage:
         binding: GatewaySessionBinding,
         record: GatewayTelemetryRecord,
     ) -> None:
+        started = time.perf_counter()
+        log.info(
+            "Gateway storage record_step begin: request_id=%s session_id=%s seq_id=%s model=%s status=%d",
+            record.request_id,
+            record.session_id,
+            record.seq_id,
+            record.requested_model,
+            record.status_code,
+        )
         session = await self.get_or_create_session(binding, record.requested_model)
         await self.data_manager.record_step(
             session=session,
@@ -274,15 +279,34 @@ class GatewayStorage:
             truncated=record.is_truncated,
             is_trainable=False,
         )
+        log.info(
+            "Gateway storage record_step complete: request_id=%s session_id=%s seq_id=%s elapsed_ms=%.2f",
+            record.request_id,
+            record.session_id,
+            record.seq_id,
+            (time.perf_counter() - started) * 1000,
+        )
 
     async def record_session_close(
         self,
         binding: GatewaySessionBinding,
         record: GatewayTelemetryRecord,
     ) -> None:
+        started = time.perf_counter()
         models = await self._models_for_session(binding)
+        log.info(
+            "Gateway storage session_close begin: session_id=%s models=%s reason=%s",
+            binding.session_id,
+            models,
+            binding.close_reason,
+        )
         if not models:
             await self.data_manager.mark_latest_session_completed(session_id=binding.session_id)
+            log.info(
+                "Gateway storage session_close complete: session_id=%s updated_without_model elapsed_ms=%.2f",
+                binding.session_id,
+                (time.perf_counter() - started) * 1000,
+            )
             return
 
         updated_count = 0
@@ -294,9 +318,17 @@ class GatewayStorage:
 
         if updated_count == 0:
             await self.data_manager.mark_latest_session_completed(session_id=binding.session_id)
+        log.info(
+            "Gateway storage session_close complete: session_id=%s updated_count=%d elapsed_ms=%.2f",
+            binding.session_id,
+            updated_count,
+            (time.perf_counter() - started) * 1000,
+        )
 
     async def close(self) -> None:
+        log.info("Gateway storage close begin")
         await self.data_manager.close()
+        log.info("Gateway storage close complete")
 
     async def _models_for_session(self, binding: GatewaySessionBinding) -> list[str]:
         models = set(binding.llm_step_count_by_model)

@@ -34,10 +34,19 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        log.info(
+            "Gateway startup begin: storage_type=%s telemetry_mode=%s max_steps=%s routes=%s",
+            cfg.storage_type,
+            cfg.telemetry_mode,
+            cfg.max_steps,
+            sorted((cfg.llm_routes or {}).keys()),
+        )
         app.state.gateway_ready = False
         app.state.gateway_draining = False
         app.state.gateway_config = cfg
+        log.info("Gateway storage init begin")
         app.state.gateway_storage = storage or await GatewayStorage.from_config(cfg)
+        log.info("Gateway storage init complete")
         app.state.gateway_router = LLMRouter(cfg)
         app.state.gateway_admission = AdmissionController(cfg)
         app.state.gateway_forwarder = InferenceForwarder(cfg)
@@ -45,19 +54,25 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         app.state.gateway_request_logger = GatewayRequestLogger(cfg)
         app.state.gateway_request_logger.start()
         app.state.gateway_telemetry = TelemetryRecorder(cfg, app.state.gateway_storage)
+        log.info("Gateway telemetry start begin")
         await app.state.gateway_telemetry.start()
+        log.info("Gateway telemetry start complete")
         app.state.gateway_ready = True
+        log.info("Gateway startup complete: ready=true")
         try:
             yield
         finally:
+            log.info("Gateway shutdown begin: drain_timeout_s=%s", cfg.drain_timeout_s)
             app.state.gateway_ready = False
             app.state.gateway_draining = True
             app.state.gateway_admission.draining = True
             await _wait_for_drain(app, cfg.drain_timeout_s)
+            log.info("Gateway drain complete; stopping telemetry and clients")
             await app.state.gateway_telemetry.stop()
             await app.state.gateway_forwarder.close()
             app.state.gateway_request_logger.close()
             await app.state.gateway_storage.close()
+            log.info("Gateway shutdown complete")
 
     app = FastAPI(
         title="AIEvo API Gateway",
@@ -99,12 +114,48 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 endpoint=endpoint,
                 path_session_id=path_session_id,
             )
+            log.info(
+                "Gateway request resolved: request_id=%s session_id=%s endpoint=%s model=%s stream=%s",
+                ctx.request_id,
+                ctx.session_id,
+                ctx.endpoint,
+                ctx.requested_model,
+                ctx.is_stream,
+            )
             binding = await resolver.get_or_create_binding(ctx)
+            log.debug("Gateway request binding loaded: request_id=%s session_id=%s", ctx.request_id, ctx.session_id)
             await storage.bind_session_environment(binding)
+            log.info(
+                "Gateway request start: request_id=%s session_id=%s endpoint=%s model=%s stream=%s "
+                "binding_status=%s step_count=%s queue_depth=%d",
+                ctx.request_id,
+                ctx.session_id,
+                ctx.endpoint,
+                ctx.requested_model,
+                ctx.is_stream,
+                binding.status,
+                binding.step_count_for(ctx.requested_model),
+                telemetry.queue_depth(),
+            )
+            log.debug(
+                "Gateway binding resolved: request_id=%s job_id=%s env_name=%s group_id=%s "
+                "active_requests=%d active_streams=%d",
+                ctx.request_id,
+                binding.job_id,
+                binding.env_name,
+                binding.group_id,
+                binding.active_request_count,
+                binding.active_stream_count,
+            )
             if binding.status == "closed":
                 if binding.is_model_truncated(ctx.requested_model):
                     ctx = replace(ctx, synthetic_stop=True)
                     reason = binding.model_truncate_reason(ctx.requested_model) or "max_steps_reached"
+                    log.info(
+                        "Gateway synthetic stop for closed truncated session: request_id=%s reason=%s",
+                        ctx.request_id,
+                        reason,
+                    )
                     return await _return_synthetic_stop(
                         ctx=ctx,
                         binding=binding,
@@ -118,6 +169,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             if binding.is_model_truncated(ctx.requested_model):
                 ctx = replace(ctx, synthetic_stop=True)
                 reason = binding.model_truncate_reason(ctx.requested_model) or "max_steps_reached"
+                log.info("Gateway synthetic stop: request_id=%s reason=%s", ctx.request_id, reason)
                 return await _return_synthetic_stop(
                     ctx=ctx,
                     binding=binding,
@@ -132,10 +184,29 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 if telemetry.should_reject_new_requests():
                     raise AdmissionRejected("telemetry queue is full", 503)
                 target = await router.select_target(ctx, binding)
+                log.debug(
+                    "Gateway target selected: request_id=%s route_model=%s base_url=%s max_concurrency=%d",
+                    ctx.request_id,
+                    target.route_model,
+                    target.base_url,
+                    target.max_concurrency,
+                )
 
             decision = await admission.acquire_request(ctx, binding, target)
+            log.debug(
+                "Gateway admission decision: request_id=%s action=%s llm_step_index=%s reason=%s",
+                ctx.request_id,
+                decision.action,
+                decision.llm_step_index,
+                decision.stop_reason,
+            )
             if decision.action == "stop":
                 ctx = replace(ctx, synthetic_stop=True)
+                log.info(
+                    "Gateway synthetic stop from admission: request_id=%s reason=%s",
+                    ctx.request_id,
+                    decision.stop_reason or "max_steps_reached",
+                )
                 return await _return_synthetic_stop(
                     ctx=ctx,
                     binding=binding,
@@ -151,11 +222,29 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 target = await router.select_target(ctx, binding)
             route_reserved = True
             await router.on_acquire(target.route_model, is_stream=ctx.is_stream)
+            log.debug(
+                "Gateway route acquired: request_id=%s route_model=%s stream=%s",
+                ctx.request_id,
+                target.route_model,
+                ctx.is_stream,
+            )
 
             headers = forwarder.build_upstream_headers(target)
             await request_logger.log_request(ctx, binding, target, payload)
             if ctx.is_stream:
+                log.info(
+                    "Gateway upstream stream open begin: request_id=%s route_model=%s endpoint=%s",
+                    ctx.request_id,
+                    target.route_model,
+                    endpoint,
+                )
                 opened = await _open_stream(forwarder, target, endpoint, payload, headers)
+                log.info(
+                    "Gateway upstream stream opened: request_id=%s status=%d upstream_latency_ms=%.2f",
+                    ctx.request_id,
+                    opened.status_code,
+                    opened.upstream_latency_ms,
+                )
                 release_in_finally = False
                 return StreamingResponse(
                     _stream_and_finalize(
@@ -174,8 +263,21 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     media_type=opened.media_type,
                 )
 
+            log.info(
+                "Gateway upstream request begin: request_id=%s route_model=%s endpoint=%s",
+                ctx.request_id,
+                target.route_model,
+                endpoint,
+            )
             result = await _forward_json(forwarder, target, endpoint, payload, headers)
             latency_ms = (time.perf_counter() - started) * 1000
+            log.info(
+                "Gateway upstream request complete: request_id=%s status=%d upstream_latency_ms=%.2f total_latency_ms=%.2f",
+                ctx.request_id,
+                result.status_code,
+                result.upstream_latency_ms,
+                latency_ms,
+            )
             await request_logger.log_response(
                 ctx,
                 binding,
@@ -200,10 +302,29 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 latency_ms,
                 upstream_latency_ms=result.upstream_latency_ms,
             )
+            log.info(
+                "Gateway request complete: request_id=%s session_id=%s model=%s status=%d total_latency_ms=%.2f",
+                ctx.request_id,
+                ctx.session_id,
+                ctx.requested_model,
+                result.status_code,
+                latency_ms,
+            )
             return JSONResponse(result.body, status_code=result.status_code)
         except Exception as exc:
             latency_ms = (time.perf_counter() - started) * 1000
             status_code, error_body = forwarder.normalize_error(exc)
+            log.warning(
+                "Gateway request failed: request_id=%s session_id=%s endpoint=%s model=%s status=%d "
+                "latency_ms=%.2f error=%s",
+                ctx.request_id if ctx else None,
+                ctx.session_id if ctx else path_session_id,
+                endpoint,
+                ctx.requested_model if ctx else None,
+                status_code,
+                latency_ms,
+                exc,
+            )
             if target is not None:
                 await router.mark_route_result(target.route_model, False, latency_ms, status_code)
             await request_logger.log_error(
@@ -233,6 +354,12 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             if release_in_finally:
                 if route_reserved and target is not None and ctx is not None:
                     await router.on_release(target.route_model, is_stream=ctx.is_stream)
+                    log.debug(
+                        "Gateway route released: request_id=%s route_model=%s stream=%s",
+                        ctx.request_id,
+                        target.route_model,
+                        ctx.is_stream,
+                    )
                 await admission.release(ctx, binding, target)
 
     async def handle_session_chat_completions(session_id: str, request: Request) -> Response:
@@ -286,6 +413,12 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 raise ValueError("request body requires a non-empty model field")
 
             is_stream = bool(payload.get("stream", False))
+            log.info(
+                "Gateway standard request start: endpoint=%s model=%s stream=%s",
+                endpoint,
+                requested_model,
+                is_stream,
+            )
             target = await router.select_standard_target(
                 requested_model=requested_model,
                 is_stream=is_stream,
@@ -295,7 +428,19 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
 
             headers = forwarder.build_upstream_headers(target)
             if is_stream:
+                log.info(
+                    "Gateway standard upstream stream open begin: endpoint=%s model=%s",
+                    endpoint,
+                    requested_model,
+                )
                 opened = await _open_stream(forwarder, target, endpoint, payload, headers)
+                log.info(
+                    "Gateway standard upstream stream opened: endpoint=%s model=%s status=%d upstream_latency_ms=%.2f",
+                    endpoint,
+                    requested_model,
+                    opened.status_code,
+                    opened.upstream_latency_ms,
+                )
                 release_in_finally = False
                 return StreamingResponse(
                     _standard_stream_and_finalize(
@@ -310,16 +455,33 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 )
 
             result = await _forward_json(forwarder, target, endpoint, payload, headers)
+            latency_ms = (time.perf_counter() - started) * 1000
             await router.mark_route_result(
                 target.route_model,
                 True,
                 result.upstream_latency_ms,
                 result.status_code,
             )
+            log.info(
+                "Gateway standard request complete: endpoint=%s model=%s status=%d upstream_latency_ms=%.2f total_latency_ms=%.2f",
+                endpoint,
+                requested_model,
+                result.status_code,
+                result.upstream_latency_ms,
+                latency_ms,
+            )
             return JSONResponse(result.body, status_code=result.status_code)
         except Exception as exc:
             latency_ms = (time.perf_counter() - started) * 1000
             status_code, error_body = forwarder.normalize_error(exc)
+            log.warning(
+                "Gateway standard request failed: endpoint=%s model=%s status=%d latency_ms=%.2f error=%s",
+                endpoint,
+                payload.get("model") if isinstance(payload, dict) else None,
+                status_code,
+                latency_ms,
+                exc,
+            )
             if target is not None:
                 await router.mark_route_result(target.route_model, False, latency_ms, status_code)
             return JSONResponse(error_body, status_code=status_code)
@@ -345,6 +507,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         except Exception:
             pass
         binding = await resolver.close_session(session_id, reason=reason)
+        log.info("Gateway session close requested: session_id=%s reason=%s", session_id, reason)
         await telemetry.enqueue_session_close(binding)
         return {"session_id": session_id, "status": binding.status}
 
@@ -652,6 +815,13 @@ async def _stream_and_finalize(
     stream_capture = request_logger.new_stream_capture()
 
     try:
+        log.info(
+            "Gateway stream proxy start: request_id=%s session_id=%s model=%s status=%d",
+            ctx.request_id,
+            ctx.session_id,
+            ctx.requested_model,
+            opened.status_code,
+        )
         async for chunk in opened.response.content.iter_any():
             if chunk:
                 stream_capture.append(chunk)
@@ -659,6 +829,12 @@ async def _stream_and_finalize(
                 stream_text_parts.append(chunk.decode("utf-8", errors="replace"))
                 if first_chunk_at is None:
                     first_chunk_at = time.perf_counter()
+                    log.info(
+                        "Gateway stream first chunk: request_id=%s ttft_ms=%.2f bytes=%d",
+                        ctx.request_id,
+                        (first_chunk_at - started) * 1000,
+                        len(chunk),
+                    )
                 chunk_count += 1
                 output_bytes += len(chunk)
                 stream_metadata_buffer = _collect_stream_metadata(
@@ -672,11 +848,13 @@ async def _stream_and_finalize(
         client_cancelled = True
         status_code = 499
         error_text = "client cancelled streaming response"
+        log.warning("Gateway stream client cancelled: request_id=%s", ctx.request_id)
         raise
     except Exception as exc:
         upstream_cancelled = True
         status_code = 502
         error_text = str(exc)
+        log.warning("Gateway stream upstream failed: request_id=%s error=%s", ctx.request_id, exc)
         raise
     finally:
         opened.response.close()
@@ -692,6 +870,14 @@ async def _stream_and_finalize(
         ok = status_code < 400
         await router.mark_route_result(target.route_model, ok, latency_ms, status_code)
         try:
+            log.info(
+                "Gateway stream finalize begin: request_id=%s status=%d chunks=%d bytes=%d total_latency_ms=%.2f",
+                ctx.request_id,
+                status_code,
+                chunk_count,
+                output_bytes,
+                latency_ms,
+            )
             stream_body = stream_capture.snapshot()
             telemetry_response_body = _stream_response_body_for_telemetry(
                 summary=stream_response_body,
@@ -739,9 +925,15 @@ async def _stream_and_finalize(
                     stream_stats=stats,
                     response_body=telemetry_response_body,
                 )
+            log.info(
+                "Gateway stream finalize complete: request_id=%s status=%d telemetry_recorded=true",
+                ctx.request_id,
+                status_code,
+            )
         finally:
             await router.on_release(target.route_model, is_stream=ctx.is_stream)
             await admission.release(ctx, binding, target)
+            log.debug("Gateway stream resources released: request_id=%s", ctx.request_id)
 
 
 async def _standard_stream_and_finalize(
@@ -754,19 +946,32 @@ async def _standard_stream_and_finalize(
 ) -> AsyncIterator[bytes]:
     status_code = opened.status_code
     try:
+        log.info(
+            "Gateway standard stream proxy start: route_model=%s status=%d",
+            target.route_model,
+            opened.status_code,
+        )
         async for chunk in opened.response.content.iter_any():
             yield chunk
     except asyncio.CancelledError:
         status_code = 499
+        log.warning("Gateway standard stream client cancelled: route_model=%s", target.route_model)
         raise
     except Exception:
         status_code = 502
+        log.warning("Gateway standard stream failed: route_model=%s", target.route_model, exc_info=True)
         raise
     finally:
         opened.response.close()
         latency_ms = (time.perf_counter() - started) * 1000
         await router.mark_route_result(target.route_model, status_code < 400, latency_ms, status_code)
         await router.on_release(target.route_model, is_stream=is_stream)
+        log.info(
+            "Gateway standard stream complete: route_model=%s status=%d total_latency_ms=%.2f",
+            target.route_model,
+            status_code,
+            latency_ms,
+        )
 
 
 def _standard_openai_root(session_root: str) -> str:
@@ -779,10 +984,19 @@ def _standard_openai_root(session_root: str) -> str:
 async def _wait_for_drain(app: FastAPI, drain_timeout_s: int) -> None:
     admission: AdmissionController = app.state.gateway_admission
     deadline = time.monotonic() + max(0, drain_timeout_s)
+    next_log_at = 0.0
     while time.monotonic() < deadline:
         snapshot = await admission.snapshot()
         if snapshot["inflight_requests"] <= 0 and snapshot["active_streams"] <= 0:
             return
+        now = time.monotonic()
+        if now >= next_log_at:
+            log.info(
+                "Gateway draining: inflight_requests=%d active_streams=%d",
+                snapshot["inflight_requests"],
+                snapshot["active_streams"],
+            )
+            next_log_at = now + 1.0
         await asyncio.sleep(0.05)
 
 

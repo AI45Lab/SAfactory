@@ -1,13 +1,16 @@
 aiohttp==3.13.2
 aiosqlite==0.21.0
+boto3>=1.34.0
 fastapi==0.118.2
 gymnasium==0.29.1
 httpx==0.28.1
+loguru>=0.7.2
 matplotlib==3.10.6
 numpy==1.26.4
 openai==1.108.0
 pandas==2.3.2
 pillow==11.3.0
+prometheus-client==0.25.0
 pydantic==2.12.0
 PyYAML==6.0.2
 requests==2.32.5

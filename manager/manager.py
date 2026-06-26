@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .actor_pool import RuntimeAgentPool
 from .binding_plan import build_binding_plan
@@ -26,7 +25,7 @@ class AgentPoolManager:
     def __init__(
         self,
         cfg: dict,
-        conn: Optional[sqlite3.Connection],
+        conn: Any,
         *,
         job_id: str = "",
         db_processing_done_checker: Optional[Callable[[], bool]] = None,

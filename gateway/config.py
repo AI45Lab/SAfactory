@@ -6,6 +6,8 @@ from typing import Any
 
 import yaml
 
+DEFAULT_SQLITE_DB_URL = "sqlite://env_trajs.db"
+
 
 @dataclass(frozen=True)
 class LLMRouteConfig:
@@ -53,10 +55,20 @@ class GatewayConfig:
     llm_routes: dict[str, LLMRouteConfig] | None = None
 
     def __post_init__(self) -> None:
+        storage_type = str(self.storage_type or "").strip().lower()
+        object.__setattr__(self, "storage_type", storage_type)
+        object.__setattr__(
+            self,
+            "storage_config",
+            _storage_config_for(storage_type, self.storage_config),
+        )
+
         if not self.base_session_path.startswith("/"):
             raise ValueError("base_session_path must start with '/'")
         if self.max_steps < -1:
             raise ValueError("max_steps must be -1 or a non-negative integer")
+        if self.storage_type not in {"sqlite", "cloud"}:
+            raise ValueError("storage_type must be one of: sqlite, cloud")
         if self.telemetry_mode == "durable_async":
             raise ValueError(
                 "telemetry_mode='durable_async' requires a durable outbox and is not implemented yet"
@@ -81,7 +93,7 @@ def load_gateway_config(path: str | None = None) -> GatewayConfig:
     file_data = _load_file(path) if path else {}
     cfg = _dict_to_config(file_data)
 
-    storage_config = dict(cfg.storage_config or {})
+    storage_config = _storage_config_for(cfg.storage_type, cfg.storage_config)
     llm_routes = cfg.llm_routes or _default_routes()
 
     return GatewayConfig(
@@ -130,10 +142,30 @@ def _dict_to_config(data: dict[str, Any]) -> GatewayConfig:
     if "max_steps" in kwargs:
         kwargs["max_steps"] = int(kwargs["max_steps"])
 
+    if "storage_type" in kwargs:
+        kwargs["storage_type"] = str(kwargs["storage_type"]).strip().lower()
+
     if "llm_routes" in kwargs:
         kwargs["llm_routes"] = _routes_from_mapping(kwargs["llm_routes"])
 
     return GatewayConfig(**kwargs)
+
+
+def _storage_config_for(storage_type: str, raw: Any) -> dict[str, Any]:
+    if raw is None:
+        storage_config: dict[str, Any] = {}
+    elif isinstance(raw, dict):
+        storage_config = dict(raw)
+    else:
+        raise ValueError("storage_config must be a mapping")
+
+    if storage_type == "sqlite":
+        storage_config.setdefault("db_url", DEFAULT_SQLITE_DB_URL)
+    elif storage_type == "cloud":
+        storage_config.pop("db_url", None)
+        storage_config.pop("env_config_db_url", None)
+
+    return storage_config
 
 
 def _routes_from_mapping(raw: Any) -> dict[str, LLMRouteConfig]:

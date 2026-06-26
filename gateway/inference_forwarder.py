@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from gateway.admission_control import AdmissionRejected
 from gateway.config import GatewayConfig
 from gateway.llm_router import LLMRouteTarget, LLMRouteUnavailableError, ModelNotFoundError
 from gateway.session_resolver import SessionResolutionError
+
+log = logging.getLogger("gateway.inference_forwarder")
 
 
 class SessionClosedError(Exception):
@@ -73,6 +76,16 @@ class InferenceForwarder:
             enable_cleanup_closed=True,
         )
         self._client = aiohttp.ClientSession(timeout=timeout, connector=connector)
+        log.info(
+            "Gateway forwarder initialized: request_timeout_s=%.2f connect_timeout_s=%.2f "
+            "max_connections=%d keepalive_connections=%d proxy_configured=%s no_proxy_count=%d",
+            cfg.upstream_request_timeout_s,
+            cfg.upstream_connect_timeout_s,
+            cfg.upstream_max_connections,
+            cfg.upstream_keepalive_connections,
+            bool(self._http_proxy),
+            len(self._no_proxy),
+        )
 
     async def forward_chat(
         self,
@@ -115,20 +128,47 @@ class InferenceForwarder:
     ) -> ForwardResult:
         started = time.perf_counter()
         url = self._url(target, endpoint)
+        log.debug(
+            "Gateway forwarder json POST begin: route_model=%s endpoint=%s url=%s proxy=%s",
+            target.route_model,
+            endpoint,
+            url,
+            bool(self._proxy_for(url)),
+        )
         async with self._client.post(
             url,
             json=payload,
             headers=headers,
             proxy=self._proxy_for(url),
         ) as response:
+            log.debug(
+                "Gateway forwarder json response headers received: route_model=%s status=%d",
+                target.route_model,
+                response.status,
+            )
             body_bytes = await response.read()
             latency_ms = (time.perf_counter() - started) * 1000
             upstream_request_id = response.headers.get("x-request-id") or response.headers.get("x-openai-request-id")
             body = self._parse_bytes_body(body_bytes)
             status_code = response.status
             response_headers = dict(response.headers)
+            log.debug(
+                "Gateway forwarder json response body read: route_model=%s status=%d bytes=%d latency_ms=%.2f upstream_request_id=%s",
+                target.route_model,
+                status_code,
+                len(body_bytes),
+                latency_ms,
+                upstream_request_id,
+            )
 
         if status_code >= 400:
+            log.warning(
+                "Gateway forwarder json upstream error: route_model=%s status=%d latency_ms=%.2f upstream_request_id=%s",
+                target.route_model,
+                status_code,
+                latency_ms,
+                upstream_request_id,
+            )
             raise UpstreamHTTPError(status_code, body, upstream_request_id)
 
         return ForwardResult(
@@ -147,6 +187,13 @@ class InferenceForwarder:
     ) -> StreamForwardContext:
         started = time.perf_counter()
         url = self._url(target, endpoint)
+        log.debug(
+            "Gateway forwarder stream POST begin: route_model=%s endpoint=%s url=%s proxy=%s",
+            target.route_model,
+            endpoint,
+            url,
+            bool(self._proxy_for(url)),
+        )
         stream_headers = {
             **headers,
             "Accept": "text/event-stream",
@@ -161,11 +208,25 @@ class InferenceForwarder:
         )
         latency_ms = (time.perf_counter() - started) * 1000
         upstream_request_id = response.headers.get("x-request-id") or response.headers.get("x-openai-request-id")
+        log.debug(
+            "Gateway forwarder stream response opened: route_model=%s status=%d latency_ms=%.2f upstream_request_id=%s",
+            target.route_model,
+            response.status,
+            latency_ms,
+            upstream_request_id,
+        )
 
         if response.status >= 400:
             body_bytes = await response.read()
             response.close()
             body = self._parse_bytes_body(body_bytes)
+            log.warning(
+                "Gateway forwarder stream upstream error: route_model=%s status=%d bytes=%d upstream_request_id=%s",
+                target.route_model,
+                response.status,
+                len(body_bytes),
+                upstream_request_id,
+            )
             raise UpstreamHTTPError(response.status, body, upstream_request_id)
 
         return StreamForwardContext(
@@ -210,7 +271,9 @@ class InferenceForwarder:
         return 500, self._error("gateway_internal_error", str(exc) or exc.__class__.__name__)
 
     async def close(self) -> None:
+        log.info("Gateway forwarder close begin")
         await self._client.close()
+        log.info("Gateway forwarder close complete")
 
     def _proxy_for(self, url: str) -> str | None:
         parsed = urlparse(url)

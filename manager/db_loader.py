@@ -2,9 +2,69 @@ from __future__ import annotations
 
 import inspect
 import sqlite3
+from collections.abc import Mapping
 from typing import List, Dict, Any, Optional
 
 REMOTE_FETCH_PAGE_SIZE = 1000
+
+
+class EnvConfigCacheReader:
+    """
+    Synchronous scheduler reader backed by an in-memory env-config cache.
+
+    Cloud storage keeps scheduler rows in the strategy cache while the SDK owns
+    the remote persistence.  The manager scheduler is intentionally synchronous
+    at this boundary, so this adapter exposes the same shape as remote SDK
+    readers without requiring an event loop hop inside repository fetches.
+    """
+
+    def __init__(self, env_configs: Mapping[str, Any]) -> None:
+        self._env_configs = env_configs
+
+    def get_env_configs(
+        self,
+        *,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        job_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        rows = _rows_from_mapping_cache(self._env_configs, job_id=job_id)
+        start = max(0, int(offset or 0))
+        if limit is None:
+            return rows[start:]
+        end = start + max(0, int(limit))
+        return rows[start:end]
+
+    def get_all_environments(self, job_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        return _rows_from_mapping_cache(self._env_configs, job_id=job_id)
+
+
+def scheduler_db_reader(storage_type: str, data_manager: Any, conn: Any) -> Any:
+    """
+    Return the object AgentDataRepository should read from.
+
+    SQLite uses the raw sqlite3 connection.  Cloud mode does not have a raw sync
+    DB connection, so prefer a strategy-provided sync reader and fall back to the
+    strategy cache used by CloudStrategy.
+    """
+    if str(storage_type or "").strip().lower() == "sqlite":
+        return conn
+
+    strategy = getattr(data_manager, "strategy", None)
+    for candidate in (strategy, data_manager, conn):
+        if candidate is None:
+            continue
+        get_env_configs = getattr(candidate, "get_env_configs", None)
+        if callable(get_env_configs) and not inspect.iscoroutinefunction(get_env_configs):
+            return candidate
+        env_configs = getattr(candidate, "_env_configs", None)
+        if isinstance(env_configs, Mapping):
+            return EnvConfigCacheReader(env_configs)
+        env_cache = getattr(candidate, "_env_cache", None)
+        if isinstance(env_cache, Mapping):
+            return EnvConfigCacheReader(env_cache)
+
+    return conn
 
 
 def _supports_job_id_kw(fn: Any) -> bool:
@@ -63,20 +123,44 @@ def _invoke_sync_reader(fn: Any, *args: Any, job_id: Optional[str] = None, **kwa
     return result
 
 
+def _normalize_remote_row(row: Dict[str, Any], index: int) -> Dict[str, Any]:
+    normalized = dict(row)
+    if "image" not in normalized and "env_image" in normalized:
+        normalized["image"] = normalized.get("env_image")
+    if normalized.get("id") is None:
+        normalized["id"] = index
+    return normalized
+
+
 def _normalize_rows(rows: Any) -> List[Dict[str, Any]]:
     if not rows:
         return []
 
     normalized: List[Dict[str, Any]] = []
-    for row in rows:
+    for index, row in enumerate(rows, start=1):
         if isinstance(row, dict):
-            normalized.append(dict(row))
+            normalized.append(_normalize_remote_row(row, index))
         else:
             try:
-                normalized.append(dict(row))
+                normalized.append(_normalize_remote_row(dict(row), index))
             except Exception:
                 continue
     return normalized
+
+
+def _rows_from_mapping_cache(env_configs: Mapping[str, Any], job_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for index, value in enumerate(env_configs.values(), start=1):
+        if not isinstance(value, dict):
+            try:
+                value = dict(value)
+            except Exception:
+                continue
+        row = _normalize_remote_row(value, index)
+        if job_id and str(row.get("job_id") or "") != job_id:
+            continue
+        rows.append(row)
+    return rows
 
 
 def _filter_rows_by_job_id(rows: List[Dict[str, Any]], job_id: Optional[str]) -> List[Dict[str, Any]]:
@@ -113,6 +197,9 @@ def _load_remote_rows(
             return _filter_rows_by_job_id(_normalize_rows(rows), job_id)
 
         if limit is not None:
+            if offset and supports_limit and not supports_offset:
+                rows = _fetch_page(0, offset + limit)
+                return rows[offset: offset + limit]
             return _fetch_page(offset, limit)
 
         if supports_limit or requires_limit:
@@ -178,7 +265,7 @@ def _coerce_row_id(row: Dict[str, Any]) -> Optional[int]:
 
 
 def get_active_data(
-    conn: Optional[sqlite3.Connection],
+    conn: Any,
     limit: int,
     offset: int,
     job_id: Optional[str] = None,
@@ -209,7 +296,7 @@ def get_active_data(
 
 
 def get_active_data_after_id(
-    conn: Optional[sqlite3.Connection],
+    conn: Any,
     limit: int,
     after_id: int,
     job_id: Optional[str] = None,
@@ -250,7 +337,7 @@ def get_active_data_after_id(
     return filtered_rows[:limit]
 
 
-def get_env_image_map(conn: Optional[sqlite3.Connection], job_id: Optional[str] = None) -> Dict[str, Any]:
+def get_env_image_map(conn: Any, job_id: Optional[str] = None) -> Dict[str, Any]:
     """Return a mapping of legacy env_name -> image for all active agents."""
     if isinstance(conn, sqlite3.Connection):
         filters = ["is_deleted = 0"]
@@ -285,7 +372,7 @@ def get_env_image_map(conn: Optional[sqlite3.Connection], job_id: Optional[str] 
     return {}
 
 
-def get_all_image(conn: Optional[sqlite3.Connection], job_id: Optional[str] = None) -> Dict[str, str]:
+def get_all_image(conn: Any, job_id: Optional[str] = None) -> Dict[str, str]:
     """Return a mapping of image -> legacy env_name for all active agents."""
     if isinstance(conn, sqlite3.Connection):
         filters = [

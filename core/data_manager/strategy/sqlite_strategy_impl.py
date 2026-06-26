@@ -182,6 +182,28 @@ class SqliteStrategy(StorageStrategy):
             for e in envs
         ]
 
+    async def get_environment_by_env_id(self, env_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve one active environment by env_id."""
+        await self.init()
+
+        env = await JobEnvironment.filter(
+            env_id=env_id,
+            is_deleted=False,
+        ).order_by("-id").first()
+        if env is None:
+            return None
+
+        return {
+            "id": env.id,
+            "job_id": env.job_id,
+            "env_id": env.env_id,
+            "env_name": env.env_name,
+            "env_params": env.env_params,
+            "image": env.image,
+            "group_id": env.group_id,
+            "created_at": env.created_at.isoformat() if env.created_at else None,
+        }
+
     async def create_session(
         self,
         env_id: str,
@@ -287,6 +309,29 @@ class SqliteStrategy(StorageStrategy):
             session_id=session_id,
             step_id=step_id,
         ).update(**normalized_updates)
+
+    async def patch_session_environment(
+        self,
+        session_id: str,
+        *,
+        job_id: str,
+        env_name: str,
+        group_id: Optional[str] = None,
+    ) -> int:
+        """Patch session rows with their resolved environment metadata."""
+        await self.init()
+
+        if self._write_buffer:
+            await self._write_buffer.flush_model(SessionStep, operation="create")
+
+        updates: Dict[str, Any] = {
+            "job_id": job_id,
+            "env_name": env_name,
+        }
+        if group_id is not None:
+            updates["group_id"] = group_id
+
+        return await SessionStep.filter(session_id=session_id).update(**updates)
 
     async def mark_latest_session_completed(
         self,

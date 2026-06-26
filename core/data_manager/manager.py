@@ -75,6 +75,10 @@ class DataManager:
         """Retrieve all registered environments"""
         return await self.strategy.get_all_environments(job_id)
 
+    async def get_environment_by_env_id(self, env_id: str) -> Optional[Dict]:
+        """Retrieve one environment config by env_id."""
+        return await self.strategy.get_environment_by_env_id(env_id)
+
     def create_session(
         self,
         env_id: str,
@@ -140,6 +144,22 @@ class DataManager:
             session_id=session_id,
             step_id=step_id,
             updates=updates,
+        )
+
+    async def patch_session_environment(
+        self,
+        session_id: str,
+        *,
+        job_id: str,
+        env_name: str,
+        group_id: Optional[str] = None,
+    ) -> int:
+        """Patch persisted session rows after environment metadata is known."""
+        return await self.strategy.patch_session_environment(
+            session_id=session_id,
+            job_id=job_id,
+            env_name=env_name,
+            group_id=group_id,
         )
 
     async def mark_latest_session_completed(

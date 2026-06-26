@@ -75,6 +75,23 @@ class StorageStrategy(ABC):
             List of environment configs as dicts
         """
         pass
+
+    async def get_environment_by_env_id(self, env_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve one environment config by env_id.
+
+        Storage backends can override this with an indexed lookup. The default
+        implementation keeps older strategies compatible by scanning
+        get_all_environments().
+        """
+        for env in await self.get_all_environments():
+            if not isinstance(env, dict):
+                continue
+            if str(env.get("env_id") or "") == str(env_id):
+                if bool(env.get("is_deleted", False)):
+                    continue
+                return env
+        return None
     
     @abstractmethod
     async def create_session(
@@ -144,6 +161,22 @@ class StorageStrategy(ABC):
             Number of matched records.
         """
         pass
+
+    async def patch_session_environment(
+        self,
+        session_id: str,
+        *,
+        job_id: str,
+        env_name: str,
+        group_id: Optional[str] = None,
+    ) -> int:
+        """
+        Patch persisted session rows after their environment metadata is known.
+
+        Backends that cannot efficiently or safely rewrite existing rows may
+        leave the default no-op behavior.
+        """
+        return 0
 
     @abstractmethod
     async def mark_latest_session_completed(

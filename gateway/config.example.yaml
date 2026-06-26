@@ -6,7 +6,11 @@ max_steps: -1
 
 storage_type: sqlite
 storage_config:
-  db_url: sqlite://env_trajs.db
+  # Cloud mode uses wt-data-gateway default database URIs.
+  # Development writes trajectory rows to wt-data-gateway test tables by default.
+  # landing_table: landing_test
+  # serving_table: serving_test
+  # env_config_table: evaluation_env_config
 
 max_inflight_requests: 2048
 max_active_streams: 1024
@@ -52,8 +56,4 @@ llm_routes:
     api_key: null
     supports_stream: true
     max_concurrency: 256
-  glm51:
-    base_url: http://10.140.158.149:8200/v1/
-    api_key: null
-    supports_stream: true
-    max_concurrency: 256
+

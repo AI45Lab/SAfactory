@@ -561,7 +561,7 @@ class RJobEpisodeRunner:
         if host in {"127.0.0.1", "localhost", "::1"}:
             raise RuntimeError(
                 "RJob mode requires a gateway base URL reachable from the RJob cluster. "
-                "Set --rjob-gateway-base-url or cluster.rjob.gateway_base_url."
+                "Set gateway_base_url in the YAML passed by --rjob-config."
             )
         return base_url
 

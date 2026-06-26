@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -56,8 +57,17 @@ class TelemetryRecorder:
             return
         self._running = True
         self._flush_task = asyncio.create_task(self.flush_loop())
+        log.info(
+            "Gateway telemetry recorder started: mode=%s loss_policy=%s queue_max_size=%d batch_size=%d flush_interval_ms=%d",
+            self.cfg.telemetry_mode,
+            self.cfg.telemetry_loss_policy,
+            self.cfg.max_queue_size,
+            self.cfg.telemetry_batch_size,
+            self.cfg.telemetry_flush_interval_ms,
+        )
 
     async def stop(self) -> None:
+        log.info("Gateway telemetry recorder stopping: queued=%d", self._queue.qsize())
         self._running = False
         if self._flush_task:
             self._flush_task.cancel()
@@ -67,6 +77,11 @@ class TelemetryRecorder:
                 pass
             self._flush_task = None
         await self.flush_once(drain_all=True)
+        log.info(
+            "Gateway telemetry recorder stopped: flushed_total=%d dropped_total=%d",
+            self.flushed_total,
+            self.dropped_total,
+        )
 
     async def enqueue_success(
         self,
@@ -199,12 +214,39 @@ class TelemetryRecorder:
             except asyncio.QueueEmpty:
                 break
 
+        if batch:
+            log.info(
+                "Gateway telemetry flush begin: records=%d drain_all=%s queued_after_take=%d",
+                len(batch),
+                drain_all,
+                self._queue.qsize(),
+            )
+            started = time.perf_counter()
+        else:
+            started = 0.0
+
         for binding, record in batch:
+            log.debug(
+                "Gateway telemetry flush record: event_type=%s request_id=%s session_id=%s seq_id=%s model=%s",
+                record.event_type,
+                record.request_id,
+                record.session_id,
+                record.seq_id,
+                record.requested_model,
+            )
             if record.event_type == "gateway_session_close":
                 await self.storage.record_session_close(binding, record)
             else:
                 await self.storage.record_inference_step(binding, record)
             self.flushed_total += 1
+
+        if batch:
+            log.info(
+                "Gateway telemetry flush complete: records=%d elapsed_ms=%.2f flushed_total=%d",
+                len(batch),
+                (time.perf_counter() - started) * 1000,
+                self.flushed_total,
+            )
 
     def queue_depth(self) -> int:
         return self._queue.qsize()
@@ -266,10 +308,27 @@ class TelemetryRecorder:
                 self._ttft_count[record.requested_model] += 1
 
         if self.cfg.telemetry_mode == "strict":
+            started = time.perf_counter()
+            log.info(
+                "Gateway telemetry strict write begin: event_type=%s request_id=%s session_id=%s seq_id=%s model=%s",
+                record.event_type,
+                record.request_id,
+                record.session_id,
+                record.seq_id,
+                record.requested_model,
+            )
             if record.event_type == "gateway_session_close":
                 await self.storage.record_session_close(binding, record)
             else:
                 await self.storage.record_inference_step(binding, record)
+            self.flushed_total += 1
+            log.info(
+                "Gateway telemetry strict write complete: event_type=%s request_id=%s elapsed_ms=%.2f flushed_total=%d",
+                record.event_type,
+                record.request_id,
+                (time.perf_counter() - started) * 1000,
+                self.flushed_total,
+            )
             return
 
         policy = self.cfg.telemetry_loss_policy
@@ -289,6 +348,14 @@ class TelemetryRecorder:
 
         try:
             self._queue.put_nowait((binding, record))
+            log.info(
+                "Gateway telemetry queued: event_type=%s request_id=%s session_id=%s seq_id=%s queued=%d",
+                record.event_type,
+                record.request_id,
+                record.session_id,
+                record.seq_id,
+                self._queue.qsize(),
+            )
         except asyncio.QueueFull:
             if policy == "drop_oldest":
                 try:
@@ -306,6 +373,7 @@ class TelemetryRecorder:
         async with self._lock:
             self.dropped_total += 1
             self.dropped_by_reason[reason] += 1
+        log.warning("Gateway telemetry dropped record: reason=%s dropped_total=%d", reason, self.dropped_total)
 
     async def _build_record(
         self,

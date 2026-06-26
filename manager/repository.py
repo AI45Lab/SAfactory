@@ -29,7 +29,7 @@ class AgentDataRepository:
 
     def __init__(
         self,
-        conn: Optional[sqlite3.Connection],
+        conn: Any,
         *,
         job_id: str = "",
         db_processing_done_checker: Optional[Callable[[], bool]] = None,

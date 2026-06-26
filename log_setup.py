@@ -5,12 +5,12 @@ import os
 import re
 import shutil
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Sequence, Set
 
 
-DEFAULT_INFO_LOGGERS = ("launcher", "manager", "evaluator", "interactor")
+DEFAULT_INFO_LOGGERS = ("launcher", "manager", "evaluator")
 DEFAULT_SUPPRESS_PREFIXES = ("core.llm", "httpx", "urllib3", "aiosqlite", "tortoise")
 DEPENDENCY_WARNING_LOGGERS = (
     "httpx",
@@ -28,11 +28,10 @@ class LauncherLogSession:
     run_id: str
     run_dir: str
     main_log_path: str
-    upstream_log_path: str
 
 
-def _normalize_patterns(patterns: Optional[Sequence[str]]) -> Set[str]:
-    normalized: Set[str] = set()
+def _normalize_patterns(patterns: Sequence[str] | None) -> set[str]:
+    normalized: set[str] = set()
     for pattern in patterns or []:
         value = str(pattern).strip()
         if value:
@@ -40,7 +39,7 @@ def _normalize_patterns(patterns: Optional[Sequence[str]]) -> Set[str]:
     return normalized
 
 
-def _matches_logger(name: str, patterns: Set[str]) -> bool:
+def _matches_logger(name: str, patterns: set[str]) -> bool:
     for pattern in patterns:
         if name == pattern or name.startswith(pattern + "."):
             return True
@@ -59,7 +58,7 @@ def _build_formatter() -> logging.Formatter:
     )
 
 
-def _sanitize_run_name(run_name: Optional[str]) -> str:
+def _sanitize_run_name(run_name: str | None) -> str:
     cleaned = (run_name or "").strip()
     if not cleaned:
         return ""
@@ -73,7 +72,7 @@ class ConsoleFilter(logging.Filter):
 
     Rules:
     1. Respect the configured console level.
-    2. Always allow WARNING and above.
+    2. Allow WARNING and above when they meet the configured console level.
     3. Suppress noisy dependency prefixes below WARNING.
     4. Allow DEBUG only for explicit debug loggers.
     5. Allow INFO only for explicit info loggers.
@@ -83,15 +82,17 @@ class ConsoleFilter(logging.Filter):
         self,
         *,
         console_level: str = "INFO",
-        info_loggers: Optional[Sequence[str]] = None,
-        debug_loggers: Optional[Sequence[str]] = None,
-        suppress_prefixes: Optional[Sequence[str]] = None,
+        info_loggers: Sequence[str] | None = None,
+        debug_loggers: Sequence[str] | None = None,
+        suppress_prefixes: Sequence[str] | None = None,
     ):
         super().__init__()
         self._console_level = _parse_level(console_level, logging.INFO)
-        self._info_loggers = _normalize_patterns(info_loggers or DEFAULT_INFO_LOGGERS)
+        self._info_loggers = _normalize_patterns(DEFAULT_INFO_LOGGERS if info_loggers is None else info_loggers)
         self._debug_loggers = _normalize_patterns(debug_loggers)
-        self._suppress_prefixes = _normalize_patterns(suppress_prefixes or DEFAULT_SUPPRESS_PREFIXES)
+        self._suppress_prefixes = _normalize_patterns(
+            DEFAULT_SUPPRESS_PREFIXES if suppress_prefixes is None else suppress_prefixes
+        )
 
     def filter(self, record: logging.LogRecord) -> bool:
         if record.levelno >= logging.WARNING:
@@ -111,13 +112,13 @@ class ConsoleFilter(logging.Filter):
         return False
 
 
-def build_run_id(run_name: Optional[str] = None) -> str:
+def build_run_id(run_name: str | None = None) -> str:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     prefix = _sanitize_run_name(run_name)
     return f"{prefix}-{stamp}" if prefix else stamp
 
 
-def build_log_session(log_dir: str, run_name: Optional[str]) -> LauncherLogSession:
+def build_log_session(log_dir: str, run_name: str | None) -> LauncherLogSession:
     run_id = build_run_id(run_name)
     run_dir = os.path.join(log_dir, run_id)
     os.makedirs(run_dir, exist_ok=True)
@@ -125,16 +126,15 @@ def build_log_session(log_dir: str, run_name: Optional[str]) -> LauncherLogSessi
         run_id=run_id,
         run_dir=run_dir,
         main_log_path=os.path.join(run_dir, "main.log"),
-        upstream_log_path=os.path.join(run_dir, "upstream.log"),
     )
 
 
 def build_console_handler(
     *,
     console_level: str,
-    info_loggers: Optional[Sequence[str]] = None,
-    debug_loggers: Optional[Sequence[str]] = None,
-    suppress_prefixes: Optional[Sequence[str]] = None,
+    info_loggers: Sequence[str] | None = None,
+    debug_loggers: Sequence[str] | None = None,
+    suppress_prefixes: Sequence[str] | None = None,
 ) -> logging.Handler:
     handler = logging.StreamHandler(stream=sys.stdout)
     handler.setLevel(logging.DEBUG)
@@ -193,21 +193,19 @@ def cleanup_old_log_runs(log_dir: str, keep_runs: int = 20) -> None:
 def setup_launcher_logging(
     *,
     log_dir: str,
-    run_name: Optional[str],
+    run_name: str | None,
     console_level: str = "INFO",
     file_level: str = "DEBUG",
-    max_bytes: int = 0,
     backup_count: int = 0,
-    info_loggers: Optional[Sequence[str]] = None,
-    debug_loggers: Optional[Sequence[str]] = None,
-    suppress_prefixes: Optional[Sequence[str]] = None,
+    info_loggers: Sequence[str] | None = None,
+    debug_loggers: Sequence[str] | None = None,
+    suppress_prefixes: Sequence[str] | None = None,
 ) -> LauncherLogSession:
     """
     Configure root logging for a single launcher run.
 
     Notes:
     - Logs are organized by run directory rather than file rotation.
-    - `max_bytes` is retained for CLI compatibility and intentionally unused.
     - `backup_count` is repurposed as "how many recent run directories to keep".
     """
     os.makedirs(log_dir, exist_ok=True)
@@ -241,8 +239,5 @@ def setup_launcher_logging(
         session.run_dir,
         session.main_log_path,
     )
-
-    if max_bytes:
-        root.debug("per-file log rotation is disabled; log_max_bytes=%s is ignored", max_bytes)
 
     return session

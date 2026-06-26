@@ -50,7 +50,6 @@ class SimulationWorkerGroup:
         self.evaluation_service = evaluation_service
         self.reward_committer = reward_committer
         self.markdown_eval_resolver = MarkdownEvalTaskResolver(
-            eval_task_dir_name=self.cfg.eval_task_dir_name,
             strict=self.cfg.strict_eval_tasks,
         )
         self.worker_count = self._derive_worker_count()
@@ -308,6 +307,10 @@ class SimulationWorkerGroup:
         session: SessionContext,
         worker_id: int,
     ) -> SimulationStartRequest:
+        storage_config: Dict[str, Any] = {}
+        if self.cfg.storage_type == "sqlite":
+            storage_config["db_url"] = self.cfg.db_url
+
         return SimulationStartRequest(
             job_id=self.cfg.job_id,
             session_id=session.session_id,
@@ -318,7 +321,7 @@ class SimulationWorkerGroup:
             max_steps=self.cfg.max_steps,
             storage_type=self.cfg.storage_type,
             env_params=strip_internal_env_params(lease.env_params),
-            storage_config={"db_url": self.cfg.db_url},
+            storage_config=storage_config,
             agent_start_timeout_s=self.cfg.agent_start_timeout_s,
             record_mode="agent_runtime",
             agent_name=lease.agent_name,

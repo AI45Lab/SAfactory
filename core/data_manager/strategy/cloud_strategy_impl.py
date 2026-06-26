@@ -7,16 +7,27 @@ import uuid
 import re
 import base64
 import tempfile
+import sys
 import numpy as np
+from pathlib import Path
 from typing import List, Dict, Optional, Any, Set
 from datetime import date
 
 from core.data_manager.strategy.base_strategy import StorageStrategy, SessionContext
 
-# Cloud SDK imports
-from wt_sdk import WTGatewayClient, GatewayConfig, EnvConfigManager
-from wt_sdk.models import LandingRecord, ChatMessage, ContentItem
-from wt_sdk.utils import generate_deterministic_id, S3Uploader, S3Downloader
+try:
+    from wt_sdk import WTGatewayClient, GatewayConfig, EnvConfigManager
+    from wt_sdk.models import LandingRecord, ChatMessage, ContentItem
+    from wt_sdk.utils import generate_deterministic_id, S3Uploader, S3Downloader
+except ModuleNotFoundError as exc:
+    if exc.name != "wt_sdk":
+        raise
+    _repo_wt_sdk_parent = Path(__file__).resolve().parents[3] / "wt-data-gateway"
+    if _repo_wt_sdk_parent.exists():
+        sys.path.insert(0, str(_repo_wt_sdk_parent))
+    from wt_sdk import WTGatewayClient, GatewayConfig, EnvConfigManager
+    from wt_sdk.models import LandingRecord, ChatMessage, ContentItem
+    from wt_sdk.utils import generate_deterministic_id, S3Uploader, S3Downloader
 
 log = logging.getLogger("cloud_strategy")
 
@@ -28,6 +39,9 @@ NON_TRAJECTORY_EVENT_TYPES = {
     "episode_summary",
     "evaluation_summary",
 }
+CLOUD_DEV_LANDING_TABLE = "landing_test"
+CLOUD_DEV_SERVING_TABLE = "serving_test"
+CLOUD_DEV_DATASET_TYPE = "TEST"
 
 
 def _json_object(value: Any) -> Dict[str, Any]:
@@ -40,6 +54,10 @@ def _json_object(value: Any) -> Dict[str, Any]:
     except Exception:
         return {"previous_value": value}
     return parsed if isinstance(parsed, dict) else {"previous_value": parsed}
+
+
+def _escape_sql_literal(value: str) -> str:
+    return value.replace("'", "''")
 
 
 def _cloud_env_state_from_meta(meta_json: Any) -> Dict[str, Any]:
@@ -68,14 +86,26 @@ class CloudStrategy(StorageStrategy):
     def __init__(
         self,
         job_id: str,
-        db_url: str,
+        db_url: Optional[str] = None,
         enable_buffer: bool = False,
         buffer_size: int = 1,
-        flush_interval: float = 1.0
+        flush_interval: float = 1.0,
+        landing_table: Optional[str] = None,
+        serving_table: Optional[str] = None,
+        env_config_table: str = "evaluation_env_config",
+        dldb_model: Optional[str] = None,
+        enable_dldb_timing_logs: bool = False,
+        dldb_metrics_log_path: Optional[str] = None,
     ):
-        self.db_url = db_url
+        self.db_url = str(db_url or "").strip()
         self.job_id = job_id
         self.initialized = False
+        self.landing_table = landing_table or CLOUD_DEV_LANDING_TABLE
+        self.serving_table = serving_table or CLOUD_DEV_SERVING_TABLE
+        self.env_config_table = env_config_table
+        self.dldb_model = dldb_model
+        self.enable_dldb_timing_logs = enable_dldb_timing_logs
+        self.dldb_metrics_log_path = dldb_metrics_log_path
 
         self.client: Optional[WTGatewayClient] = None
         self.env_manager: Optional[EnvConfigManager] = None
@@ -108,21 +138,40 @@ class CloudStrategy(StorageStrategy):
         if self.initialized:
             return
 
-        # TODO After the test passed, it was modified to the production configuration.
+        os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+
         # 1. Initialize WTGatewayClient
-        config = GatewayConfig() 
-        config.tables.landing_table = "landing_test"
+        config = GatewayConfig(
+            dldb_model=self.dldb_model,
+            enable_dldb_timing_logs=self.enable_dldb_timing_logs,
+            dldb_metrics_log_path=self.dldb_metrics_log_path,
+        )
+        if self.db_url:
+            config.tables.db_uri = self.db_url
+        config.tables.landing_table = self.landing_table
+        config.tables.serving_table = self.serving_table
 
         try:
             self.client = WTGatewayClient(config)
-            log.info(f"CloudStrategy initialized with table: {config.tables.landing_table}")
+            log.info(
+                "CloudStrategy initialized with landing_table=%s serving_table=%s db_uri=%s",
+                config.tables.landing_table,
+                config.tables.serving_table,
+                config.tables.db_uri,
+            )
         except Exception as e:
             log.error(f"Failed to initialize WTGatewayClient: {e}")
             raise
 
         # 2. Initialize EnvConfigManager (S3)
         try:
-            self.env_manager = EnvConfigManager() 
+            self.env_manager = EnvConfigManager(
+                table_name=self.env_config_table,
+                storage_options=config.s3.to_storage_options(),
+                dldb_model=self.dldb_model,
+                enable_dldb_timing_logs=self.enable_dldb_timing_logs,
+                dldb_metrics_log_path=self.dldb_metrics_log_path,
+            )
         except Exception as e:
             log.error(f"Failed to initialize EnvConfigManager: {e}")
             raise
@@ -181,9 +230,77 @@ class CloudStrategy(StorageStrategy):
 
     async def get_all_environments(self, job_id: Optional[str] = None) -> List[Dict]:
         """Get all environments from cache"""
-        if job_id:
-            return [c for c in self._env_configs.values() if c.get("job_id") == job_id]
-        return list(self._env_configs.values())
+        return self._list_env_configs(job_id=job_id)
+
+    async def get_environment_by_env_id(self, env_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve one environment config from cache or cloud EnvConfigManager."""
+        await self.init()
+
+        cached = self._env_configs.get(env_id)
+        if cached is not None:
+            return dict(cached)
+
+        if self.env_manager is None:
+            return None
+
+        query = f"env_id = '{_escape_sql_literal(env_id)}'"
+        try:
+            rows = await asyncio.to_thread(
+                self.env_manager.get_env_configs,
+                limit=1,
+                offset=0,
+                filter_query=query,
+            )
+        except Exception as e:
+            log.warning("Failed to fetch cloud env config env_id=%s: %s", env_id, e)
+            return None
+
+        if not rows:
+            return None
+
+        config = self._normalize_env_config(rows[0])
+        if not config.get("env_id"):
+            return None
+
+        self._env_configs[str(config["env_id"])] = config
+        return dict(config)
+
+    def get_env_configs(
+        self,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        job_id: Optional[str] = None,
+    ) -> List[Dict]:
+        """Synchronous scheduler reader for cached cloud environment configs."""
+        configs = self._list_env_configs(job_id=job_id)
+        start = max(0, int(offset or 0))
+        if limit is None:
+            return configs[start:]
+        end = start + max(0, int(limit))
+        return configs[start:end]
+
+    def _list_env_configs(self, job_id: Optional[str] = None) -> List[Dict]:
+        rows: List[Dict] = []
+        for index, config in enumerate(self._env_configs.values(), start=1):
+            row = self._normalize_env_config(config)
+            row.setdefault("id", index)
+            if job_id and str(row.get("job_id") or "") != str(job_id):
+                continue
+            rows.append(row)
+        return rows
+
+    def _normalize_env_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        row = dict(config)
+        if "image" not in row and "env_image" in row:
+            row["image"] = row.get("env_image")
+        env_params = row.get("env_params")
+        if isinstance(env_params, str):
+            try:
+                parsed = json.loads(env_params)
+                row["env_params"] = parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                row["env_params"] = {}
+        return row
 
     async def create_session(
         self,
@@ -269,7 +386,7 @@ class CloudStrategy(StorageStrategy):
         
         # Create LandingRecord
         record = LandingRecord(
-            dataset_type="Test",
+            dataset_type=CLOUD_DEV_DATASET_TYPE,
             dt=date.today().isoformat(),
             id=record_id,
             session_id=session.session_id,
@@ -288,6 +405,7 @@ class CloudStrategy(StorageStrategy):
             is_terminal=terminated or truncated,
             is_truncated=truncated,
             is_session_completed=terminated or truncated,
+            is_trainable=is_trainable,
             meta_json=json.dumps({
                 "source": "AIEvoBox",
                 "group_id": session.group_id,
@@ -325,12 +443,18 @@ class CloudStrategy(StorageStrategy):
         if not normalized_updates:
             return 0
 
-        return await asyncio.to_thread(
-            self.client.update_landing_session_step,
-            session_id,
-            step_id,
+        result = await asyncio.to_thread(
+            self.client.update_landing,
+            filter_query,
             normalized_updates,
         )
+        log.debug(
+            "Submitted cloud session step update: session_id=%s step_id=%s result=%s",
+            session_id,
+            step_id,
+            result,
+        )
+        return 1
 
     async def mark_latest_session_completed(
         self,
@@ -343,11 +467,17 @@ class CloudStrategy(StorageStrategy):
         if self._enable_buffer:
             await self._flush_records()
 
+        clauses = []
+        session = self._sessions.get(session_id)
+        job_id = session.job_id if session is not None else self.job_id
+        if job_id:
+            clauses.append(f"job_id = '{_escape_sql_literal(job_id)}'")
         escaped_session_id = session_id.replace("'", "''")
-        query = f"session_id = '{escaped_session_id}'"
+        clauses.append(f"session_id = '{escaped_session_id}'")
         if llm_model:
             escaped_llm_model = llm_model.replace("'", "''")
-            query += f" AND agent_model = '{escaped_llm_model}'"
+            clauses.append(f"agent_model = '{escaped_llm_model}'")
+        query = " AND ".join(clauses)
 
         rows = await asyncio.to_thread(
             self.client.session.filter,
@@ -416,8 +546,15 @@ class CloudStrategy(StorageStrategy):
         return self._stats if self._enable_buffer else None
 
     def _build_session_step_filter(self, session_id: str, step_id: int) -> str:
+        session = self._sessions.get(session_id)
+        job_id = session.job_id if session is not None else self.job_id
+        clauses = []
+        if job_id:
+            clauses.append(f"job_id = '{_escape_sql_literal(job_id)}'")
         escaped_session_id = session_id.replace("'", "''")
-        return f"session_id = '{escaped_session_id}' AND step_id = {int(step_id)}"
+        clauses.append(f"session_id = '{escaped_session_id}'")
+        clauses.append(f"step_id = {int(step_id)}")
+        return " AND ".join(clauses)
 
     def _normalize_session_step_updates_for_cloud(
         self,
@@ -777,10 +914,10 @@ class CloudStrategy(StorageStrategy):
         await self.init()
         
         results = self.client.pull_data(
-            dataset_type="Test",
+            dataset_type=CLOUD_DEV_DATASET_TYPE,
             cursor=after_id,
             checkout_latest=True,
-            where_sql="job_id = '{}' AND is_terminal = True".format(job_id),
+            where_sql="job_id = '{}' AND is_terminal = True".format(_escape_sql_literal(job_id)),
             limit=limit,
         )
         
@@ -818,7 +955,10 @@ class CloudStrategy(StorageStrategy):
         await self.init()
         
         last_cursor = self.client.get_max_created_at(
-            where_sql="dataset_type = 'Test' AND job_id = '{}' AND is_terminal = True".format(job_id),
+            where_sql=(
+                "dataset_type = '{}' AND job_id = '{}' AND is_terminal = True"
+                .format(CLOUD_DEV_DATASET_TYPE, _escape_sql_literal(job_id))
+            ),
         )
         
         return last_cursor

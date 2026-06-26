@@ -23,6 +23,7 @@ from evaluator.reward_committer import RewardCommitter
 from evaluator.run_registry import InMemoryRunRegistry
 from evaluator.trajectory_reader import TrajectoryReader
 from .agent_start_client import AgentStartClient
+from .db_loader import scheduler_db_reader
 from .manager import AgentPoolManager
 from .simulation_config import (
     build_manager_runtime_config,
@@ -42,6 +43,7 @@ class SimulationFlow:
         self.cfg = cfg
         self.data_manager: Optional[DataManager] = None
         self.conn: Any = None
+        self.scheduler_conn: Any = None
         self.manager_cfg: Optional[Dict[str, Any]] = None
         self.agent_pool_manager: Optional[AgentPoolManager] = None
         self.lease_pool: Optional[SimulationLeasePool] = None
@@ -63,13 +65,18 @@ class SimulationFlow:
         if self.cfg.rebuild_table and self.cfg.storage_type == "sqlite":
             rebuild_sqlite_db(self.cfg.db_url)
 
+        storage_config: Dict[str, Any] = {
+            "enable_buffer": self.cfg.enable_buffer,
+            "buffer_size": self.cfg.buffer_size,
+            "flush_interval": self.cfg.flush_interval,
+        }
+        if self.cfg.storage_type == "sqlite":
+            storage_config["db_url"] = self.cfg.db_url
+
         self.data_manager = DataManager(
             job_id=self.cfg.job_id,
             storage_type=self.cfg.storage_type,
-            db_url=self.cfg.db_url,
-            enable_buffer=self.cfg.enable_buffer,
-            buffer_size=self.cfg.buffer_size,
-            flush_interval=self.cfg.flush_interval,
+            **storage_config,
         )
 
         yaml_config_list = all_env_yaml_load(env_root=self.cfg.agent_root, env_config=self.cfg.agent_config)
@@ -146,9 +153,10 @@ class SimulationFlow:
     async def start_agent_scheduler(self) -> None:
         if self.manager_cfg is None:
             self.manager_cfg = build_manager_runtime_config(self.cfg)
+        self.scheduler_conn = scheduler_db_reader(self.cfg.storage_type, self.data_manager, self.conn)
         self.agent_pool_manager = AgentPoolManager(
             self.manager_cfg,
-            self.conn,
+            self.scheduler_conn,
             job_id=self.cfg.job_id,
             db_processing_done_checker=lambda: is_job_db_processing_done(self.cfg.job_id),
         )
@@ -160,8 +168,6 @@ class SimulationFlow:
             raise RuntimeError("lease pool is not started")
         if self.data_manager is None:
             raise RuntimeError("data manager is not prepared")
-        if self.cfg.agent_runtime != "agent_start":
-            raise ValueError(f"Unsupported agent_runtime for this build: {self.cfg.agent_runtime!r}")
 
         self.agent_start_client = AgentStartClient(
             timeout_s=self.cfg.agent_start_timeout_s,
@@ -171,8 +177,7 @@ class SimulationFlow:
         evaluation_service = None
         if self.cfg.evaluation_enabled:
             log.info(
-                "EVAL FLOW enabled: eval_task_dir_name=%s strict_eval_tasks=%s",
-                self.cfg.eval_task_dir_name,
+                "EVAL FLOW enabled: markdown eval task dir=eval_tasks strict_eval_tasks=%s",
                 self.cfg.strict_eval_tasks,
             )
             self.evaluation_runtime = build_evaluation_runtime(
