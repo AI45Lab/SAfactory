@@ -1,4 +1,5 @@
 import asyncio
+from importlib import import_module
 import json
 import logging
 import os
@@ -7,29 +8,159 @@ import uuid
 import re
 import base64
 import tempfile
-import sys
 import numpy as np
-from pathlib import Path
 from typing import List, Dict, Optional, Any, Set
 from datetime import date
 
 from core.data_manager.strategy.base_strategy import StorageStrategy, SessionContext
 
-try:
-    from wt_sdk import WTGatewayClient, GatewayConfig, EnvConfigManager
-    from wt_sdk.models import LandingRecord, ChatMessage, ContentItem
-    from wt_sdk.utils import generate_deterministic_id, S3Uploader, S3Downloader
-except ModuleNotFoundError as exc:
-    if exc.name != "wt_sdk":
-        raise
-    _repo_wt_sdk_parent = Path(__file__).resolve().parents[3] / "wt-data-gateway"
-    if _repo_wt_sdk_parent.exists():
-        sys.path.insert(0, str(_repo_wt_sdk_parent))
-    from wt_sdk import WTGatewayClient, GatewayConfig, EnvConfigManager
-    from wt_sdk.models import LandingRecord, ChatMessage, ContentItem
-    from wt_sdk.utils import generate_deterministic_id, S3Uploader, S3Downloader
-
 log = logging.getLogger("cloud_strategy")
+
+WTGatewayClient = None
+GatewayConfig = None
+EnvConfigManager = None
+LandingRecord = None
+ChatMessage = None
+ContentItem = None
+generate_deterministic_id = None
+S3Uploader = None
+S3Downloader = None
+
+_WT_SDK_IMPORT_ERROR = (
+    "Cloud storage requires the optional private dependency "
+    "wt-data-platform-sdk, which provides the wt_sdk package. "
+    "Install the cloud dependency after configuring repository credentials "
+    "or run with --storage-type sqlite to avoid this dependency."
+)
+
+
+def _load_wt_sdk() -> None:
+    """Load wt_sdk only when cloud storage is actually used."""
+    global WTGatewayClient
+    global GatewayConfig
+    global EnvConfigManager
+    global LandingRecord
+    global ChatMessage
+    global ContentItem
+    global generate_deterministic_id
+    global S3Uploader
+    global S3Downloader
+
+    if all(
+        symbol is not None
+        for symbol in (
+            WTGatewayClient,
+            GatewayConfig,
+            EnvConfigManager,
+            LandingRecord,
+            ChatMessage,
+            ContentItem,
+            generate_deterministic_id,
+            S3Uploader,
+            S3Downloader,
+        )
+    ):
+        return
+
+    if WTGatewayClient is not None and EnvConfigManager is not None:
+        _install_mock_wt_sdk_fallbacks()
+        if all(
+            symbol is not None
+            for symbol in (
+                WTGatewayClient,
+                GatewayConfig,
+                EnvConfigManager,
+                LandingRecord,
+                ChatMessage,
+                ContentItem,
+                generate_deterministic_id,
+                S3Uploader,
+                S3Downloader,
+            )
+        ):
+            return
+
+    try:
+        wt_sdk = import_module("wt_sdk")
+        wt_sdk_models = import_module("wt_sdk.models")
+        wt_sdk_utils = import_module("wt_sdk.utils")
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(_WT_SDK_IMPORT_ERROR) from exc
+
+    WTGatewayClient = WTGatewayClient or wt_sdk.WTGatewayClient
+    GatewayConfig = GatewayConfig or wt_sdk.GatewayConfig
+    EnvConfigManager = EnvConfigManager or wt_sdk.EnvConfigManager
+    LandingRecord = LandingRecord or wt_sdk_models.LandingRecord
+    ChatMessage = ChatMessage or wt_sdk_models.ChatMessage
+    ContentItem = ContentItem or wt_sdk_models.ContentItem
+    generate_deterministic_id = generate_deterministic_id or wt_sdk_utils.generate_deterministic_id
+    S3Uploader = S3Uploader or wt_sdk_utils.S3Uploader
+    S3Downloader = S3Downloader or wt_sdk_utils.S3Downloader
+
+
+def _install_mock_wt_sdk_fallbacks() -> None:
+    """Provide tiny SDK-like objects for tests that monkeypatch cloud clients."""
+    global GatewayConfig
+    global LandingRecord
+    global ChatMessage
+    global ContentItem
+    global generate_deterministic_id
+    global S3Uploader
+    global S3Downloader
+
+    class _Model:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                if key in {"image_url", "input_audio"} and isinstance(value, dict):
+                    value = _Model(**value)
+                self.__dict__[key] = value
+
+        def __getattr__(self, _name: str) -> Any:
+            return None
+
+        def model_dump(self) -> Dict[str, Any]:
+            return dict(self.__dict__)
+
+    class _TableConfig:
+        def __init__(
+            self,
+            db_uri: str = "",
+            landing_table: str = CLOUD_DEV_LANDING_TABLE,
+            serving_table: str = CLOUD_DEV_SERVING_TABLE,
+        ):
+            self.db_uri = db_uri
+            self.landing_table = landing_table
+            self.serving_table = serving_table
+
+    class _S3Config:
+        def to_storage_options(self) -> Dict[str, Any]:
+            return {}
+
+    class _GatewayConfig:
+        def __init__(self, tables: Any = None, **_kwargs):
+            self.tables = tables or _TableConfig()
+            self.s3 = _S3Config()
+
+    def _deterministic_id(value: Dict[str, Any]) -> str:
+        payload = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, payload))
+
+    class _S3Uploader:
+        def upload_file(self, file_path: str, key: str) -> str:
+            return f"s3://mock/{key}"
+
+    class _S3Downloader:
+        def download_file(self, image_path: str, local_path: str) -> None:
+            raise RuntimeError(f"Mock S3Downloader cannot download {image_path!r}")
+
+    GatewayConfig = GatewayConfig or _GatewayConfig
+    LandingRecord = LandingRecord or _Model
+    ChatMessage = ChatMessage or _Model
+    ContentItem = ContentItem or _Model
+    generate_deterministic_id = generate_deterministic_id or _deterministic_id
+    S3Uploader = S3Uploader or _S3Uploader
+    S3Downloader = S3Downloader or _S3Downloader
+
 
 # Retry configuration
 MAX_UPLOAD_RETRIES = 3
@@ -107,14 +238,14 @@ class CloudStrategy(StorageStrategy):
         self.enable_dldb_timing_logs = enable_dldb_timing_logs
         self.dldb_metrics_log_path = dldb_metrics_log_path
 
-        self.client: Optional[WTGatewayClient] = None
-        self.env_manager: Optional[EnvConfigManager] = None
-        self.s3_uploader: Optional[S3Uploader] = None
+        self.client: Any = None
+        self.env_manager: Any = None
+        self.s3_uploader: Any = None
 
         self._enable_buffer = enable_buffer
         self._buffer_size = buffer_size
         self._flush_interval = flush_interval
-        self._record_buffer: List[LandingRecord] = []
+        self._record_buffer: List[Any] = []
         self._buffer_lock = asyncio.Lock()
         self._flush_lock = asyncio.Lock()
         self._flush_task: Optional[asyncio.Task] = None
@@ -139,6 +270,7 @@ class CloudStrategy(StorageStrategy):
             return
 
         os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+        _load_wt_sdk()
 
         # 1. Initialize WTGatewayClient
         config = GatewayConfig(
@@ -675,7 +807,7 @@ class CloudStrategy(StorageStrategy):
 
         return self._chat_message_to_landing_value(message)
 
-    def _chat_message_to_landing_value(self, message: ChatMessage) -> Dict[str, Any]:
+    def _chat_message_to_landing_value(self, message: Any) -> Dict[str, Any]:
         content = None
         if message.content is not None:
             content = [
@@ -773,7 +905,7 @@ class CloudStrategy(StorageStrategy):
 
         return processed_messages, uploaded_urls
 
-    async def _buffer_record(self, record: LandingRecord) -> None:
+    async def _buffer_record(self, record: Any) -> None:
         should_flush = False
 
         async with self._buffer_lock:
@@ -1005,6 +1137,7 @@ class CloudStrategy(StorageStrategy):
         Returns:
             (base64_string, media_type)
         """
+        _load_wt_sdk()
         downloader = S3Downloader()
 
         suffix = os.path.splitext(image_path)[1]
@@ -1072,8 +1205,9 @@ class CloudStrategy(StorageStrategy):
         messages = self.remove_none_and_empty(messages)
         return messages
 
-    def _convert_to_chat_messages(self, messages: List[Dict]) -> List[ChatMessage]:
+    def _convert_to_chat_messages(self, messages: List[Dict]) -> List[Any]:
         """Convert OpenAI format messages to SDK ChatMessage format"""
+        _load_wt_sdk()
         result = []
 
         for msg in messages:

@@ -14,6 +14,7 @@ from evaluator.eval_types import EvalMethod, EvalSpec
 log = logging.getLogger("evaluator.markdown_eval_resolver")
 
 TASK_NAME_KEYS = ("task_name", "task_id", "case_uid", "id", "name")
+EVAL_TASK_DIR_NAME = "eval_tasks"
 
 DEFAULT_MARKDOWN_JUDGE_TEMPLATE = """\
 {{ eval_task_body }}
@@ -64,10 +65,8 @@ class MarkdownEvalTaskResolver:
     def __init__(
         self,
         *,
-        eval_task_dir_name: str = "eval_tasks",
         strict: bool = False,
     ) -> None:
-        self.eval_task_dir_name = str(eval_task_dir_name or "eval_tasks").strip() or "eval_tasks"
         self.strict = bool(strict)
         self._cache: dict[Path, MarkdownEvalTask] = {}
 
@@ -115,7 +114,7 @@ class MarkdownEvalTaskResolver:
             )
             return None
 
-        eval_dir = Path(config_dir) / self.eval_task_dir_name / dataset_name
+        eval_dir = Path(config_dir) / EVAL_TASK_DIR_NAME / dataset_name
         candidates = self._candidate_paths(eval_dir=eval_dir, task_name=str(task_name), dataset=dataset)
         log.info(
             "EVAL RESOLVER lookup: config_dir=%s dataset=%s task=%s candidates=%s",

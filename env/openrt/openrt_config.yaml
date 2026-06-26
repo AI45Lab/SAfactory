@@ -12,6 +12,6 @@ environments:
       default_attacker_model:  dsv4pro
       default_judge_model: dsv4pro
       default_target_models:
-        - yinlian_qwen_base_0617_num_1_2_32k_gspo140
+        - dsv4pro
       max_workers: 50
       evaluator_workers: 32

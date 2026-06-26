@@ -7,13 +7,26 @@ from typing import Optional, Tuple
 
 import pandas as pd
 import dldb
-from wt_sdk.config import default_config
 
 from evaluator.config import ReportConfig
 from evaluator.cache import CacheManager
 from evaluator.summarizer import MessageSummarizer
 
 log = logging.getLogger("evaluator.generator")
+
+_WT_SDK_REPORT_IMPORT_ERROR = (
+    "Cloud report generation requires the optional private dependency "
+    "wt-data-platform-sdk, which provides wt_sdk.config.default_config. "
+    "Install requirements-cloud.txt after configuring repository credentials."
+)
+
+
+def _load_wt_default_config():
+    try:
+        from wt_sdk.config import default_config
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(_WT_SDK_REPORT_IMPORT_ERROR) from exc
+    return default_config
 
 
 class ReportGenerator:
@@ -30,6 +43,7 @@ class ReportGenerator:
         self, query: str, table_name: str = "landing_test", db_uri: str = None
     ) -> pd.DataFrame:
         """从 cloud db 中查询记录。"""
+        default_config = _load_wt_default_config()
         db_name = db_uri or default_config.tables.db_uri
         log.info(f"Connecting to {db_name}...")
 

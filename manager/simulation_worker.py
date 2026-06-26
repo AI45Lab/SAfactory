@@ -6,6 +6,8 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
+import httpx
+
 from core.data_manager.manager import DataManager, SessionContext
 from core.runtime_metadata import strip_internal_env_params
 from evaluator.eval_types import EvalRequest, parse_eval_specs
@@ -156,8 +158,7 @@ class SimulationWorkerGroup:
                     await self.registry.mark_rollout_finished(session.session_id, result)
 
                 if self.gateway_client is not None:
-                    await self.gateway_client.close_session(result.session_id, reason="rollout_finished")
-                    await self.gateway_client.wait_telemetry_flush(result.session_id)
+                    await self._finalize_gateway_session(result, worker_id=worker_id, agent_key=agent_key)
 
                 if self.evaluation_service is None or self.reward_committer is None:
                     release_reusable = False
@@ -300,6 +301,29 @@ class SimulationWorkerGroup:
             )
 
         return result
+
+    async def _finalize_gateway_session(
+        self,
+        result: SimulationStartResult,
+        *,
+        worker_id: int,
+        agent_key: str,
+    ) -> None:
+        if self.gateway_client is None:
+            return
+        try:
+            await self.gateway_client.close_session(result.session_id, reason="rollout_finished")
+            await self.gateway_client.wait_telemetry_flush(result.session_id)
+        except httpx.HTTPError as exc:
+            log.warning(
+                "worker=%d agent=%s gateway session finalization failed; preserving rollout status=%s "
+                "session_id=%s error=%s",
+                worker_id,
+                agent_key,
+                result.status,
+                result.session_id,
+                exc,
+            )
 
     def _build_start_request(
         self,

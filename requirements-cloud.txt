@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Cloud storage depends on the private wt-data-gateway repository.
+# Install this file only when you have access to the Gitee project.
+wt-data-platform-sdk @ git+https://gitee.pjlab.org.cn/L2/safeai/Wind-Tunnel/renwuwu---jizuoxitong/wt-data-gateway.git@perfTuning
