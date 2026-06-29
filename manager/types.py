@@ -56,6 +56,12 @@ class SimulationRunConfig:
     docker_bin: str
     docker_pull_policy: str
     docker_startup_concurrency: int
+    agent_start_timeout_grace_s: float = 120.0
+    container_refill_timeout_s: float = 300.0
+    docker_command_timeout_s: float = 300.0
+    docker_start_timeout_s: float = 300.0
+    docker_remove_timeout_s: float = 120.0
+    docker_lifecycle_timeout_s: float = 60.0
     rjob_config: Dict[str, Any] = field(default_factory=dict)
     cleanup_docker_container: bool = True
     max_workers: Optional[int] = None
@@ -68,6 +74,12 @@ class SimulationRunConfig:
     evaluation_enabled: bool = False
     evaluation_config: Dict[str, Any] = field(default_factory=dict)
     strict_eval_tasks: bool = False
+    circuit_breaker_enabled: bool = True
+    circuit_breaker_window: int = 50
+    circuit_breaker_min_samples: int = 20
+    circuit_breaker_failure_rate: float = 0.8
+    circuit_breaker_timeout_rate: float = 0.5
+    circuit_breaker_consecutive_timeouts: int = 5
 
 
 @dataclass(frozen=True, slots=True)

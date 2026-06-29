@@ -95,11 +95,14 @@ class SimulationLeasePool:
     not run the episode and it does not know anything about LLM routing.
     """
 
-    def __init__(self, mgr: AgentPoolManager, *, pool_size: int):
+    def __init__(self, mgr: AgentPoolManager, *, pool_size: int, refill_timeout_s: float = 300.0):
         self.mgr = mgr
         self.pool_size = max(1, int(pool_size or 1))
+        self.refill_timeout_s = max(1.0, float(refill_timeout_s or 300.0))
         self._runtime = _LeaseRuntimeState()
         self._lifecycle_lock = asyncio.Lock()
+        self._lifecycle_cond = asyncio.Condition()
+        self._active_refills = 0
         self._closing = False
         self._closed = False
 
@@ -134,31 +137,67 @@ class SimulationLeasePool:
         reusable: Optional[bool] = None,
     ) -> None:
         old_key = (str(lease.agent_name), str(lease.agent_id))
-        async with self._lifecycle_lock:
-            if self._closing or self._closed:
-                log.info("done(): pool is closing; skip refill for agent=%s id=%s", lease.agent_name, lease.agent_id)
-                await self._finish_without_replacement(old_key)
-                return
+        entered_refill = await self._enter_refill_if_open()
+        if not entered_refill:
+            log.info("done(): pool is closing; skip refill for agent=%s id=%s", lease.agent_name, lease.agent_id)
+            await self._finish_without_replacement(old_key)
+            return
 
+        refill_started = False
+        refill_settled = False
+        try:
             await self._runtime.begin_refill(old_key)
-            ok = await self._close_and_refill(lease, old_key, result, reusable)
-            if not ok:
-                await self._runtime.fail_refill(old_key)
+            refill_started = True
+            refill_settled = await self._close_and_refill(lease, old_key, result, reusable)
+            if not refill_settled:
                 raise RuntimeError(f"close_and_refill failed for {lease.agent_name}/{lease.agent_id}")
+        finally:
+            if refill_started and not refill_settled:
+                await self._runtime.fail_refill(old_key)
+            await self._leave_refill()
 
     async def aclose(self) -> None:
         async with self._lifecycle_lock:
-            if self._closed:
-                log.info("SimulationLeasePool.aclose(): already closed")
-                return
-            self._closing = True
-
-        async with self._lifecycle_lock:
-            if self._closed:
-                return
+            async with self._lifecycle_cond:
+                if self._closed:
+                    log.info("SimulationLeasePool.aclose(): already closed")
+                    return
+                self._closing = True
+                while self._active_refills > 0:
+                    log.info(
+                        "SimulationLeasePool.aclose(): waiting for %d active container refill(s)",
+                        self._active_refills,
+                    )
+                    await self._lifecycle_cond.wait()
             log.info("SimulationLeasePool.aclose(): closing AgentPoolManager")
             await self.mgr.close_all()
-            self._closed = True
+            async with self._lifecycle_cond:
+                self._closed = True
+                self._lifecycle_cond.notify_all()
+
+    async def stop_refills(self, reason: str = "") -> None:
+        async with self._lifecycle_cond:
+            if self._closing or self._closed:
+                return
+            self._closing = True
+            log.warning(
+                "SimulationLeasePool.stop_refills(): no more replacement containers will be scheduled%s",
+                f" reason={reason}" if reason else "",
+            )
+            self._lifecycle_cond.notify_all()
+
+    async def _enter_refill_if_open(self) -> bool:
+        async with self._lifecycle_cond:
+            if self._closing or self._closed:
+                return False
+            self._active_refills += 1
+            return True
+
+    async def _leave_refill(self) -> None:
+        async with self._lifecycle_cond:
+            if self._active_refills > 0:
+                self._active_refills -= 1
+            self._lifecycle_cond.notify_all()
 
     async def _finish_without_replacement(self, old_key: Tuple[str, str]) -> None:
         await self._runtime.begin_refill(old_key)
@@ -173,10 +212,20 @@ class SimulationLeasePool:
     ) -> bool:
         try:
             succeeded = bool(reusable) if reusable is not None else result is not None and result.status == "succeeded"
-            replacement = await self.mgr.close_and_refill(lease.agent_name, lease.agent_id, succeeded=succeeded)
+            replacement = await asyncio.wait_for(
+                self.mgr.close_and_refill(lease.agent_name, lease.agent_id, succeeded=succeeded),
+                timeout=self.refill_timeout_s,
+            )
         except asyncio.CancelledError:
-            await self._runtime.fail_refill(old_key)
             raise
+        except asyncio.TimeoutError:
+            log.error(
+                "close_and_refill timed out for %s/%s after %.1fs",
+                lease.agent_name,
+                lease.agent_id,
+                self.refill_timeout_s,
+            )
+            return False
         except Exception:
             log.exception("close_and_refill failed for %s/%s", lease.agent_name, lease.agent_id)
             return False

@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import logging
 import time
+from collections import deque
 from typing import Any, Dict, Optional
 
 import httpx
@@ -29,6 +30,96 @@ from .types import (
 )
 
 log = logging.getLogger("manager.simulation_worker")
+
+
+class _SimulationCircuitBreaker:
+    _TIMEOUT_MARKERS = (
+        "timed out",
+        "timeoutexpired",
+        "command timed out",
+        "docker exec timed out",
+    )
+
+    def __init__(self, cfg: SimulationRunConfig) -> None:
+        self.enabled = bool(cfg.circuit_breaker_enabled)
+        self.window = max(1, int(cfg.circuit_breaker_window or 1))
+        self.min_samples = max(1, min(self.window, int(cfg.circuit_breaker_min_samples or 1)))
+        self.failure_rate_threshold = min(1.0, max(0.0, float(cfg.circuit_breaker_failure_rate)))
+        self.timeout_rate_threshold = min(1.0, max(0.0, float(cfg.circuit_breaker_timeout_rate)))
+        self.consecutive_timeout_limit = max(1, int(cfg.circuit_breaker_consecutive_timeouts or 1))
+        self._samples: deque[tuple[bool, bool]] = deque(maxlen=self.window)
+        self._consecutive_timeouts = 0
+        self._opened = asyncio.Event()
+        self._reason = ""
+        self._lock = asyncio.Lock()
+
+    def is_open(self) -> bool:
+        return self._opened.is_set()
+
+    def reason(self) -> str:
+        return self._reason
+
+    async def wait_open(self) -> None:
+        await self._opened.wait()
+
+    async def record(self, result: SimulationStartResult) -> bool:
+        if not self.enabled or self._opened.is_set():
+            return False
+
+        failed = str(result.status or "").lower() != "succeeded"
+        timed_out = self._is_timeout(result)
+        async with self._lock:
+            if self._opened.is_set():
+                return False
+            self._samples.append((failed, timed_out))
+            self._consecutive_timeouts = self._consecutive_timeouts + 1 if timed_out else 0
+
+            reason = self._evaluate_locked()
+            if not reason:
+                return False
+            self._reason = reason
+            self._opened.set()
+            return True
+
+    def _evaluate_locked(self) -> str:
+        if self._consecutive_timeouts >= self.consecutive_timeout_limit:
+            return f"consecutive_timeouts={self._consecutive_timeouts}"
+
+        sample_count = len(self._samples)
+        if sample_count < self.min_samples:
+            return ""
+
+        failures = sum(1 for failed, _ in self._samples if failed)
+        timeouts = sum(1 for _, timed_out in self._samples if timed_out)
+        failure_rate = failures / sample_count
+        timeout_rate = timeouts / sample_count
+        if failure_rate >= self.failure_rate_threshold:
+            return (
+                f"failure_rate={failure_rate:.3f} "
+                f"threshold={self.failure_rate_threshold:.3f} samples={sample_count}"
+            )
+        if timeout_rate >= self.timeout_rate_threshold:
+            return (
+                f"timeout_rate={timeout_rate:.3f} "
+                f"threshold={self.timeout_rate_threshold:.3f} samples={sample_count}"
+            )
+        return ""
+
+    @classmethod
+    def _is_timeout(cls, result: SimulationStartResult) -> bool:
+        if bool(result.truncated):
+            return True
+        metrics = result.metrics if isinstance(result.metrics, dict) else {}
+        if str(metrics.get("timeout_layer") or "").strip():
+            return True
+        text = " ".join(
+            [
+                str(result.error_text or ""),
+                str(metrics.get("error") or ""),
+                str(metrics.get("error_text") or ""),
+            ]
+        ).lower()
+        return any(marker in text for marker in cls._TIMEOUT_MARKERS)
 
 
 class SimulationWorkerGroup:
@@ -57,6 +148,7 @@ class SimulationWorkerGroup:
         self.worker_count = self._derive_worker_count()
         self._results: Dict[str, SimulationStartResult] = {}
         self._results_lock = asyncio.Lock()
+        self._circuit_breaker = _SimulationCircuitBreaker(cfg)
 
     async def run_all(self) -> SimulationRunSummary:
         log.info(
@@ -89,7 +181,7 @@ class SimulationWorkerGroup:
         if not results:
             return SimulationRunSummary(
                 job_id=self.cfg.job_id,
-                status="failed_no_episodes",
+                status="stopped_by_circuit_breaker" if self._circuit_breaker.is_open() else "failed_no_episodes",
                 total_episodes=0,
                 succeeded_episodes=0,
                 failed_episodes=0,
@@ -99,7 +191,12 @@ class SimulationWorkerGroup:
 
         succeeded = sum(1 for result in results.values() if result.status == "succeeded")
         failed = len(results) - succeeded
-        status = "cancelled" if cancelled else ("succeeded" if failed == 0 else "completed_with_failures")
+        if cancelled:
+            status = "cancelled"
+        elif self._circuit_breaker.is_open():
+            status = "stopped_by_circuit_breaker"
+        else:
+            status = "succeeded" if failed == 0 else "completed_with_failures"
         return SimulationRunSummary(
             job_id=self.cfg.job_id,
             status=status,
@@ -112,7 +209,7 @@ class SimulationWorkerGroup:
 
     async def _worker_loop(self, worker_id: int) -> None:
         while True:
-            lease = await self.lease_pool.acquire()
+            lease = await self._acquire_lease_or_stop(worker_id)
             if lease is None:
                 log.info("worker=%d: lease pool exhausted", worker_id)
                 return
@@ -242,6 +339,8 @@ class SimulationWorkerGroup:
                     self._results[agent_key] = result
             finally:
                 try:
+                    if result is not None:
+                        await self._record_circuit_result(result, worker_id=worker_id, agent_key=agent_key)
                     if self.registry is not None and session is not None and not run_failed:
                         await self.registry.mark_releasing_container(session.session_id)
                     await self.lease_pool.done(lease, result, reusable=release_reusable)
@@ -261,6 +360,72 @@ class SimulationWorkerGroup:
                 result.total_reward,
                 elapsed,
             )
+
+    async def _acquire_lease_or_stop(self, worker_id: int) -> SimulationAgentLease | None:
+        if self._circuit_breaker.is_open():
+            log.warning(
+                "worker=%d: stop acquiring leases because circuit breaker is open: %s",
+                worker_id,
+                self._circuit_breaker.reason(),
+            )
+            return None
+
+        acquire_task = asyncio.create_task(self.lease_pool.acquire())
+        breaker_task = asyncio.create_task(self._circuit_breaker.wait_open())
+        done, pending = await asyncio.wait(
+            {acquire_task, breaker_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        if breaker_task in done:
+            lease = None
+            if acquire_task in done and not acquire_task.cancelled():
+                lease = acquire_task.result()
+            if lease is not None:
+                await self.lease_pool.stop_refills(self._circuit_breaker.reason())
+                await self.lease_pool.done(lease, None, reusable=False)
+            log.warning(
+                "worker=%d: stop waiting for lease because circuit breaker opened: %s",
+                worker_id,
+                self._circuit_breaker.reason(),
+            )
+            return None
+
+        lease = acquire_task.result()
+        if lease is not None and self._circuit_breaker.is_open():
+            log.warning(
+                "worker=%d: releasing acquired lease without running because circuit breaker opened: %s/%s",
+                worker_id,
+                lease.agent_name,
+                lease.agent_id,
+            )
+            await self.lease_pool.stop_refills(self._circuit_breaker.reason())
+            await self.lease_pool.done(lease, None, reusable=False)
+            return None
+        return lease
+
+    async def _record_circuit_result(
+        self,
+        result: SimulationStartResult,
+        *,
+        worker_id: int,
+        agent_key: str,
+    ) -> None:
+        opened = await self._circuit_breaker.record(result)
+        if not opened:
+            return
+        reason = self._circuit_breaker.reason()
+        log.error(
+            "worker=%d agent=%s opened simulation circuit breaker: %s",
+            worker_id,
+            agent_key,
+            reason,
+        )
+        await self.lease_pool.stop_refills(reason)
 
     async def _run_one_episode(
         self,

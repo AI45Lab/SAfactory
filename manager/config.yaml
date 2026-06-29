@@ -24,6 +24,10 @@ cluster:
     name_prefix: "safactory-openclaw"
     pull_policy: "never"              # never | always
     startup_concurrency: 8
+    command_timeout_s: 300
+    start_timeout_s: 300
+    remove_timeout_s: 120
+    lifecycle_timeout_s: 60
     cleanup_container_on_finish: true # false keeps containers after rollout/evaluation for debugging
     remove_on_close: true
     idle_command: "tail -f /dev/null"

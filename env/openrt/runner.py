@@ -238,11 +238,19 @@ def _results_dir(request: dict[str, Any], env_params: dict[str, Any]) -> Path:
 
 
 def _timeout_s(request: dict[str, Any], env_params: dict[str, Any], dataset: dict[str, Any]) -> float:
-    raw = dataset.get("timeout_s", env_params.get("timeout_s", request.get("agent_start_timeout_s", 3600.0)))
+    request_timeout = _float_or_default(request.get("agent_start_timeout_s"), 3600.0)
+    raw = dataset.get("timeout_s", env_params.get("timeout_s", request_timeout))
     try:
-        return max(1.0, float(raw))
+        return max(1.0, min(float(raw), request_timeout))
     except (TypeError, ValueError):
-        return 3600.0
+        return request_timeout
+
+
+def _float_or_default(value: Any, default: float) -> float:
+    try:
+        return max(1.0, float(value))
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def _gateway_session_url(request: dict[str, Any], session_id: str) -> str:

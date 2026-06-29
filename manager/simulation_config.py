@@ -152,6 +152,36 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         docker_bin=str(args.docker_bin or "docker"),
         docker_pull_policy=str(args.docker_pull_policy or "never").strip().lower(),
         docker_startup_concurrency=max(1, int(args.docker_startup_concurrency or 1)),
+        agent_start_timeout_grace_s=_float_at_least(
+            getattr(args, "agent_start_timeout_grace_s", 120.0),
+            default=120.0,
+            minimum=0.0,
+        ),
+        container_refill_timeout_s=_float_at_least(
+            getattr(args, "container_refill_timeout_s", 300.0),
+            default=300.0,
+            minimum=1.0,
+        ),
+        docker_command_timeout_s=_float_at_least(
+            getattr(args, "docker_command_timeout_s", 300.0),
+            default=300.0,
+            minimum=1.0,
+        ),
+        docker_start_timeout_s=_float_at_least(
+            getattr(args, "docker_start_timeout_s", 300.0),
+            default=300.0,
+            minimum=1.0,
+        ),
+        docker_remove_timeout_s=_float_at_least(
+            getattr(args, "docker_remove_timeout_s", 120.0),
+            default=120.0,
+            minimum=1.0,
+        ),
+        docker_lifecycle_timeout_s=_float_at_least(
+            getattr(args, "docker_lifecycle_timeout_s", 60.0),
+            default=60.0,
+            minimum=1.0,
+        ),
         rjob_config=rjob_section,
         cleanup_docker_container=bool(getattr(args, "cleanup_docker_container", True)),
         max_workers=max_workers,
@@ -164,6 +194,26 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         evaluation_enabled=bool(args.evaluation_enabled),
         evaluation_config=evaluation_config,
         strict_eval_tasks=bool(args.strict_eval_tasks),
+        circuit_breaker_enabled=bool(getattr(args, "circuit_breaker", True)),
+        circuit_breaker_window=_int_at_least(getattr(args, "circuit_breaker_window", 50), default=50, minimum=1),
+        circuit_breaker_min_samples=_int_at_least(
+            getattr(args, "circuit_breaker_min_samples", 20),
+            default=20,
+            minimum=1,
+        ),
+        circuit_breaker_failure_rate=_rate_or_default(
+            getattr(args, "circuit_breaker_failure_rate", 0.8),
+            default=0.8,
+        ),
+        circuit_breaker_timeout_rate=_rate_or_default(
+            getattr(args, "circuit_breaker_timeout_rate", 0.5),
+            default=0.5,
+        ),
+        circuit_breaker_consecutive_timeouts=_int_at_least(
+            getattr(args, "circuit_breaker_consecutive_timeouts", 5),
+            default=5,
+            minimum=1,
+        ),
     )
 
 
@@ -182,6 +232,30 @@ def _validate_storage_db_url(storage_type: str, db_url: str) -> None:
         raise ValueError("--db-path value must be a URI only, for example sqlite://env_trajs.db")
     if storage_type == "sqlite" and not db_url.startswith("sqlite://"):
         raise ValueError(f"sqlite storage requires a sqlite:// db path, got {db_url!r}")
+
+
+def _float_at_least(value: Any, *, default: float, minimum: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return max(float(minimum), number)
+
+
+def _int_at_least(value: Any, *, default: int, minimum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+    return max(int(minimum), number)
+
+
+def _rate_or_default(value: Any, *, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return min(1.0, max(0.0, number))
 
 
 def derive_pool_sizing(
@@ -218,6 +292,10 @@ def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
                 "startup_concurrency": int(cfg.docker_startup_concurrency),
                 "cleanup_container_on_finish": bool(cfg.cleanup_docker_container),
                 "remove_on_close": bool(cfg.cleanup_docker_container),
+                "command_timeout_s": float(cfg.docker_command_timeout_s),
+                "start_timeout_s": float(cfg.docker_start_timeout_s),
+                "remove_timeout_s": float(cfg.docker_remove_timeout_s),
+                "lifecycle_timeout_s": float(cfg.docker_lifecycle_timeout_s),
             },
             "rjob": rjob_cfg,
             "env_types": env_types,

@@ -61,6 +61,14 @@ def _as_list(value: Any) -> List[str]:
     return [str(value)]
 
 
+def _positive_float(value: Any, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return max(1.0, number)
+
+
 def _merge_dicts(*values: Any) -> Dict[str, Any]:
     merged: Dict[str, Any] = {}
     for value in values:
@@ -106,6 +114,10 @@ class DockerContainerBackend(ClusterBackend):
         self._default_cleanup_command = str(self._docker_cfg.get("cleanup_command", "") or "")
         self._default_healthcheck_command = str(self._docker_cfg.get("healthcheck_command", "") or "")
         self._default_max_runs = int(self._docker_cfg.get("max_runs_per_container", 0) or 0)
+        self._command_timeout_s = _positive_float(self._docker_cfg.get("command_timeout_s"), 300.0)
+        self._start_timeout_s = _positive_float(self._docker_cfg.get("start_timeout_s"), self._command_timeout_s)
+        self._remove_timeout_s = _positive_float(self._docker_cfg.get("remove_timeout_s"), 120.0)
+        self._lifecycle_timeout_s = _positive_float(self._docker_cfg.get("lifecycle_timeout_s"), 60.0)
 
         self._containers: Dict[str, DockerContainerRecord] = {}
         self._idle: Dict[str, Deque[str]] = {}
@@ -217,7 +229,11 @@ class DockerContainerBackend(ClusterBackend):
                 record.container_id,
             )
             return
-        result = await self._run_command([self.docker_bin, "rm", "-f", ident], check=False)
+        result = await self._run_command(
+            [self.docker_bin, "rm", "-f", ident],
+            check=False,
+            timeout_s=self._remove_timeout_s,
+        )
         if result.returncode != 0:
             log.warning("docker rm failed for %s: %s", ident, (result.stderr or "").strip())
 
@@ -251,6 +267,7 @@ class DockerContainerBackend(ClusterBackend):
         await self._run_required(
             [self.docker_bin, "cp", str(runner_host_path), f"{record.container_id}:{self._runner_container_path}"],
             action=f"install Safactory OpenClaw runner in {record.container_name}",
+            timeout_s=self._start_timeout_s,
         )
         log.debug(
             "installed Safactory OpenClaw runner into %s:%s",
@@ -325,7 +342,11 @@ class DockerContainerBackend(ClusterBackend):
                 }
             ),
         )
-        result = await self._run_required(run_cmd, action=f"start OpenClaw container for {env_name}")
+        result = await self._run_required(
+            run_cmd,
+            action=f"start OpenClaw container for {env_name}",
+            timeout_s=self._start_timeout_s,
+        )
         container_id = result.stdout.strip().splitlines()[-1].strip()
         if not container_id:
             raise RuntimeError(f"docker run returned empty container id for agent={env_name} image={image}")
@@ -347,7 +368,11 @@ class DockerContainerBackend(ClusterBackend):
         try:
             await self._install_runner_script_if_needed(record, docker_cfg)
         except Exception:
-            await self._run_command([self.docker_bin, "rm", "-f", container_id], check=False)
+            await self._run_command(
+                [self.docker_bin, "rm", "-f", container_id],
+                check=False,
+                timeout_s=self._remove_timeout_s,
+            )
             raise
         self._containers[container_id] = record
         log.info(
@@ -417,7 +442,7 @@ class DockerContainerBackend(ClusterBackend):
         if record.workdir:
             cmd.extend(["-w", record.workdir])
         cmd.extend([record.container_id, "sh", "-lc", command])
-        result = await self._run_command(cmd, check=False)
+        result = await self._run_command(cmd, check=False, timeout_s=self._lifecycle_timeout_s)
         if result.returncode == 0:
             return True
         log.warning(
@@ -429,17 +454,33 @@ class DockerContainerBackend(ClusterBackend):
         )
         return False
 
-    async def _run_required(self, cmd: List[str], *, action: str) -> subprocess.CompletedProcess[str]:
+    async def _run_required(
+        self,
+        cmd: List[str],
+        *,
+        action: str,
+        timeout_s: float | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         try:
-            return await self._run_command(cmd, check=True)
+            return await self._run_command(cmd, check=True, timeout_s=timeout_s)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"{action} timed out after {float(exc.timeout or 0):.1f}s: cmd={cmd!r}") from exc
         except subprocess.CalledProcessError as exc:
             stdout = (exc.stdout or "").strip()
             stderr = (exc.stderr or "").strip()
             raise RuntimeError(f"{action} failed: cmd={cmd!r} stdout={stdout!r} stderr={stderr!r}") from exc
 
-    async def _run_command(self, cmd: List[str], *, check: bool) -> subprocess.CompletedProcess[str]:
+    async def _run_command(
+        self,
+        cmd: List[str],
+        *,
+        check: bool,
+        timeout_s: float | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        timeout = _positive_float(timeout_s, self._command_timeout_s)
+
         def _run() -> subprocess.CompletedProcess[str]:
-            return subprocess.run(cmd, check=check, capture_output=True, text=True)
+            return subprocess.run(cmd, check=check, capture_output=True, text=True, timeout=timeout)
 
         return await asyncio.to_thread(_run)
 

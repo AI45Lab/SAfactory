@@ -160,7 +160,11 @@ class SimulationFlow:
             job_id=self.cfg.job_id,
             db_processing_done_checker=lambda: is_job_db_processing_done(self.cfg.job_id),
         )
-        self.lease_pool = SimulationLeasePool(self.agent_pool_manager, pool_size=self.cfg.warm_pool_size)
+        self.lease_pool = SimulationLeasePool(
+            self.agent_pool_manager,
+            pool_size=self.cfg.warm_pool_size,
+            refill_timeout_s=self.cfg.container_refill_timeout_s,
+        )
         await self.lease_pool.start()
 
     async def run_workers(self) -> SimulationRunSummary:
@@ -170,7 +174,7 @@ class SimulationFlow:
             raise RuntimeError("data manager is not prepared")
 
         self.agent_start_client = AgentStartClient(
-            timeout_s=self.cfg.agent_start_timeout_s,
+            timeout_s=self.cfg.agent_start_timeout_s + self.cfg.agent_start_timeout_grace_s,
         )
         self.run_registry = InMemoryRunRegistry()
         self.gateway_client = GatewayClient(gateway_base_url=self.cfg.gateway_base_url)

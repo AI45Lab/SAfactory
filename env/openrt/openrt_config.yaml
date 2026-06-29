@@ -2,16 +2,16 @@ environments:
   - env_name: openrt
     env_image: b65104033c5d
     env_num: 1
-    dataset: ./datasets/openrt_attacks_thin.jsonl
+    dataset: ./datasets/openrt_attacks.jsonl
     dataset_load_mode: eager
 
     env_params:
       task_family: openrt
       api_key: EMPTY
       default_openrt_dataset: harmbench
-      default_attacker_model:  dsv4pro
-      default_judge_model: dsv4pro
+      default_attacker_model: deepseek-ai/DeepSeek-V3
+      default_judge_model: gpt-4o-mini
       default_target_models:
-        - dsv4pro
+        - yinlian_qwen_base_0617_num_1_2_32k_gspo140
       max_workers: 50
       evaluator_workers: 32

@@ -51,7 +51,17 @@ class DockerEpisodeRunner:
             lease.agent_id,
             json_for_log(request_params),
         )
-        result = await asyncio.to_thread(self._run, cmd, payload)
+        try:
+            result = await asyncio.to_thread(self._run, cmd, payload)
+        except subprocess.TimeoutExpired as exc:
+            log.warning(
+                "OpenClaw docker exec timed out: agent=%s/%s container=%s timeout_s=%.2f",
+                lease.agent_name,
+                lease.agent_id,
+                lease.container_name or lease.container_id,
+                self.timeout_s,
+            )
+            return self._timeout_result(lease, request, exc)
         self._log_runner_diagnostics(result.stderr, lease)
         result_mode = str(getattr(lease, "result_mode", "json") or "json").strip().lower()
         if result_mode == "exit_code":
@@ -132,6 +142,45 @@ class DockerEpisodeRunner:
             check=False,
         )
 
+    def _timeout_result(
+        self,
+        lease: SimulationAgentLease,
+        request: SimulationStartRequest,
+        exc: subprocess.TimeoutExpired,
+    ) -> SimulationStartResult:
+        timeout_s = float(exc.timeout or self.timeout_s)
+        return SimulationStartResult(
+            session_id=str(request.session_id),
+            status="failed",
+            total_reward=0.0,
+            step_count=0,
+            terminated=True,
+            truncated=True,
+            error_text=(
+                f"docker exec timed out after {timeout_s:.1f}s "
+                f"(inner agent timeout={float(request.agent_start_timeout_s):.1f}s)"
+            ),
+            metrics={
+                "timeout_layer": "docker_exec",
+                "outer_timeout_s": timeout_s,
+                "inner_timeout_s": float(request.agent_start_timeout_s),
+                "container_id": lease.container_id,
+                "container_name": lease.container_name,
+                "stdout_tail": self._timeout_stream_tail(getattr(exc, "stdout", None)),
+                "stderr_tail": self._timeout_stream_tail(getattr(exc, "stderr", None)),
+            },
+        )
+
     @staticmethod
     def _cmd_for_log(cmd: List[str]) -> str:
         return shlex.join([str(part) for part in cmd])
+
+    @staticmethod
+    def _timeout_stream_tail(value: object, limit: int = 1000) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            text = value.decode("utf-8", errors="replace")
+        else:
+            text = str(value)
+        return tail(text, limit=limit)

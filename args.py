@@ -46,6 +46,42 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
     )
     parser.add_argument("--gateway-base-url", type=str, default="http://127.0.0.1:8080/v1/sessions")
     parser.add_argument("--agent-start-timeout-s", type=float, default=600.0)
+    parser.add_argument(
+        "--agent-start-timeout-grace-s",
+        type=float,
+        default=120.0,
+        help="Extra outer runner timeout budget after the in-container agent timeout.",
+    )
+    parser.add_argument(
+        "--container-refill-timeout-s",
+        type=float,
+        default=300.0,
+        help="Maximum time to release one finished runtime resource and prepare its replacement.",
+    )
+    parser.add_argument(
+        "--docker-command-timeout-s",
+        type=float,
+        default=300.0,
+        help="Default timeout for Docker lifecycle commands issued by the manager.",
+    )
+    parser.add_argument(
+        "--docker-start-timeout-s",
+        type=float,
+        default=300.0,
+        help="Timeout for Docker run/copy commands while starting rollout containers.",
+    )
+    parser.add_argument(
+        "--docker-remove-timeout-s",
+        type=float,
+        default=120.0,
+        help="Timeout for Docker rm commands while releasing rollout containers.",
+    )
+    parser.add_argument(
+        "--docker-lifecycle-timeout-s",
+        type=float,
+        default=60.0,
+        help="Timeout for optional per-container cleanup and healthcheck commands.",
+    )
     parser.add_argument("--max-steps", type=int, default=1000)
     parser.add_argument("--llm-model", type=str, default="default")
     parser.add_argument("--llm-temperature", type=float, default=0.3)
@@ -76,6 +112,17 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
         default=False,
         help="Fail evaluation when the expected markdown eval task file is missing.",
     )
+    parser.add_argument(
+        "--circuit-breaker",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Stop scheduling new episodes when recent rollout failures/timeouts exceed configured thresholds.",
+    )
+    parser.add_argument("--circuit-breaker-window", type=int, default=50)
+    parser.add_argument("--circuit-breaker-min-samples", type=int, default=20)
+    parser.add_argument("--circuit-breaker-failure-rate", type=float, default=0.8)
+    parser.add_argument("--circuit-breaker-timeout-rate", type=float, default=0.5)
+    parser.add_argument("--circuit-breaker-consecutive-timeouts", type=int, default=5)
 
     parser.add_argument("--log-dir", type=str, default="logs")
     parser.add_argument("--run-name", type=str, default="")
