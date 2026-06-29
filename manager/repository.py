@@ -74,47 +74,81 @@ class AgentDataRepository:
             fetch_batch_size=max(1, int(startup_batch_size or 1)),
         )
 
-    async def reserve_rows(self, limit: int, *, fetch_batch_size: int) -> List[Dict[str, Any]]:
+    async def reserve_rows(
+        self,
+        limit: int,
+        *,
+        fetch_batch_size: int,
+        wait_for_rows: bool = False,
+        poll_interval_s: float = 1.0,
+    ) -> List[Dict[str, Any]]:
         requested = max(0, int(limit))
         if requested <= 0:
             return []
 
         batch_size = max(1, int(fetch_batch_size))
+        poll_interval = max(0.1, float(poll_interval_s or 1.0))
 
-        async with self._fetch_lock:
-            reserved = self._drain_buffer_locked(requested)
+        while True:
+            async with self._fetch_lock:
+                reserved = self._drain_buffer_locked(requested)
 
-            while len(reserved) < requested:
-                if self._stop_db_reads:
-                    break
-
-                if not self._row_buffer:
-                    fetch_limit = max(batch_size, requested - len(reserved))
-                    started_at = time.perf_counter()
-                    await asyncio.to_thread(self._fill_buffer_locked, fetch_limit)
-                    elapsed = time.perf_counter() - started_at
-                    if elapsed >= DB_FETCH_WARN_SECONDS:
-                        log.warning(
-                            "agent DB fetch took %.2fs limit=%d last_seen_id=%d buffered=%d job_id=%s",
-                            elapsed,
-                            int(fetch_limit),
-                            int(self._last_seen_id),
-                            len(self._row_buffer),
-                            self._job_id or "<all>",
-                        )
-                    if not self._row_buffer:
+                while len(reserved) < requested:
+                    if self._stop_db_reads:
                         break
 
-                reserved.extend(self._drain_buffer_locked(requested - len(reserved)))
+                    if not self._row_buffer:
+                        fetch_limit = max(batch_size, requested - len(reserved))
+                        started_at = time.perf_counter()
+                        await asyncio.to_thread(self._fill_buffer_locked, fetch_limit)
+                        elapsed = time.perf_counter() - started_at
+                        if elapsed >= DB_FETCH_WARN_SECONDS:
+                            log.warning(
+                                "agent DB fetch took %.2fs limit=%d last_seen_id=%d buffered=%d job_id=%s",
+                                elapsed,
+                                int(fetch_limit),
+                                int(self._last_seen_id),
+                                len(self._row_buffer),
+                                self._job_id or "<all>",
+                            )
+                        if not self._row_buffer:
+                            break
 
-            self._update_stop_state_locked()
-            return reserved
+                    reserved.extend(self._drain_buffer_locked(requested - len(reserved)))
 
-    async def reserve_one(self, *, fetch_batch_size: int) -> Optional[Dict[str, Any]]:
-        rows = await self.reserve_rows(1, fetch_batch_size=fetch_batch_size)
+                self._update_stop_state_locked()
+                if reserved or not wait_for_rows or self._stop_db_reads:
+                    return reserved
+
+                log.debug(
+                    "agent DB has no reservable rows yet; waiting for producer job_id=%s last_seen_id=%d",
+                    self._job_id or "<all>",
+                    int(self._last_seen_id),
+                )
+
+            await asyncio.sleep(poll_interval)
+
+    async def reserve_one(
+        self,
+        *,
+        fetch_batch_size: int,
+        wait_for_rows: bool = False,
+        poll_interval_s: float = 1.0,
+    ) -> Optional[Dict[str, Any]]:
+        rows = await self.reserve_rows(
+            1,
+            fetch_batch_size=fetch_batch_size,
+            wait_for_rows=wait_for_rows,
+            poll_interval_s=poll_interval_s,
+        )
         if not rows:
             return None
         return rows[0]
+
+    async def is_exhausted(self) -> bool:
+        async with self._fetch_lock:
+            self._update_stop_state_locked()
+            return bool(self._stop_db_reads)
 
     def _drain_buffer_locked(self, limit: int) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []

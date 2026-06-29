@@ -105,30 +105,37 @@ class SimulationLeasePool:
         self._active_refills = 0
         self._closing = False
         self._closed = False
+        self._repair_lock = asyncio.Lock()
 
     async def start(self) -> None:
         log.info("starting AgentPoolManager for simulation lease pool")
         await self.mgr.start()
 
-        entries = await self.mgr.list_pool_instances()
-        log.info("manager reports %d warmed agent instance(s)", len(entries))
-        for entry in entries:
-            lease = self._entry_to_agent_lease(entry)
-            if lease is None:
-                continue
-            added = await self._runtime.add_ready_lease((lease.agent_name, lease.agent_id), lease)
-            if added:
-                log.debug("enqueued agent lease: %s/%s", lease.agent_name, lease.agent_id)
-
+        added = await self._enqueue_manager_leases()
+        log.info("manager reports %d warmed agent instance(s)", added)
         await self._runtime.mark_initial_load_done()
 
     async def acquire(self) -> Optional[SimulationAgentLease]:
-        lease = await self._runtime.acquire()
-        if lease is None:
-            log.debug("acquire(): exhausted")
-        else:
-            log.debug("acquire(): got %s/%s", lease.agent_name, lease.agent_id)
-        return lease
+        while True:
+            lease = await self._runtime.acquire()
+            if lease is not None:
+                log.debug("acquire(): got %s/%s", lease.agent_name, lease.agent_id)
+                return lease
+
+            if await self.mgr.is_data_exhausted():
+                log.debug("acquire(): exhausted")
+                return None
+
+            log.warning(
+                "acquire(): local lease pool is empty before data source exhaustion; "
+                "repairing manager capacity"
+            )
+            async with self._repair_lock:
+                if await self.mgr.is_data_exhausted():
+                    log.debug("acquire(): exhausted after repair wait")
+                    return None
+                await self.mgr.ensure_capacity(wait_for_rows=True)
+                await self._enqueue_manager_leases()
 
     async def done(
         self,
@@ -190,6 +197,19 @@ class SimulationLeasePool:
             )
             self._lifecycle_cond.notify_all()
 
+    async def _enqueue_manager_leases(self) -> int:
+        entries = await self.mgr.list_pool_instances()
+        added_count = 0
+        for entry in entries:
+            lease = self._entry_to_agent_lease(entry)
+            if lease is None:
+                continue
+            added = await self._runtime.add_ready_lease((lease.agent_name, lease.agent_id), lease)
+            if added:
+                added_count += 1
+                log.debug("enqueued agent lease: %s/%s", lease.agent_name, lease.agent_id)
+        return added_count
+
     async def _enter_refill_if_open(self) -> bool:
         async with self._lifecycle_cond:
             if self._closing or self._closed:
@@ -214,22 +234,27 @@ class SimulationLeasePool:
         result: Optional[SimulationStartResult],
         reusable: Optional[bool],
     ) -> bool:
+        succeeded = bool(reusable) if reusable is not None else result is not None and result.status == "succeeded"
+        refill_task = asyncio.create_task(
+            self.mgr.close_and_refill(lease.agent_name, lease.agent_id, succeeded=succeeded),
+            name=f"simulation-refill-{lease.agent_name}-{lease.agent_id}",
+        )
         try:
-            succeeded = bool(reusable) if reusable is not None else result is not None and result.status == "succeeded"
-            replacement = await asyncio.wait_for(
-                self.mgr.close_and_refill(lease.agent_name, lease.agent_id, succeeded=succeeded),
-                timeout=self.refill_timeout_s,
-            )
+            while not refill_task.done():
+                done, _pending = await asyncio.wait({refill_task}, timeout=self.refill_timeout_s)
+                if done:
+                    break
+                log.warning(
+                    "close_and_refill still waiting for %s/%s after %.1fs; "
+                    "keeping refill alive so workers do not lose capacity",
+                    lease.agent_name,
+                    lease.agent_id,
+                    self.refill_timeout_s,
+                )
+            replacement = await refill_task
         except asyncio.CancelledError:
+            refill_task.cancel()
             raise
-        except asyncio.TimeoutError:
-            log.warning(
-                "close_and_refill timed out for %s/%s after %.1fs",
-                lease.agent_name,
-                lease.agent_id,
-                self.refill_timeout_s,
-            )
-            return False
         except Exception:
             log.warning(
                 "close_and_refill failed for %s/%s",

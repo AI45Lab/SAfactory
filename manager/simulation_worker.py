@@ -182,7 +182,7 @@ class SimulationWorkerGroup:
         if not results:
             return SimulationRunSummary(
                 job_id=self.cfg.job_id,
-                status="stopped_by_circuit_breaker" if self._circuit_breaker.is_open() else "failed_no_episodes",
+                status="failed_no_episodes",
                 total_episodes=0,
                 succeeded_episodes=0,
                 failed_episodes=0,
@@ -194,8 +194,6 @@ class SimulationWorkerGroup:
         failed = len(results) - succeeded
         if cancelled:
             status = "cancelled"
-        elif self._circuit_breaker.is_open():
-            status = "stopped_by_circuit_breaker"
         else:
             status = "succeeded" if failed == 0 else "completed_with_failures"
         return SimulationRunSummary(
@@ -224,7 +222,7 @@ class SimulationWorkerGroup:
             if lease is None:
                 log.info("worker=%d: lease pool exhausted", worker_id)
                 trace.emit_summary(
-                    status="stopped_by_circuit_breaker" if self._circuit_breaker.is_open() else "lease_pool_exhausted",
+                    status="lease_pool_exhausted",
                     circuit_breaker_reason=self._circuit_breaker.reason() or None,
                 )
                 return
@@ -446,51 +444,8 @@ class SimulationWorkerGroup:
             )
 
     async def _acquire_lease_or_stop(self, worker_id: int) -> SimulationAgentLease | None:
-        if self._circuit_breaker.is_open():
-            log.warning(
-                "worker=%d: stop acquiring leases because circuit breaker is open: %s",
-                worker_id,
-                self._circuit_breaker.reason(),
-            )
-            return None
-
-        acquire_task = asyncio.create_task(self.lease_pool.acquire())
-        breaker_task = asyncio.create_task(self._circuit_breaker.wait_open())
-        done, pending = await asyncio.wait(
-            {acquire_task, breaker_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-
-        if breaker_task in done:
-            lease = None
-            if acquire_task in done and not acquire_task.cancelled():
-                lease = acquire_task.result()
-            if lease is not None:
-                await self.lease_pool.stop_refills(self._circuit_breaker.reason())
-                await self.lease_pool.done(lease, None, reusable=False)
-            log.warning(
-                "worker=%d: stop waiting for lease because circuit breaker opened: %s",
-                worker_id,
-                self._circuit_breaker.reason(),
-            )
-            return None
-
-        lease = acquire_task.result()
-        if lease is not None and self._circuit_breaker.is_open():
-            log.warning(
-                "worker=%d: releasing acquired lease without running because circuit breaker opened: %s/%s",
-                worker_id,
-                lease.agent_name,
-                lease.agent_id,
-            )
-            await self.lease_pool.stop_refills(self._circuit_breaker.reason())
-            await self.lease_pool.done(lease, None, reusable=False)
-            return None
-        return lease
+        del worker_id
+        return await self.lease_pool.acquire()
 
     async def _record_circuit_result(
         self,
@@ -504,12 +459,11 @@ class SimulationWorkerGroup:
             return
         reason = self._circuit_breaker.reason()
         log.error(
-            "worker=%d agent=%s opened simulation circuit breaker: %s",
+            "worker=%d agent=%s opened simulation circuit breaker: %s; continuing until data is exhausted",
             worker_id,
             agent_key,
             reason,
         )
-        await self.lease_pool.stop_refills(reason)
 
     async def _run_one_episode(
         self,

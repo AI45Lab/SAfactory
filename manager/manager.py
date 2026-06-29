@@ -97,6 +97,14 @@ class AgentPoolManager:
     async def list_pool_instances(self) -> List[PoolEntry]:
         return await self._pool.list_instances()
 
+    async def ensure_capacity(self, *, wait_for_rows: bool = False) -> None:
+        if not self._initialized:
+            raise RuntimeError("AgentPoolManager not started. Call await start() first.")
+        await self._pool.ensure_capacity(wait_for_rows=wait_for_rows)
+
+    async def is_data_exhausted(self) -> bool:
+        return await self._repo.is_exhausted()
+
     async def close_and_refill(
         self,
         agent: str,

@@ -79,17 +79,21 @@ class RuntimeAgentPool:
         await asyncio.gather(*tasks, return_exceptions=True)
         await self.ensure_capacity()
 
-    async def ensure_capacity(self) -> None:
+    async def ensure_capacity(self, *, wait_for_rows: bool = False) -> None:
         while True:
             async with self._lock:
                 deficit = max(0, self._pool_size - len(self._pool))
             if deficit <= 0:
                 return
 
-            rows = await self._repo.reserve_rows(deficit, fetch_batch_size=self._repo_fetch_batch_size(deficit))
+            rows = await self._repo.reserve_rows(
+                deficit,
+                fetch_batch_size=self._repo_fetch_batch_size(deficit),
+                wait_for_rows=wait_for_rows,
+            )
             if not rows:
                 log.info(
-                    "ensure_capacity: no DB rows currently available to fill %s pool",
+                    "ensure_capacity: no DB rows available to fill %s pool",
                     self._allocator.runtime,
                 )
                 return
@@ -108,11 +112,14 @@ class RuntimeAgentPool:
             old_entry = self._pool.pop(key, None)
 
         if old_entry is not None:
-            await self._release_entry(old_entry, succeeded=succeeded)
+            self._schedule_release_entry(old_entry, succeeded=succeeded)
 
-        next_row = await self._repo.reserve_one(fetch_batch_size=self._repo_fetch_batch_size())
+        next_row = await self._repo.reserve_one(
+            fetch_batch_size=self._repo_fetch_batch_size(),
+            wait_for_rows=True,
+        )
         if not next_row:
-            log.info("close_and_refill: no DB row currently available to refill %s pool", self._allocator.runtime)
+            log.info("close_and_refill: DB rows exhausted for %s pool", self._allocator.runtime)
             return None
         return await self._fill_slot_for_refill(next_row)
 
@@ -132,6 +139,19 @@ class RuntimeAgentPool:
                 ),
             )
             raise
+
+    def _schedule_release_entry(self, entry: PoolEntry, *, succeeded: bool) -> None:
+        task = asyncio.create_task(
+            self._allocator.release(entry, succeeded=succeeded),
+            name=f"{self._allocator.runtime}-release-{entry.env_name}-{entry.env_id}",
+        )
+        self._track_background_task(
+            task,
+            action=(
+                f"release {self._allocator.runtime} lease "
+                f"{entry.env_name}/{entry.env_id} resource={entry.resource_name or entry.container_id}"
+            ),
+        )
 
     async def _fill_slot_for_refill(self, row: Dict[str, Any]) -> Optional[PoolEntry]:
         task = asyncio.create_task(
