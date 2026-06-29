@@ -24,7 +24,6 @@ async def main(argv: Sequence[str] | None = None) -> int:
     )
 
     log.info("main log file: %s", log_session.main_log_path)
-    log.info("gateway log file: %s", log_session.gateway_log_path)
     log.info("log run directory: %s", log_session.run_dir)
 
     flow = SimulationFlow(load_simulation_run_config(args))
