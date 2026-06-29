@@ -12,6 +12,7 @@ from datetime import datetime
 
 DEFAULT_INFO_LOGGERS = ("launcher", "manager", "evaluator")
 DEFAULT_SUPPRESS_PREFIXES = ("core.llm", "httpx", "urllib3", "aiosqlite", "tortoise")
+GATEWAY_LOGGER_PREFIXES = ("gateway", "uvicorn")
 DEPENDENCY_WARNING_LOGGERS = (
     "httpx",
     "urllib3",
@@ -28,6 +29,7 @@ class LauncherLogSession:
     run_id: str
     run_dir: str
     main_log_path: str
+    gateway_log_path: str
 
 
 def _normalize_patterns(patterns: Sequence[str] | None) -> set[str]:
@@ -112,6 +114,17 @@ class ConsoleFilter(logging.Filter):
         return False
 
 
+class LoggerPrefixFilter(logging.Filter):
+    def __init__(self, prefixes: Sequence[str], *, include: bool) -> None:
+        super().__init__()
+        self._prefixes = _normalize_patterns(prefixes)
+        self._include = include
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        matched = _matches_logger(record.name, self._prefixes)
+        return matched if self._include else not matched
+
+
 def build_run_id(run_name: str | None = None) -> str:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     prefix = _sanitize_run_name(run_name)
@@ -126,6 +139,7 @@ def build_log_session(log_dir: str, run_name: str | None) -> LauncherLogSession:
         run_id=run_id,
         run_dir=run_dir,
         main_log_path=os.path.join(run_dir, "main.log"),
+        gateway_log_path=os.path.join(run_dir, "gateway.log"),
     )
 
 
@@ -150,10 +164,30 @@ def build_console_handler(
     return handler
 
 
-def build_main_file_handler(*, session: LauncherLogSession, file_level: str) -> logging.Handler:
+def build_main_file_handler(
+    *,
+    session: LauncherLogSession,
+    file_level: str,
+    exclude_loggers: Sequence[str] | None = None,
+) -> logging.Handler:
     handler = logging.FileHandler(session.main_log_path, encoding="utf-8")
     handler.setLevel(_parse_level(file_level, logging.DEBUG))
     handler.setFormatter(_build_formatter())
+    if exclude_loggers:
+        handler.addFilter(LoggerPrefixFilter(exclude_loggers, include=False))
+    return handler
+
+
+def build_scoped_file_handler(
+    *,
+    path: str,
+    file_level: str,
+    include_loggers: Sequence[str],
+) -> logging.Handler:
+    handler = logging.FileHandler(path, encoding="utf-8")
+    handler.setLevel(_parse_level(file_level, logging.DEBUG))
+    handler.setFormatter(_build_formatter())
+    handler.addFilter(LoggerPrefixFilter(include_loggers, include=True))
     return handler
 
 
@@ -223,7 +257,20 @@ def setup_launcher_logging(
             suppress_prefixes=suppress_prefixes,
         )
     )
-    root.addHandler(build_main_file_handler(session=session, file_level=file_level))
+    root.addHandler(
+        build_main_file_handler(
+            session=session,
+            file_level=file_level,
+            exclude_loggers=GATEWAY_LOGGER_PREFIXES,
+        )
+    )
+    root.addHandler(
+        build_scoped_file_handler(
+            path=session.gateway_log_path,
+            file_level=file_level,
+            include_loggers=GATEWAY_LOGGER_PREFIXES,
+        )
+    )
 
     # Keep especially chatty dependency loggers at WARNING in both console and file logs.
     _set_logger_levels(DEPENDENCY_WARNING_LOGGERS, logging.WARNING)
@@ -233,11 +280,12 @@ def setup_launcher_logging(
     cleanup_old_log_runs(log_dir, keep_runs=int(backup_count or 0))
 
     root.info(
-        "logging initialized: console_level=%s file_level=%s run_dir=%s main_log=%s",
+        "logging initialized: console_level=%s file_level=%s run_dir=%s main_log=%s gateway_log=%s",
         console_level.upper(),
         file_level.upper(),
         session.run_dir,
         session.main_log_path,
+        session.gateway_log_path,
     )
 
     return session

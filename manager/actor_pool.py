@@ -35,6 +35,7 @@ class RuntimeAgentPool:
         self._lock = asyncio.Lock()
         self._pool: Dict[AgentKey, PoolEntry] = {}
         self._image_by_env: Dict[str, str] = {}
+        self._background_tasks: set[asyncio.Task] = set()
 
     def _repo_fetch_batch_size(self, requested: int = 1) -> int:
         return max(1, self._pool_size, int(requested))
@@ -107,13 +108,61 @@ class RuntimeAgentPool:
             old_entry = self._pool.pop(key, None)
 
         if old_entry is not None:
-            await self._allocator.release(old_entry, succeeded=succeeded)
+            await self._release_entry(old_entry, succeeded=succeeded)
 
         next_row = await self._repo.reserve_one(fetch_batch_size=self._repo_fetch_batch_size())
         if not next_row:
             log.info("close_and_refill: no DB row currently available to refill %s pool", self._allocator.runtime)
             return None
-        return await self._fill_slot(next_row)
+        return await self._fill_slot_for_refill(next_row)
+
+    async def _release_entry(self, entry: PoolEntry, *, succeeded: bool) -> None:
+        task = asyncio.create_task(
+            self._allocator.release(entry, succeeded=succeeded),
+            name=f"{self._allocator.runtime}-release-{entry.env_name}-{entry.env_id}",
+        )
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            self._track_background_task(
+                task,
+                action=(
+                    f"release {self._allocator.runtime} lease "
+                    f"{entry.env_name}/{entry.env_id} resource={entry.resource_name or entry.container_id}"
+                ),
+            )
+            raise
+
+    async def _fill_slot_for_refill(self, row: Dict[str, Any]) -> Optional[PoolEntry]:
+        task = asyncio.create_task(
+            self._fill_slot(row),
+            name=f"{self._allocator.runtime}-refill-{row.get('env_name')}-{row.get('env_id')}",
+        )
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            self._track_background_task(
+                task,
+                action=(
+                    f"refill {self._allocator.runtime} lease "
+                    f"{row.get('env_name')}/{row.get('env_id')}"
+                ),
+            )
+            raise
+
+    def _track_background_task(self, task: asyncio.Task, *, action: str) -> None:
+        self._background_tasks.add(task)
+
+        def _done(completed: asyncio.Task) -> None:
+            self._background_tasks.discard(completed)
+            try:
+                completed.result()
+            except asyncio.CancelledError:
+                log.warning("background %s was cancelled", action)
+            except Exception:
+                log.warning("background %s failed", action, exc_info=True)
+
+        task.add_done_callback(_done)
 
     async def _fill_slot(self, row: Dict[str, Any]) -> Optional[PoolEntry]:
         async with self._fill_sem:

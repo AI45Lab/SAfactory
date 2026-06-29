@@ -11,6 +11,7 @@ from typing import Any
 
 from core.data_manager.manager import DataManager
 from core.data_manager.strategy.base_strategy import SessionContext
+from core.perf_trace import PerfTrace
 
 from gateway.config import GatewayConfig
 from gateway.models import GatewaySessionBinding, GatewayTelemetryRecord
@@ -259,6 +260,17 @@ class GatewayStorage:
         record: GatewayTelemetryRecord,
     ) -> None:
         started = time.perf_counter()
+        trace = PerfTrace(
+            "gateway.storage.record_inference_step",
+            logger=log,
+            context={
+                "request_id": record.request_id,
+                "session_id": record.session_id,
+                "seq_id": record.seq_id,
+                "model": record.requested_model,
+                "status_code": record.status_code,
+            },
+        )
         log.info(
             "Gateway storage record_step begin: request_id=%s session_id=%s seq_id=%s model=%s status=%d",
             record.request_id,
@@ -267,25 +279,36 @@ class GatewayStorage:
             record.requested_model,
             record.status_code,
         )
-        session = await self.get_or_create_session(binding, record.requested_model)
-        await self.data_manager.record_step(
-            session=session,
-            step_id=record.seq_id,
-            messages=_trajectory_messages(record),
-            response="",
-            step_reward=0.0,
-            env_state=json.dumps(self._metadata(record), ensure_ascii=False, default=str),
-            terminated=False,
-            truncated=record.is_truncated,
-            is_trainable=False,
-        )
-        log.info(
-            "Gateway storage record_step complete: request_id=%s session_id=%s seq_id=%s elapsed_ms=%.2f",
-            record.request_id,
-            record.session_id,
-            record.seq_id,
-            (time.perf_counter() - started) * 1000,
-        )
+        try:
+            with trace.span("get_or_create_session"):
+                session = await self.get_or_create_session(binding, record.requested_model)
+            with trace.span("data_manager_record_step"):
+                await self.data_manager.record_step(
+                    session=session,
+                    step_id=record.seq_id,
+                    messages=_trajectory_messages(record),
+                    response="",
+                    step_reward=0.0,
+                    env_state=json.dumps(self._metadata(record), ensure_ascii=False, default=str),
+                    terminated=False,
+                    truncated=record.is_truncated,
+                    is_trainable=False,
+                )
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            log.info(
+                "Gateway storage record_step complete: request_id=%s session_id=%s seq_id=%s elapsed_ms=%.2f",
+                record.request_id,
+                record.session_id,
+                record.seq_id,
+                elapsed_ms,
+            )
+            trace.emit_summary(status="success", elapsed_ms=elapsed_ms)
+        except asyncio.CancelledError:
+            trace.emit_summary(status="cancelled", error_type="CancelledError")
+            raise
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
 
     async def record_session_close(
         self,
@@ -293,37 +316,58 @@ class GatewayStorage:
         record: GatewayTelemetryRecord,
     ) -> None:
         started = time.perf_counter()
-        models = await self._models_for_session(binding)
-        log.info(
-            "Gateway storage session_close begin: session_id=%s models=%s reason=%s",
-            binding.session_id,
-            models,
-            binding.close_reason,
+        trace = PerfTrace(
+            "gateway.storage.record_session_close",
+            logger=log,
+            context={"session_id": binding.session_id, "reason": binding.close_reason},
         )
-        if not models:
-            await self.data_manager.mark_latest_session_completed(session_id=binding.session_id)
+        try:
+            with trace.span("models_for_session"):
+                models = await self._models_for_session(binding)
+            trace.update_context(model_count=len(models), models=models)
             log.info(
-                "Gateway storage session_close complete: session_id=%s updated_without_model elapsed_ms=%.2f",
+                "Gateway storage session_close begin: session_id=%s models=%s reason=%s",
                 binding.session_id,
-                (time.perf_counter() - started) * 1000,
+                models,
+                binding.close_reason,
             )
-            return
+            if not models:
+                with trace.span("mark_latest_session_completed_without_model"):
+                    await self.data_manager.mark_latest_session_completed(session_id=binding.session_id)
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_without_model=True)
+                log.info(
+                    "Gateway storage session_close complete: session_id=%s updated_without_model elapsed_ms=%.2f",
+                    binding.session_id,
+                    elapsed_ms,
+                )
+                return
 
-        updated_count = 0
-        for model in models:
-            updated_count += await self.data_manager.mark_latest_session_completed(
-                session_id=binding.session_id,
-                llm_model=model,
+            updated_count = 0
+            for model in models:
+                with trace.span("mark_latest_session_completed", model=model):
+                    updated_count += await self.data_manager.mark_latest_session_completed(
+                        session_id=binding.session_id,
+                        llm_model=model,
+                    )
+
+            if updated_count == 0:
+                with trace.span("mark_latest_session_completed_fallback"):
+                    await self.data_manager.mark_latest_session_completed(session_id=binding.session_id)
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            log.info(
+                "Gateway storage session_close complete: session_id=%s updated_count=%d elapsed_ms=%.2f",
+                binding.session_id,
+                updated_count,
+                elapsed_ms,
             )
-
-        if updated_count == 0:
-            await self.data_manager.mark_latest_session_completed(session_id=binding.session_id)
-        log.info(
-            "Gateway storage session_close complete: session_id=%s updated_count=%d elapsed_ms=%.2f",
-            binding.session_id,
-            updated_count,
-            (time.perf_counter() - started) * 1000,
-        )
+            trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_count=updated_count)
+        except asyncio.CancelledError:
+            trace.emit_summary(status="cancelled", error_type="CancelledError")
+            raise
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
 
     async def close(self) -> None:
         log.info("Gateway storage close begin")

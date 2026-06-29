@@ -61,6 +61,10 @@ class SimulationRunConfig:
     docker_command_timeout_s: float = 300.0
     docker_start_timeout_s: float = 300.0
     docker_remove_timeout_s: float = 120.0
+    docker_stop_timeout_s: float = 10.0
+    docker_inspect_timeout_s: float = 10.0
+    docker_remove_retries: int = 3
+    docker_remove_retry_delay_s: float = 2.0
     docker_lifecycle_timeout_s: float = 60.0
     rjob_config: Dict[str, Any] = field(default_factory=dict)
     cleanup_docker_container: bool = True

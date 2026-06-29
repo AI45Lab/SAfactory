@@ -5,6 +5,7 @@ import logging
 import time
 from typing import Protocol
 
+from core.perf_trace import PerfTrace
 from evaluator.backends.base import EvaluationBackend
 from evaluator.eval_types import (
     EvalMethod,
@@ -52,67 +53,112 @@ class EvaluationService:
 
     async def evaluate(self, request: EvalRequest) -> EvalResult:
         started_at = time.perf_counter()
-        if self.registry is not None:
-            await self.registry.mark_evaluating(request.session_id)
+        trace = PerfTrace(
+            "evaluator.evaluate",
+            logger=log,
+            context={
+                "job_id": request.job_id,
+                "session_id": request.session_id,
+                "max_concurrency": self.max_concurrency,
+                "fail_policy": self.fail_policy,
+            },
+        )
+        try:
+            if self.registry is not None:
+                with trace.span("registry_mark_evaluating"):
+                    await self.registry.mark_evaluating(request.session_id)
 
-        specs = request.eval_specs or parse_eval_specs(
-            request.env_params,
-            default_specs=self.default_specs,
-        )
-        validate_eval_specs(specs)
-        log.info(
-            "EVAL FLOW start: session=%s job=%s specs=%s fail_policy=%s",
-            request.session_id,
-            request.job_id,
-            [
-                {
-                    "eval_id": spec.eval_id,
-                    "method": spec.method.value,
-                    "weight": spec.weight,
-                    "timeout_s": spec.timeout_s,
-                }
-                for spec in specs
-            ],
-            self.fail_policy,
-        )
-        trajectory = await self._read_trajectory(request)
-        log.info(
-            "EVAL FLOW trajectory ready: session=%s sealed=%s steps=%d warnings=%s",
-            request.session_id,
-            trajectory.sealed,
-            len(trajectory.steps),
-            trajectory.warnings,
-        )
+            with trace.span("resolve_specs"):
+                specs = request.eval_specs or parse_eval_specs(
+                    request.env_params,
+                    default_specs=self.default_specs,
+                )
+                validate_eval_specs(specs)
+            trace.mark(
+                "specs_validated",
+                spec_count=len(specs),
+                eval_ids=[spec.eval_id for spec in specs],
+                methods=[spec.method.value for spec in specs],
+            )
+            log.info(
+                "EVAL FLOW start: session=%s job=%s specs=%s fail_policy=%s",
+                request.session_id,
+                request.job_id,
+                [
+                    {
+                        "eval_id": spec.eval_id,
+                        "method": spec.method.value,
+                        "weight": spec.weight,
+                        "timeout_s": spec.timeout_s,
+                    }
+                    for spec in specs
+                ],
+                self.fail_policy,
+            )
+            with trace.span("read_trajectory"):
+                trajectory = await self._read_trajectory(request)
+            trace.mark(
+                "trajectory_ready",
+                sealed=trajectory.sealed,
+                step_count=len(trajectory.steps),
+                warning_count=len(trajectory.warnings),
+            )
+            log.info(
+                "EVAL FLOW trajectory ready: session=%s sealed=%s steps=%d warnings=%s",
+                request.session_id,
+                trajectory.sealed,
+                len(trajectory.steps),
+                trajectory.warnings,
+            )
 
-        tasks = [self._evaluate_one_spec(request, spec, trajectory) for spec in specs]
-        results = await asyncio.gather(*tasks)
-        log.info(
-            "EVAL FLOW backend results: session=%s results=%s",
-            request.session_id,
-            [
-                {
-                    "eval_id": result.eval_id,
-                    "method": result.method,
-                    "status": result.status,
-                    "score": result.normalized_score_10,
-                    "reason": result.reason,
-                }
-                for result in results
-            ],
-        )
-        final_result = merge_eval_results(results, specs, fail_policy=self.fail_policy)
-        final_result.session_id = request.session_id
-        if self.registry is not None:
-            await self.registry.mark_eval_finished(request.session_id, final_result)
-        log.info(
-            "EVAL FLOW complete: session=%s status=%s score=%.4f elapsed=%.2fs reason=%s",
-            request.session_id,
-            final_result.status,
-            final_result.normalized_score_10,
-            time.perf_counter() - started_at,
-            final_result.reason,
-        )
-        return final_result
+            tasks = [self._evaluate_one_spec(request, spec, trajectory) for spec in specs]
+            with trace.span("backend_evaluate_all", spec_count=len(specs)):
+                results = await asyncio.gather(*tasks)
+            trace.mark(
+                "backend_results_ready",
+                result_count=len(results),
+                failed_count=sum(1 for result in results if result.status != EvalStatus.SUCCEEDED.value),
+            )
+            log.info(
+                "EVAL FLOW backend results: session=%s results=%s",
+                request.session_id,
+                [
+                    {
+                        "eval_id": result.eval_id,
+                        "method": result.method,
+                        "status": result.status,
+                        "score": result.normalized_score_10,
+                        "reason": result.reason,
+                    }
+                    for result in results
+                ],
+            )
+            with trace.span("merge_results"):
+                final_result = merge_eval_results(results, specs, fail_policy=self.fail_policy)
+                final_result.session_id = request.session_id
+            if self.registry is not None:
+                with trace.span("registry_mark_eval_finished"):
+                    await self.registry.mark_eval_finished(request.session_id, final_result)
+            log.info(
+                "EVAL FLOW complete: session=%s status=%s score=%.4f elapsed=%.2fs reason=%s",
+                request.session_id,
+                final_result.status,
+                final_result.normalized_score_10,
+                time.perf_counter() - started_at,
+                final_result.reason,
+            )
+            trace.emit_summary(
+                status=final_result.status,
+                score=final_result.normalized_score_10,
+                reason=final_result.reason,
+            )
+            return final_result
+        except asyncio.CancelledError:
+            trace.emit_summary(status="cancelled", error_type="CancelledError")
+            raise
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
 
     async def _evaluate_one_spec(
         self,

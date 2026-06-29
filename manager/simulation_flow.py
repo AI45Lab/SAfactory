@@ -17,6 +17,7 @@ from core.data_manager.yaml_aggregator import (
     sync_configs_to_db,
     wait_for_pending_inserts,
 )
+from core.perf_trace import PerfTrace
 from evaluator.factory import EvaluationRuntime, build_evaluation_runtime
 from evaluator.gateway_client import GatewayClient
 from evaluator.reward_committer import RewardCommitter
@@ -56,10 +57,41 @@ class SimulationFlow:
         self._shutdown_started = False
 
     async def run(self) -> SimulationRunSummary:
-        await self.prepare_storage()
-        await self.check_gateway_ready()
-        await self.start_agent_scheduler()
-        return await self.run_workers()
+        trace = PerfTrace(
+            "simulation_flow.run",
+            logger=log,
+            context={
+                "job_id": self.cfg.job_id,
+                "mode": self.cfg.mode,
+                "storage_type": self.cfg.storage_type,
+                "pool_size": self.cfg.pool_size,
+                "warm_pool_size": self.cfg.warm_pool_size,
+                "evaluation_enabled": self.cfg.evaluation_enabled,
+            },
+        )
+        try:
+            with trace.span("prepare_storage"):
+                await self.prepare_storage()
+            with trace.span("check_gateway_ready"):
+                await self.check_gateway_ready()
+            with trace.span("start_agent_scheduler"):
+                await self.start_agent_scheduler()
+            with trace.span("run_workers"):
+                summary = await self.run_workers()
+            trace.update_context(
+                summary_status=summary.status,
+                total_episodes=summary.total_episodes,
+                succeeded_episodes=summary.succeeded_episodes,
+                failed_episodes=summary.failed_episodes,
+            )
+            trace.emit_summary(status=summary.status)
+            return summary
+        except asyncio.CancelledError:
+            trace.emit_summary(status="cancelled", error_type="CancelledError")
+            raise
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
 
     async def prepare_storage(self) -> None:
         if self.cfg.rebuild_table and self.cfg.storage_type == "sqlite":
@@ -213,41 +245,53 @@ class SimulationFlow:
         if self._shutdown_started:
             return
         self._shutdown_started = True
+        trace = PerfTrace(
+            "simulation_flow.shutdown",
+            logger=log,
+            context={"job_id": self.cfg.job_id},
+        )
 
         if self.lease_pool is not None:
             try:
-                await self.lease_pool.aclose()
+                with trace.span("lease_pool_close"):
+                    await self.lease_pool.aclose()
             except Exception:
                 log.exception("lease pool close failed (ignored)")
 
         if self.agent_start_client is not None:
             try:
-                await self.agent_start_client.close()
+                with trace.span("agent_start_client_close"):
+                    await self.agent_start_client.close()
             except Exception:
                 log.exception("agent start client close failed (ignored)")
 
         if self.evaluation_runtime is not None:
             try:
-                await self.evaluation_runtime.stop()
+                with trace.span("evaluation_runtime_stop"):
+                    await self.evaluation_runtime.stop()
             except Exception:
                 log.exception("evaluation runtime stop failed (ignored)")
 
         try:
-            await wait_for_pending_inserts()
+            with trace.span("wait_for_pending_inserts"):
+                await wait_for_pending_inserts()
         except Exception:
             log.exception("wait_for_pending_inserts failed (ignored)")
 
         if self.data_manager is not None:
             try:
-                await self.data_manager.close()
+                with trace.span("data_manager_close"):
+                    await self.data_manager.close()
             except Exception:
                 log.exception("data manager close failed (ignored)")
 
         if self.conn is not None:
             try:
-                self.conn.close()
+                with trace.span("manager_db_connection_close"):
+                    self.conn.close()
             except Exception:
                 log.exception("manager DB connection close failed (ignored)")
+        trace.emit_summary(status="complete")
 
     def _gateway_origin(self) -> str:
         parsed = urlsplit(self.cfg.gateway_base_url)

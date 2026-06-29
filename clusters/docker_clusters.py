@@ -69,6 +69,22 @@ def _positive_float(value: Any, default: float) -> float:
     return max(1.0, number)
 
 
+def _float_at_least(value: Any, default: float, minimum: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = float(default)
+    return max(float(minimum), number)
+
+
+def _int_at_least(value: Any, default: int, minimum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = int(default)
+    return max(int(minimum), number)
+
+
 def _merge_dicts(*values: Any) -> Dict[str, Any]:
     merged: Dict[str, Any] = {}
     for value in values:
@@ -118,6 +134,14 @@ class DockerContainerBackend(ClusterBackend):
         self._start_timeout_s = _positive_float(self._docker_cfg.get("start_timeout_s"), self._command_timeout_s)
         self._remove_timeout_s = _positive_float(self._docker_cfg.get("remove_timeout_s"), 120.0)
         self._lifecycle_timeout_s = _positive_float(self._docker_cfg.get("lifecycle_timeout_s"), 60.0)
+        self._stop_timeout_s = _positive_float(self._docker_cfg.get("stop_timeout_s"), 10.0)
+        self._inspect_timeout_s = _positive_float(self._docker_cfg.get("inspect_timeout_s"), 10.0)
+        self._remove_retries = _int_at_least(self._docker_cfg.get("remove_retries"), default=3, minimum=1)
+        self._remove_retry_delay_s = _float_at_least(
+            self._docker_cfg.get("remove_retry_delay_s"),
+            default=2.0,
+            minimum=0.0,
+        )
 
         self._containers: Dict[str, DockerContainerRecord] = {}
         self._idle: Dict[str, Deque[str]] = {}
@@ -210,7 +234,8 @@ class DockerContainerBackend(ClusterBackend):
         await self.remove(container_id)
 
     async def remove(self, container_id: str) -> None:
-        record = self._containers.pop(str(container_id or ""), None)
+        container_key = str(container_id or "")
+        record = self._containers.get(container_key)
         if record is None:
             return
         async with self._lock:
@@ -220,6 +245,7 @@ class DockerContainerBackend(ClusterBackend):
 
         ident = record.container_id or record.container_name
         if not ident:
+            self._containers.pop(container_key, None)
             return
         if not self._cleanup_container_on_finish:
             log.info(
@@ -228,14 +254,174 @@ class DockerContainerBackend(ClusterBackend):
                 record.container_name,
                 record.container_id,
             )
+            self._containers.pop(record.container_id, None)
             return
-        result = await self._run_command(
-            [self.docker_bin, "rm", "-f", ident],
-            check=False,
-            timeout_s=self._remove_timeout_s,
+        removed = await self._remove_container_with_retries(record, ident)
+        if removed:
+            self._containers.pop(record.container_id, None)
+
+    async def _remove_container_with_retries(self, record: DockerContainerRecord, ident: str) -> bool:
+        for attempt in range(1, self._remove_retries + 1):
+            exists = await self._container_exists(ident)
+            if exists is False:
+                log.info("Docker container already removed: %s", ident)
+                return True
+
+            running = await self._container_running(ident)
+            if running:
+                await self._stop_container(ident, attempt=attempt)
+                exists_after_stop = await self._container_exists(ident)
+                if exists_after_stop is False:
+                    log.info("Docker container stopped and auto-removed: %s", ident)
+                    return True
+
+            rm_ok = await self._force_remove_container(ident, attempt=attempt)
+            if rm_ok:
+                exists_after_rm = await self._container_exists(ident)
+                if exists_after_rm is False:
+                    return True
+                if exists_after_rm is True:
+                    log.warning(
+                        "docker rm reported success but container still exists: container=%s attempt=%d/%d",
+                        ident,
+                        attempt,
+                        self._remove_retries,
+                    )
+                else:
+                    log.warning(
+                        "docker rm reported success but removal could not be confirmed: "
+                        "container=%s attempt=%d/%d",
+                        ident,
+                        attempt,
+                        self._remove_retries,
+                    )
+
+            if attempt < self._remove_retries:
+                await asyncio.sleep(self._remove_retry_delay_s)
+
+        log.warning(
+            "failed to remove Docker container after %d attempt(s): agent=%s container=%s id=%s",
+            self._remove_retries,
+            record.env_name,
+            record.container_name,
+            record.container_id,
         )
+        return False
+
+    async def _container_exists(self, ident: str) -> Optional[bool]:
+        try:
+            result = await self._run_command(
+                [self.docker_bin, "container", "inspect", ident],
+                check=False,
+                timeout_s=self._inspect_timeout_s,
+            )
+        except subprocess.TimeoutExpired:
+            log.warning("docker inspect timed out for %s after %.1fs", ident, self._inspect_timeout_s)
+            return None
+        except Exception:
+            log.warning("docker inspect raised for %s", ident, exc_info=True)
+            return None
+        if result.returncode == 0:
+            return True
+        if self._is_missing_container_error(result.stderr):
+            return False
+        log.warning("docker inspect failed for %s: %s", ident, self._tail(result.stderr))
+        return None
+
+    async def _container_running(self, ident: str) -> Optional[bool]:
+        try:
+            result = await self._run_command(
+                [self.docker_bin, "container", "inspect", "-f", "{{.State.Running}}", ident],
+                check=False,
+                timeout_s=self._inspect_timeout_s,
+            )
+        except subprocess.TimeoutExpired:
+            log.warning(
+                "docker inspect running-state timed out for %s after %.1fs",
+                ident,
+                self._inspect_timeout_s,
+            )
+            return None
+        except Exception:
+            log.warning("docker inspect running-state raised for %s", ident, exc_info=True)
+            return None
         if result.returncode != 0:
-            log.warning("docker rm failed for %s: %s", ident, (result.stderr or "").strip())
+            if not self._is_missing_container_error(result.stderr):
+                log.warning("docker inspect running-state failed for %s: %s", ident, self._tail(result.stderr))
+            return None
+        return (result.stdout or "").strip().lower() == "true"
+
+    async def _stop_container(self, ident: str, *, attempt: int) -> bool:
+        grace_s = max(1, int(self._stop_timeout_s))
+        command_timeout = max(self._remove_timeout_s, self._stop_timeout_s + 10.0)
+        try:
+            result = await self._run_command(
+                [self.docker_bin, "stop", "-t", str(grace_s), ident],
+                check=False,
+                timeout_s=command_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            log.warning(
+                "docker stop timed out for %s after %.1fs attempt=%d/%d",
+                ident,
+                command_timeout,
+                attempt,
+                self._remove_retries,
+            )
+            return False
+        except Exception:
+            log.warning(
+                "docker stop raised for %s attempt=%d/%d",
+                ident,
+                attempt,
+                self._remove_retries,
+                exc_info=True,
+            )
+            return False
+        if result.returncode == 0:
+            return True
+        if self._is_missing_container_error(result.stderr):
+            return True
+        log.warning(
+            "docker stop failed for %s attempt=%d/%d: %s",
+            ident,
+            attempt,
+            self._remove_retries,
+            self._tail(result.stderr),
+        )
+        return False
+
+    async def _force_remove_container(self, ident: str, *, attempt: int) -> bool:
+        try:
+            result = await self._run_command(
+                [self.docker_bin, "rm", "-f", ident],
+                check=False,
+                timeout_s=self._remove_timeout_s,
+            )
+        except subprocess.TimeoutExpired:
+            log.warning(
+                "docker rm timed out for %s after %.1fs attempt=%d/%d",
+                ident,
+                self._remove_timeout_s,
+                attempt,
+                self._remove_retries,
+            )
+            return False
+        except Exception:
+            log.warning("docker rm raised for %s attempt=%d/%d", ident, attempt, self._remove_retries, exc_info=True)
+            return False
+        if result.returncode == 0:
+            return True
+        if self._is_missing_container_error(result.stderr):
+            return True
+        log.warning(
+            "docker rm failed for %s attempt=%d/%d: %s",
+            ident,
+            attempt,
+            self._remove_retries,
+            self._tail(result.stderr),
+        )
+        return False
 
     async def close(self) -> None:
         if not self._cleanup_container_on_finish:
@@ -245,7 +431,10 @@ class DockerContainerBackend(ClusterBackend):
             self._idle.clear()
             return
         for container_id in list(self._containers):
-            await self.remove(container_id)
+            try:
+                await self.remove(container_id)
+            except Exception:
+                log.warning("Docker backend close failed to remove %s", container_id, exc_info=True)
 
     async def _install_runner_script_if_needed(
         self,
@@ -302,6 +491,7 @@ class DockerContainerBackend(ClusterBackend):
         run_cmd = self._build_run_command(
             image=image,
             name=container_name,
+            env_name=env_name,
             docker_cfg=docker_cfg,
             idle_command=idle_command,
             workdir=workdir,
@@ -337,6 +527,11 @@ class DockerContainerBackend(ClusterBackend):
                     "healthcheck_command": resolved_healthcheck_command,
                     "reuse_container": reuse_container,
                     "max_runs_per_container": resolved_max_runs,
+                    "stop_timeout_s": self._stop_timeout_s,
+                    "inspect_timeout_s": self._inspect_timeout_s,
+                    "remove_timeout_s": self._remove_timeout_s,
+                    "remove_retries": self._remove_retries,
+                    "remove_retry_delay_s": self._remove_retry_delay_s,
                     "runner_container_path": self._runner_container_path,
                     "install_runner_script": bool(install_runner),
                 }
@@ -368,11 +563,14 @@ class DockerContainerBackend(ClusterBackend):
         try:
             await self._install_runner_script_if_needed(record, docker_cfg)
         except Exception:
-            await self._run_command(
-                [self.docker_bin, "rm", "-f", container_id],
-                check=False,
-                timeout_s=self._remove_timeout_s,
-            )
+            try:
+                await self._run_command(
+                    [self.docker_bin, "rm", "-f", container_id],
+                    check=False,
+                    timeout_s=self._remove_timeout_s,
+                )
+            except Exception:
+                log.warning("failed to remove partially initialized container %s", container_id, exc_info=True)
             raise
         self._containers[container_id] = record
         log.info(
@@ -403,6 +601,7 @@ class DockerContainerBackend(ClusterBackend):
         *,
         image: str,
         name: str,
+        env_name: str,
         docker_cfg: Dict[str, Any],
         idle_command: str,
         workdir: str,
@@ -414,6 +613,9 @@ class DockerContainerBackend(ClusterBackend):
         if self._remove_on_close:
             cmd.append("--rm")
         cmd.extend(["--name", name])
+        cmd.extend(["--label", "safactory.managed=true"])
+        cmd.extend(["--label", "safactory.component=openclaw"])
+        cmd.extend(["--label", f"safactory.env_name={_safe_name(env_name)}"])
 
         if workdir:
             cmd.extend(["-w", workdir])
@@ -495,6 +697,11 @@ class DockerContainerBackend(ClusterBackend):
     @staticmethod
     def _tail(value: str, limit: int = 500) -> str:
         return (value or "").strip()[-int(limit):]
+
+    @staticmethod
+    def _is_missing_container_error(value: str) -> bool:
+        text = (value or "").lower()
+        return "no such object" in text or "no such container" in text
 
     @staticmethod
     def _container_key(env_name: str, image: str) -> str:

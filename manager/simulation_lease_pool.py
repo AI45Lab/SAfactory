@@ -150,7 +150,11 @@ class SimulationLeasePool:
             refill_started = True
             refill_settled = await self._close_and_refill(lease, old_key, result, reusable)
             if not refill_settled:
-                raise RuntimeError(f"close_and_refill failed for {lease.agent_name}/{lease.agent_id}")
+                log.warning(
+                    "done(): close/refill did not complete for %s/%s; dropping lease from local pool",
+                    lease.agent_name,
+                    lease.agent_id,
+                )
         finally:
             if refill_started and not refill_settled:
                 await self._runtime.fail_refill(old_key)
@@ -219,7 +223,7 @@ class SimulationLeasePool:
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:
-            log.error(
+            log.warning(
                 "close_and_refill timed out for %s/%s after %.1fs",
                 lease.agent_name,
                 lease.agent_id,
@@ -227,7 +231,12 @@ class SimulationLeasePool:
             )
             return False
         except Exception:
-            log.exception("close_and_refill failed for %s/%s", lease.agent_name, lease.agent_id)
+            log.warning(
+                "close_and_refill failed for %s/%s",
+                lease.agent_name,
+                lease.agent_id,
+                exc_info=True,
+            )
             return False
 
         if replacement is None:
@@ -236,7 +245,11 @@ class SimulationLeasePool:
 
         new_lease = self._entry_to_agent_lease(replacement)
         if new_lease is None:
-            log.error("replacement agent instance could not be converted for %s/%s", replacement.env_name, replacement.env_id)
+            log.warning(
+                "replacement agent instance could not be converted for %s/%s",
+                replacement.env_name,
+                replacement.env_id,
+            )
             return False
 
         new_key = (new_lease.agent_name, new_lease.agent_id)

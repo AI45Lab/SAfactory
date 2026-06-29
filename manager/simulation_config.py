@@ -177,6 +177,26 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
             default=120.0,
             minimum=1.0,
         ),
+        docker_stop_timeout_s=_float_at_least(
+            getattr(args, "docker_stop_timeout_s", 10.0),
+            default=10.0,
+            minimum=1.0,
+        ),
+        docker_inspect_timeout_s=_float_at_least(
+            getattr(args, "docker_inspect_timeout_s", 10.0),
+            default=10.0,
+            minimum=1.0,
+        ),
+        docker_remove_retries=_int_at_least(
+            getattr(args, "docker_remove_retries", 3),
+            default=3,
+            minimum=1,
+        ),
+        docker_remove_retry_delay_s=_float_at_least(
+            getattr(args, "docker_remove_retry_delay_s", 2.0),
+            default=2.0,
+            minimum=0.0,
+        ),
         docker_lifecycle_timeout_s=_float_at_least(
             getattr(args, "docker_lifecycle_timeout_s", 60.0),
             default=60.0,
@@ -295,6 +315,10 @@ def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
                 "command_timeout_s": float(cfg.docker_command_timeout_s),
                 "start_timeout_s": float(cfg.docker_start_timeout_s),
                 "remove_timeout_s": float(cfg.docker_remove_timeout_s),
+                "stop_timeout_s": float(cfg.docker_stop_timeout_s),
+                "inspect_timeout_s": float(cfg.docker_inspect_timeout_s),
+                "remove_retries": int(cfg.docker_remove_retries),
+                "remove_retry_delay_s": float(cfg.docker_remove_retry_delay_s),
                 "lifecycle_timeout_s": float(cfg.docker_lifecycle_timeout_s),
             },
             "rjob": rjob_cfg,

@@ -6,6 +6,7 @@ import logging
 import sqlite3
 from typing import Any
 
+from core.perf_trace import PerfTrace
 from evaluator.eval_types import EvalResult, to_jsonable
 from evaluator.trajectory_reader import _sqlite_path
 
@@ -22,6 +23,16 @@ class RewardCommitter:
         session_id: str,
         eval_result: EvalResult,
     ) -> None:
+        trace = PerfTrace(
+            "evaluator.reward_commit",
+            logger=log,
+            context={
+                "session_id": session_id,
+                "score": eval_result.normalized_score_10,
+                "status": eval_result.status,
+                "db_path": self.db_path,
+            },
+        )
         log.info(
             "EVAL REWARD commit start: session=%s score=%.4f status=%s db=%s",
             session_id,
@@ -29,16 +40,25 @@ class RewardCommitter:
             eval_result.status,
             self.db_path,
         )
-        await asyncio.to_thread(
-            self._commit_sqlite,
-            session_id=session_id,
-            eval_result=eval_result,
-        )
-        log.info(
-            "EVAL REWARD commit complete: session=%s score=%.4f",
-            session_id,
-            eval_result.normalized_score_10,
-        )
+        try:
+            with trace.span("sqlite_commit"):
+                await asyncio.to_thread(
+                    self._commit_sqlite,
+                    session_id=session_id,
+                    eval_result=eval_result,
+                )
+            log.info(
+                "EVAL REWARD commit complete: session=%s score=%.4f",
+                session_id,
+                eval_result.normalized_score_10,
+            )
+            trace.emit_summary(status="success")
+        except asyncio.CancelledError:
+            trace.emit_summary(status="cancelled", error_type="CancelledError")
+            raise
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
 
     def _commit_sqlite(
         self,

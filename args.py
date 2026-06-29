@@ -77,6 +77,30 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
         help="Timeout for Docker rm commands while releasing rollout containers.",
     )
     parser.add_argument(
+        "--docker-stop-timeout-s",
+        type=float,
+        default=10.0,
+        help="Grace period passed to docker stop before forced removal.",
+    )
+    parser.add_argument(
+        "--docker-inspect-timeout-s",
+        type=float,
+        default=10.0,
+        help="Timeout for Docker inspect checks during container cleanup.",
+    )
+    parser.add_argument(
+        "--docker-remove-retries",
+        type=int,
+        default=3,
+        help="Number of stop/inspect/rm attempts when releasing rollout containers.",
+    )
+    parser.add_argument(
+        "--docker-remove-retry-delay-s",
+        type=float,
+        default=2.0,
+        help="Delay between Docker container removal retry attempts.",
+    )
+    parser.add_argument(
         "--docker-lifecycle-timeout-s",
         type=float,
         default=60.0,
