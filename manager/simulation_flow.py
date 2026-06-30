@@ -209,7 +209,12 @@ class SimulationFlow:
             timeout_s=self.cfg.agent_start_timeout_s + self.cfg.agent_start_timeout_grace_s,
         )
         self.run_registry = InMemoryRunRegistry()
-        self.gateway_client = GatewayClient(gateway_base_url=self.cfg.gateway_base_url)
+        self.gateway_client = GatewayClient(
+            gateway_base_url=self.cfg.gateway_base_url,
+            close_timeout_s=self.cfg.gateway_close_timeout_s,
+            close_retries=self.cfg.gateway_close_retries,
+            retry_backoff_s=self.cfg.gateway_close_retry_backoff_s,
+        )
         evaluation_service = None
         if self.cfg.evaluation_enabled:
             log.info(

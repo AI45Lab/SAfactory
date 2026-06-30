@@ -113,6 +113,7 @@ class DockerContainerBackend(ClusterBackend):
         self._remove_on_close = bool(
             self._docker_cfg.get("remove_on_close", self._cleanup_container_on_finish)
         )
+        self._cleanup_stale_on_start = bool(self._docker_cfg.get("cleanup_stale_on_start", False))
         self._pull_policy = str(self._docker_cfg.get("pull_policy", "never") or "never").strip().lower()
         self._reuse_policy = str(self._docker_cfg.get("reuse_policy", "explicit") or "explicit").strip().lower()
         self._default_reuse = bool(self._docker_cfg.get("default_reuse_container", False))
@@ -152,6 +153,8 @@ class DockerContainerBackend(ClusterBackend):
         if not plan.env_to_image:
             log.warning("empty Docker binding plan")
             return
+        if self._cleanup_stale_on_start:
+            await self._cleanup_stale_containers_on_start()
         await self.validate_images(plan)
         log.info("OpenClaw Docker backend ready for %d agent image(s)", len(plan.env_to_image))
 
@@ -436,6 +439,80 @@ class DockerContainerBackend(ClusterBackend):
             except Exception:
                 log.warning("Docker backend close failed to remove %s", container_id, exc_info=True)
 
+    async def _cleanup_stale_containers_on_start(self) -> None:
+        labels = _merge_dicts(self._docker_cfg.get("labels"))
+        job_id = str(labels.get("safactory.job_id") or "").strip()
+        if not job_id:
+            log.debug("skip stale Docker cleanup because safactory.job_id label is empty")
+            return
+
+        try:
+            result = await self._run_command(
+                [
+                    self.docker_bin,
+                    "ps",
+                    "-aq",
+                    "--filter",
+                    "label=safactory.managed=true",
+                    "--filter",
+                    "label=safactory.component=openclaw",
+                    "--filter",
+                    f"label=safactory.job_id={job_id}",
+                ],
+                check=False,
+                timeout_s=self._inspect_timeout_s,
+            )
+        except subprocess.TimeoutExpired:
+            log.warning("stale Docker cleanup list timed out for job_id=%s", job_id)
+            return
+        except Exception:
+            log.warning("stale Docker cleanup list raised for job_id=%s", job_id, exc_info=True)
+            return
+        if result.returncode != 0:
+            log.warning("stale Docker cleanup list failed for job_id=%s: %s", job_id, self._tail(result.stderr))
+            return
+
+        container_ids = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+        if not container_ids:
+            return
+
+        log.warning("removing %d stale Safactory Docker container(s) for job_id=%s", len(container_ids), job_id)
+        for container_id in container_ids:
+            removed = False
+            for attempt in range(1, self._remove_retries + 1):
+                try:
+                    rm_result = await self._run_command(
+                        [self.docker_bin, "rm", "-f", container_id],
+                        check=False,
+                        timeout_s=self._remove_timeout_s,
+                    )
+                except subprocess.TimeoutExpired:
+                    log.warning(
+                        "stale Docker cleanup rm timed out for %s attempt=%d/%d",
+                        container_id,
+                        attempt,
+                        self._remove_retries,
+                    )
+                    rm_result = None
+                except Exception:
+                    log.warning(
+                        "stale Docker cleanup rm raised for %s attempt=%d/%d",
+                        container_id,
+                        attempt,
+                        self._remove_retries,
+                        exc_info=True,
+                    )
+                    rm_result = None
+                if rm_result is not None and (
+                    rm_result.returncode == 0 or self._is_missing_container_error(rm_result.stderr)
+                ):
+                    removed = True
+                    break
+                if attempt < self._remove_retries:
+                    await asyncio.sleep(self._remove_retry_delay_s)
+            if not removed:
+                log.warning("failed to remove stale Safactory Docker container: %s", container_id)
+
     async def _install_runner_script_if_needed(
         self,
         record: DockerContainerRecord,
@@ -519,6 +596,7 @@ class DockerContainerBackend(ClusterBackend):
                     "env": _merge_dicts(docker_cfg.get("env")),
                     "volumes": docker_cfg.get("volumes", []) or [],
                     "extra_args": _as_list(docker_cfg.get("extra_args")),
+                    "labels": self._labels_for_env(docker_cfg, env_name),
                     "workdir": workdir,
                     "idle_command": idle_command,
                     "run_command": resolved_run_command,
@@ -596,6 +674,21 @@ class DockerContainerBackend(ClusterBackend):
     def _resolve_pull_policy(self, docker_cfg: Dict[str, Any]) -> str:
         return str(docker_cfg.get("pull_policy", self._pull_policy) or self._pull_policy).strip().lower()
 
+    def _labels_for_env(self, docker_cfg: Dict[str, Any], env_name: str) -> Dict[str, str]:
+        labels: Dict[str, str] = {}
+        for key, value in _merge_dicts(self._docker_cfg.get("labels"), docker_cfg.get("labels")).items():
+            normalized_key = str(key or "").strip()
+            if normalized_key:
+                labels[normalized_key] = str(value)
+        labels.update(
+            {
+                "safactory.managed": "true",
+                "safactory.component": "openclaw",
+                "safactory.env_name": _safe_name(env_name),
+            }
+        )
+        return labels
+
     def _build_run_command(
         self,
         *,
@@ -613,9 +706,8 @@ class DockerContainerBackend(ClusterBackend):
         if self._remove_on_close:
             cmd.append("--rm")
         cmd.extend(["--name", name])
-        cmd.extend(["--label", "safactory.managed=true"])
-        cmd.extend(["--label", "safactory.component=openclaw"])
-        cmd.extend(["--label", f"safactory.env_name={_safe_name(env_name)}"])
+        for key, value in self._labels_for_env(docker_cfg, env_name).items():
+            cmd.extend(["--label", f"{key}={value}"])
 
         if workdir:
             cmd.extend(["-w", workdir])

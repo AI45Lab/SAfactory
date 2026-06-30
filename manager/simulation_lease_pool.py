@@ -240,18 +240,16 @@ class SimulationLeasePool:
             name=f"simulation-refill-{lease.agent_name}-{lease.agent_id}",
         )
         try:
-            while not refill_task.done():
-                done, _pending = await asyncio.wait({refill_task}, timeout=self.refill_timeout_s)
-                if done:
-                    break
-                log.warning(
-                    "close_and_refill still waiting for %s/%s after %.1fs; "
-                    "keeping refill alive so workers do not lose capacity",
-                    lease.agent_name,
-                    lease.agent_id,
-                    self.refill_timeout_s,
-                )
-            replacement = await refill_task
+            replacement = await asyncio.wait_for(refill_task, timeout=self.refill_timeout_s)
+        except asyncio.TimeoutError:
+            refill_task.cancel()
+            log.warning(
+                "close_and_refill timed out for %s/%s after %.1fs; dropping lease from local pool",
+                lease.agent_name,
+                lease.agent_id,
+                self.refill_timeout_s,
+            )
+            return False
         except asyncio.CancelledError:
             refill_task.cancel()
             raise

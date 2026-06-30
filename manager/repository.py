@@ -5,7 +5,8 @@ import logging
 import sqlite3
 import time
 from collections import deque
-from typing import Any, Callable, Deque, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from .db_loader import (
     get_active_data,
@@ -45,6 +46,12 @@ class AgentDataRepository:
         self._fetch_lock = asyncio.Lock()
         self._db_processing_done_cached: bool = False
         self._stop_db_reads: bool = False
+        self._fetch_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="safactory-agent-db-fetch",
+        )
+        self._pending_fetch: Optional[asyncio.Future[Tuple[List[Dict[str, Any]], int, int]]] = None
+        self._pending_fetch_args: Optional[Tuple[int, int, int]] = None
 
     def reset_cursor(self) -> None:
         self._last_seen_id = 0
@@ -52,6 +59,13 @@ class AgentDataRepository:
         self._row_buffer.clear()
         self._db_processing_done_cached = False
         self._stop_db_reads = False
+        self._pending_fetch = None
+        self._pending_fetch_args = None
+
+    def close(self) -> None:
+        self._pending_fetch = None
+        self._pending_fetch_args = None
+        self._fetch_executor.shutdown(wait=False, cancel_futures=True)
 
     def get_env_image_map(self) -> Dict[str, str]:
         m = get_env_image_map(self._conn, job_id=self._job_id) or {}
@@ -67,11 +81,17 @@ class AgentDataRepository:
             out[str(k)] = str(v)
         return out
 
-    async def prime(self, startup_batch_size: int) -> List[Dict[str, Any]]:
+    async def prime(
+        self,
+        startup_batch_size: int,
+        *,
+        fetch_timeout_s: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
         """Reserve the initial warm-pool rows in one batched pass."""
         return await self.reserve_rows(
             startup_batch_size,
             fetch_batch_size=max(1, int(startup_batch_size or 1)),
+            fetch_timeout_s=fetch_timeout_s,
         )
 
     async def reserve_rows(
@@ -81,6 +101,8 @@ class AgentDataRepository:
         fetch_batch_size: int,
         wait_for_rows: bool = False,
         poll_interval_s: float = 1.0,
+        max_wait_s: Optional[float] = None,
+        fetch_timeout_s: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         requested = max(0, int(limit))
         if requested <= 0:
@@ -88,6 +110,11 @@ class AgentDataRepository:
 
         batch_size = max(1, int(fetch_batch_size))
         poll_interval = max(0.1, float(poll_interval_s or 1.0))
+
+        loop = asyncio.get_running_loop()
+        deadline = None
+        if max_wait_s is not None:
+            deadline = loop.time() + max(0.0, float(max_wait_s))
 
         while True:
             async with self._fetch_lock:
@@ -100,7 +127,21 @@ class AgentDataRepository:
                     if not self._row_buffer:
                         fetch_limit = max(batch_size, requested - len(reserved))
                         started_at = time.perf_counter()
-                        await asyncio.to_thread(self._fill_buffer_locked, fetch_limit)
+                        fetch_rows: List[Dict[str, Any]] = []
+                        try:
+                            fetch_rows = await self._fetch_rows_async(
+                                fetch_limit,
+                                timeout_s=fetch_timeout_s,
+                            )
+                        except TimeoutError:
+                            log.warning(
+                                "agent DB fetch timed out; will retry scheduling new rows "
+                                "limit=%d last_seen_id=%d job_id=%s",
+                                int(fetch_limit),
+                                int(self._last_seen_id),
+                                self._job_id or "<all>",
+                            )
+                            break
                         elapsed = time.perf_counter() - started_at
                         if elapsed >= DB_FETCH_WARN_SECONDS:
                             log.warning(
@@ -111,6 +152,8 @@ class AgentDataRepository:
                                 len(self._row_buffer),
                                 self._job_id or "<all>",
                             )
+                        if fetch_rows:
+                            self._row_buffer.extend(fetch_rows)
                         if not self._row_buffer:
                             break
 
@@ -119,6 +162,14 @@ class AgentDataRepository:
                 self._update_stop_state_locked()
                 if reserved or not wait_for_rows or self._stop_db_reads:
                     return reserved
+                if deadline is not None and loop.time() >= deadline:
+                    log.warning(
+                        "agent DB row wait timed out after %.1fs job_id=%s last_seen_id=%d",
+                        max(0.0, float(max_wait_s or 0.0)),
+                        self._job_id or "<all>",
+                        int(self._last_seen_id),
+                    )
+                    return reserved
 
                 log.debug(
                     "agent DB has no reservable rows yet; waiting for producer job_id=%s last_seen_id=%d",
@@ -126,7 +177,13 @@ class AgentDataRepository:
                     int(self._last_seen_id),
                 )
 
-            await asyncio.sleep(poll_interval)
+            sleep_s = poll_interval
+            if deadline is not None:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return reserved
+                sleep_s = min(sleep_s, remaining)
+            await asyncio.sleep(sleep_s)
 
     async def reserve_one(
         self,
@@ -134,12 +191,16 @@ class AgentDataRepository:
         fetch_batch_size: int,
         wait_for_rows: bool = False,
         poll_interval_s: float = 1.0,
+        max_wait_s: Optional[float] = None,
+        fetch_timeout_s: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         rows = await self.reserve_rows(
             1,
             fetch_batch_size=fetch_batch_size,
             wait_for_rows=wait_for_rows,
             poll_interval_s=poll_interval_s,
+            max_wait_s=max_wait_s,
+            fetch_timeout_s=fetch_timeout_s,
         )
         if not rows:
             return None
@@ -156,15 +217,38 @@ class AgentDataRepository:
             rows.append(self._row_buffer.popleft())
         return rows
 
-    def _fill_buffer_locked(self, limit: int) -> None:
-        rows = self._fetch_rows_locked(limit)
+    async def _fetch_rows_async(
+        self,
+        limit: int,
+        *,
+        timeout_s: Optional[float],
+    ) -> List[Dict[str, Any]]:
+        fetch_args = (int(limit), int(self._last_seen_id), int(self._fallback_offset))
+        task = self._get_or_start_fetch_task(fetch_args)
+
+        try:
+            if timeout_s is None or float(timeout_s) <= 0.0:
+                rows, last_seen_id, fallback_offset = await task
+            else:
+                rows, last_seen_id, fallback_offset = await asyncio.wait_for(
+                    asyncio.shield(task),
+                    timeout=float(timeout_s),
+                )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError from exc
+        finally:
+            if task.done():
+                self._pending_fetch = None
+                self._pending_fetch_args = None
+
         if rows:
-            self._row_buffer.extend(rows)
-            return
+            self._last_seen_id = last_seen_id
+            self._fallback_offset = fallback_offset
+            return rows
 
         if self._db_processing_done_checker is None or self._db_processing_done_cached:
             self._update_stop_state_locked()
-            return
+            return []
 
         try:
             self._db_processing_done_cached = bool(self._db_processing_done_checker())
@@ -172,28 +256,60 @@ class AgentDataRepository:
             log.warning("db_processing_done_checker failed; assuming producer is still active", exc_info=True)
 
         self._update_stop_state_locked()
+        return []
 
-    def _fetch_rows_locked(self, limit: int) -> List[Dict[str, Any]]:
+    def _get_or_start_fetch_task(
+        self,
+        fetch_args: Tuple[int, int, int],
+    ) -> asyncio.Future[Tuple[List[Dict[str, Any]], int, int]]:
+        if (
+            self._pending_fetch is not None
+            and self._pending_fetch_args == fetch_args
+        ):
+            return self._pending_fetch
+
+        loop = asyncio.get_running_loop()
+        task = loop.run_in_executor(
+            self._fetch_executor,
+            self._fetch_rows_snapshot,
+            fetch_args[0],
+            fetch_args[1],
+            fetch_args[2],
+        )
+        self._pending_fetch = task
+        self._pending_fetch_args = fetch_args
+        return task
+
+    def _fetch_rows_snapshot(
+        self,
+        limit: int,
+        last_seen_id: int,
+        fallback_offset: int,
+    ) -> Tuple[List[Dict[str, Any]], int, int]:
         if self._cursor_reads_enabled:
             rows = get_active_data_after_id(
                 self._conn,
                 int(limit),
-                int(self._last_seen_id),
+                int(last_seen_id),
                 job_id=self._job_id,
             ) or []
+            next_last_seen_id = int(last_seen_id)
             if rows:
-                self._last_seen_id = int(rows[-1].get("id") or self._last_seen_id)
-            return rows
+                next_last_seen_id = int(rows[-1].get("id") or next_last_seen_id)
+            return rows, next_last_seen_id, int(fallback_offset)
 
         rows = get_active_data(
             self._conn,
             int(limit),
-            int(self._fallback_offset),
+            int(fallback_offset),
             job_id=self._job_id,
         ) or []
+        next_fallback_offset = int(fallback_offset)
         if rows:
-            self._fallback_offset += len(rows)
-        return rows
+            next_fallback_offset += len(rows)
+        return rows, int(last_seen_id), next_fallback_offset
 
     def _update_stop_state_locked(self) -> None:
+        if self._stop_db_reads:
+            return
         self._stop_db_reads = self._db_processing_done_cached and not self._row_buffer

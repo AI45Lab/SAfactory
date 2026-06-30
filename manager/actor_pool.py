@@ -27,11 +27,15 @@ class RuntimeAgentPool:
         allocator: RuntimeLeaseAllocator,
         pool_size: int,
         startup_concurrency: int,
+        row_wait_timeout_s: float = 60.0,
+        row_fetch_timeout_s: float = 30.0,
     ) -> None:
         self._repo = repo
         self._allocator = allocator
         self._pool_size = max(0, int(pool_size))
         self._fill_sem = asyncio.Semaphore(max(1, int(startup_concurrency or 1)))
+        self._row_wait_timeout_s = max(1.0, float(row_wait_timeout_s or 60.0))
+        self._row_fetch_timeout_s = max(1.0, float(row_fetch_timeout_s or 30.0))
         self._lock = asyncio.Lock()
         self._pool: Dict[AgentKey, PoolEntry] = {}
         self._image_by_env: Dict[str, str] = {}
@@ -49,6 +53,7 @@ class RuntimeAgentPool:
             *[self._allocator.remove(entry) for entry in entries],
             return_exceptions=True,
         )
+        await self.drain_background_tasks(timeout_s=30.0)
 
     async def list_instances(self) -> List[PoolEntry]:
         async with self._lock:
@@ -63,6 +68,7 @@ class RuntimeAgentPool:
             rows = await self._repo.reserve_rows(
                 self._pool_size,
                 fetch_batch_size=self._repo_fetch_batch_size(self._pool_size),
+                fetch_timeout_s=self._row_fetch_timeout_s,
             )
         if not rows:
             log.info("no active rows, skip %s prewarm", self._allocator.runtime)
@@ -90,6 +96,8 @@ class RuntimeAgentPool:
                 deficit,
                 fetch_batch_size=self._repo_fetch_batch_size(deficit),
                 wait_for_rows=wait_for_rows,
+                max_wait_s=self._row_wait_timeout_s if wait_for_rows else None,
+                fetch_timeout_s=self._row_fetch_timeout_s,
             )
             if not rows:
                 log.info(
@@ -117,6 +125,8 @@ class RuntimeAgentPool:
         next_row = await self._repo.reserve_one(
             fetch_batch_size=self._repo_fetch_batch_size(),
             wait_for_rows=True,
+            max_wait_s=self._row_wait_timeout_s,
+            fetch_timeout_s=self._row_fetch_timeout_s,
         )
         if not next_row:
             log.info("close_and_refill: DB rows exhausted for %s pool", self._allocator.runtime)
@@ -183,6 +193,27 @@ class RuntimeAgentPool:
                 log.warning("background %s failed", action, exc_info=True)
 
         task.add_done_callback(_done)
+
+    async def drain_background_tasks(self, *, timeout_s: float) -> None:
+        if not self._background_tasks:
+            return
+        pending = set(self._background_tasks)
+        log.info("draining %d background %s task(s)", len(pending), self._allocator.runtime)
+        done, still_pending = await asyncio.wait(pending, timeout=max(0.0, float(timeout_s or 0.0)))
+        for task in done:
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+        if still_pending:
+            log.warning(
+                "leaving %d background %s task(s) unfinished after %.1fs",
+                len(still_pending),
+                self._allocator.runtime,
+                float(timeout_s or 0.0),
+            )
 
     async def _fill_slot(self, row: Dict[str, Any]) -> Optional[PoolEntry]:
         async with self._fill_sem:

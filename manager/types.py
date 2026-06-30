@@ -58,6 +58,12 @@ class SimulationRunConfig:
     docker_startup_concurrency: int
     agent_start_timeout_grace_s: float = 120.0
     container_refill_timeout_s: float = 300.0
+    row_wait_timeout_s: float = 60.0
+    row_fetch_timeout_s: float = 30.0
+    gateway_close_timeout_s: float = 15.0
+    gateway_close_retries: int = 1
+    gateway_close_retry_backoff_s: float = 1.0
+    shutdown_timeout_s: float = 120.0
     docker_command_timeout_s: float = 300.0
     docker_start_timeout_s: float = 300.0
     docker_remove_timeout_s: float = 120.0
@@ -68,6 +74,7 @@ class SimulationRunConfig:
     docker_lifecycle_timeout_s: float = 60.0
     rjob_config: Dict[str, Any] = field(default_factory=dict)
     cleanup_docker_container: bool = True
+    cleanup_stale_docker_containers: bool = True
     max_workers: Optional[int] = None
     rebuild_table: bool = False
     enable_buffer: bool = True

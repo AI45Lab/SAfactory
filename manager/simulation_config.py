@@ -162,6 +162,36 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
             default=300.0,
             minimum=1.0,
         ),
+        row_wait_timeout_s=_float_at_least(
+            getattr(args, "row_wait_timeout_s", 60.0),
+            default=60.0,
+            minimum=1.0,
+        ),
+        row_fetch_timeout_s=_float_at_least(
+            getattr(args, "row_fetch_timeout_s", 30.0),
+            default=30.0,
+            minimum=1.0,
+        ),
+        gateway_close_timeout_s=_float_at_least(
+            getattr(args, "gateway_close_timeout_s", 15.0),
+            default=15.0,
+            minimum=1.0,
+        ),
+        gateway_close_retries=_int_at_least(
+            getattr(args, "gateway_close_retries", 1),
+            default=1,
+            minimum=0,
+        ),
+        gateway_close_retry_backoff_s=_float_at_least(
+            getattr(args, "gateway_close_retry_backoff_s", 1.0),
+            default=1.0,
+            minimum=0.0,
+        ),
+        shutdown_timeout_s=_float_at_least(
+            getattr(args, "shutdown_timeout_s", 120.0),
+            default=120.0,
+            minimum=1.0,
+        ),
         docker_command_timeout_s=_float_at_least(
             getattr(args, "docker_command_timeout_s", 300.0),
             default=300.0,
@@ -204,6 +234,7 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         ),
         rjob_config=rjob_section,
         cleanup_docker_container=bool(getattr(args, "cleanup_docker_container", True)),
+        cleanup_stale_docker_containers=bool(getattr(args, "cleanup_stale_docker_containers", True)),
         max_workers=max_workers,
         rebuild_table=bool(args.rebuild_table),
         enable_buffer=bool(args.enable_buffer),
@@ -304,6 +335,8 @@ def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
     return {
         "mode": cfg.mode,
         "pool_size": int(cfg.warm_pool_size),
+        "row_wait_timeout_s": float(cfg.row_wait_timeout_s),
+        "row_fetch_timeout_s": float(cfg.row_fetch_timeout_s),
         "database": database_cfg,
         "cluster": {
             "docker": {
@@ -312,6 +345,9 @@ def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
                 "startup_concurrency": int(cfg.docker_startup_concurrency),
                 "cleanup_container_on_finish": bool(cfg.cleanup_docker_container),
                 "remove_on_close": bool(cfg.cleanup_docker_container),
+                "cleanup_stale_on_start": bool(
+                    cfg.cleanup_docker_container and cfg.cleanup_stale_docker_containers
+                ),
                 "command_timeout_s": float(cfg.docker_command_timeout_s),
                 "start_timeout_s": float(cfg.docker_start_timeout_s),
                 "remove_timeout_s": float(cfg.docker_remove_timeout_s),
@@ -320,6 +356,10 @@ def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
                 "remove_retries": int(cfg.docker_remove_retries),
                 "remove_retry_delay_s": float(cfg.docker_remove_retry_delay_s),
                 "lifecycle_timeout_s": float(cfg.docker_lifecycle_timeout_s),
+                "labels": {
+                    "safactory.job_id": cfg.job_id,
+                    "safactory.runtime": cfg.mode,
+                },
             },
             "rjob": rjob_cfg,
             "env_types": env_types,

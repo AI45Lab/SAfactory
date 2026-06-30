@@ -36,6 +36,7 @@ class GatewayConfig:
     per_session_max_inflight: int = 8
     telemetry_mode: str = "strict"
     telemetry_loss_policy: str = "fail_closed"
+    telemetry_write_timeout_s: float = 10.0
     payload_capture_policy: str = "full"
     payload_sample_rate: float = 1.0
     redact_sensitive_fields: bool = True
@@ -79,6 +80,8 @@ class GatewayConfig:
             raise ValueError(
                 "telemetry_loss_policy must be one of: drop_newest, drop_oldest, fail_closed"
             )
+        if float(self.telemetry_write_timeout_s) <= 0.0:
+            raise ValueError("telemetry_write_timeout_s must be positive")
         if self.per_llm_route_max_concurrency <= 0:
             raise ValueError("per_llm_route_max_concurrency must be positive")
         if self.request_log_max_bytes < 0:
@@ -121,6 +124,7 @@ def _dict_to_config(data: dict[str, Any]) -> GatewayConfig:
         normalized.setdefault("telemetry_batch_size", telemetry.get("batch_size"))
         normalized.setdefault("telemetry_flush_interval_ms", telemetry.get("flush_interval_ms"))
         normalized.setdefault("telemetry_loss_policy", telemetry.get("loss_policy"))
+        normalized.setdefault("telemetry_write_timeout_s", telemetry.get("write_timeout_s"))
         normalized.setdefault("payload_capture_policy", telemetry.get("capture_payload"))
         normalized.setdefault("payload_sample_rate", telemetry.get("payload_sample_rate"))
         normalized.setdefault("redact_sensitive_fields", telemetry.get("redact_sensitive_fields"))
@@ -141,6 +145,9 @@ def _dict_to_config(data: dict[str, Any]) -> GatewayConfig:
 
     if "max_steps" in kwargs:
         kwargs["max_steps"] = int(kwargs["max_steps"])
+
+    if "telemetry_write_timeout_s" in kwargs:
+        kwargs["telemetry_write_timeout_s"] = float(kwargs["telemetry_write_timeout_s"])
 
     if "storage_type" in kwargs:
         kwargs["storage_type"] = str(kwargs["storage_type"]).strip().lower()

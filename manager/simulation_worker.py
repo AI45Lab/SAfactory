@@ -445,6 +445,8 @@ class SimulationWorkerGroup:
 
     async def _acquire_lease_or_stop(self, worker_id: int) -> SimulationAgentLease | None:
         del worker_id
+        if self._circuit_breaker.is_open():
+            return None
         return await self.lease_pool.acquire()
 
     async def _record_circuit_result(
@@ -459,11 +461,12 @@ class SimulationWorkerGroup:
             return
         reason = self._circuit_breaker.reason()
         log.error(
-            "worker=%d agent=%s opened simulation circuit breaker: %s; continuing until data is exhausted",
+            "worker=%d agent=%s opened simulation circuit breaker: %s; stopping pool refills and draining active work",
             worker_id,
             agent_key,
             reason,
         )
+        await self.lease_pool.stop_refills(reason=f"circuit_breaker:{reason}")
 
     async def _run_one_episode(
         self,

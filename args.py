@@ -44,6 +44,12 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
             "Use --no-cleanup-docker-container to keep containers for debugging."
         ),
     )
+    parser.add_argument(
+        "--cleanup-stale-docker-containers",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Remove stale Safactory Docker containers from the same job_id before startup.",
+    )
     parser.add_argument("--gateway-base-url", type=str, default="http://127.0.0.1:8080/v1/sessions")
     parser.add_argument("--agent-start-timeout-s", type=float, default=600.0)
     parser.add_argument(
@@ -57,6 +63,42 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
         type=float,
         default=300.0,
         help="Maximum time to release one finished runtime resource and prepare its replacement.",
+    )
+    parser.add_argument(
+        "--row-wait-timeout-s",
+        type=float,
+        default=60.0,
+        help="Maximum time to wait for newly produced DB rows while refilling the runtime pool.",
+    )
+    parser.add_argument(
+        "--row-fetch-timeout-s",
+        type=float,
+        default=30.0,
+        help="Maximum time for one scheduler DB fetch before stopping new row scheduling.",
+    )
+    parser.add_argument(
+        "--gateway-close-timeout-s",
+        type=float,
+        default=15.0,
+        help="HTTP timeout for gateway session close requests.",
+    )
+    parser.add_argument(
+        "--gateway-close-retries",
+        type=int,
+        default=1,
+        help="Retry count for gateway session close requests.",
+    )
+    parser.add_argument(
+        "--gateway-close-retry-backoff-s",
+        type=float,
+        default=1.0,
+        help="Backoff between gateway session close retries.",
+    )
+    parser.add_argument(
+        "--shutdown-timeout-s",
+        type=float,
+        default=120.0,
+        help="Maximum time allowed for launcher shutdown and container cleanup.",
     )
     parser.add_argument(
         "--docker-command-timeout-s",

@@ -41,6 +41,8 @@ class AgentPoolManager:
         self._mode = str(self.cfg.get("mode", "docker") or "docker").strip().lower()
         if self._mode not in {"docker", "rjob"}:
             raise ValueError(f"Unsupported OpenClaw workflow mode: {self._mode!r}")
+        self._row_wait_timeout_s = float(self.cfg.get("row_wait_timeout_s", 60.0) or 60.0)
+        self._row_fetch_timeout_s = float(self.cfg.get("row_fetch_timeout_s", 30.0) or 30.0)
 
         cluster_cfg: Dict = dict(self.cfg.get("cluster", {}) or {})
         self._allocator: RuntimeLeaseAllocator = self._build_allocator(cluster_cfg)
@@ -51,6 +53,8 @@ class AgentPoolManager:
             allocator=self._allocator,
             pool_size=self._pool_size,
             startup_concurrency=startup_concurrency,
+            row_wait_timeout_s=self._row_wait_timeout_s,
+            row_fetch_timeout_s=self._row_fetch_timeout_s,
         )
         self._state_lock = asyncio.Lock()
         self._initialized = False
@@ -68,7 +72,11 @@ class AgentPoolManager:
                 self._initialized = True
                 return
 
-            prewarm_rows = await self._repo.prime(self._pool_size) if self._pool_size > 0 else []
+            prewarm_rows = (
+                await self._repo.prime(self._pool_size, fetch_timeout_s=self._row_fetch_timeout_s)
+                if self._pool_size > 0
+                else []
+            )
             await self._allocator.start(plan)
             await self._pool.prewarm(rows=prewarm_rows)
 
@@ -93,6 +101,7 @@ class AgentPoolManager:
             await self._allocator.close()
         except Exception:
             log.warning("%s allocator close failed (ignored)", self._mode, exc_info=True)
+        self._repo.close()
 
     async def list_pool_instances(self) -> List[PoolEntry]:
         return await self._pool.list_instances()

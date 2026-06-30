@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 from collections.abc import Sequence
 
 from args import parse_simulation_args
@@ -26,9 +27,26 @@ async def main(argv: Sequence[str] | None = None) -> int:
     log.info("main log file: %s", log_session.main_log_path)
     log.info("log run directory: %s", log_session.run_dir)
 
-    flow = SimulationFlow(load_simulation_run_config(args))
+    cfg = load_simulation_run_config(args)
+    flow = SimulationFlow(cfg)
+    stop_event = asyncio.Event()
+    _install_signal_handlers(stop_event)
+    run_task: asyncio.Task | None = None
+    stop_task: asyncio.Task | None = None
     try:
-        summary = await flow.run()
+        run_task = asyncio.create_task(flow.run(), name="simulation-flow-run")
+        stop_task = asyncio.create_task(stop_event.wait(), name="launcher-stop-signal")
+        done, _pending = await asyncio.wait({run_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+        if stop_task in done and not run_task.done():
+            log.warning("launcher received shutdown signal; cancelling simulation flow")
+            run_task.cancel()
+            try:
+                await run_task
+            except asyncio.CancelledError:
+                pass
+            return 130
+
+        summary = await run_task
         log.info(
             "RUN SUMMARY: status=%s episodes=%d succeeded=%d failed=%d",
             summary.status,
@@ -38,7 +56,27 @@ async def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0 if summary.status == "succeeded" and summary.failed_episodes == 0 else 2
     finally:
-        await flow.shutdown()
+        if stop_task is not None:
+            stop_task.cancel()
+            await asyncio.gather(stop_task, return_exceptions=True)
+        await _shutdown_with_timeout(flow, timeout_s=cfg.shutdown_timeout_s)
+
+
+def _install_signal_handlers(stop_event: asyncio.Event) -> None:
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop_event.set)
+        except (NotImplementedError, RuntimeError):
+            log.debug("signal handler unavailable for %s", sig, exc_info=True)
+
+
+async def _shutdown_with_timeout(flow: SimulationFlow, *, timeout_s: float) -> None:
+    timeout = max(1.0, float(timeout_s or 120.0))
+    try:
+        await asyncio.wait_for(flow.shutdown(), timeout=timeout)
+    except asyncio.TimeoutError:
+        log.error("simulation shutdown timed out after %.1fs; some runtime resources may remain", timeout)
 
 
 if __name__ == "__main__":

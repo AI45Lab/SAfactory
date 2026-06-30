@@ -76,7 +76,10 @@ class TelemetryRecorder:
             except asyncio.CancelledError:
                 pass
             self._flush_task = None
-        await self.flush_once(drain_all=True)
+        try:
+            await self.flush_once(drain_all=True)
+        except Exception:
+            log.exception("Gateway telemetry final flush failed")
         log.info(
             "Gateway telemetry recorder stopped: flushed_total=%d dropped_total=%d",
             self.flushed_total,
@@ -234,10 +237,7 @@ class TelemetryRecorder:
                 record.seq_id,
                 record.requested_model,
             )
-            if record.event_type == "gateway_session_close":
-                await self.storage.record_session_close(binding, record)
-            else:
-                await self.storage.record_inference_step(binding, record)
+            await self._write_record(binding, record)
             self.flushed_total += 1
 
         if batch:
@@ -317,10 +317,7 @@ class TelemetryRecorder:
                 record.seq_id,
                 record.requested_model,
             )
-            if record.event_type == "gateway_session_close":
-                await self.storage.record_session_close(binding, record)
-            else:
-                await self.storage.record_inference_step(binding, record)
+            await self._write_record(binding, record)
             self.flushed_total += 1
             log.info(
                 "Gateway telemetry strict write complete: event_type=%s request_id=%s elapsed_ms=%.2f flushed_total=%d",
@@ -368,6 +365,30 @@ class TelemetryRecorder:
                 except asyncio.QueueFull:
                     pass
             await self._drop("queue_full")
+
+    async def _write_record(
+        self,
+        binding: GatewaySessionBinding,
+        record: GatewayTelemetryRecord,
+    ) -> None:
+        async def _write() -> None:
+            if record.event_type == "gateway_session_close":
+                await self.storage.record_session_close(binding, record)
+            else:
+                await self.storage.record_inference_step(binding, record)
+
+        timeout_s = max(0.001, float(self.cfg.telemetry_write_timeout_s))
+        try:
+            await asyncio.wait_for(_write(), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            log.error(
+                "Gateway telemetry write timed out: event_type=%s request_id=%s session_id=%s timeout_s=%.1f",
+                record.event_type,
+                record.request_id,
+                record.session_id,
+                timeout_s,
+            )
+            raise
 
     async def _drop(self, reason: str) -> None:
         async with self._lock:
