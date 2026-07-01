@@ -14,6 +14,7 @@ from .types import SimulationRunConfig
 log = logging.getLogger("manager.simulation_config")
 
 DEFAULT_SQLITE_DB_URL = "sqlite://env_trajs.db"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 _RJOB_DEFAULT_CONFIG: Dict[str, Any] = {
     "cluster_entry": "",
@@ -38,11 +39,25 @@ def load_rjob_global_config(path: str) -> Dict[str, Any]:
     path = str(path or "").strip()
     if not path:
         return _normalize_rjob_config({})
-    cfg_path = Path(path).expanduser()
-    if not cfg_path.is_absolute():
-        cfg_path = (Path.cwd() / cfg_path).resolve(strict=False)
+    cfg_path = _resolve_config_path(path)
     cfg = load_yaml_file(str(cfg_path))
     return _normalize_rjob_config(_rjob_config_section(cfg))
+
+
+def _resolve_config_path(path: str) -> Path:
+    cfg_path = Path(path).expanduser()
+    if cfg_path.is_absolute():
+        return cfg_path
+
+    cwd_path = (Path.cwd() / cfg_path).resolve(strict=False)
+    if cwd_path.exists():
+        return cwd_path
+
+    project_path = (PROJECT_ROOT / cfg_path).resolve(strict=False)
+    if project_path.exists():
+        return project_path
+
+    return cwd_path
 
 
 def _rjob_config_section(cfg: Dict[str, Any]) -> Dict[str, Any]:
