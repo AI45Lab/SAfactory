@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 from urllib.parse import urlsplit
 
+from core.perf_trace import PerfTrace
+
 from .episode_common import (
     RESULT_JSON_PREFIX,
     json_for_log,
@@ -43,60 +45,102 @@ class RJobEpisodeRunner:
         lease: SimulationAgentLease,
         request: SimulationStartRequest,
     ) -> SimulationStartResult:
-        if not lease.image:
-            raise RuntimeError(f"RJob lease missing image: {lease.agent_name}/{lease.agent_id}")
-        if not lease.run_command:
-            raise RuntimeError(f"RJob lease missing run_command: {lease.agent_name}/{lease.agent_id}")
-
         cfg = dict(lease.runtime_config or {})
-        gateway_base_url = self._resolve_gateway_base_url(cfg, request)
-        client = self._client(cfg)
-        request_params, payload = request_payload(request)
-        rjob_name = self._build_job_name(cfg, lease, request)
-        merged_env = _merge_dicts(
-            cfg.get("env"),
-            request_env(
-                request,
-                payload,
-                gateway_base_url=gateway_base_url,
-                containerize_local_gateway=False,
-            ),
-        )
-        job = self._build_job(
-            cfg=cfg,
-            lease=lease,
-            request=request,
-            rjob_name=rjob_name,
-            env=merged_env,
-        )
-        submit_kwargs = self._submit_kwargs(cfg)
-
-        log.info(
-            "OpenClaw RJob submit params: agent=%s/%s name=%s params=%s",
-            lease.agent_name,
-            lease.agent_id,
-            rjob_name,
-            self._safe_json_for_log(
-                {
-                    "request": request_params,
-                    "image": lease.image,
-                    "workdir": lease.workdir,
-                    "run_command": lease.run_command,
-                    "submit": submit_kwargs,
-                    "resources": cfg.get("resources") or cfg.get("default_resources") or {},
-                    "mount_config": cfg.get("mount_config") or [],
-                }
-            ),
+        poll_interval_s = float(cfg.get("poll_interval_s", 5.0) or 5.0)
+        timeout_s = float(request.agent_start_timeout_s or self.timeout_s)
+        trace = PerfTrace(
+            "rjob_episode.start",
+            logger=log,
+            context={
+                "job_id": request.job_id,
+                "session_id": request.session_id,
+                "group_id": request.group_id,
+                "agent_name": lease.agent_name,
+                "agent_id": lease.agent_id,
+                "row_id": lease.row_id,
+                "runtime": lease.runtime,
+                "result_mode": lease.result_mode,
+                "image": lease.image,
+                "resource_name": lease.resource_name,
+                "timeout_s": timeout_s,
+                "poll_interval_s": poll_interval_s,
+            },
         )
 
         submitted_name = ""
         terminal_status = "Unknown"
         logs_text = ""
+        result: SimulationStartResult | None = None
+        timings_ms: Dict[str, float] = {}
+        status_poll_count = 0
+        summary_status = "failed"
+        summary_extra: Dict[str, Any] = {}
+        episode_started = time.perf_counter()
         try:
-            submitted = await asyncio.to_thread(client.submit, job, **submit_kwargs)
+            if not lease.image:
+                raise RuntimeError(f"RJob lease missing image: {lease.agent_name}/{lease.agent_id}")
+            if not lease.run_command:
+                raise RuntimeError(f"RJob lease missing run_command: {lease.agent_name}/{lease.agent_id}")
+
+            with trace.span("resolve_gateway_base_url"):
+                gateway_base_url = self._resolve_gateway_base_url(cfg, request)
+            with trace.span("build_request_payload"):
+                request_params, payload = request_payload(request)
+            with trace.span("client_init"):
+                client = self._client(cfg)
+
+            rjob_name = self._build_job_name(cfg, lease, request)
+            trace.update_context(requested_rjob_name=rjob_name)
+            with trace.span("build_job", requested_rjob_name=rjob_name):
+                merged_env = _merge_dicts(
+                    cfg.get("env"),
+                    request_env(
+                        request,
+                        payload,
+                        gateway_base_url=gateway_base_url,
+                        containerize_local_gateway=False,
+                    ),
+                )
+                job = self._build_job(
+                    cfg=cfg,
+                    lease=lease,
+                    request=request,
+                    rjob_name=rjob_name,
+                    env=merged_env,
+                )
+                submit_kwargs = self._submit_kwargs(cfg)
+            trace.update_context(
+                dry_run=bool(submit_kwargs.get("dry_run")),
+                predict_only=bool(submit_kwargs.get("predict_only")),
+            )
+
+            log.info(
+                "OpenClaw RJob submit params: agent=%s/%s name=%s params=%s",
+                lease.agent_name,
+                lease.agent_id,
+                rjob_name,
+                self._safe_json_for_log(
+                    {
+                        "request": request_params,
+                        "image": lease.image,
+                        "workdir": lease.workdir,
+                        "run_command": lease.run_command,
+                        "submit": submit_kwargs,
+                        "resources": cfg.get("resources") or cfg.get("default_resources") or {},
+                        "mount_config": cfg.get("mount_config") or [],
+                    }
+                ),
+            )
+
+            started = time.perf_counter()
+            with trace.span("submit_job", requested_rjob_name=rjob_name):
+                submitted = await asyncio.to_thread(client.submit, job, **submit_kwargs)
+            timings_ms["rjob_submit_ms"] = _elapsed_ms(started)
             submitted_name = str(submitted or rjob_name).strip()
+            trace.update_context(submitted_rjob_name=submitted_name)
+            trace.mark("job_submitted", submitted_rjob_name=submitted_name)
             if not submitted_name and (submit_kwargs.get("dry_run") or submit_kwargs.get("predict_only")):
-                return SimulationStartResult(
+                result = SimulationStartResult(
                     session_id=request.session_id,
                     status="succeeded",
                     total_reward=0.0,
@@ -105,19 +149,30 @@ class RJobEpisodeRunner:
                     truncated=False,
                     metrics={"runtime": "rjob", "dry_run": bool(submit_kwargs.get("dry_run"))},
                 )
+                summary_status = result.status
+                return result
             if not submitted_name:
                 raise RuntimeError("RJobClient.submit returned empty job name")
 
-            terminal_status = await self._wait_terminal(
-                client,
-                submitted_name,
-                timeout_s=float(request.agent_start_timeout_s or self.timeout_s),
-                poll_interval_s=float(cfg.get("poll_interval_s", 5.0) or 5.0),
-            )
+            started = time.perf_counter()
+            with trace.span("wait_terminal", submitted_rjob_name=submitted_name):
+                terminal_status, status_poll_count = await self._wait_terminal(
+                    client,
+                    submitted_name,
+                    timeout_s=timeout_s,
+                    poll_interval_s=poll_interval_s,
+                    trace=trace,
+                )
+            timings_ms["rjob_wait_terminal_ms"] = _elapsed_ms(started)
+            trace.update_context(rjob_status=terminal_status, status_poll_count=status_poll_count)
             try:
-                logs_text = await self._logs_text(client, submitted_name)
+                started = time.perf_counter()
+                with trace.span("fetch_logs", submitted_rjob_name=submitted_name, terminal_status=terminal_status):
+                    logs_text = await self._logs_text(client, submitted_name)
+                timings_ms["rjob_fetch_logs_ms"] = _elapsed_ms(started)
+                trace.mark("logs_fetched", log_chars=len(logs_text))
             except Exception as exc:
-                return SimulationStartResult(
+                result = SimulationStartResult(
                     session_id=request.session_id,
                     status="failed",
                     total_reward=0.0,
@@ -132,19 +187,40 @@ class RJobEpisodeRunner:
                         "logs_error": str(exc),
                     },
                 )
-            result = self._result_from_terminal_status(
-                terminal_status=terminal_status,
-                logs_text=logs_text,
-                lease=lease,
-                request=request,
-                job_name=submitted_name,
-            )
+                summary_status = result.status
+                summary_extra = {"logs_error": str(exc), "error_type": type(exc).__name__}
+                return result
+
+            started = time.perf_counter()
+            with trace.span("parse_result", submitted_rjob_name=submitted_name, terminal_status=terminal_status):
+                result = self._result_from_terminal_status(
+                    terminal_status=terminal_status,
+                    logs_text=logs_text,
+                    lease=lease,
+                    request=request,
+                    job_name=submitted_name,
+                )
+            timings_ms["rjob_parse_result_ms"] = _elapsed_ms(started)
+            summary_status = result.status
             return result
+        except asyncio.CancelledError:
+            summary_status = "cancelled"
+            summary_extra = {"error_type": "CancelledError"}
+            trace.update_context(error_type="CancelledError")
+            raise
         except TimeoutError as exc:
+            terminal_status = str(getattr(exc, "last_status", terminal_status) or terminal_status)
+            status_poll_count = int(getattr(exc, "poll_count", status_poll_count) or status_poll_count)
             if submitted_name:
-                await self._stop_job(client, submitted_name)
-                logs_text = await self._logs_text(client, submitted_name, suppress_errors=True)
-            return SimulationStartResult(
+                started = time.perf_counter()
+                with trace.span("stop_timed_out_job", submitted_rjob_name=submitted_name):
+                    await self._stop_job(client, submitted_name)
+                timings_ms["rjob_stop_ms"] = _elapsed_ms(started)
+                started = time.perf_counter()
+                with trace.span("fetch_timeout_logs", submitted_rjob_name=submitted_name):
+                    logs_text = await self._logs_text(client, submitted_name, suppress_errors=True)
+                timings_ms["rjob_fetch_timeout_logs_ms"] = _elapsed_ms(started)
+            result = SimulationStartResult(
                 session_id=request.session_id,
                 status="failed",
                 total_reward=0.0,
@@ -159,14 +235,58 @@ class RJobEpisodeRunner:
                     "logs_tail": tail(logs_text),
                 },
             )
+            summary_status = result.status
+            summary_extra = {
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "timeout_layer": "rjob_wait_terminal",
+            }
+            return result
+        except Exception as exc:
+            summary_status = "failed"
+            summary_extra = {"error_type": type(exc).__name__, "error": str(exc)}
+            trace.update_context(error_type=type(exc).__name__, error=str(exc))
+            raise
         finally:
             if submitted_name:
-                await self._cleanup_job(
-                    client,
-                    submitted_name,
-                    cfg=cfg,
+                cleanup_started = time.perf_counter()
+                with trace.span(
+                    "cleanup_job",
+                    submitted_rjob_name=submitted_name,
                     terminal_status=terminal_status,
+                    cleanup_on_finish=bool(cfg.get("cleanup_on_finish", True)),
+                    keep_failed_jobs=bool(cfg.get("keep_failed_jobs", False)),
+                ):
+                    await self._cleanup_job(
+                        client,
+                        submitted_name,
+                        cfg=cfg,
+                        terminal_status=terminal_status,
+                    )
+                timings_ms["rjob_cleanup_ms"] = _elapsed_ms(cleanup_started)
+            timings_ms["rjob_total_ms"] = _elapsed_ms(episode_started)
+            if result is not None:
+                self._attach_timing_metrics(
+                    result,
+                    trace=trace,
+                    timings_ms=timings_ms,
+                    submitted_name=submitted_name,
+                    terminal_status=terminal_status,
+                    status_poll_count=status_poll_count,
                 )
+                trace.update_context(
+                    result_status=result.status,
+                    result_reward=result.total_reward,
+                    result_step_count=result.step_count,
+                    result_truncated=result.truncated,
+                )
+            trace.emit_summary(
+                status=summary_status,
+                submitted_rjob_name=submitted_name or None,
+                terminal_status=terminal_status,
+                status_poll_count=status_poll_count or None,
+                **summary_extra,
+            )
 
     async def close(self) -> None:
         return
@@ -332,19 +452,38 @@ class RJobEpisodeRunner:
         *,
         timeout_s: float,
         poll_interval_s: float,
-    ) -> str:
+        trace: PerfTrace | None = None,
+    ) -> tuple[str, int]:
         deadline = time.monotonic() + max(1.0, float(timeout_s))
         unknown_count = 0
+        poll_count = 0
+        last_status = ""
         while True:
             status = await self._get_status(client, job_name)
+            poll_count += 1
+            if status != last_status:
+                if trace is not None:
+                    trace.mark("status_poll", status=status, poll_count=poll_count, job_name=job_name)
+                log.info("RJob status changed: name=%s status=%s poll_count=%d", job_name, status, poll_count)
+                last_status = status
             if status in _SUCCEEDED_STATUSES or status in _FAILED_STATUSES:
-                return status
+                return status, poll_count
             if status == "Unknown":
                 unknown_count += 1
                 if unknown_count >= 5:
-                    return status
+                    return status, poll_count
             if time.monotonic() >= deadline:
-                raise TimeoutError(f"RJob {job_name} timed out after {timeout_s:.1f}s; last_status={status}")
+                if trace is not None:
+                    trace.mark(
+                        "wait_terminal.timeout",
+                        last_status=status,
+                        poll_count=poll_count,
+                        timeout_s=timeout_s,
+                    )
+                exc = TimeoutError(f"RJob {job_name} timed out after {timeout_s:.1f}s; last_status={status}")
+                exc.last_status = status  # type: ignore[attr-defined]
+                exc.poll_count = poll_count  # type: ignore[attr-defined]
+                raise exc
             if status not in _RUNNING_STATUSES and status != "Unknown":
                 log.warning("RJob %s returned unrecognized status=%s; keep polling", job_name, status)
             await asyncio.sleep(max(0.1, float(poll_interval_s)))
@@ -588,6 +727,29 @@ class RJobEpisodeRunner:
                         submit[key] = "***"
         return json_for_log(scrubbed)
 
+    @staticmethod
+    def _attach_timing_metrics(
+        result: SimulationStartResult,
+        *,
+        trace: PerfTrace,
+        timings_ms: Dict[str, float],
+        submitted_name: str,
+        terminal_status: str,
+        status_poll_count: int,
+    ) -> None:
+        result.metrics = dict(result.metrics or {})
+        result.metrics.update(
+            {
+                "runtime": "rjob",
+                "rjob_trace_id": trace.trace_id,
+                "rjob_started_at_utc": trace.started_at_utc,
+                "rjob_name": submitted_name or result.metrics.get("rjob_name"),
+                "rjob_status": terminal_status,
+                "rjob_status_poll_count": status_poll_count,
+                **timings_ms,
+            }
+        )
+
 
 def _make(cls: Any, **kwargs: Any) -> Any:
     try:
@@ -607,6 +769,10 @@ def _merge_dicts(*values: Any) -> Dict[str, Any]:
         if isinstance(value, dict):
             merged.update({str(key): str(val) for key, val in value.items()})
     return merged
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 3)
 
 
 def _safe_name(value: str, *, max_len: int) -> str:
