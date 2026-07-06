@@ -1,152 +1,281 @@
 # Configuration
 
-Safactory configuration has three layers:
+Safactory v2 uses several explicit configuration surfaces:
 
-1. CLI flags passed to `launcher.py`.
-2. The manager config at `manager/config.yaml`.
-3. Environment YAML files under `env/` or passed with `--env-config`.
+1. `gateway` config for model routes, telemetry, request logs, and storage.
+2. `launcher.py` CLI flags for scheduling, storage, model route selection, evaluation, and runtime mode.
+3. Agent config YAML passed with `--agent-config`, or all configs under `--agent-root`.
+4. Agent start config YAML passed with `--agent-start-config`.
+5. Optional global RJob config passed with `--rjob-config`.
+6. Optional evaluator runtime config passed with `--evaluation-config`.
 
-CLI flags take precedence over values loaded from YAML.
+For a local SQLite run, gateway and launcher must share the same DB URI.
 
-## Essential CLI Flags
+## Minimal Local Run
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--mode` | `local` | Execution mode: `local` or `remote`. |
-| `--env-transport` | `http` | Environment transport: `http` or `inproc`. |
-| `--env-config` | `None` | Path to one environment YAML. Incompatible with `--env-root`. |
-| `--env-root` | `env` | Directory scanned recursively for environment YAML files when `--env-config` is not set. |
-| `--pool-size` | `0` | Override YAML pool size. `0` keeps the YAML value. |
-| `--llm-base-url` | project default endpoint | OpenAI-compatible model endpoint. Replace this for real runs. |
-| `--llm-api-key` | `EMPTY` | API key. Use `EMPTY` for endpoints that do not require one. |
-| `--llm-model` | project default model | Model identifier sent to the endpoint. |
-| `--max-steps` | `1000` | Maximum agent steps per episode. |
-| `--db-path` | `sqlite://android_envs.db` | SQLite database URI. |
-| `--log-dir` | `logs` | Run log directory. |
+Start gateway:
 
-Example:
+```bash
+python -m gateway --config gateway/config.local.yaml
+```
+
+Run one agent config:
 
 ```bash
 python launcher.py \
-  --mode local \
-  --env-transport http \
-  --env-config env/osgym/os_config.yaml \
-  --llm-base-url http://YOUR_LLM_HOST/v1 \
-  --llm-api-key YOUR_API_KEY \
-  --llm-model YOUR_MODEL \
-  --pool-size 1
+  --agent-config env/openclaw/openclaw_config.yaml \
+  --agent-start-config env/openclaw/openclaw_start.yaml \
+  --gateway-base-url http://127.0.0.1:8000/v1/sessions \
+  --llm-model YOUR_ROUTE_KEY \
+  --db-path sqlite://env_trajs.db \
+  --pool-size 1 \
+  --max-workers 1
 ```
+
+## Essential CLI Flags
+
+| Category | Flag | Default | Description |
+|----------|------|---------|-------------|
+| Job | `--job-id` | generated when empty | Identifier written to environment rows and trajectory rows. |
+| Runtime | `--mode` | `docker` | Runtime allocator: `docker` or `rjob`. |
+| Config | `--agent-config` | `None` | Path to one agent task YAML. |
+| Config | `--agent-root` | `env` | Directory scanned for child YAML files when `--agent-config` is not set. Invalid YAMLs are skipped with warnings. |
+| Config | `--agent-start-config` | `None` | YAML that defines how each agent runtime starts in Docker and optionally RJob. |
+| Config | `--rjob-config` | `config.yaml` | Global RJob connection and auth config. |
+| Storage | `--storage-type` | `sqlite` | `sqlite` or `cloud`. |
+| Storage | `--db-path` | `sqlite://env_trajs.db` for SQLite | SQLite DB URI. Ignored by cloud storage. |
+| Gateway | `--gateway-base-url` | `http://127.0.0.1:8080/v1/sessions` | Gateway session root. Override this to match your gateway port. |
+| LLM | `--llm-model` | `default` | Gateway route key used by agent rollouts. |
+| LLM | `--llm-temperature` | `0.3` | Sampling temperature passed to agent runtimes. |
+| Episode | `--max-steps` | `1000` | Maximum step budget passed to the runtime request. Gateway `max_steps` can enforce an additional request-level limit. |
+| Pool | `--pool-size` | `1` | Base concurrency. Warm pool size is `ceil(pool_size * multiplier)`. |
+| Pool | `--multiplier` | `1.2` | Warm-pool multiplier. |
+| Pool | `--max-workers` | `0` | Worker count cap. `0` uses warm-pool size. |
 
 ## Full CLI Reference
 
 | Category | Flag | Default | Description |
 |----------|------|---------|-------------|
-| Job | `--job-id` | auto-generated when empty | Identifier recorded with environment configs and session rows. |
-| Config | `--manager-config` | `./manager/config.yaml` | Manager YAML path. |
-| Config | `--exp-config` | `./core/exp/config.yaml` | Experience injection YAML path. |
-| Storage | `--storage-type` | `sqlite` | Storage backend: `sqlite` or `cloud`. |
-| Storage | `--warmup-count` | `100` | Number of environment configs preloaded into the manager. |
-| Storage | `--save-batch-size` | `100` | Batch size for storing environment configs. |
-| Storage | `--disable-buffer` | buffer enabled | Disable buffered record writes. |
-| Storage | `--buffer-size` | `100` | Buffered record capacity. |
-| Storage | `--flush-interval` | `5.0` | Buffered write flush interval in seconds. |
-| Storage | `--rebuild-table` / `--no-rebuild-table` | `false` | Delete and recreate SQLite tables before loading configs. |
-| Pool | `--multiplier` | `1.2` | Pre-warm `ceil(multiplier * pool_size)` actors. |
-| Local service | `--start-local-upstream` / `--no-start-local-upstream` | `None` | Explicitly control local FastAPI service startup. |
-| Local service | `--local-upstream-app` | `env.app:app` | ASGI app used for local HTTP mode. |
-| Local service | `--local-upstream-host` | `0.0.0.0` | Local service bind host. |
-| Local service | `--local-upstream-port` | `36663` | Local service port. |
-| Local service | `--local-upstream-url` | `http://127.0.0.1:36663` | URL used by the runner to reach the local service. |
-| Local service | `--wait-timeout` | `60.0` | Seconds to wait for local service readiness. |
-| Interactor | `--message-cut` | `-1` | Number of recent messages kept in context. `<= 0` keeps all. |
-| Interactor | `--env-http-timeout-s` | `300.0` | Environment HTTP request timeout. |
-| Interactor | `--http-retries` | `2` | Retry count for failed environment calls. |
-| LLM | `--llm-temperature` | `0.3` | Sampling temperature. |
-| RL | `--rl-use-session-suffix-url` | `false` | Use session-routed LLM proxy URLs. |
-| RL | `--rl-group-size` | `0` | Override `env_num` for repeated samples per prompt. |
-| RL | `--rl-epoch` | `1` | Duplicate environment configs for multiple RL epochs. |
-| Logging | `--run-name` | empty | Optional prefix for the run log directory. |
+| Storage | `--rebuild-table` / `--no-rebuild-table` | `false` | For SQLite, delete the DB file before loading configs. |
+| Storage | `--disable-buffer` | buffer enabled | Disable buffered writes. |
+| Storage | `--buffer-size` | `100` | Write buffer capacity. |
+| Storage | `--flush-interval` | `5.0` | Write buffer flush interval in seconds. |
+| Docker | `--docker-bin` | `docker` | Docker executable. |
+| Docker | `--docker-pull-policy` | `never` | `never` or `always`. |
+| Docker | `--docker-startup-concurrency` | `8` | Max concurrent Docker startup operations. |
+| Docker | `--cleanup-docker-container` / `--no-cleanup-docker-container` | `true` | Remove rollout containers after completion. |
+| Docker | `--cleanup-stale-docker-containers` / `--no-cleanup-stale-docker-containers` | `true` | Remove stale Safactory containers for the same job at startup. |
+| Timeout | `--agent-start-timeout-s` | `600.0` | Inner agent runtime timeout. |
+| Timeout | `--agent-start-timeout-grace-s` | `120.0` | Extra outer timeout budget. |
+| Timeout | `--container-refill-timeout-s` | `300.0` | Max time to release and replace one runtime resource. |
+| Timeout | `--row-wait-timeout-s` | `60.0` | Max time to wait for new DB rows while refilling. |
+| Timeout | `--row-fetch-timeout-s` | `30.0` | Max time for one scheduler DB fetch. |
+| Timeout | `--gateway-close-timeout-s` | `15.0` | HTTP timeout for gateway close calls. |
+| Timeout | `--gateway-close-retries` | `1` | Retry count for gateway close calls. |
+| Timeout | `--gateway-close-retry-backoff-s` | `1.0` | Backoff between gateway close retries. |
+| Timeout | `--shutdown-timeout-s` | `120.0` | Max launcher shutdown time. |
+| Docker timeout | `--docker-command-timeout-s` | `300.0` | Default Docker lifecycle command timeout. |
+| Docker timeout | `--docker-start-timeout-s` | `300.0` | Docker run/copy startup timeout. |
+| Docker timeout | `--docker-remove-timeout-s` | `120.0` | Docker remove timeout. |
+| Docker timeout | `--docker-stop-timeout-s` | `10.0` | Docker stop grace period. |
+| Docker timeout | `--docker-inspect-timeout-s` | `10.0` | Docker inspect timeout. |
+| Docker timeout | `--docker-remove-retries` | `3` | Container removal retries. |
+| Docker timeout | `--docker-remove-retry-delay-s` | `2.0` | Delay between removal retries. |
+| Docker timeout | `--docker-lifecycle-timeout-s` | `60.0` | Optional per-container cleanup and healthcheck timeout. |
+| Evaluation | `--enable-evaluation` | `false` | Run evaluator flow after rollout. |
+| Evaluation | `--evaluation-config` | empty | Evaluator runtime YAML. |
+| Evaluation | `--evaluation-model` | empty | Gateway route key used by evaluator model calls. |
+| Evaluation | `--strict-eval-tasks` | `false` | Fail when expected markdown eval task is missing. |
+| RL | `--rl-group-size` | `0` | Override each YAML environment group's `env_num`. |
+| RL | `--rl-epoch` | `1` | Duplicate environment configs for multiple rollout epochs. |
+| Circuit breaker | `--circuit-breaker` / `--no-circuit-breaker` | `true` | Stop scheduling when recent failures/timeouts exceed thresholds. |
+| Circuit breaker | `--circuit-breaker-window` | `50` | Sliding window size. |
+| Circuit breaker | `--circuit-breaker-min-samples` | `20` | Minimum samples before opening. |
+| Circuit breaker | `--circuit-breaker-failure-rate` | `0.8` | Failure-rate threshold. |
+| Circuit breaker | `--circuit-breaker-timeout-rate` | `0.5` | Timeout-rate threshold. |
+| Circuit breaker | `--circuit-breaker-consecutive-timeouts` | `5` | Consecutive timeout threshold. |
+| Logging | `--log-dir` | `logs` | Run log root. |
+| Logging | `--run-name` | empty | Optional run directory prefix. |
 | Logging | `--console-log-level` | `INFO` | Console log level. |
 | Logging | `--file-log-level` | `DEBUG` | File log level. |
-| Logging | `--log-max-bytes` | `52428800` | Legacy rotation size. Ignored in run-directory log mode. |
-| Logging | `--log-backup-count` | `20` | Recent run log directories to keep. `0` keeps all. |
-| Logging | `--debug-log` | `false` | Enable debug storage logs on the console. |
+| Logging | `--log-backup-count` | `20` | Recent log directories to keep. |
+| Logging | `--debug-log` | `false` | Enable selected debug storage loggers. |
 
-## Manager Config
+## Gateway Config
 
-`manager/config.yaml` controls database defaults, pool size, remote cluster settings, environment launch commands, and RayJob credentials. Treat checked-in values as examples and replace private paths, image names, and credentials before use.
-
-Minimal local-style example:
+See [Gateway](gateway.md) for full details. The fields most often changed are:
 
 ```yaml
-mode: local
-pool_size: 1
-
-database:
-  driver: sqlite
-  sqlite_path: android_envs.db
-
-cluster:
-  http:
-    port: 36663
-    timeout_s: 100
-    concurrency: 200
-    startup_concurrency: 16
+listen_port: 8000
+base_session_path: /v1/sessions
+max_steps: -1
+storage_type: sqlite
+storage_config:
+  db_url: sqlite://env_trajs.db
+llm_routes:
+  route-key:
+    base_url: http://model-server/v1
+    api_key: null
+    supports_stream: true
+    max_concurrency: 256
 ```
 
-Remote mode adds per-environment cluster launch settings:
+## Agent Config YAML
 
-```yaml
-cluster:
-  env_types:
-    os_gym:
-      quotagroup: "your-quota"
-      entrypoint: "bash /path/to/start_os_gym.sh"
-      resources:
-        head:
-          cpu: 18
-          gpu: 0
-          memory: 72Gi
-          privileged: true
-      limit: 12
-
-rayjob:
-  domain: "https://your-rayjob-platform.example"
-  tenant: "your-tenant"
-  access_key: "replace-me"
-  secret_key: "replace-me"
-  project: "your-project"
-```
-
-## Environment YAML
-
-Each environment YAML defines one or more runnable environment groups.
+Agent config YAML defines task rows. Each row expands into one or more `job_environments` entries.
 
 ```yaml
 environments:
-  - env_name: os_gym
-    env_image: your_optional_runtime_image
+  - env_name: openclaw
+    env_image: ghcr.io/openclaw/openclaw:latest
     env_num: 1
-    dataset: path/to/cases.jsonl
+    dataset: ./datasets/task_brief_text_writer.jsonl
     dataset_load_mode: eager
+
     env_params:
-      max_steps: 30
-      prompt_format: kimi
+      task_family: openclaw_brief_text_writer
+      workload:
+        total_tasks: 1
+        expected_parallelism: 1
 ```
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `env_name` | yes | Registry name resolved by `env/env_factory.py`. |
-| `env_image` | no | Runtime image used by remote launchers. |
-| `env_num` | no | Number of parallel instances for this environment group. |
-| `dataset` | no | JSON, JSONL, YAML, text, or parquet path consumed by the data loader. |
-| `dataset_load_mode` | no | Defaults to `eager`; some parquet-based environments use `parquet_row_ref`. |
-| `env_params` | no | Keyword arguments passed into the environment constructor. |
+| `env_name` | yes | Agent/runtime name. Must match `agent_name` in the start config. |
+| `env_image` | no | Runtime image or image ID used by Docker/RJob allocation. |
+| `env_num` | no | Number of parallel copies for each dataset row. Must be a positive integer. |
+| `dataset` | no | Path to JSON, JSONL, YAML, or parquet data. Relative paths resolve from the config file directory. |
+| `dataset_load_mode` | no | `eager` by default. `parquet_row_ref` stores lightweight row references for parquet files. |
+| `env_params` | no | Public parameters passed to the runtime in `SimulationStartRequest.env_params`. |
 
-Supported registry names include `android_gym`, `os_gym`, `mc`, `mc_gym`, `embodied_alfred`, `emb`, `qa_gym`, `dabstepgym`, `discoveryworld`, `deepeyes_env`, `geo3k_vl_test`, `robotrustbench`, `math500_text`, and `math500`.
+For each dataset item, Safactory sets:
 
-## Data Paths
+- `env_params.dataset` to the dataset row.
+- internal metadata with config path, dataset path, dataset name, and load mode.
+- a deterministic `group_id` based on `env_name` and task index.
 
-Relative dataset paths are resolved from the YAML file directory. For example, `dataset: cases.jsonl` in `env/androidgym/android_env.yaml` resolves to `env/androidgym/cases.jsonl`.
+## Agent Start Config YAML
 
-Use absolute paths for shared storage, Docker-mounted volumes, or externally downloaded datasets.
+Agent start config defines how to start the runtime for an `env_name`.
+
+Single-agent form:
+
+```yaml
+agent_name: openclaw
+
+container:
+  workdir: /workspace
+  mounts:
+    - source: ./env/openclaw/workspace
+      target: /workspace
+      mode: rw
+    - source: ./env/openclaw/runner.mjs
+      target: /tmp/safactory-openclaw-runner.mjs
+      mode: ro
+  env:
+    NO_COLOR: "1"
+  extra_args:
+    - --add-host=host.docker.internal:host-gateway
+  idle_command: "tail -f /dev/null"
+  run_command: "node /tmp/safactory-openclaw-runner.mjs"
+```
+
+Multi-agent form:
+
+```yaml
+agents:
+  openclaw:
+    container:
+      workdir: /workspace
+      run_command: "node /tmp/runner.mjs"
+  openrt:
+    container:
+      workdir: /app
+      run_command: "python /tmp/runner.py"
+```
+
+Docker container fields:
+
+| Field | Description |
+|-------|-------------|
+| `workdir` | Working directory for `docker exec`. |
+| `idle_command` | Command used to keep an allocated container alive. |
+| `run_command` | Command executed for each episode. It reads request JSON from stdin and prints result JSON to stdout. |
+| `result_mode` | `json` by default. `exit_code` treats a zero exit code as success. |
+| `network`, `platform` | Optional Docker runtime settings. |
+| `env` | Environment variables injected into the container. |
+| `mounts` / `volumes` | Docker bind mounts. Relative `source` paths resolve from current working directory. |
+| `extra_args` | Additional `docker run` args. |
+| `install_runner_script` | Boolean compatibility flag. Defaults to `false`. |
+
+The runtime receives a `SimulationStartRequest` as stdin and through `SAFACTORY_START_REQUEST_JSON`. It must print a JSON object compatible with:
+
+```json
+{
+  "session_id": "env-uuid",
+  "status": "succeeded",
+  "total_reward": 0.0,
+  "step_count": 1,
+  "terminated": true,
+  "truncated": false,
+  "error_text": null,
+  "metrics": {}
+}
+```
+
+## RJob Config
+
+Global RJob settings live in `config.yaml` or the file passed with `--rjob-config`:
+
+```yaml
+rjob:
+  cluster_entry: "https://your-rjob-platform.example"
+  namespace: "your-namespace"
+  access_key: "replace-me"
+  secret_key: "replace-me"
+  charged_group: "your-quota"
+  gateway_base_url: "http://gateway.example/v1/sessions"
+  submit_concurrency: 1
+  cleanup_on_finish: true
+  no_packaging: true
+```
+
+Per-agent RJob settings live in `--agent-start-config` under `rjob:`:
+
+```yaml
+rjob:
+  name_prefix: openrt
+  image_pull_policy: IfNotPresent
+  no_packaging: true
+  cleanup_on_finish: true
+  keep_failed_jobs: true
+  resources:
+    cpu: 1
+    gpu: 0
+    memory_in_mb: 1024
+  embedded_files:
+    - source: ./runner.py
+      target: /tmp/safactory-openrt-runner.py
+  mount_config:
+    - "gpfs+gpfs://gpfs1/path/data:/app/data"
+```
+
+Supported per-agent RJob keys include connection overrides, image pull policy, `resources`, `requests`, `env`, `labels`, `annotations`, `affinity`, `mount_config`, `mount`, `before_script`, `depends_on`, `embedded_files`, `replicas`, `poll_interval_s`, `termination_grace_period_seconds`, `local_storage_in_mb`, and cleanup flags.
+
+## Useful Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `AIEVOBOX_GATEWAY_CONFIG` | Optional path used by `launcher.py` to validate model route keys before startup. |
+| `SAFACTORY_GATEWAY_LOG_PATH` | Gateway service log path. |
+| `AIEVOBOX_SQLITE_BULK_INSERT_BATCH_SIZE` | Override SQLite background env-row insert batch size. |
+| `AIEVOBOX_SQLITE_BULK_INSERT_PAUSE_S` | Pause between SQLite background insert batches. |
+
+## Common Pitfalls
+
+| Symptom | Fix |
+|---------|-----|
+| `unrecognized arguments: --env-config` | v2 uses `--agent-config`, not the old `--env-config`. |
+| `unrecognized arguments: --llm-base-url` | Model endpoints live in gateway `llm_routes`; launcher uses `--llm-model` route keys. |
+| Gateway and launcher start but evaluator sees no rows | Ensure gateway `storage_config.db_url` equals launcher `--db-path`. |
+| Docker runtime cannot reach gateway on localhost | Add `--add-host=host.docker.internal:host-gateway` and use the helper-provided gateway session URL inside the runtime. |

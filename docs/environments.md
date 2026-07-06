@@ -1,138 +1,196 @@
 # Supported Environments
 
-![Safactory architecture](../fig/envs.png)
+Safactory v2 treats each environment as an external agent runtime. A runtime is described by two files:
 
-Safactory ships multiple environment adapters behind one launcher and one `BaseEnv` interface. Some run directly on the host, while VM, emulator, simulator, or Docker-backed environments need extra setup.
+- Agent config: task rows, dataset, `env_params`, and image.
+- Agent start config: Docker or RJob startup details for the runtime.
+
+The current checkout includes these v2 adapters.
 
 ## Overview
 
-| Domain | Registry name | Public name | Notes | Config / guide |
-|--------|---------------|-------------|-------|----------------|
-| Desktop | `os_gym` | OSWorld / RiOSWorld | Ubuntu desktop automation with screenshots and `pyautogui`. | [guide](../env/osgym/README.md) |
-| Mobile | `android_gym` | AndroidGym | Android emulator interaction through ADB. | [guide](../env/androidgym/README_EN.md) |
-| Game | `mc`, `mc_gym` | Minecraft / MineStudio | Minecraft tasks through MineStudio / Malmo. | [install](../env/mc/INSTALL.md) |
-| Embodied | `robotrustbench` | RoboTrustBench | Habitat-based safety and robustness tasks. | [guide](../env/robotrustbench/README.md) |
-| Embodied | `embodied_alfred`, `emb` | Embodied ALFRED | Household embodied tasks through EmbodiedBench / ALFRED. | [guide](../env/embodiedgym/README.md) |
-| QA | `qa_gym` | QAGym | Prompt-attack and QA robustness environment. | [guide](../env/qagym/README.md) |
-| Data processing | `dabstepgym` | DABStep | Code-execution data wrangling tasks. | [guide](../env/dabstep/README.md) |
-| Scientific discovery | `discoveryworld` | DiscoveryWorld | Text and optional vision science tasks. | [guide](../env/dwgym/README.md) |
-| Multimodal reasoning | `deepeyes_env` | DeepEyes | Multi-turn visual tool-use tasks. | [guide](../env/deepeyes/README.md) |
-| Geometry VL | `geo3k_vl_test` | Geo3K-VL | Geometry-focused visual reasoning tasks. | [guide](../env/geo3k_vl_test/README.md) |
-| Math | `math500_text`, `math500` | Math500 text | Text-only math environment. | [config](../env/math500_text/math500_text_env_configs.yaml) |
+| Adapter | `env_name` / `agent_name` | Config | Start config | Runtime notes |
+|---------|----------------------------|--------|--------------|---------------|
+| OpenClaw | `openclaw` | `env/openclaw/openclaw_config.yaml` | `env/openclaw/openclaw_start.yaml` | Generic OpenClaw CLI runtime. Good for smoke tests and tool-use tasks. |
+| OpenRT | `openrt` | `env/openrt/openrt_config.yaml` | `env/openrt/openrt_start.yaml` | Runs OpenRT `eval.py` against gateway session URLs. |
+| OpenRT RJob | `openrt` | `env/openrt/openrt_config.rjob.yaml` | `env/openrt/openrt_start.rjob.yaml` | Remote RJob variant with image, resources, embedded runner, and GPFS mounts. |
+| WildClawBench | `wildclawbench` | `env/wildclawbench/wildclawbench_config.yaml` | `env/wildclawbench/wildclawbench_start.yaml` | Requires a WildClawBench checkout and matching image. |
+| DTAP | `dtap` | `env/dtap/dtap_config.yaml` | `env/dtap/dtap_start.yaml` | Runs DecodingTrust-Agent workloads and mounts Docker socket. |
+| ClawEnvKit | `clawenvkit` | `env/clawenvkit/clawenvkit_config.yaml` | `env/clawenvkit/clawenvkit_start.yaml` | Runs ClawEnvKit / Auto-ClawEval tasks. |
 
-## Environment Notes
+The checked-in YAML files contain local paths and internal image names in places. Treat them as working examples and adjust paths, images, mounts, and model route keys for your machine or cluster.
 
-### OS (`os_gym`)
+## Run One Adapter
 
-Wraps OSWorld / RiOSWorld style desktop tasks. The agent observes a Linux desktop and acts through `pyautogui`.
-
-Requirements:
-
-- Docker or a compatible VM runtime.
-- Privileged execution for QEMU / KVM when using VM-backed tasks.
-- Ubuntu VM image, either downloaded automatically or provided through `vm_path`.
-- OS task dataset in JSONL format.
-
-### Android (`android_gym`)
-
-Drives Android Emulator instances through ADB. The adapter supports parallel emulator mode and single snapshot mode.
-
-Requirements:
-
-- `adb` and Android Emulator available on the host or inside the runtime image.
-- A compatible AVD, defaulting to `nexus_safe` unless overridden.
-- Android task JSONL file, usually `env/androidgym/cases.jsonl`.
-
-### Minecraft (`mc`)
-
-Runs Minecraft tasks through MineStudio and Malmo-compatible tooling.
-
-Requirements:
-
-- Java 8 for Malmo compatibility.
-- Xvfb for headless display.
-- MineStudio dependencies from `env/mc/requirements.txt`.
-- Optional CUDA support for GPU-accelerated components.
-
-### RoboTrustBench (`robotrustbench`)
-
-Runs embodied safety and robustness variants: `safety`, `robust`, and `robustd`.
-
-Requirements:
-
-- Habitat and simulator dependencies.
-- Prepared task resources and dataset files for the selected variant.
-- A containerized runtime is recommended.
-
-### Embodied ALFRED (`embodied_alfred`, `emb`)
-
-Adapts EmbodiedBench / ALFRED tasks into Safactory.
-
-Requirements:
-
-- EmbodiedBench installed.
-- EB-ALFRED dataset.
-- AI2-THOR resources.
-- Xvfb and required system fonts for headless rendering.
-
-### QAGym (`qa_gym`)
-
-Models QA robustness and prompt-attack evaluation as an environment.
-
-Requirements:
-
-- QAGym dependencies from the repo root.
-- OpenAI-compatible endpoints for the agent and optional judge or attack models.
-- `env/qagym/qa_cases.jsonl` or a replacement dataset.
-
-### DABStep (`dabstepgym`)
-
-Runs data-wrangling tasks where agents write and execute Python code.
-
-Requirements:
-
-- DABStep dependencies.
-- Optional official evaluation library from the DABStep Hugging Face Space.
-- Dataset downloaded automatically or placed under `env/dabstep/data`.
-
-### DiscoveryWorld (`discoveryworld`)
-
-Provides scientific discovery tasks with text observations and optional visual frames.
-
-Requirements:
-
-- DiscoveryWorld installed under `env/dwgym/discoveryworld`.
-- Scenario, difficulty, seed, and vision settings configured in YAML.
-
-### DeepEyes (`deepeyes_env`)
-
-Runs multimodal visual tool-use tasks with optional crop and rotate tools.
-
-Requirements:
-
-- Parquet dataset path.
-- Optional judge model endpoint.
-- Runtime config such as `env/deepeyes/deepeyes_env_runtime.yaml`.
-
-### Geo3K-VL (`geo3k_vl_test`)
-
-Runs geometry visual-language tasks with image inputs and reference answers.
-
-Requirements:
-
-- Parquet dataset path.
-- Runtime config such as `env/geo3k_vl_test/geo3k_vl_test_env_runtime.yaml`.
-
-## Running One Environment
+Start gateway first, then run:
 
 ```bash
 python launcher.py \
-  --mode local \
-  --env-config env/osgym/os_config.yaml \
-  --llm-base-url http://YOUR_LLM_HOST/v1 \
-  --llm-api-key YOUR_API_KEY \
-  --llm-model YOUR_MODEL \
-  --pool-size 1
+  --agent-config env/openclaw/openclaw_config.yaml \
+  --agent-start-config env/openclaw/openclaw_start.yaml \
+  --gateway-base-url http://127.0.0.1:8000/v1/sessions \
+  --llm-model YOUR_ROUTE_KEY \
+  --db-path sqlite://env_trajs.db \
+  --pool-size 1 \
+  --max-workers 1
 ```
 
-Use `--env-root env` when you want to load multiple YAML files recursively.
+Use `--agent-root env` to load all agent configs under `env/`. During discovery, YAML files that are not agent configs, such as `*_start.yaml`, are skipped with warnings.
+
+## OpenClaw
+
+Files:
+
+- `env/openclaw/openclaw_config.yaml`
+- `env/openclaw/openclaw_start.yaml`
+- `env/openclaw/runner.mjs`
+
+The runner receives a `SimulationStartRequest`, writes an OpenClaw config pointing at the gateway session URL, and runs:
+
+```bash
+openclaw agent --local --json --session-id <session_id> --message <task> --model safactory/<route>
+```
+
+Common settings:
+
+| Field | Meaning |
+|-------|---------|
+| `env_params.task_family` | Included in the task prompt. |
+| `env_params.dataset` | Dataset row merged by the YAML loader. |
+| `container.workdir` | Workspace mounted into the OpenClaw image. |
+| `container.extra_args` | Should include `--add-host=host.docker.internal:host-gateway` for local gateway access from Docker. |
+
+OpenClaw is the easiest adapter for a smoke test because its runner is self-contained.
+
+## OpenRT
+
+Files:
+
+- `env/openrt/openrt_config.yaml`
+- `env/openrt/openrt_start.yaml`
+- `env/openrt/runner.py`
+- `env/openrt/rule_evaluator.py`
+
+The runner executes OpenRT `eval.py` inside the container and uses the gateway session URL as an OpenAI-compatible base URL. It expects each dataset row to define one attack, for example:
+
+```json
+{"task_id": "case-001", "attack": "PAIR"}
+```
+
+Important `env_params`:
+
+| Field | Meaning |
+|-------|---------|
+| `default_openrt_dataset` | Dataset name passed to OpenRT, defaulting to `harmbench`. |
+| `default_attacker_model` | Attacker model name used by OpenRT. |
+| `default_judge_model` | Judge model name used by OpenRT. |
+| `default_target_models` | Target model list. These model names should be routable through gateway. |
+| `results_root` | Optional output root. Defaults to `/app/results`. |
+| `max_workers`, `evaluator_workers` | Passed to OpenRT CLI when set. |
+
+OpenRT also has an RJob version:
+
+```bash
+python launcher.py \
+  --mode rjob \
+  --rjob-config config.yaml \
+  --agent-config env/openrt/openrt_config.rjob.yaml \
+  --agent-start-config env/openrt/openrt_start.rjob.yaml \
+  --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
+  --llm-model YOUR_ROUTE_KEY \
+  --storage-type cloud \
+  --pool-size 8
+```
+
+## WildClawBench
+
+Files:
+
+- `env/wildclawbench/wildclawbench_config.yaml`
+- `env/wildclawbench/wildclawbench_start.yaml`
+- `env/wildclawbench/runner.py`
+
+This adapter expects a WildClawBench checkout and a runtime image that can run its tasks. Update these fields before running:
+
+| Field | Update |
+|-------|--------|
+| `env_params.wildclawbench_root` | Absolute path to the WildClawBench checkout. |
+| `container.workdir` | Same root path inside the container. |
+| `container.mounts` | Mount the WildClawBench checkout and runner file. |
+| `env.DEFAULT_MODEL`, `env_params.model_ref` | Model reference used by WildClawBench/OpenClaw. |
+| `env.JUDGE_MODEL`, `env_params.judge_model` | Judge route key. |
+
+## DTAP
+
+Files:
+
+- `env/dtap/dtap_config.yaml`
+- `env/dtap/dtap_start.yaml`
+- `clusters/dtap_safactory_runner.py`
+
+DTAP runs DecodingTrust-Agent tasks. The start config mounts:
+
+- A `DecodingTrust-Agent` checkout.
+- Safactory `results`.
+- The DTAP runner script.
+- `/var/run/docker.sock`, because DTAP may start nested Docker workloads.
+
+Review these fields before running:
+
+| Field | Meaning |
+|-------|---------|
+| `env_params.dtap_root` | Runtime path to DecodingTrust-Agent. |
+| `env_params.dataset_root` | DTAP dataset path. |
+| `env_params.route_model` / `model_ref` | Route/model reference used by the task runtime. |
+| `container.network` | Defaults to `host` in the example. |
+| `container.mounts` | Must point to real local paths. |
+
+## ClawEnvKit
+
+Files:
+
+- `env/clawenvkit/clawenvkit_config.yaml`
+- `env/clawenvkit/clawenvkit_start.yaml`
+- `clusters/clawenvkit_safactory_runner.py`
+
+ClawEnvKit runs Auto-ClawEval-style tasks with an OpenClaw harness. Update dataset and result mounts before running.
+
+Important fields:
+
+| Field | Meaning |
+|-------|---------|
+| `env_params.dataset_root` | Dataset path inside the runtime. |
+| `env_params.clawenvkit_root` | ClawEnvKit install path. |
+| `env_params.harness_entrypoint` | Harness entrypoint script. |
+| `env_params.route_model` / `model_ref` | Gateway route/model reference. |
+| `container.extra_args` | The example resets entrypoint, runs as user `0`, and adds host-gateway. |
+
+## Dataset Loading
+
+Agent config `dataset` supports JSON, JSONL, YAML list, and parquet.
+
+- JSONL lines must be valid JSON objects.
+- Relative paths resolve from the agent config directory.
+- `dataset_load_mode: eager` materializes rows.
+- `dataset_load_mode: parquet_row_ref` stores lightweight parquet row references.
+
+Each dataset row becomes `env_params.dataset` in the runtime request.
+
+## Runtime Result Contract
+
+All adapters should output one JSON result on stdout:
+
+```json
+{
+  "session_id": "same-session-id",
+  "status": "succeeded",
+  "total_reward": 0.0,
+  "step_count": 1,
+  "terminated": true,
+  "truncated": false,
+  "error_text": null,
+  "metrics": {}
+}
+```
+
+If the runtime exits non-zero in JSON mode, Docker/RJob runners treat it as failure even if stdout contains partial output.

@@ -6,7 +6,7 @@
     <a href="README_CN.md">中文</a> &nbsp ｜ &nbsp English
 </p>
 
-**A next-generation agent infrastructure that integrates evaluation and training, supporting agent evaluation, trajectory collection, and reinforcement learning training across multiple types of environments including OS, Android, Minecraft, embodied AI, QA, data processing, and scientific discovery. It is the first to validate a trustworthy scaling law for agents, achieving improved safety capabilities without an alignment tax.**
+**A next-generation agent infrastructure that integrates evaluation and training, supporting rapid agent onboarding, fast integration of community benchmarks, concurrent rollout execution, trajectory collection, and reinforcement learning training across domains such as OS, Android, Minecraft, embodied AI, QA, data processing, and scientific discovery. It is the first to validate a trustworthy scaling law for agents, achieving improved safety capabilities without an alignment tax.**
 
 [Quick Start](#quick-start) |
 [Demo](#demo) |
@@ -30,19 +30,19 @@
 
 ![tax](fig/tax.png)
 
-Safactory is an agent sandbox for teams that need one pipeline for evaluation, data generation, and RL training. It provides a common environment interface, concurrent rollout management, OpenAI-compatible model access, trajectory persistence, and a Buffer Server bridge for Slime / GRPO training.
+Safactory is an agent sandbox for teams that need one pipeline for evaluation, data generation, and RL training. It helps teams plug in new agents and community benchmarks quickly, run them concurrently through scalable rollout pools, route OpenAI-compatible model traffic, persist trajectories, and bridge completed data into Slime / GRPO training.
 
 | Need | Safactory provides |
 |------|--------------------|
-| Evaluate agents | Run LLM or VLM agents against realistic interactive environments and collect rewards. |
+| Evaluate agents and benchmarks | Run LLM or VLM agents against realistic interactive tasks and community benchmarks, then collect rewards. |
 | Build trajectory data | Persist messages, actions, observations, rewards, and environment state to SQLite. |
 | Train with RL | Stream rollout trajectories into Slime through the built-in Buffer Server. |
-| Add new Env | Access new environments through standard interfaces. |
+| Add new agents and benches | Onboard agent runtimes and benchmark suites quickly, then scale them with concurrent rollout workers. |
 
 Core features:
 
-- Multi-domain environments: OS, Android, Minecraft, RoboTrustBench, Embodied ALFRED, QA, DABStep, DiscoveryWorld, DeepEyes, Geo3K-VL, and Math500.
-- High-concurrency rollouts through environment pools and async workers.
+- Multi-domain agent and benchmark adapters: OS, Android, Minecraft, RoboTrustBench, Embodied ALFRED, QA, DABStep, DiscoveryWorld, DeepEyes, Geo3K-VL, and Math500.
+- High-concurrency rollouts through runtime pools and async workers.
 - OpenAI-compatible model integration for vLLM, SGLang, hosted APIs, and local proxies.
 - Local single-machine mode and remote RayJob-backed cluster mode.
 - Optional experience extraction and prompt-time experience injection.
@@ -59,7 +59,7 @@ https://github.com/user-attachments/assets/4c551b27-ce4d-4fc8-8df6-d6dc8100cc88
 
 ## <a id="quick-start"></a>🚀 Quick Start
 
-### Install
+### 1. Install
 
 ```bash
 git clone https://github.com/AI45Lab/Safactory.git
@@ -67,99 +67,147 @@ cd Safactory
 pip install -r requirements.txt
 ```
 
-Some environments have extra runtime dependencies. See [Supported Environments](docs/environments.md) before running Docker, emulator, VM, or simulator-backed tasks.
+If you want to use LanceDB/cloud storage features, install the optional cloud dependencies as well:
 
-### Evaluate a model
+```bash
+pip install -r requirements-cloud.txt
+```
+
+Docker mode requires Docker and an agent image that matches the selected adapter. RJob mode additionally requires a valid RJob client configuration.
+
+### 2. Configure the Gateway
+
+Copy the example and replace route placeholders with your own OpenAI-compatible model endpoint:
+
+```bash
+cp gateway/config.example.yaml gateway/config.local.yaml
+```
+
+In `gateway/config.local.yaml`, make sure the gateway and launcher share the same SQLite DB:
+
+```yaml
+listen_port: 8000
+storage_type: sqlite
+storage_config:
+  db_url: sqlite://env_trajs.db
+
+llm_routes:
+  YOUR_ROUTE_KEY:
+    base_url: http://YOUR_LLM_HOST/v1
+    api_key: YOUR_API_KEY
+    supports_stream: true
+    max_concurrency: 64
+```
+
+Start the gateway:
+
+```bash
+python -m gateway --config gateway/config.local.yaml
+```
+
+Check readiness in another terminal:
+
+```bash
+curl http://127.0.0.1:8000/readyz
+```
+
+### 3. Run One Agent Config
+
+This example runs the checked-in OpenClaw adapter in Docker mode:
 
 ```bash
 python launcher.py \
-  --env-config env/osgym/os_config.yaml \   # Select the evaluation environment (OS / Android / Minecraft, etc.)
-  --llm-base-url http://YOUR_LLM_HOST/v1 \  # Model service address
-  --llm-api-key YOUR_API_KEY \              # API Key
-  --llm-model YOUR_MODEL \                  # Model name
-  --pool-size 500                           # Number of concurrent agent instances
+  --agent-config env/openclaw/openclaw_config.yaml \
+  --agent-start-config env/openclaw/openclaw_start.yaml \
+  --gateway-base-url http://127.0.0.1:8000/v1/sessions \
+  --llm-model YOUR_ROUTE_KEY \
+  --db-path sqlite://env_trajs.db \
+  --pool-size 1 \
+  --max-workers 1 \
+  --max-steps 20
 ```
 
-This starts the runner, loads the selected environment configuration, schedules tasks, calls the model endpoint, and writes step-level records to SQLite.
+Important details:
 
-### Collect trajectory data
+- `--llm-model` is a gateway `llm_routes` key, not an arbitrary upstream model name.
+- `--agent-config` defines tasks and datasets.
+- `--agent-start-config` defines how the agent runtime is started.
+- `--gateway-base-url` should point at the gateway session root.
+- `--db-path` must match `gateway.storage_config.db_url` when `storage_type` is `sqlite`.
 
-Every rollout is recorded automatically. The default CLI database path is `sqlite://env_trajs.db`; override it with `--db-path`:
+### 4. Run With Evaluation
+
+Enable evaluator flow after rollout:
 
 ```bash
 python launcher.py \
-  --env-config env/osgym/os_config.yaml \
-  --db-path sqlite://runs/os_eval.db \
-  --llm-base-url http://YOUR_LLM_HOST/v1 \
-  --llm-api-key YOUR_API_KEY \
-  --llm-model YOUR_MODEL
+  --agent-config env/openclaw/openclaw_config.yaml \
+  --agent-start-config env/openclaw/openclaw_start.yaml \
+  --gateway-base-url http://127.0.0.1:8000/v1/sessions \
+  --llm-model YOUR_ROUTE_KEY \
+  --evaluation-model YOUR_ROUTE_KEY \
+  --evaluation-config evaluator/configs/codex_cli_agent_eval.yaml \
+  --enable-evaluation \
+  --db-path sqlite://env_trajs.db \
+  --pool-size 1
 ```
 
-See [Data Manager](docs/data-manager.md) for schema details and query examples.
+Evaluation specs can come from `env_params.eval`, `env_params.evaluation.specs`, markdown files under `env/<agent>/eval_tasks/<dataset>/`, or a rule evaluator file. See [Evaluation](docs/evaluation.md).
 
-### Train with RL
+### 5. Run RJob Mode
 
-Safactory integrates with [Slime](https://github.com/THUDM/slime) through a Buffer Server:
+RJob mode uses the same launcher but replaces Docker allocation with RJob submission:
 
 ```bash
-# Terminal 1: Slime training process
-cd rl
-./run_slime_generator_vl.sh
+python launcher.py \
+  --mode rjob \
+  --rjob-config config.yaml \
+  --agent-config env/openrt/openrt_config.rjob.yaml \
+  --agent-start-config env/openrt/openrt_start.rjob.yaml \
+  --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
+  --llm-model YOUR_ROUTE_KEY \
+  --storage-type cloud \
+  --pool-size 8
+```
 
-# Terminal 2: Safactory Buffer Server and rollout runner
-cd rl
+Global RJob auth belongs in `config.yaml` or `--rjob-config`. Per-agent image, resources, mounts, embedded files, and run command belong in `--agent-start-config`.
+
+## Data And Logs
+
+Default local paths:
+
+| Artifact | Default |
+|----------|---------|
+| SQLite trajectory DB | `env_trajs.db` |
+| Launcher logs | `logs/<timestamp>/main.log` |
+| Gateway log | `logs/gateway.log` |
+| Gateway request log | `logs/gateway_requests.jsonl` |
+| Adapter outputs | Usually `results/` or adapter-specific mounted output directories |
+
+Use [Data Manager](docs/data-manager.md) for table details and query examples.
+
+## RL Training
+
+Safactory can feed Slime through `rl/buffer_server.py`. The current RL scripts live under `rl/examples/<task>/` and source task-specific `env.sh` files:
+
+```bash
+cd rl/examples/math500
 ./run_buffer_server.sh
 ```
 
-Full instructions are in [RL Training](docs/rl-training.md).
+The Buffer Server starts `launcher.py`, reads completed trainable rows, groups samples by `group_id`, and exposes batches through `/get_rollout_data`. See [RL Training](docs/rl-training.md).
 
-## <a id="datasets"></a>📦 Datasets
-
-Safactory can generate reusable trajectory datasets. The public OS trajectory release is available on Hugging Face:
-
-- [AI45Research/SATraj-OS](https://huggingface.co/datasets/AI45Research/SATraj-OS), a Safactory-generated OS trajectory dataset for agent training and analysis.
-
-Safactory-generated data also supports safe agent training. In this experiment, **SATraj-Agent-8B** is obtained by fine-tuning Qwen3-vl-8B on SATraj-OS, then evaluated on OS-Harm for safety and OSWorld for task ability. The model reduces average unsafe behavior from 31.33% to **3.33%** while improving OSWorld Total from 14.40% to 22.16%, showing that safety can improve without a safty alignment tax.
-
-<table>
-  <thead>
-    <tr>
-      <th rowspan="2">Model</th>
-      <th colspan="7">Safety (OS-Harm)</th>
-      <th colspan="5">Ability (OSWorld, higher is better)</th>
-    </tr>
-    <tr>
-      <th>Avg. Unsafe ↓</th>
-      <th>Misuse Unsafe ↓</th>
-      <th>Misuse Completed ↓</th>
-      <th>Injection Unsafe ↓</th>
-      <th>Injection Completed ↑</th>
-      <th>Misbehavior Unsafe ↓</th>
-      <th>Misbehavior Completed ↑</th>
-      <th>Total</th>
-      <th>Chrome</th>
-      <th>GIMP</th>
-      <th>OS</th>
-      <th>VS Code</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr><td>Qwen3.5-397B</td><td align="right">32.00%</td><td align="right">62.00%</td><td align="right">8.00%</td><td align="right">16.00%</td><td align="right">40.00%</td><td align="right">18.00%</td><td align="right">6.00%</td><td align="right"><strong>62.20%</strong></td><td align="right">-</td><td align="right">-</td><td align="right">-</td><td align="right">-</td></tr>
-    <tr><td>Qwen3vl-8b</td><td align="right">31.33%</td><td align="right">69.33%</td><td align="right">22.67%</td><td align="right">10.00%</td><td align="right">14.00%</td><td align="right">14.67%</td><td align="right">4.00%</td><td align="right">14.40%</td><td align="right">28.26%</td><td align="right">15.38%</td><td align="right">25.00%</td><td align="right">21.74%</td></tr>
-    <tr><td>SAModel-OS-8B</td><td align="right"><strong>3.33%</strong></td><td align="right"><strong>0.00%</strong></td><td align="right"><strong>0.00%</strong></td><td align="right"><strong>8.00%</strong></td><td align="right"><strong>54.00%</strong></td><td align="right"><strong>2.00%</strong></td><td align="right"><strong>10.00%</strong></td><td align="right">22.16%</td><td align="right"><strong>34.78%</strong></td><td align="right"><strong>42.31%</strong></td><td align="right"><strong>29.17%</strong></td><td align="right"><strong>56.52%</strong></td></tr>
-  </tbody>
-</table>
-
-## <a id="documentation"></a>📚 Documentation
+## Documentation
 
 | Guide | What it covers |
 |-------|----------------|
-| [Configuration](docs/configuration.md) | CLI flags, manager YAML, and environment YAML format. |
-| [Supported Environments](docs/environments.md) | Environment registry names, prerequisites, and setup links. |
-| [Data Manager](docs/data-manager.md) | SQLite schema, storage behavior, and query examples. |
-| [RL Training](docs/rl-training.md) | Slime integration, Buffer Server setup, and RL variables. |
-| [Custom Environment](docs/custom-environment.md) | Minimal `BaseEnv` implementation and registration flow. |
-| [Experience Extraction and Injection](docs/experience-extraction-injection.md) | Reusing historical trajectories as prompt-time experience. |
+| [Gateway](docs/gateway.md) | Gateway endpoints, routing, telemetry, request logs, and storage matching. |
+| [Configuration](docs/configuration.md) | Current `launcher.py`, gateway, agent config, agent start config, and RJob fields. |
+| [Supported Environments](docs/environments.md) | Checked-in v2 adapters and their runtime requirements. |
+| [Evaluation](docs/evaluation.md) | LLM judge, agent-eval, rule evaluator, markdown eval tasks, and reward commit behavior. |
+| [Data Manager](docs/data-manager.md) | SQLite/cloud storage behavior, tables, event types, and useful queries. |
+| [Custom Runtime](docs/custom-environment.md) | How to add a v2 external agent runtime and the two required YAML files. |
+| [RL Training](docs/rl-training.md) | Buffer Server and Slime integration details. |
 
 ## <a id="architecture"></a>🏗️ Architecture
 
@@ -167,28 +215,34 @@ Safactory-generated data also supports safe agent training. In this experiment, 
 
 At a high level, `launcher.py` loads environment YAML files, starts or connects to environment services, sends observations to an OpenAI-compatible model endpoint, records every interaction through the data manager, and optionally forwards completed rollouts to RL training.
 
-## <a id="contributing"></a>🤝 Contributing
+## Datasets
 
-Contributions are welcome for new environments, bug fixes, documentation improvements, and reproducible examples.
+Safactory can generate reusable trajectory datasets. The public OS trajectory release is available on Hugging Face:
 
-1. Fork the repository.
-2. Add or update an environment under `env/<name>/`.
-3. Include a YAML config and a short README for environment-specific dependencies.
+- [AI45Research/SATraj-OS](https://huggingface.co/datasets/AI45Research/SATraj-OS), a Safactory-generated OS trajectory dataset for agent training and analysis.
+
+## Contributing
+
+Contributions are welcome for new adapters, runtime launchers, evaluator backends, bug fixes, and reproducible examples.
+
+1. Add or update an adapter under `env/<name>/`.
+2. Provide both `<name>_config.yaml` and `<name>_start.yaml`.
+3. Keep secrets and private endpoints out of committed configs.
 4. Run a local smoke test with `launcher.py`.
-5. Open a pull request with the setup notes and expected behavior.
+5. Include setup notes, expected outputs, and storage requirements in the pull request.
 
-## <a id="citation"></a>📝 Citation
+## Citation
 
 If Safactory or Safactory-generated datasets are useful in your work, cite the repository and the specific dataset or report you used.
 
 ```bibtex
 @misc{chen2026safactoryscalableagenticinfrastructure,
-      title={Safactory: A Scalable Agentic Infrastructure for Training Trustworthy Autonomous Intelligence}, 
+      title={Safactory: A Scalable Agentic Infrastructure for Training Trustworthy Autonomous Intelligence},
       author={Shanghai AI Lab},
       year={2026},
       eprint={2605.06230},
       archivePrefix={arXiv},
       primaryClass={cs.AI},
-      url={https://arxiv.org/abs/2605.06230}, 
+      url={https://arxiv.org/abs/2605.06230},
 }
 ```

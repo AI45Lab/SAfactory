@@ -1,138 +1,196 @@
 # 支持的环境
 
-![Safactory architecture](../fig/envs.png)
+Safactory 将每个环境视为外部 agent runtime。一个 runtime 由两份文件描述：
 
-Safactory 在一个 launcher 和一个 `BaseEnv` 接口后提供多个环境适配器。部分环境可直接在宿主机运行，虚拟机、模拟器、仿真器或 Docker 支撑的环境则需要额外配置。
+- Agent config：任务行、dataset、`env_params` 和镜像。
+- Agent start config：Docker 或 RJob 启动细节。
+
+当前 checkout 包含以下 v2 adapter。
 
 ## 总览
 
-| 领域 | 注册名 | 公开名称 | 说明 | 配置 / 指南 |
-|------|--------|----------|------|-------------|
-| 桌面 | `os_gym` | OSWorld / RiOSWorld | 使用截图和 `pyautogui` 的 Ubuntu 桌面自动化。 | [指南](../env/osgym/README_CN.md) |
-| 移动 | `android_gym` | AndroidGym | 通过 ADB 交互 Android 模拟器。 | [指南](../env/androidgym/README_CN.md) |
-| 游戏 | `mc`, `mc_gym` | Minecraft / MineStudio | 通过 MineStudio / Malmo 运行 Minecraft 任务。 | [安装](../env/mc/INSTALL_CN.md) |
-| 具身 | `robotrustbench` | RoboTrustBench | 基于 Habitat 的安全性和鲁棒性任务。 | [指南](../env/robotrustbench/README_CN.md) |
-| 具身 | `embodied_alfred`, `emb` | Embodied ALFRED | 通过 EmbodiedBench / ALFRED 运行家庭具身任务。 | [指南](../env/embodiedgym/README_CN.md) |
-| QA | `qa_gym` | QAGym | Prompt 攻击和 QA 鲁棒性环境。 | [指南](../env/qagym/README_CN.md) |
-| 数据处理 | `dabstepgym` | DABStep | 代码执行型数据整理任务。 | [指南](../env/dabstep/README_CN.md) |
-| 科学发现 | `discoveryworld` | DiscoveryWorld | 文本和可选视觉科学任务。 | [指南](../env/dwgym/README_CN.md) |
-| 多模态推理 | `deepeyes_env` | DeepEyes | 多轮视觉工具使用任务。 | [指南](../env/deepeyes/README_CN.md) |
-| 几何 VL | `geo3k_vl_test` | Geo3K-VL | 面向几何的视觉推理任务。 | [指南](../env/geo3k_vl_test/README_CN.md) |
-| 数学 | `math500_text`, `math500` | Math500 text | 纯文本数学环境。 | [配置](../env/math500_text/math500_text_env_configs.yaml) |
+| Adapter | `env_name` / `agent_name` | Config | Start config | Runtime 说明 |
+|---------|----------------------------|--------|--------------|--------------|
+| OpenClaw | `openclaw` | `env/openclaw/openclaw_config.yaml` | `env/openclaw/openclaw_start.yaml` | 通用 OpenClaw CLI runtime，适合 smoke test 和工具使用任务。 |
+| OpenRT | `openrt` | `env/openrt/openrt_config.yaml` | `env/openrt/openrt_start.yaml` | 通过 gateway session URL 运行 OpenRT `eval.py`。 |
+| OpenRT RJob | `openrt` | `env/openrt/openrt_config.rjob.yaml` | `env/openrt/openrt_start.rjob.yaml` | 远程 RJob 版本，包含镜像、资源、嵌入 runner 和 GPFS 挂载。 |
+| WildClawBench | `wildclawbench` | `env/wildclawbench/wildclawbench_config.yaml` | `env/wildclawbench/wildclawbench_start.yaml` | 需要 WildClawBench checkout 和匹配镜像。 |
+| DTAP | `dtap` | `env/dtap/dtap_config.yaml` | `env/dtap/dtap_start.yaml` | 运行 DecodingTrust-Agent workload，并挂载 Docker socket。 |
+| ClawEnvKit | `clawenvkit` | `env/clawenvkit/clawenvkit_config.yaml` | `env/clawenvkit/clawenvkit_start.yaml` | 运行 ClawEnvKit / Auto-ClawEval 任务。 |
 
-## 环境说明
+仓库中的 YAML 有些包含本地路径和内部镜像名。请把它们视为工作示例，按你的机器或集群调整路径、镜像、挂载和模型 route key。
 
-### OS (`os_gym`)
+## 运行一个 Adapter
 
-封装 OSWorld / RiOSWorld 风格的桌面任务。智能体观察 Linux 桌面，并通过 `pyautogui` 执行动作。
-
-要求：
-
-- Docker 或兼容的 VM 运行时。
-- 使用 VM 任务时，QEMU / KVM 需要特权执行。
-- Ubuntu VM 镜像，可自动下载或通过 `vm_path` 提供。
-- JSONL 格式的 OS 任务数据集。
-
-### Android (`android_gym`)
-
-通过 ADB 驱动 Android Emulator 实例。适配器支持并发模拟器模式和单快照模式。
-
-要求：
-
-- 宿主机或运行时镜像中可用 `adb` 和 Android Emulator。
-- 兼容的 AVD，未覆盖时默认 `nexus_safe`。
-- Android 任务 JSONL 文件，通常为 `env/androidgym/cases.jsonl`。
-
-### Minecraft (`mc`)
-
-通过 MineStudio 和 Malmo 兼容工具运行 Minecraft 任务。
-
-要求：
-
-- Java 8，用于 Malmo 兼容。
-- Xvfb，用于无头显示。
-- 来自 `env/mc/requirements.txt` 的 MineStudio 依赖。
-- 可选 CUDA 支持，用于 GPU 加速组件。
-
-### RoboTrustBench (`robotrustbench`)
-
-运行具身安全性和鲁棒性变体：`safety`、`robust` 和 `robustd`。
-
-要求：
-
-- Habitat 和仿真器依赖。
-- 为所选变体准备好的任务资源和数据集文件。
-- 推荐使用容器化运行时。
-
-### Embodied ALFRED (`embodied_alfred`, `emb`)
-
-将 EmbodiedBench / ALFRED 任务适配到 Safactory。
-
-要求：
-
-- 已安装 EmbodiedBench。
-- EB-ALFRED 数据集。
-- AI2-THOR 资源。
-- 用于无头渲染的 Xvfb 和必要系统字体。
-
-### QAGym (`qa_gym`)
-
-将 QA 鲁棒性和 prompt 攻击评测建模为环境。
-
-要求：
-
-- 仓库根目录下的 QAGym 依赖。
-- 面向智能体以及可选 judge 或 attack 模型的 OpenAI 兼容端点。
-- `env/qagym/qa_cases.jsonl` 或替换数据集。
-
-### DABStep (`dabstepgym`)
-
-运行数据整理任务，智能体需要编写并执行 Python 代码。
-
-要求：
-
-- DABStep 依赖。
-- 可选的 DABStep Hugging Face Space 官方评测库。
-- 自动下载的数据集，或放置在 `env/dabstep/data` 下的数据集。
-
-### DiscoveryWorld (`discoveryworld`)
-
-提供文本观察和可选视觉帧的科学发现任务。
-
-要求：
-
-- DiscoveryWorld 安装在 `env/dwgym/discoveryworld` 下。
-- 在 YAML 中配置场景、难度、seed 和视觉设置。
-
-### DeepEyes (`deepeyes_env`)
-
-运行多模态视觉工具使用任务，可选裁剪和旋转工具。
-
-要求：
-
-- Parquet 数据集路径。
-- 可选 judge 模型端点。
-- 运行时配置，例如 `env/deepeyes/deepeyes_env_runtime.yaml`。
-
-### Geo3K-VL (`geo3k_vl_test`)
-
-运行带图片输入和参考答案的几何视觉语言任务。
-
-要求：
-
-- Parquet 数据集路径。
-- 运行时配置，例如 `env/geo3k_vl_test/geo3k_vl_test_env_runtime.yaml`。
-
-## 运行单个环境
+先启动 gateway，然后运行：
 
 ```bash
 python launcher.py \
-  --mode local \
-  --env-config env/osgym/os_config.yaml \
-  --llm-base-url http://YOUR_LLM_HOST/v1 \
-  --llm-api-key YOUR_API_KEY \
-  --llm-model YOUR_MODEL \
-  --pool-size 1
+  --agent-config env/openclaw/openclaw_config.yaml \
+  --agent-start-config env/openclaw/openclaw_start.yaml \
+  --gateway-base-url http://127.0.0.1:8000/v1/sessions \
+  --llm-model YOUR_ROUTE_KEY \
+  --db-path sqlite://env_trajs.db \
+  --pool-size 1 \
+  --max-workers 1
 ```
 
-需要递归加载多个 YAML 文件时使用 `--env-root env`。
+可以用 `--agent-root env` 加载 `env/` 下所有 agent config。发现过程中，`*_start.yaml` 这类不是 agent config 的 YAML 会 warning 后跳过。
+
+## OpenClaw
+
+文件：
+
+- `env/openclaw/openclaw_config.yaml`
+- `env/openclaw/openclaw_start.yaml`
+- `env/openclaw/runner.mjs`
+
+Runner 收到 `SimulationStartRequest` 后，会写入指向 gateway session URL 的 OpenClaw config，然后运行：
+
+```bash
+openclaw agent --local --json --session-id <session_id> --message <task> --model safactory/<route>
+```
+
+常用设置：
+
+| 字段 | 含义 |
+|------|------|
+| `env_params.task_family` | 放入任务 prompt。 |
+| `env_params.dataset` | YAML loader 合并后的 dataset 行。 |
+| `container.workdir` | 挂载到 OpenClaw 镜像中的 workspace。 |
+| `container.extra_args` | 本地 Docker 访问 gateway 时应包含 `--add-host=host.docker.internal:host-gateway`。 |
+
+OpenClaw runner 比较自包含，是最适合 smoke test 的 adapter。
+
+## OpenRT
+
+文件：
+
+- `env/openrt/openrt_config.yaml`
+- `env/openrt/openrt_start.yaml`
+- `env/openrt/runner.py`
+- `env/openrt/rule_evaluator.py`
+
+Runner 会在容器内执行 OpenRT `eval.py`，并将 gateway session URL 当作 OpenAI 兼容 base URL。每条 dataset row 需要定义一个 attack，例如：
+
+```json
+{"task_id": "case-001", "attack": "PAIR"}
+```
+
+重要 `env_params`：
+
+| 字段 | 含义 |
+|------|------|
+| `default_openrt_dataset` | 传给 OpenRT 的 dataset 名，默认 `harmbench`。 |
+| `default_attacker_model` | OpenRT attacker model。 |
+| `default_judge_model` | OpenRT judge model。 |
+| `default_target_models` | Target model 列表。这些模型名应能通过 gateway 路由。 |
+| `results_root` | 可选输出根目录。默认 `/app/results`。 |
+| `max_workers`, `evaluator_workers` | 设置时会传给 OpenRT CLI。 |
+
+OpenRT 也提供 RJob 版本：
+
+```bash
+python launcher.py \
+  --mode rjob \
+  --rjob-config config.yaml \
+  --agent-config env/openrt/openrt_config.rjob.yaml \
+  --agent-start-config env/openrt/openrt_start.rjob.yaml \
+  --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
+  --llm-model YOUR_ROUTE_KEY \
+  --storage-type cloud \
+  --pool-size 8
+```
+
+## WildClawBench
+
+文件：
+
+- `env/wildclawbench/wildclawbench_config.yaml`
+- `env/wildclawbench/wildclawbench_start.yaml`
+- `env/wildclawbench/runner.py`
+
+该 adapter 需要 WildClawBench checkout 和能运行其任务的镜像。运行前请更新：
+
+| 字段 | 更新内容 |
+|------|----------|
+| `env_params.wildclawbench_root` | WildClawBench checkout 的绝对路径。 |
+| `container.workdir` | 容器内相同 root 路径。 |
+| `container.mounts` | 挂载 WildClawBench checkout 和 runner 文件。 |
+| `env.DEFAULT_MODEL`, `env_params.model_ref` | WildClawBench/OpenClaw 使用的模型引用。 |
+| `env.JUDGE_MODEL`, `env_params.judge_model` | Judge route key。 |
+
+## DTAP
+
+文件：
+
+- `env/dtap/dtap_config.yaml`
+- `env/dtap/dtap_start.yaml`
+- `clusters/dtap_safactory_runner.py`
+
+DTAP 运行 DecodingTrust-Agent 任务。Start config 会挂载：
+
+- `DecodingTrust-Agent` checkout。
+- Safactory `results`。
+- DTAP runner 脚本。
+- `/var/run/docker.sock`，因为 DTAP 可能启动嵌套 Docker workload。
+
+运行前重点检查：
+
+| 字段 | 含义 |
+|------|------|
+| `env_params.dtap_root` | Runtime 内 DecodingTrust-Agent 路径。 |
+| `env_params.dataset_root` | DTAP dataset 路径。 |
+| `env_params.route_model` / `model_ref` | 任务 runtime 使用的 route/model reference。 |
+| `container.network` | 示例默认为 `host`。 |
+| `container.mounts` | 必须指向真实本地路径。 |
+
+## ClawEnvKit
+
+文件：
+
+- `env/clawenvkit/clawenvkit_config.yaml`
+- `env/clawenvkit/clawenvkit_start.yaml`
+- `clusters/clawenvkit_safactory_runner.py`
+
+ClawEnvKit 通过 OpenClaw harness 运行 Auto-ClawEval 风格任务。运行前请更新 dataset 和结果挂载。
+
+重要字段：
+
+| 字段 | 含义 |
+|------|------|
+| `env_params.dataset_root` | Runtime 内 dataset 路径。 |
+| `env_params.clawenvkit_root` | ClawEnvKit 安装路径。 |
+| `env_params.harness_entrypoint` | Harness entrypoint 脚本。 |
+| `env_params.route_model` / `model_ref` | Gateway route/model reference。 |
+| `container.extra_args` | 示例会重置 entrypoint，以用户 `0` 运行，并添加 host-gateway。 |
+
+## Dataset 加载
+
+Agent config 的 `dataset` 支持 JSON、JSONL、YAML list 和 parquet。
+
+- JSONL 每行必须是合法 JSON object。
+- 相对路径从 agent config 所在目录解析。
+- `dataset_load_mode: eager` 会物化数据行。
+- `dataset_load_mode: parquet_row_ref` 会保存轻量 parquet row reference。
+
+每条 dataset row 会成为 runtime request 中的 `env_params.dataset`。
+
+## Runtime Result Contract
+
+所有 adapter 都应该向 stdout 输出一条 JSON result：
+
+```json
+{
+  "session_id": "same-session-id",
+  "status": "succeeded",
+  "total_reward": 0.0,
+  "step_count": 1,
+  "terminated": true,
+  "truncated": false,
+  "error_text": null,
+  "metrics": {}
+}
+```
+
+在 JSON mode 下，如果 runtime 以非零状态退出，Docker/RJob runner 会视为失败，即使 stdout 中有部分输出。
