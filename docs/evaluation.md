@@ -15,6 +15,8 @@ A run with evaluation follows this flow:
 7. `rule_evaluator.py` reads the dataset row, benchmark metrics, and trajectory, then returns a 0 to 10 score.
 8. Safactory writes that score back to `session_steps.reward` / `session_steps.step_reward`.
 
+When integrating a benchmark, design one dataset row as one benchmark case and let Safactory schedule at task level. Each case then gets its own `session_id` and gateway trajectory, so the rule evaluator never sees model calls from other cases mixed into the current trajectory.
+
 Example command:
 
 ```bash

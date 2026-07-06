@@ -1,13 +1,23 @@
 # 自定义 Runtime
 
-在 Safactory v2 中，新增环境的常规方式是新增一个 external agent runtime。这个 runtime 可以是 Python、Node.js、shell 或 benchmark 自己的程序。它接收 `SimulationStartRequest`，执行一个 episode，通过 gateway 调用模型，然后输出 result JSON。
+本文说明如何把一个新的 agent 或 bench 接入 Safactory 的 custom environment。Safactory v2 把两者都视为 external runtime：runtime 可以是 Python、Node.js、shell，也可以是 benchmark 自己的 harness 包装脚本。它接收 `SimulationStartRequest`，只执行一个 task/case，通过 gateway 调用模型，最后输出一条 result JSON。
 
-通常需要新增：
+最重要的调度模型是：dataset 的一行就是一个 task 级调度单元。Launcher 会为每个 task 创建独立的 `job_environments` 记录、`session_id` 和 gateway session，然后用同一个 image + runner 去执行这一条 task。这样模型请求、gateway telemetry、runtime result、evaluation reward 都绑定到同一个 session，避免不同 case 的轨迹互相污染。接入 bench 时不要让 runner 在一个 episode 里循环整个 benchmark dataset；应该让 dataset 每行表示一个 bench case，由 Safactory 逐 task 调度。
 
-1. 一个 runtime 脚本。
-2. 一个 agent config YAML。
-3. 一个 agent start config YAML。
-4. 可选 eval tasks 或 rule evaluator。
+通常需要新增或确认五个核心组件：
+
+| 组件 | 位置 | 作用 | 示例 |
+|------|------|------|------|
+| `image` | `agent config` 的 `env_image`，RJob 可在 start config 里覆盖 | 运行时镜像。包含 agent/bench 依赖、benchmark harness、Python/Node 运行环境等。 | `myagent-image:latest`、`mybench-image:latest` |
+| `runner` | `env/<name>/runner.py`，并由 `start_config.container.run_command` 调用 | Safactory 和原生 agent/bench 之间的适配层。读取 `SimulationStartRequest`，取出 `env_params.dataset`，调用 gateway 中的被测模型，运行一个 task/case，向 stdout 输出 result JSON。 | `python /tmp/safactory-mybench-runner.py` |
+| `rule_evaluator` | 可选，常见为 `env/<name>/rule_evaluator.py` | 把 runner 写入 `metrics` 的原始 bench 结果和 gateway 轨迹转换为 Safactory 的 0 到 10 分 reward。纯 agent smoke test 可以先不写；bench 通常建议写。 | `env/mybench/rule_evaluator.py` |
+| `config` | `env/<name>/<name>_config.yaml` | 定义 task 行：`env_name`、`env_image`、`dataset`、`env_num`、`env_params`，以及可选 evaluation 配置。 | `env/mybench/mybench_config.yaml` |
+| `start_config` | `env/<name>/<name>_start.yaml` | 定义同名 runtime 如何启动：挂载 runner、设置 workdir/env、Docker/RJob 参数、`run_command`。`agent_name` 必须匹配 `config` 里的 `env_name`。 | `env/mybench/mybench_start.yaml` |
+
+Agent 和 bench 的差别主要在 runner 和 evaluator：
+
+- Agent runtime 通常直接根据 `env_params.dataset` 生成 prompt、工具任务或交互流程，评测可以来自最终回复、markdown eval task 或自定义 rule。
+- Bench runtime 通常包装一个已有 benchmark harness。runner 只取当前 dataset row 对应的单个 case，把原生 bench 的分数、通过状态、输出路径等写入 `metrics`，再由 `rule_evaluator.py` 统一换算 reward。
 
 ## 1. 编写 Runtime 脚本
 
@@ -152,7 +162,23 @@ Runtime 会通过 stdin 和 `SAFACTORY_START_REQUEST_JSON` 收到 `SimulationSta
 | `error_text` | 否 | 失败详情。 |
 | `metrics` | 否 | Adapter 自定义 JSON 对象。 |
 
+对于 bench，`metrics` 是 runner 和 `rule_evaluator.py` 之间最重要的接口。建议至少写入 case id、原生分数、通过状态、原因和详细输出路径：
+
+```json
+{
+  "metrics": {
+    "bench_case_id": "case-001",
+    "bench_score": 0.73,
+    "bench_passed": true,
+    "bench_reason": "all required checks passed",
+    "bench_output_path": "/workspace/Safactory/results/mybench/case-001.json"
+  }
+}
+```
+
 ## 4. 添加 Agent Config
+
+Agent config 是 task 调度的来源。`env_name` 绑定 start config，`env_image` 指定 runtime image，`dataset` 决定要展开多少个 task，`env_params` 会原样传给 runner。
 
 创建 `env/myagent/myagent_config.yaml`：
 
@@ -176,7 +202,34 @@ environments:
 
 Dataset row 会出现在 `request.env_params.dataset`。
 
+Bench 接入时也使用同一个 config 结构，只是 dataset 每行应该代表一个 bench case，而不是一个完整 benchmark batch：
+
+```yaml
+environments:
+  - env_name: mybench
+    env_image: mybench-image:latest
+    env_num: 1
+    dataset: ./datasets/cases.jsonl
+    dataset_load_mode: eager
+    env_params:
+      task_family: mybench
+      bench_root: /workspace/MyBench
+      output_root: /workspace/Safactory/results/mybench
+      evaluation:
+        rule_evaluator: env/mybench/rule_evaluator.py
+        rule_evaluator_timeout_s: 60
+```
+
+```jsonl
+{"task_id": "case-001", "case_id": "case-001", "input": "example input", "expected": "example answer"}
+{"task_id": "case-002", "case_id": "case-002", "input": "another input", "expected": "another answer"}
+```
+
+上面的两行会被调度成两个独立 episode，并分别产生独立 `session_id`、gateway 轨迹和 reward。不要在 `runner.py` 里再次读取并循环 `cases.jsonl`，否则多个 case 的模型调用会落在同一条轨迹里，训练和评测都会变得不可解释。
+
 ## 5. 添加 Agent Start Config
+
+Start config 描述 image 被拉起后如何执行 runner。通常把 runner 文件 mount 到容器里；如果 runner 已经 bake 进 image，也可以只写容器内路径。`run_command` 是每个 task/case 都会执行一次的命令，它必须读取 request JSON 并输出 result JSON。
 
 创建 `env/myagent/myagent_start.yaml`：
 
@@ -201,6 +254,32 @@ container:
   idle_command: "tail -f /dev/null"
   run_command: "python /tmp/safactory-myagent-runner.py"
 ```
+
+Bench 的 start config 写法完全相同，只是换成 bench image 和 bench runner：
+
+```yaml
+agent_name: mybench
+
+container:
+  workdir: /workspace/MyBench
+  mounts:
+    - source: ./env/mybench/runner.py
+      target: /tmp/safactory-mybench-runner.py
+      mode: ro
+    - source: ./results
+      target: /workspace/Safactory/results
+      mode: rw
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
+    no_proxy: host.docker.internal,localhost,127.0.0.1,::1
+  extra_args:
+    - --add-host=host.docker.internal:host-gateway
+  idle_command: "tail -f /dev/null"
+  run_command: "python /tmp/safactory-mybench-runner.py"
+```
+
+`agent_name: mybench` 必须和 `mybench_config.yaml` 里的 `env_name: mybench` 一致；否则 launcher 找不到对应的启动方式。
 
 ## 6. 运行 Smoke Test
 
@@ -229,6 +308,8 @@ python launcher.py \
 - 在 agent config 中添加 inline `env_params.evaluation.specs`。
 - 在 `env/myagent/eval_tasks/<dataset>/<task_name>.md` 下添加 markdown task。
 - 添加 `env/myagent/rule_evaluator.py`。
+
+新增 bench 时优先使用 `rule_evaluator.py`：runner 保留 bench 原始输出，rule evaluator 负责把不同 bench 的分数尺度、通过条件和异常情况统一成 Safactory reward。这个文件只在 evaluation 阶段执行，不应该重新跑 bench case。
 
 见[评测](evaluation_CN.md)。
 

@@ -15,6 +15,8 @@
 7. `rule_evaluator.py` 读取 dataset、bench metrics、trajectory，返回 0 到 10 的分数。
 8. Safactory 把该分数写回 `session_steps` 的 `reward` / `step_reward`。
 
+接入 bench 时应把 dataset 的一行设计成一个 bench case，让 Safactory 以 task 级别调度。这样每个 case 都有独立 `session_id` 和 gateway trajectory，rule evaluator 读到的轨迹不会混入其他 case 的模型调用。
+
 启动命令示例：
 
 ```bash

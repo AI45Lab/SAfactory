@@ -1,13 +1,23 @@
 # Custom Runtime
 
-In Safactory v2, the normal way to add an environment is to add an external agent runtime. The runtime can be a Python, Node.js, shell, or benchmark-specific program that receives a `SimulationStartRequest`, performs one episode, calls the gateway for model requests, and prints a result JSON object.
+This page explains how to connect a new agent or benchmark as a Safactory custom environment. Safactory v2 treats both as external runtimes: a runtime can be Python, Node.js, shell, or a wrapper around the benchmark's native harness. It receives a `SimulationStartRequest`, runs exactly one task/case, calls the gateway for model requests, and prints one result JSON object.
 
-You usually add:
+The key scheduling model is: one dataset row is one task-level scheduling unit. The launcher creates a separate `job_environments` row, `session_id`, and gateway session for each task, then runs the same image + runner for that single task. This keeps model calls, gateway telemetry, runtime results, and evaluation rewards bound to one session, preventing trajectories from different cases from contaminating each other. When integrating a benchmark, do not make the runner loop over the entire benchmark dataset inside one episode; make each dataset row represent one benchmark case and let Safactory schedule cases task by task.
 
-1. A runtime script.
-2. An agent config YAML.
-3. An agent start config YAML.
-4. Optional eval tasks or rule evaluator.
+You usually add or verify five core pieces:
+
+| Piece | Where | Role | Example |
+|-------|-------|------|---------|
+| `image` | `env_image` in the agent config; RJob can override it in start config | Runtime image. It contains agent/benchmark dependencies, the benchmark harness, and Python/Node runtimes. | `myagent-image:latest`, `mybench-image:latest` |
+| `runner` | `env/<name>/runner.py`, invoked by `start_config.container.run_command` | Adapter between Safactory and the native agent/benchmark. It reads `SimulationStartRequest`, extracts `env_params.dataset`, calls the gateway target model, runs one task/case, and prints result JSON to stdout. | `python /tmp/safactory-mybench-runner.py` |
+| `rule_evaluator` | Optional, commonly `env/<name>/rule_evaluator.py` | Converts raw benchmark results from `metrics` plus gateway trajectory into a Safactory reward on the 0 to 10 scale. Simple agent smoke tests can omit it; benchmarks usually should include it. | `env/mybench/rule_evaluator.py` |
+| `config` | `env/<name>/<name>_config.yaml` | Defines task rows: `env_name`, `env_image`, `dataset`, `env_num`, `env_params`, and optional evaluation settings. | `env/mybench/mybench_config.yaml` |
+| `start_config` | `env/<name>/<name>_start.yaml` | Defines how the matching runtime starts: runner mounts, workdir/env, Docker/RJob settings, and `run_command`. `agent_name` must match `env_name` in the config. | `env/mybench/mybench_start.yaml` |
+
+Agents and benchmarks mostly differ in the runner and evaluator:
+
+- An agent runtime usually turns `env_params.dataset` into a prompt, tool task, or interaction flow. Evaluation can use the final response, markdown eval tasks, or a custom rule.
+- A benchmark runtime usually wraps an existing benchmark harness. The runner handles only the current dataset row, writes native benchmark score/pass/output metadata into `metrics`, and a `rule_evaluator.py` converts those results into reward.
 
 ## 1. Write A Runtime Script
 
@@ -152,7 +162,23 @@ Fields:
 | `error_text` | no | Failure detail. |
 | `metrics` | no | JSON object with adapter-specific details. |
 
+For benchmarks, `metrics` is the most important interface between the runner and `rule_evaluator.py`. Prefer storing at least the case id, native score, pass/fail flag, reason, and detailed output path:
+
+```json
+{
+  "metrics": {
+    "bench_case_id": "case-001",
+    "bench_score": 0.73,
+    "bench_passed": true,
+    "bench_reason": "all required checks passed",
+    "bench_output_path": "/workspace/Safactory/results/mybench/case-001.json"
+  }
+}
+```
+
 ## 4. Add Agent Config
+
+The agent config is the source of task scheduling. `env_name` binds to the start config, `env_image` selects the runtime image, `dataset` determines how many tasks are expanded, and `env_params` is passed to the runner.
 
 Create `env/myagent/myagent_config.yaml`:
 
@@ -176,7 +202,34 @@ Create `env/myagent/datasets/tasks.jsonl`:
 
 Dataset rows are available as `request.env_params.dataset`.
 
+Benchmark integration uses the same config structure, but each dataset row should represent one benchmark case rather than a full benchmark batch:
+
+```yaml
+environments:
+  - env_name: mybench
+    env_image: mybench-image:latest
+    env_num: 1
+    dataset: ./datasets/cases.jsonl
+    dataset_load_mode: eager
+    env_params:
+      task_family: mybench
+      bench_root: /workspace/MyBench
+      output_root: /workspace/Safactory/results/mybench
+      evaluation:
+        rule_evaluator: env/mybench/rule_evaluator.py
+        rule_evaluator_timeout_s: 60
+```
+
+```jsonl
+{"task_id": "case-001", "case_id": "case-001", "input": "example input", "expected": "example answer"}
+{"task_id": "case-002", "case_id": "case-002", "input": "another input", "expected": "another answer"}
+```
+
+Those two rows are scheduled as two independent episodes, each with its own `session_id`, gateway trajectory, and reward. Do not make `runner.py` read and loop over `cases.jsonl` again; otherwise multiple cases' model calls land in the same trajectory and training/evaluation becomes hard to interpret.
+
 ## 5. Add Agent Start Config
+
+The start config describes how to run the runner after the image is allocated. Most integrations mount the runner file into the container; if the runner is baked into the image, point `run_command` at the in-image path instead. `run_command` is executed once per task/case and must read request JSON and print result JSON.
 
 Create `env/myagent/myagent_start.yaml`:
 
@@ -201,6 +254,32 @@ container:
   idle_command: "tail -f /dev/null"
   run_command: "python /tmp/safactory-myagent-runner.py"
 ```
+
+A benchmark start config uses the same shape, with the benchmark image and runner:
+
+```yaml
+agent_name: mybench
+
+container:
+  workdir: /workspace/MyBench
+  mounts:
+    - source: ./env/mybench/runner.py
+      target: /tmp/safactory-mybench-runner.py
+      mode: ro
+    - source: ./results
+      target: /workspace/Safactory/results
+      mode: rw
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
+    no_proxy: host.docker.internal,localhost,127.0.0.1,::1
+  extra_args:
+    - --add-host=host.docker.internal:host-gateway
+  idle_command: "tail -f /dev/null"
+  run_command: "python /tmp/safactory-mybench-runner.py"
+```
+
+`agent_name: mybench` must match `env_name: mybench` in `mybench_config.yaml`; otherwise the launcher cannot find the corresponding startup definition.
 
 ## 6. Run A Smoke Test
 
@@ -229,6 +308,8 @@ You can add evaluation in one of three ways:
 - Add inline `env_params.evaluation.specs` in the agent config.
 - Add markdown tasks under `env/myagent/eval_tasks/<dataset>/<task_name>.md`.
 - Add `env/myagent/rule_evaluator.py`.
+
+For new benchmarks, prefer `rule_evaluator.py`: the runner preserves raw benchmark output, and the rule evaluator normalizes different benchmark score scales, pass conditions, and error cases into Safactory reward. It runs only during evaluation and should not re-run the benchmark case.
 
 See [Evaluation](evaluation.md).
 
