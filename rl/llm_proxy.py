@@ -18,7 +18,7 @@ import os
 import sys
 import time
 from logging.handlers import RotatingFileHandler
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 # Add rl directory to path for utils import
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -321,6 +321,33 @@ async def health_check():
         "initialized": STATE.tokenizer is not None,
         "remote_engine_url": STATE.remote_engine_url,
     }
+
+
+@app.post("/admin/clear_sessions")
+async def admin_clear_sessions(request: Request):
+    # Called by buffer_server to release mask-builder state for dropped rollout groups.
+    builder = STATE.trajectory_mask_builder
+    if builder is None:
+        return {"cleared": 0, "requested": 0}
+
+    try:
+        payload = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
+
+    raw_session_ids = payload.get("session_ids", []) if isinstance(payload, dict) else []
+    if not isinstance(raw_session_ids, list):
+        raise HTTPException(status_code=400, detail="session_ids must be a list")
+
+    session_ids: List[str] = [str(session_id) for session_id in raw_session_ids if session_id]
+    cleared = builder.clear_sessions(session_ids)
+    logger.info(
+        "Cleared trajectory sessions: requested=%d cleared=%d reason=%s",
+        len(session_ids),
+        cleared,
+        payload.get("reason") if isinstance(payload, dict) else None,
+    )
+    return {"cleared": cleared, "requested": len(session_ids)}
 
 
 @app.on_event("shutdown")

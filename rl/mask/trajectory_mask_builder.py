@@ -516,3 +516,15 @@ class TrajectoryMaskBuilder:
 
     def clear_session(self, session_id: str) -> None:
         self.session_roots.pop(session_id, None)
+
+    def clear_sessions(self, session_ids: List[str]) -> int:
+        # Batch cleanup keeps the admin proxy endpoint cheap and deterministic.
+        cleared = 0
+        for session_id in session_ids:
+            if session_id in self.session_roots:
+                self.session_roots.pop(session_id, None)
+                cleared += 1
+        return cleared
+
+    def session_count(self) -> int:
+        return len(self.session_roots)
