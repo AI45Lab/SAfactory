@@ -192,15 +192,15 @@ Buffer Server 会启动 `launcher.py`，读取已完成的可训练行，按 `gr
 
 ## 文档
 
-| 指南 | 内容 |
-|------|------|
-| [Gateway](docs/gateway_CN.md) | Gateway 端点、路由、Admission Control、telemetry、请求日志和存储一致性。 |
-| [配置](docs/configuration_CN.md) | 当前 `launcher.py`、gateway、agent config、agent start config 和 RJob 字段。 |
-| [支持的环境](docs/environments_CN.md) | 当前仓库内置 adapter 及运行时依赖。 |
-| [评测](docs/evaluation_CN.md) | LLM judge、agent-eval、rule evaluator、markdown eval task 和 reward commit 行为。 |
-| [数据管理器](docs/data-manager_CN.md) | SQLite/cloud 存储行为、表、事件类型和查询示例。 |
-| [自定义 Runtime](docs/custom-environment_CN.md) | 如何新增 external agent runtime，以及两份必要 YAML。 |
-| [RL 训练](docs/rl-training_CN.md) | Buffer Server 与 Slime 集成细节。 |
+| 指南                                     | 内容                                                                        |
+|----------------------------------------|---------------------------------------------------------------------------|
+| [Gateway](docs/gateway_CN.md)          | Gateway 端点、路由、Admission Control、telemetry、请求日志和存储一致性。                     |
+| [配置](docs/configuration_CN.md)         | 当前 `launcher.py`、gateway、agent config、agent start config 和 RJob 字段。       |
+| [支持的环境](docs/environments_CN.md)       | 当前仓库内置 adapter 及运行时依赖。                                                    |
+| [评测](docs/evaluation_CN.md)            | LLM judge、agent-eval、rule evaluator、markdown eval task 和 reward commit 行为。 |
+| [数据管理器](docs/data-manager_CN.md)       | SQLite/cloud 存储行为、表、事件类型和查询示例。                                            |
+| [自定义环境](docs/custom-environment_CN.md) | 如何新增自定义环境。                                                                |
+| [RL 训练](docs/rl-training_CN.md)        | Buffer Server 与 Slime 集成细节。                                               |
 
 ## <a id="architecture"></a>🏗️ 架构
 
@@ -216,10 +216,10 @@ Safactory 可以生成可复用的轨迹数据集。公开 OS 轨迹发布在 Hu
 
 ## 贡献
 
-欢迎贡献新 adapter、运行时启动器、evaluator backend、bug 修复和可复现实例。
+欢迎贡献新的自定义环境、 bug 修复和可复现实例。
 
-1. 在 `env/<name>/` 下添加或更新 adapter。
-2. 同时提供 `<name>_config.yaml` 和 `<name>_start.yaml`。
+1. 在 `env/<name>/` 下添加或更新自定义环境。
+2. 同时提供 `<name>_config.yaml` 和 `<name>_start.yaml`，需要包含必须的字段。
 3. 不要提交密钥和私有端点。
 4. 使用 `launcher.py` 运行本地 smoke test。
 5. 在 pull request 中说明安装步骤、预期输出和存储要求。

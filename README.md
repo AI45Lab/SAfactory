@@ -223,10 +223,10 @@ Safactory can generate reusable trajectory datasets. The public OS trajectory re
 
 ## Contributing
 
-Contributions are welcome for new adapters, runtime launchers, evaluator backends, bug fixes, and reproducible examples.
+Contributions are welcome for new custom environments, bug fixes, and reproducible examples.
 
-1. Add or update an adapter under `env/<name>/`.
-2. Provide both `<name>_config.yaml` and `<name>_start.yaml`.
+1. Add or update a custom environment under `env/<name>/`.
+2. Provide both `<name>_config.yaml` and `<name>_start.yaml`, including all required fields.
 3. Keep secrets and private endpoints out of committed configs.
 4. Run a local smoke test with `launcher.py`.
 5. Include setup notes, expected outputs, and storage requirements in the pull request.
