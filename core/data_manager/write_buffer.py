@@ -85,7 +85,7 @@ class WriteBuffer:
             return
         self._running = True
         self._flush_task = asyncio.create_task(self._periodic_flush())
-        logger.info(
+        logger.debug(
             f"WriteBuffer started: buffer_size={self._buffer_size}, "
             f"flush_interval={self._flush_interval}s"
         )
@@ -105,12 +105,12 @@ class WriteBuffer:
         # 2. 等待所有由 buffer_create/update 触发的临时任务完成
         # 避免在关闭 DB 连接时这些任务还在运行
         if self._background_tasks:
-            logger.info(f"Waiting for {len(self._background_tasks)} background flush tasks...")
+            logger.debug(f"Waiting for {len(self._background_tasks)} background flush tasks...")
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
         # 3. 最终刷新，确保数据不丢失
         await self.flush()
-        logger.info(f"WriteBuffer stopped: stats={self._stats}")
+        logger.debug(f"WriteBuffer stopped: stats={self._stats}")
 
     async def buffer_create(self, instance: T) -> T:
         """

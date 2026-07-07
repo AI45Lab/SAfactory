@@ -220,7 +220,7 @@ class SimulationWorkerGroup:
             with trace.span("acquire_lease"):
                 lease = await self._acquire_lease_or_stop(worker_id)
             if lease is None:
-                log.info("worker=%d: lease pool exhausted", worker_id)
+                log.debug("worker=%d: lease pool exhausted", worker_id)
                 trace.emit_summary(
                     status="lease_pool_exhausted",
                     circuit_breaker_reason=self._circuit_breaker.reason() or None,
@@ -245,7 +245,7 @@ class SimulationWorkerGroup:
             run_failed = False
             cancelled = False
             try:
-                log.info(
+                log.debug(
                     "worker=%d acquired agent=%s runtime=%s resource=%s reuse=%s",
                     worker_id,
                     agent_key,
@@ -322,7 +322,7 @@ class SimulationWorkerGroup:
                             )
                     trace.mark("eval_specs_resolved", eval_spec_count=len(eval_specs))
                     if eval_specs:
-                        log.info(
+                        log.debug(
                             "worker=%d agent=%s evaluation specs resolved: %s",
                             worker_id,
                             agent_key,

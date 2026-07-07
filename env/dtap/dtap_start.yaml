@@ -3,6 +3,10 @@ agent_name: dtap
 container:
   workdir: /workspace/DecodingTrust-Agent
   network: host
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-dtap-runner.py
+    command: "python /tmp/safactory-dtap-runner.py"
 
   mounts:
     - source: ../DecodingTrust-Agent
@@ -12,10 +16,6 @@ container:
     - source: ./results
       target: /workspace/Safactory/results
       mode: rw
-
-    - source: ./clusters/dtap_safactory_runner.py
-      target: /tmp/dtap_safactory_runner.py
-      mode: ro
 
     - source: /var/run/docker.sock
       target: /var/run/docker.sock
@@ -40,4 +40,3 @@ container:
     - --add-host=host.docker.internal:host-gateway
 
   idle_command: "tail -f /dev/null"
-  run_command: "python /tmp/dtap_safactory_runner.py"

@@ -93,7 +93,7 @@ class PerfTrace:
         self._marks.append(mark)
         if self.log_marks:
             payload = self._payload(status="mark", extra={"mark": mark.as_dict()})
-            self.logger.info(
+            self.logger.debug(
                 "perf_trace mark: %s",
                 json.dumps(payload, ensure_ascii=False, default=_json_default),
             )
@@ -124,7 +124,7 @@ class PerfTrace:
         if self._summary_emitted and not force:
             return
         self._summary_emitted = True
-        self.logger.info(
+        self.logger.debug(
             "perf_trace summary: %s",
             json.dumps(self._payload(status=status, extra=extra), ensure_ascii=False, default=_json_default),
         )

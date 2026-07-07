@@ -61,7 +61,7 @@ class RuntimeAgentPool:
 
     async def prewarm(self, rows: Optional[List[Dict[str, Any]]] = None) -> None:
         if self._pool_size <= 0:
-            log.info("pool_size <= 0, skip %s prewarm", self._allocator.runtime)
+            log.debug("pool_size <= 0, skip %s prewarm", self._allocator.runtime)
             return
 
         if rows is None:
@@ -71,11 +71,11 @@ class RuntimeAgentPool:
                 fetch_timeout_s=self._row_fetch_timeout_s,
             )
         if not rows:
-            log.info("no active rows, skip %s prewarm", self._allocator.runtime)
+            log.debug("no active rows, skip %s prewarm", self._allocator.runtime)
             return
 
         self._image_by_env = self._repo.get_env_image_map()
-        log.info(
+        log.debug(
             "%s prewarm start: target_pool_size=%d initial_rows=%d",
             self._allocator.runtime,
             self._pool_size,
@@ -100,7 +100,7 @@ class RuntimeAgentPool:
                 fetch_timeout_s=self._row_fetch_timeout_s,
             )
             if not rows:
-                log.info(
+                log.debug(
                     "ensure_capacity: no DB rows available to fill %s pool",
                     self._allocator.runtime,
                 )
@@ -129,7 +129,7 @@ class RuntimeAgentPool:
             fetch_timeout_s=self._row_fetch_timeout_s,
         )
         if not next_row:
-            log.info("close_and_refill: DB rows exhausted for %s pool", self._allocator.runtime)
+            log.debug("close_and_refill: DB rows exhausted for %s pool", self._allocator.runtime)
             return None
         return await self._fill_slot_for_refill(next_row)
 
@@ -198,7 +198,7 @@ class RuntimeAgentPool:
         if not self._background_tasks:
             return
         pending = set(self._background_tasks)
-        log.info("draining %d background %s task(s)", len(pending), self._allocator.runtime)
+        log.debug("draining %d background %s task(s)", len(pending), self._allocator.runtime)
         done, still_pending = await asyncio.wait(pending, timeout=max(0.0, float(timeout_s or 0.0)))
         for task in done:
             try:
@@ -248,7 +248,7 @@ class RuntimeAgentPool:
 
         async with self._lock:
             self._pool[(env_name, env_id)] = entry
-        log.info(
+        log.debug(
             "allocated %s lease: agent=%s/%s resource=%s reuse=%s",
             entry.runtime,
             env_name,

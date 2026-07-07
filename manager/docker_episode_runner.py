@@ -21,7 +21,7 @@ log = logging.getLogger("manager.docker_episode_runner")
 
 
 class DockerEpisodeRunner:
-    """Runs one OpenClaw episode inside an allocated Docker container."""
+    """Runs one episode through a runner entrypoint inside an allocated Docker container."""
 
     def __init__(self, *, timeout_s: float) -> None:
         self.timeout_s = float(timeout_s)
@@ -38,15 +38,15 @@ class DockerEpisodeRunner:
 
         request_params, payload = request_payload(request)
         cmd = self._docker_exec_cmd(lease, request, payload)
-        log.info(
-            "OpenClaw docker exec command: agent=%s/%s container=%s command=%s",
+        log.debug(
+            "runner entrypoint docker exec command: agent=%s/%s container=%s command=%s",
             lease.agent_name,
             lease.agent_id,
             lease.container_name or lease.container_id,
             self._cmd_for_log(cmd),
         )
-        log.info(
-            "OpenClaw agent start request params: agent=%s/%s params=%s",
+        log.debug(
+            "runner entrypoint request params: agent=%s/%s params=%s",
             lease.agent_name,
             lease.agent_id,
             json_for_log(request_params),
@@ -55,7 +55,7 @@ class DockerEpisodeRunner:
             result = await asyncio.to_thread(self._run, cmd, payload)
         except subprocess.TimeoutExpired as exc:
             log.warning(
-                "OpenClaw docker exec timed out: agent=%s/%s container=%s timeout_s=%.2f",
+                "runner entrypoint docker exec timed out: agent=%s/%s container=%s timeout_s=%.2f",
                 lease.agent_name,
                 lease.agent_id,
                 lease.container_name or lease.container_id,
@@ -67,7 +67,7 @@ class DockerEpisodeRunner:
         if result_mode == "exit_code":
             if result.returncode != 0:
                 raise RuntimeError(
-                    "OpenClaw command failed: "
+                    "runner entrypoint command failed: "
                     f"container={lease.container_name or lease.container_id} "
                     f"returncode={result.returncode} "
                     f"stdout={tail(result.stdout)} stderr={tail(result.stderr)}"
@@ -88,7 +88,7 @@ class DockerEpisodeRunner:
             )
         if result.returncode != 0:
             raise RuntimeError(
-                "OpenClaw run failed: "
+                "runner entrypoint failed: "
                 f"container={lease.container_name or lease.container_id} "
                 f"returncode={result.returncode} "
                 f"stdout={tail(result.stdout)} stderr={tail(result.stderr)}"
@@ -124,8 +124,8 @@ class DockerEpisodeRunner:
             if not line.startswith(RUNNER_DIAGNOSTIC_PREFIX):
                 continue
             payload = line[len(RUNNER_DIAGNOSTIC_PREFIX) :].strip()
-            log.info(
-                "OpenClaw agent create params: agent=%s/%s container=%s params=%s",
+            log.debug(
+                "runner entrypoint create params: agent=%s/%s container=%s params=%s",
                 lease.agent_name,
                 lease.agent_id,
                 lease.container_name or lease.container_id,

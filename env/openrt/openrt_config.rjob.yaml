@@ -1,17 +1,17 @@
 environments:
   - env_name: openrt
-    env_image: b65104033c5d
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:openrtx86_0001
     env_num: 1
-    dataset: ./datasets/openrt_attacks.jsonl
+    dataset: ./datasets/openrt_attacks_thin.jsonl
     dataset_load_mode: eager
 
     env_params:
       task_family: openrt
       api_key: EMPTY
       default_openrt_dataset: harmbench
-      default_attacker_model: dsv4pro
+      default_attacker_model:  dsv4pro
       default_judge_model: dsv4pro
       default_target_models:
-        - Intern-S2-Preview
+        - GLM-5.2-w8a8
       max_workers: 1
       evaluator_workers: 1

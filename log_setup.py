@@ -11,7 +11,16 @@ from datetime import datetime
 
 
 DEFAULT_INFO_LOGGERS = ("launcher", "manager", "evaluator")
-DEFAULT_SUPPRESS_PREFIXES = ("core.llm", "httpx", "httpcore", "urllib3", "aiosqlite", "tortoise")
+DEFAULT_SUPPRESS_PREFIXES = (
+    "core.llm",
+    "httpx",
+    "httpcore",
+    "urllib3",
+    "aiosqlite",
+    "tortoise",
+    "kubernetes",
+    "brainpp",
+)
 DEPENDENCY_WARNING_LOGGERS = (
     "httpx",
     "httpcore",
@@ -21,6 +30,11 @@ DEPENDENCY_WARNING_LOGGERS = (
     "aiosqlite",
     "tortoise",
     "tortoise.db_client",
+    "kubernetes",
+    "kubernetes.client",
+    "kubernetes.client.rest",
+    "brainpp",
+    "brainpp.rjob",
 )
 
 
@@ -233,7 +247,7 @@ def setup_launcher_logging(
 
     cleanup_old_log_runs(log_dir, keep_runs=int(backup_count or 0))
 
-    root.info(
+    root.debug(
         "logging initialized: console_level=%s file_level=%s run_dir=%s main_log=%s",
         console_level.upper(),
         file_level.upper(),

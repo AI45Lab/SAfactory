@@ -108,11 +108,11 @@ class SimulationLeasePool:
         self._repair_lock = asyncio.Lock()
 
     async def start(self) -> None:
-        log.info("starting AgentPoolManager for simulation lease pool")
+        log.debug("starting AgentPoolManager for simulation lease pool")
         await self.mgr.start()
 
         added = await self._enqueue_manager_leases()
-        log.info("manager reports %d warmed agent instance(s)", added)
+        log.debug("manager reports %d warmed agent instance(s)", added)
         await self._runtime.mark_initial_load_done()
 
     async def acquire(self) -> Optional[SimulationAgentLease]:
@@ -146,7 +146,7 @@ class SimulationLeasePool:
         old_key = (str(lease.agent_name), str(lease.agent_id))
         entered_refill = await self._enter_refill_if_open()
         if not entered_refill:
-            log.info("done(): pool is closing; skip refill for agent=%s id=%s", lease.agent_name, lease.agent_id)
+            log.debug("done(): pool is closing; skip refill for agent=%s id=%s", lease.agent_name, lease.agent_id)
             await self._finish_without_replacement(old_key)
             return
 
@@ -171,16 +171,16 @@ class SimulationLeasePool:
         async with self._lifecycle_lock:
             async with self._lifecycle_cond:
                 if self._closed:
-                    log.info("SimulationLeasePool.aclose(): already closed")
+                    log.debug("SimulationLeasePool.aclose(): already closed")
                     return
                 self._closing = True
                 while self._active_refills > 0:
-                    log.info(
+                    log.debug(
                         "SimulationLeasePool.aclose(): waiting for %d active container refill(s)",
                         self._active_refills,
                     )
                     await self._lifecycle_cond.wait()
-            log.info("SimulationLeasePool.aclose(): closing AgentPoolManager")
+            log.debug("SimulationLeasePool.aclose(): closing AgentPoolManager")
             await self.mgr.close_all()
             async with self._lifecycle_cond:
                 self._closed = True

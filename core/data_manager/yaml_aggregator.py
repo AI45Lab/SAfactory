@@ -79,7 +79,7 @@ async def _do_bulk_insert(pending_records: list, batch_size: int = 500) -> None:
         pause_s = 0.0
 
     try:
-        log.info(
+        log.debug(
             "Bulk insert start: total=%d batch_size=%d pause_s=%.3f",
             total,
             batch_size,
@@ -88,10 +88,10 @@ async def _do_bulk_insert(pending_records: list, batch_size: int = 500) -> None:
         for i in range(0, total, batch_size):
             async with in_transaction():
                 await JobEnvironment.bulk_create(pending_records[i:i + batch_size])
-            log.info("Bulk insert progress: %d/%d", min(i + batch_size, total), total)
+            log.debug("Bulk insert progress: %d/%d", min(i + batch_size, total), total)
             if pause_s > 0.0 and i + batch_size < total:
                 await asyncio.sleep(pause_s)
-        log.info("Bulk insert done: %d env records", total)
+        log.debug("Bulk insert done: %d env records", total)
     except Exception:
         log.exception("Background bulk insert failed for %d records", total)
 
@@ -106,8 +106,8 @@ async def _do_bulk_cloud_insert(env_manager, pending_configs: list, batch_size: 
         for i in range(0, total, batch_size):
             batch = pending_configs[i:i + batch_size]
             await asyncio.to_thread(env_manager.save_config, batch)
-            log.info("Cloud bulk insert progress: %d/%d", min(i + batch_size, total), total)
-        log.info("Cloud bulk insert done: %d env configs", total)
+            log.debug("Cloud bulk insert progress: %d/%d", min(i + batch_size, total), total)
+        log.debug("Cloud bulk insert done: %d env configs", total)
     except Exception:
         log.exception("Background cloud bulk insert failed for %d configs", total)
 
@@ -115,9 +115,9 @@ async def _do_bulk_cloud_insert(env_manager, pending_configs: list, batch_size: 
 async def wait_for_pending_inserts() -> None:
     """Wait for all background env-config insert tasks to complete."""
     if _insert_tasks:
-        log.info("Waiting for %d pending insert task(s)...", len(_insert_tasks))
+        log.debug("Waiting for %d pending insert task(s)...", len(_insert_tasks))
         await asyncio.gather(*_insert_tasks, return_exceptions=True)
-        log.info("All pending insert tasks completed.")
+        log.debug("All pending insert tasks completed.")
 
 
 def iter_child_yaml_files(env_root: Path):
@@ -179,12 +179,12 @@ def all_env_yaml_load(
 
     if env_config:
         yaml_path = _resolve_env_config_path(env_config=env_config, env_root=env_root)
-        log.info("Loading env config: %s", yaml_path)
+        log.debug("Loading env config: %s", yaml_path)
         yaml_config_list.extend(load_yaml_configs(str(yaml_path)) or [])
         return yaml_config_list
 
     for yaml_path in iter_child_yaml_files(env_root):
-        log.info("Loading env config: %s", yaml_path)
+        log.debug("Loading env config: %s", yaml_path)
         try:
             yaml_configs = load_yaml_configs(str(yaml_path))
         except Exception as e:
@@ -322,7 +322,7 @@ async def _sync_sqlite(
     if pending_records:
         async with in_transaction():
             await JobEnvironment.bulk_create(pending_records[:startup_submit_count])
-        log.info(
+        log.debug(
             "Initial sync insert: %d/%d env records committed",
             min(startup_submit_count, len(pending_records)),
             len(pending_records),
@@ -334,7 +334,7 @@ async def _sync_sqlite(
                 _do_bulk_insert(remaining, batch_size=followup_submit_batch),
                 task_name="sqlite-env-sync",
             )
-            log.info("Scheduled background bulk insert: %d remaining env records", len(remaining))
+            log.debug("Scheduled background bulk insert: %d remaining env records", len(remaining))
 
     # Soft-delete any active envs that are no longer in the YAML
     for env in existing_envs:
@@ -343,7 +343,7 @@ async def _sync_sqlite(
             await env.save()
             soft_deleted += 1
 
-    log.info(
+    log.debug(
         "Sync complete: added=%d updated=%d soft_deleted=%d kept=%d",
         added, updated, soft_deleted, len(matched_env_ids) - added,
     )
@@ -409,7 +409,7 @@ async def _sync_cloud(
     if pending_configs:
         first_batch = pending_configs[:startup_submit_count]
         await asyncio.to_thread(env_manager.save_config, first_batch)
-        log.info(
+        log.debug(
             "Initial cloud sync insert: %d/%d env configs committed",
             len(first_batch),
             len(pending_configs),
@@ -425,7 +425,7 @@ async def _sync_cloud(
                 ),
                 task_name="cloud-env-sync",
             )
-            log.info(
+            log.debug(
                 "Scheduled background cloud bulk insert: %d remaining env configs",
                 len(remaining),
             )

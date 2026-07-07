@@ -3,15 +3,15 @@ agent_name: wildclawbench
 container:
   workdir: /Users/bin-mac/CodeX/WildClawBench
   platform: linux/amd64
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-wildclawbench-runner.py
+    command: "python3 /tmp/safactory-wildclawbench-runner.py"
 
   mounts:
     - source: /Users/bin-mac/CodeX/WildClawBench
       target: /Users/bin-mac/CodeX/WildClawBench
       mode: rw
-
-    - source: ./env/wildclawbench/runner.py
-      target: /tmp/safactory-wildclawbench-runner.py
-      mode: ro
 
   env:
     WILDCLAWBENCH_ROOT: /Users/bin-mac/CodeX/WildClawBench
@@ -43,4 +43,3 @@ container:
     - --add-host=host.docker.internal:host-gateway
 
   idle_command: "tail -f /dev/null"
-  run_command: "python3 /tmp/safactory-wildclawbench-runner.py"

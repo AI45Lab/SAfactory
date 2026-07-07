@@ -180,7 +180,7 @@ class SimulationFlow:
                 f"gateway model route(s) are not configured: {missing}; "
                 f"available={available}"
             )
-        log.info("gateway model routes ready: models=%s available=%s", required_models, available)
+        log.debug("gateway model routes ready: models=%s available=%s", required_models, available)
 
     async def start_agent_scheduler(self) -> None:
         if self.manager_cfg is None:
@@ -233,7 +233,7 @@ class SimulationFlow:
             evaluation_service = self.evaluation_runtime.service
             self.reward_committer = RewardCommitter(db_url=self.cfg.db_url)
         else:
-            log.info("EVAL FLOW disabled: launcher was not started with --enable-evaluation")
+            log.debug("EVAL FLOW disabled: launcher was not started with --enable-evaluation")
         self.worker_group = SimulationWorkerGroup(
             lease_pool=self.lease_pool,
             data_manager=self.data_manager,

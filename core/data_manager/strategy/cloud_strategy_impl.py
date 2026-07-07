@@ -285,7 +285,7 @@ class CloudStrategy(StorageStrategy):
 
         try:
             self.client = WTGatewayClient(config)
-            log.info(
+            log.debug(
                 "CloudStrategy initialized with landing_table=%s serving_table=%s db_uri=%s",
                 config.tables.landing_table,
                 config.tables.serving_table,
@@ -320,7 +320,7 @@ class CloudStrategy(StorageStrategy):
         if self._enable_buffer and not self._running:
             self._running = True
             self._flush_task = asyncio.create_task(self._periodic_flush())
-            log.info(
+            log.debug(
                 "Cloud buffer started: buffer_size=%d flush_interval=%.2fs",
                 self._buffer_size,
                 self._flush_interval,
@@ -351,7 +351,7 @@ class CloudStrategy(StorageStrategy):
         
         try:
             await asyncio.to_thread(self.env_manager.save_config, config_dict)
-            log.info(f"Environment config saved to S3: {env_id}")
+            log.debug("Environment config saved to S3: %s", env_id)
         except Exception as e:
             log.error(f"Failed to save env config to S3: {e}")
             
@@ -666,7 +666,7 @@ class CloudStrategy(StorageStrategy):
             self.env_manager.close()
 
         self.initialized = False
-        log.info("Cloud strategy closed")
+        log.debug("Cloud strategy closed")
                 
     def get_sync_connection(self) -> None:
         """Not applicable for cloud storage"""
@@ -945,7 +945,7 @@ class CloudStrategy(StorageStrategy):
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
         await self._flush_records()
-        log.info("Cloud buffer stopped: stats=%s", self._stats)
+        log.debug("Cloud buffer stopped: stats=%s", self._stats)
 
     async def _flush_records(self) -> int:
         async with self._flush_lock:
@@ -1027,7 +1027,7 @@ class CloudStrategy(StorageStrategy):
             os.makedirs(local_dir, exist_ok=True)
             with open(local_path, "wb") as f:
                 f.write(img_data)
-            log.info("Image saved locally: %s", local_path)
+            log.debug("Image saved locally: %s", local_path)
             return local_path
         except Exception as e:
             log.error("Local save also failed: %s", e)
@@ -1054,7 +1054,7 @@ class CloudStrategy(StorageStrategy):
         )
         
         if results is None or len(results) == 0:
-            print(f"len results {len(results)} No more data to fetch")
+            log.debug("No completed cloud steps to fetch: result_count=%s", 0 if results is None else len(results))
             return []
         
         cursor = self.client.extract_cursor(results)

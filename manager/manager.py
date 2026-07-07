@@ -91,7 +91,7 @@ class AgentPoolManager:
     async def close_all(self) -> None:
         async with self._state_lock:
             if self._closed:
-                log.info("AgentPoolManager.close_all(): already closed")
+                log.debug("AgentPoolManager.close_all(): already closed")
                 return
             self._initialized = False
             self._closed = True

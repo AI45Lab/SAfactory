@@ -1,0 +1,45 @@
+agent_name: openrt
+
+container:
+  workdir: /app
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-openrt-runner.py
+    command: "python /tmp/safactory-openrt-runner.py"
+
+  # mounts:
+  #   - source: /mnt/shared-storage-user/huangbin/GitHub/Safactory/data
+  #     target: /app/data
+  #     mode: ro
+
+  #   - source: /mnt/shared-storage-user/huangbin/GitHub/Safactory/results
+  #     target: /app/results
+  #     mode: rw
+
+  env:
+    OPENAI_API_KEY: EMPTY
+    HTTP_PROXY: ""
+    HTTPS_PROXY: ""
+    ALL_PROXY: ""
+    http_proxy: ""
+    https_proxy: ""
+    all_proxy: ""
+    NO_PROXY: ""
+    no_proxy: ""
+
+rjob:
+  name_prefix: openrt
+  private_machine: Group
+  image_pull_policy: IfNotPresent
+  no_packaging: true
+  cleanup_on_finish: true
+  keep_failed_jobs: true
+
+  resources:
+    cpu: 1
+    gpu: 0
+    memory_in_mb: 1024
+
+  mount_config:
+    - "gpfs://gpfs1/huangbin/GitHub/Safactory/data:/app/data"
+    - "gpfs://gpfs1/huangbin/GitHub/Safactory/results:/app/results"

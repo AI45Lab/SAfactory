@@ -2,18 +2,17 @@ agent_name: openclaw
 
 container:
   workdir: /workspace
+  runner_entrypoint:
+    source: ./runner.mjs
+    target: /tmp/safactory-openclaw-runner.mjs
+    command: "node /tmp/safactory-openclaw-runner.mjs"
 
   mounts:
     - source: ./env/openclaw/workspace
       target: /workspace
       mode: rw
 
-    - source: ./env/openclaw/runner.mjs
-      target: /tmp/safactory-openclaw-runner.mjs
-      mode: ro
-
   env:
     NO_COLOR: "1"
 
   idle_command: "tail -f /dev/null"
-  run_command: "node /tmp/safactory-openclaw-runner.mjs"

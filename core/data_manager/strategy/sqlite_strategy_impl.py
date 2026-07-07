@@ -122,7 +122,7 @@ class SqliteStrategy(StorageStrategy):
         await asyncio.to_thread(create_indexes)
         elapsed = time.perf_counter() - started_at
         if elapsed >= 1.0:
-            log.info("Ensured SQLite runtime indexes in %.2fs: %s", elapsed, file_path)
+            log.debug("Ensured SQLite runtime indexes in %.2fs: %s", elapsed, file_path)
 
     async def add_environment(
         self,

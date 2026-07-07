@@ -24,8 +24,8 @@ async def main(argv: Sequence[str] | None = None) -> int:
         debug_loggers=["sqlite_strategy", "yaml_aggregator"] if args.debug_log else None,
     )
 
-    log.info("main log file: %s", log_session.main_log_path)
-    log.info("log run directory: %s", log_session.run_dir)
+    log.debug("main log file: %s", log_session.main_log_path)
+    log.debug("log run directory: %s", log_session.run_dir)
 
     cfg = load_simulation_run_config(args)
     flow = SimulationFlow(cfg)

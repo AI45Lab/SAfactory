@@ -1,7 +1,11 @@
+import logging
 from typing import Optional, List, Dict, Any
 
 from core.data_manager.strategy.base_strategy import StorageStrategy, SessionContext
 from core.data_manager.strategy_factory import StorageFactory
+
+log = logging.getLogger("core.data_manager.manager")
+
 
 class DataManager:
     """
@@ -19,23 +23,23 @@ class DataManager:
         self.strategy: Optional[StorageStrategy] = None
 
         try:
-            print(f"Initializing DataManager with strategy: '{storage_type}'")
+            log.debug("Initializing DataManager with strategy: %r", storage_type)
             self.strategy = StorageFactory.create(job_id, storage_type, **storage_config)
-            print(f"DataManager initialized successfully using {self.strategy.__class__.__name__}")
+            log.debug("DataManager initialized successfully using %s", self.strategy.__class__.__name__)
 
         except ValueError as e:
             error_msg = f"Unsupported storage type: '{storage_type}'. Please check registered types."
-            print(f"{error_msg} Original Error: {e}")
+            log.error("%s Original Error: %s", error_msg, e)
             raise ValueError(error_msg) from e
 
         except TypeError as e:
             error_msg = f"Invalid configuration for storage type '{storage_type}'."
-            print(f"{error_msg} Missing or invalid arguments. Original Error: {e}")
+            log.error("%s Missing or invalid arguments. Original Error: %s", error_msg, e)
             raise ValueError(error_msg) from e
 
         except Exception as e:
             error_msg = f"Failed to initialize storage strategy '{storage_type}' due to an internal error."
-            print(f"{error_msg} Original Error: {e}")
+            log.error("%s Original Error: %s", error_msg, e)
             raise RuntimeError(error_msg) from e
 
     async def init(self) -> None:

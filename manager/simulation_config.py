@@ -452,12 +452,29 @@ def _normalize_agent_start_docker(agent_name: Any, spec: Any, cfg_path: Path) ->
             raise ValueError(f"container.env for {agent_name!r} must be a mapping in {cfg_path}")
         docker["env"] = {str(key): str(value) for key, value in env.items()}
 
+    runner_entrypoint = _normalize_runner_entrypoint(container.get("runner_entrypoint"), cfg_path)
+    if runner_entrypoint:
+        docker["runner_entrypoint"] = runner_entrypoint
+        entrypoint_command = str(runner_entrypoint.get("command") or "").strip()
+        if entrypoint_command:
+            existing_run_command = str(docker.get("run_command") or "").strip()
+            if existing_run_command and existing_run_command != entrypoint_command:
+                raise ValueError(
+                    f"container.runner_entrypoint.command conflicts with run_command for {agent_name!r} "
+                    f"in {cfg_path}"
+                )
+            docker["run_command"] = entrypoint_command
+
     mounts = container.get("mounts", container.get("volumes", [])) or []
     if isinstance(mounts, (str, dict)):
         mounts = [mounts]
     if not isinstance(mounts, list):
         raise ValueError(f"container.mounts for {agent_name!r} must be a list in {cfg_path}")
-    docker["volumes"] = [_normalize_mount(mount, cfg_path) for mount in mounts]
+    normalized_mounts = [_normalize_mount(mount, cfg_path) for mount in mounts]
+    runner_mount = _mount_from_runner_entrypoint(runner_entrypoint)
+    if runner_mount:
+        _append_mount_if_missing(normalized_mounts, runner_mount, agent_name=agent_name, cfg_path=cfg_path)
+    docker["volumes"] = normalized_mounts
 
     extra_args = container.get("extra_args", []) or []
     if isinstance(extra_args, str):
@@ -559,6 +576,84 @@ def _copy_non_empty(src: Dict[str, Any], dst: Dict[str, Any], key: str) -> None:
         dst[key] = str(value)
 
 
+def _normalize_runner_entrypoint(value: Any, cfg_path: Path) -> Dict[str, str]:
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        command = value.strip()
+        if not command:
+            return {}
+        return {"command": command}
+    if not isinstance(value, dict):
+        raise ValueError(f"container.runner_entrypoint must be a mapping or string in {cfg_path}")
+
+    source = value.get("source") or value.get("hostPath") or value.get("host_path")
+    target = value.get("target") or value.get("containerPath") or value.get("container_path")
+    command = value.get("command") or value.get("run_command")
+    mode = str(value.get("mode") or "ro").strip() or "ro"
+
+    normalized: Dict[str, str] = {}
+    if source:
+        source_path = Path(str(source)).expanduser()
+        if not source_path.is_absolute():
+            source_path = (cfg_path.parent / source_path).resolve(strict=False)
+        normalized["source"] = str(source_path)
+    if target:
+        normalized["target"] = str(target)
+    if command:
+        normalized["command"] = str(command)
+    if mode:
+        normalized["mode"] = mode
+
+    if normalized.get("source") and not normalized.get("target"):
+        raise ValueError(f"container.runner_entrypoint.source requires target in {cfg_path}")
+    if normalized.get("target") and not normalized.get("command"):
+        raise ValueError(f"container.runner_entrypoint.target requires command in {cfg_path}")
+    if not normalized.get("source") and not normalized.get("command"):
+        raise ValueError(f"container.runner_entrypoint requires source or command in {cfg_path}")
+    return normalized
+
+
+def _mount_from_runner_entrypoint(entrypoint: Dict[str, str]) -> Dict[str, str]:
+    source = str(entrypoint.get("source") or "").strip()
+    target = str(entrypoint.get("target") or "").strip()
+    if not source or not target:
+        return {}
+    return {
+        "source": source,
+        "target": target,
+        "mode": str(entrypoint.get("mode") or "ro").strip() or "ro",
+    }
+
+
+def _append_mount_if_missing(
+    mounts: List[Any],
+    mount: Dict[str, str],
+    *,
+    agent_name: Any,
+    cfg_path: Path,
+) -> None:
+    source = str(mount.get("source") or "").strip()
+    target = str(mount.get("target") or "").strip()
+    for existing in mounts:
+        if not isinstance(existing, dict):
+            continue
+        existing_source = str(
+            existing.get("source") or existing.get("hostPath") or existing.get("host_path") or ""
+        ).strip()
+        existing_target = str(
+            existing.get("target") or existing.get("containerPath") or existing.get("container_path") or ""
+        ).strip()
+        if existing_source == source and existing_target == target:
+            return
+        if existing_target == target:
+            raise ValueError(
+                f"container.runner_entrypoint target conflicts with an existing mount for {agent_name!r} "
+                f"in {cfg_path}: {target}"
+            )
+    mounts.append(mount)
+
+
 def _normalize_mount(mount: Any, cfg_path: Path) -> Any:
     if isinstance(mount, str):
         return mount
@@ -594,7 +689,7 @@ def expand_rl_group_size(yaml_config_list: List[Dict[str, Any]], group_size: int
     expanded = [dict(item) for item in yaml_config_list]
     for item in expanded:
         item["env_num"] = int(group_size)
-    log.info("Override agent parallelism env_num=%d for %d config(s)", int(group_size), len(expanded))
+    log.debug("Override agent parallelism env_num=%d for %d config(s)", int(group_size), len(expanded))
     return expanded
 
 
@@ -611,7 +706,7 @@ def expand_rl_epoch(yaml_config_list: List[Dict[str, Any]], epoch: int) -> List[
             epoch_item = dict(item)
             epoch_item["task_idx"] = item.get("task_idx", 1) + epoch_idx * num_tasks
             expanded.append(epoch_item)
-    log.info("rl_epoch=%d: expanded %d configs to %d configs", epoch, num_tasks, len(expanded))
+    log.debug("rl_epoch=%d: expanded %d configs to %d configs", epoch, num_tasks, len(expanded))
     return expanded
 
 

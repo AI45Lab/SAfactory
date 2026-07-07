@@ -96,7 +96,7 @@ def containerize_local_gateway_url(url: str) -> str:
 def parse_result_output(text: str) -> Dict[str, Any]:
     text = (text or "").strip()
     if not text:
-        raise RuntimeError("OpenClaw run returned empty output; expected SimulationStartResult JSON")
+        raise RuntimeError("runner entrypoint returned empty output; expected SimulationStartResult JSON")
 
     for line in reversed(text.splitlines()):
         line = line.strip()
@@ -112,7 +112,7 @@ def parse_result_output(text: str) -> Dict[str, Any]:
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"OpenClaw run returned non-JSON output: {tail(text)}") from exc
+        raise RuntimeError(f"runner entrypoint returned non-JSON output: {tail(text)}") from exc
 
 
 def normalize_result(result: Any, *, session_id: str) -> SimulationStartResult:
@@ -139,7 +139,7 @@ def to_dict(result: Any) -> Dict[str, Any]:
         return asdict(result)
     if hasattr(result, "model_dump"):
         return result.model_dump(mode="json")
-    raise TypeError(f"Unsupported OpenClaw result type: {type(result).__name__}")
+    raise TypeError(f"Unsupported runner entrypoint result type: {type(result).__name__}")
 
 
 def json_for_log(value: Any) -> str:

@@ -1,4 +1,5 @@
 import os
+import logging
 import yaml
 import json
 from typing import Any, Dict, List
@@ -6,6 +7,8 @@ from typing import Any, Dict, List
 import numpy as np
 
 from core.runtime_metadata import SAFACTORY_INTERNAL_ENV_KEY
+
+log = logging.getLogger("core.data_manager.load_yaml")
 
 
 def _convert_numpy_types(obj: Any) -> Any:
@@ -166,7 +169,7 @@ def load_yaml_configs(yaml_path: str) -> List[Dict]:
             try:
                 dataset_items = load_dataset_file(base_dir, dataset_path, load_mode=dataset_load_mode)
             except Exception as e:
-                print(f"环境 [{env_name}] 加载dataset失败: {e} (跳过此环境)")
+                log.warning("Environment %s dataset load failed; skipping: %s", env_name, e)
                 continue
         else:
             # 如果没有dataset，则生成单个配置，仅包含基础params

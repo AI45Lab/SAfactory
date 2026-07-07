@@ -2,6 +2,10 @@ agent_name: clawenvkit
 
 container:
   workdir: /workspace
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-clawenvkit-runner.py
+    command: "python3 /tmp/safactory-clawenvkit-runner.py"
 
   mounts:
     - source: ../ClawEnvKit/Auto-ClawEval-mini
@@ -11,10 +15,6 @@ container:
     - source: ./results
       target: /workspace/Safactory/results
       mode: rw
-
-    - source: ./clusters/clawenvkit_safactory_runner.py
-      target: /tmp/clawenvkit_safactory_runner.py
-      mode: ro
 
   env:
     OPENAI_API_KEY: dummy
@@ -33,4 +33,3 @@ container:
     - --add-host=host.docker.internal:host-gateway
 
   idle_command: "tail -f /dev/null"
-  run_command: "python3 /tmp/clawenvkit_safactory_runner.py"

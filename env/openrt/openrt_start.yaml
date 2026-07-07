@@ -2,6 +2,10 @@ agent_name: openrt
 
 container:
   workdir: /app
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-openrt-runner.py
+    command: "python /tmp/safactory-openrt-runner.py"
 
   mounts:
     - source: /Users/bin-mac/AILab/OpenRT/data
@@ -11,10 +15,6 @@ container:
     - source: /Users/bin-mac/CodeX/Safactory/results
       target: /app/results
       mode: rw
-
-    - source: ./env/openrt/runner.py
-      target: /tmp/safactory-openrt-runner.py
-      mode: ro
 
   env:
     OPENAI_API_KEY: EMPTY
@@ -31,4 +31,3 @@ container:
     - --add-host=host.docker.internal:host-gateway
 
   idle_command: "tail -f /dev/null"
-  run_command: "python /tmp/safactory-openrt-runner.py"
