@@ -2,16 +2,16 @@
 # Override with: python launcher.py --mode rjob --rjob-config path/to/config.yaml
 
 rjob:
-  cluster_entry: ""
-  namespace: ""
+  cluster_entry: "https://h.pjlab.org.cn"
+  namespace: "ailab-evobox"
   access_key: ""
   secret_key: ""
   verifyssl: true
   retries: 3
 
   # Optional but commonly shared across RJob submissions.
-  charged_group: ""
-  gateway_base_url: ""
+  charged_group: "evobox_proxy"
+  gateway_base_url: "http://100.104.2.195:36001/v1/sessions"
   name_prefix: safactory
   poll_interval_s: 5
   cleanup_on_finish: true
