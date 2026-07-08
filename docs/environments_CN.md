@@ -126,7 +126,7 @@ python launcher.py \
 
 - `env/dtap/dtap_config.yaml`
 - `env/dtap/dtap_start.yaml`
-- `clusters/dtap_safactory_runner.py`
+- `env/dtap/runner.py`
 
 DTAP 运行 DecodingTrust-Agent 任务。Start config 会挂载：
 
@@ -151,7 +151,7 @@ DTAP 运行 DecodingTrust-Agent 任务。Start config 会挂载：
 
 - `env/clawenvkit/clawenvkit_config.yaml`
 - `env/clawenvkit/clawenvkit_start.yaml`
-- `clusters/clawenvkit_safactory_runner.py`
+- `env/clawenvkit/runner.py`
 
 ClawEnvKit 通过 OpenClaw harness 运行 Auto-ClawEval 风格任务。运行前请更新 dataset 和结果挂载。
 

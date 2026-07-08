@@ -9,10 +9,10 @@ You usually add or verify five core pieces:
 | Piece | Where | Role | Example |
 |-------|-------|------|---------|
 | `image` | `env_image` in the agent config; RJob can override it in start config | Runtime image. It contains agent/benchmark dependencies, the benchmark harness, and Python/Node runtimes. | `myagent-image:latest`, `mybench-image:latest` |
-| `runner` | `env/<name>/runner.py`, invoked by `start_config.container.run_command` | Adapter between Safactory and the native agent/benchmark. It reads `SimulationStartRequest`, extracts `env_params.dataset`, calls the gateway target model, runs one task/case, and prints result JSON to stdout. | `python /tmp/safactory-mybench-runner.py` |
+| `runner_entrypoint` | Usually `env/<name>/runner.py` or `env/<name>/runner.mjs`, invoked by `start_config.container.runner_entrypoint.command` | Adapter between Safactory and the native agent/benchmark. It reads `SimulationStartRequest`, extracts `env_params.dataset`, calls the gateway target model, runs one task/case, and prints result JSON to stdout. | `python /tmp/safactory-mybench-runner.py` |
 | `rule_evaluator` | Optional, commonly `env/<name>/rule_evaluator.py` | Converts raw benchmark results from `metrics` plus gateway trajectory into a Safactory reward on the 0 to 10 scale. Simple agent smoke tests can omit it; benchmarks usually should include it. | `env/mybench/rule_evaluator.py` |
 | `config` | `env/<name>/<name>_config.yaml` | Defines task rows: `env_name`, `env_image`, `dataset`, `env_num`, `env_params`, and optional evaluation settings. | `env/mybench/mybench_config.yaml` |
-| `start_config` | `env/<name>/<name>_start.yaml` | Defines how the matching runtime starts: runner mounts, workdir/env, Docker/RJob settings, and `run_command`. `agent_name` must match `env_name` in the config. | `env/mybench/mybench_start.yaml` |
+| `start_config` | `env/<name>/<name>_start.yaml` | Defines how the matching runtime starts: runner entrypoint, workdir/env, Docker/RJob settings, and extra mounts. `agent_name` must match `env_name` in the config. | `env/mybench/mybench_start.yaml` |
 
 Agents and benchmarks mostly differ in the runner and evaluator:
 
@@ -229,7 +229,7 @@ Those two rows are scheduled as two independent episodes, each with its own `ses
 
 ## 5. Add Agent Start Config
 
-The start config describes how to run the runner after the image is allocated. Most integrations mount the runner file into the container; if the runner is baked into the image, point `run_command` at the in-image path instead. `run_command` is executed once per task/case and must read request JSON and print result JSON.
+The start config describes how to run the runner entrypoint after the image is allocated. `runner_entrypoint.command` is executed once per task/case and must read request JSON and print result JSON. When `runner_entrypoint.source` points to a local file, Docker mounts it and RJob embeds it automatically; the source path is relative to the start config file.
 
 Create `env/myagent/myagent_start.yaml`:
 
@@ -238,10 +238,11 @@ agent_name: myagent
 
 container:
   workdir: /workspace
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-myagent-runner.py
+    command: "python /tmp/safactory-myagent-runner.py"
   mounts:
-    - source: ./env/myagent/runner.py
-      target: /tmp/safactory-myagent-runner.py
-      mode: ro
     - source: ./results
       target: /workspace/Safactory/results
       mode: rw
@@ -252,7 +253,6 @@ container:
   extra_args:
     - --add-host=host.docker.internal:host-gateway
   idle_command: "tail -f /dev/null"
-  run_command: "python /tmp/safactory-myagent-runner.py"
 ```
 
 A benchmark start config uses the same shape, with the benchmark image and runner:
@@ -262,10 +262,11 @@ agent_name: mybench
 
 container:
   workdir: /workspace/MyBench
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-mybench-runner.py
+    command: "python /tmp/safactory-mybench-runner.py"
   mounts:
-    - source: ./env/mybench/runner.py
-      target: /tmp/safactory-mybench-runner.py
-      mode: ro
     - source: ./results
       target: /workspace/Safactory/results
       mode: rw
@@ -276,7 +277,6 @@ container:
   extra_args:
     - --add-host=host.docker.internal:host-gateway
   idle_command: "tail -f /dev/null"
-  run_command: "python /tmp/safactory-mybench-runner.py"
 ```
 
 `agent_name: mybench` must match `env_name: mybench` in `mybench_config.yaml`; otherwise the launcher cannot find the corresponding startup definition.

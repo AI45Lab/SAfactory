@@ -165,19 +165,19 @@ agent_name: openclaw
 
 container:
   workdir: /workspace
+  runner_entrypoint:
+    source: ./runner.mjs
+    target: /tmp/safactory-openclaw-runner.mjs
+    command: "node /tmp/safactory-openclaw-runner.mjs"
   mounts:
     - source: ./env/openclaw/workspace
       target: /workspace
       mode: rw
-    - source: ./env/openclaw/runner.mjs
-      target: /tmp/safactory-openclaw-runner.mjs
-      mode: ro
   env:
     NO_COLOR: "1"
   extra_args:
     - --add-host=host.docker.internal:host-gateway
   idle_command: "tail -f /dev/null"
-  run_command: "node /tmp/safactory-openclaw-runner.mjs"
 ```
 
 Multi-agent form:
@@ -187,11 +187,17 @@ agents:
   openclaw:
     container:
       workdir: /workspace
-      run_command: "node /tmp/runner.mjs"
+      runner_entrypoint:
+        source: ./env/openclaw/runner.mjs
+        target: /tmp/runner.mjs
+        command: "node /tmp/runner.mjs"
   openrt:
     container:
       workdir: /app
-      run_command: "python /tmp/runner.py"
+      runner_entrypoint:
+        source: ./env/openrt/runner.py
+        target: /tmp/runner.py
+        command: "python /tmp/runner.py"
 ```
 
 Docker container fields:
@@ -199,8 +205,9 @@ Docker container fields:
 | Field | Description |
 |-------|-------------|
 | `workdir` | Working directory for `docker exec`. |
+| `runner_entrypoint` | Runner entrypoint for one episode. `source` is resolved relative to the start config file, mounted into Docker or embedded into RJob when local, and `command` is executed for each episode. |
 | `idle_command` | Command used to keep an allocated container alive. |
-| `run_command` | Command executed for each episode. It reads request JSON from stdin and prints result JSON to stdout. |
+| `run_command` | Legacy command field. Prefer `runner_entrypoint.command`. |
 | `result_mode` | `json` by default. `exit_code` treats a zero exit code as success. |
 | `network`, `platform` | Optional Docker runtime settings. |
 | `env` | Environment variables injected into the container. |
@@ -253,14 +260,11 @@ rjob:
     cpu: 1
     gpu: 0
     memory_in_mb: 1024
-  embedded_files:
-    - source: ./runner.py
-      target: /tmp/safactory-openrt-runner.py
   mount_config:
     - "gpfs+gpfs://gpfs1/path/data:/app/data"
 ```
 
-Supported per-agent RJob keys include connection overrides, image pull policy, `resources`, `requests`, `env`, `labels`, `annotations`, `affinity`, `mount_config`, `mount`, `before_script`, `depends_on`, `embedded_files`, `replicas`, `poll_interval_s`, `termination_grace_period_seconds`, `local_storage_in_mb`, and cleanup flags.
+When `container.runner_entrypoint.source` points to a local file, RJob mode embeds that file automatically. Supported per-agent RJob keys include connection overrides, image pull policy, `resources`, `requests`, `env`, `labels`, `annotations`, `affinity`, `mount_config`, `mount`, `before_script`, `depends_on`, `embedded_files` for additional files, `replicas`, `poll_interval_s`, `termination_grace_period_seconds`, `local_storage_in_mb`, and cleanup flags.
 
 ## Useful Environment Variables
 

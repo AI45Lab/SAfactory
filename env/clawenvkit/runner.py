@@ -399,7 +399,7 @@ def _persist_result_artifact(result: dict[str, Any]) -> None:
         tmp_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         tmp_path.replace(path)
     except Exception as exc:
-        print(f"SAFACTORY_OPENCLAW_DIAGNOSTIC result_artifact_write_failed: {exc}", file=sys.stderr, flush=True)
+        print(f"SAFACTORY_RUNNER_DIAGNOSTIC result_artifact_write_failed: {exc}", file=sys.stderr, flush=True)
 
 
 def _failure_result(session_id: str, error_text: str, started_at: float, *, truncated: bool = False) -> dict[str, Any]:

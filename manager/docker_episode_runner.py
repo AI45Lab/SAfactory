@@ -7,7 +7,7 @@ import subprocess
 from typing import List
 
 from .episode_common import (
-    RUNNER_DIAGNOSTIC_PREFIX,
+    RUNNER_DIAGNOSTIC_PREFIXES,
     json_for_log,
     normalize_result,
     parse_result_artifact,
@@ -41,20 +41,20 @@ class DockerEpisodeRunner:
         request_params, payload = request_payload(request)
         cmd = self._docker_exec_cmd(lease, request, payload)
         log.debug(
-            "runner entrypoint docker exec command: agent=%s/%s container=%s command=%s",
+            "runner entrypoint docker exec command: env=%s agent_id=%s container=%s command=%s",
             lease.agent_name,
             lease.agent_id,
             lease.container_name or lease.container_id,
             self._cmd_for_log(cmd),
         )
         log.debug(
-            "runner entrypoint request params: agent=%s/%s params=%s",
+            "runner entrypoint request params: env=%s agent_id=%s params=%s",
             lease.agent_name,
             lease.agent_id,
             json_for_log(request_params),
         )
         log.debug(
-            "runner entrypoint result artifact: agent=%s/%s path=%s",
+            "runner entrypoint result artifact: env=%s agent_id=%s path=%s",
             lease.agent_name,
             lease.agent_id,
             result_artifact_path(request),
@@ -63,7 +63,7 @@ class DockerEpisodeRunner:
             result = await asyncio.to_thread(self._run, cmd, payload)
         except subprocess.TimeoutExpired as exc:
             log.warning(
-                "runner entrypoint docker exec timed out: agent=%s/%s container=%s timeout_s=%.2f",
+                "runner entrypoint docker exec timed out: env=%s agent_id=%s container=%s timeout_s=%.2f",
                 lease.agent_name,
                 lease.agent_id,
                 lease.container_name or lease.container_id,
@@ -128,11 +128,12 @@ class DockerEpisodeRunner:
     def _log_runner_diagnostics(cls, stderr: str, lease: SimulationAgentLease) -> None:
         for raw_line in (stderr or "").splitlines():
             line = raw_line.strip()
-            if not line.startswith(RUNNER_DIAGNOSTIC_PREFIX):
+            prefix = next((item for item in RUNNER_DIAGNOSTIC_PREFIXES if line.startswith(item)), "")
+            if not prefix:
                 continue
-            payload = line[len(RUNNER_DIAGNOSTIC_PREFIX) :].strip()
+            payload = line[len(prefix) :].strip()
             log.debug(
-                "runner entrypoint create params: agent=%s/%s container=%s params=%s",
+                "runner entrypoint diagnostic: env=%s agent_id=%s container=%s payload=%s",
                 lease.agent_name,
                 lease.agent_id,
                 lease.container_name or lease.container_id,

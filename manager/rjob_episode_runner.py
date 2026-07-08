@@ -113,7 +113,7 @@ class RJobEpisodeRunner:
             )
 
             log.debug(
-                "OpenClaw RJob submit params: agent=%s/%s name=%s params=%s",
+                "RJob submit params: env=%s agent_id=%s rjob=%s params=%s",
                 lease.agent_name,
                 lease.agent_id,
                 rjob_name,

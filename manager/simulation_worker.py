@@ -479,8 +479,9 @@ class SimulationWorkerGroup:
             result = await self.agent_start_client.start(lease, request)
         except Exception as exc:
             log.warning(
-                "worker=%d agent=%s/%s OpenClaw start failed: %s",
+                "worker=%d runtime=%s env=%s agent_id=%s start failed: %s",
                 worker_id,
+                lease.runtime,
                 lease.agent_name,
                 lease.agent_id,
                 exc,
@@ -498,8 +499,9 @@ class SimulationWorkerGroup:
 
         if result.status != "succeeded":
             log.warning(
-                "worker=%d agent=%s/%s returned status=%s error=%s",
+                "worker=%d runtime=%s env=%s agent_id=%s returned status=%s error=%s",
                 worker_id,
+                lease.runtime,
                 lease.agent_name,
                 lease.agent_id,
                 result.status,

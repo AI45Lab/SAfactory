@@ -15,7 +15,7 @@ log = logging.getLogger("manager")
 
 class AgentPoolManager:
     """
-    OpenClaw scheduler facade.
+    Safactory runtime scheduler facade.
 
     It exposes ready runtime leases and refills from the DB after each episode.
     Docker mode warms containers; RJob mode reserves rows and submits the remote
@@ -40,7 +40,7 @@ class AgentPoolManager:
         self._pool_size = int(self.cfg.get("pool_size", 0) or 0)
         self._mode = str(self.cfg.get("mode", "docker") or "docker").strip().lower()
         if self._mode not in {"docker", "rjob"}:
-            raise ValueError(f"Unsupported OpenClaw workflow mode: {self._mode!r}")
+            raise ValueError(f"Unsupported runtime workflow mode: {self._mode!r}")
         self._row_wait_timeout_s = float(self.cfg.get("row_wait_timeout_s", 60.0) or 60.0)
         self._row_fetch_timeout_s = float(self.cfg.get("row_fetch_timeout_s", 30.0) or 30.0)
 
@@ -82,7 +82,7 @@ class AgentPoolManager:
 
             self._initialized = True
             log.info(
-                "OpenClaw %s scheduler started: pool_size=%d job_id=%s",
+                "Safactory %s scheduler started: pool_size=%d job_id=%s",
                 self._mode,
                 self._pool_size,
                 self._job_id or "<all>",
@@ -130,4 +130,4 @@ class AgentPoolManager:
             return DockerLeaseAllocator(cluster_cfg=cluster_cfg)
         if self._mode == "rjob":
             return RJobLeaseAllocator(cluster_cfg=cluster_cfg)
-        raise ValueError(f"Unsupported OpenClaw workflow mode: {self._mode!r}")
+        raise ValueError(f"Unsupported runtime workflow mode: {self._mode!r}")

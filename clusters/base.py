@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 class ClusterBackend(ABC):
     """
-    Strategy interface for the current OpenClaw Docker workflow.
+    Strategy interface for Safactory runtime allocation backends.
     """
 
     @abstractmethod

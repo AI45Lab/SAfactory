@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 const PROVIDER_ID = process.env.SAFACTORY_OPENCLAW_PROVIDER_ID || "safactory";
 const DEFAULT_HOST_GATEWAY = process.env.SAFACTORY_DOCKER_HOST_GATEWAY || "host.docker.internal";
-const DIAGNOSTIC_PREFIX = "SAFACTORY_OPENCLAW_DIAGNOSTIC ";
+const DIAGNOSTIC_PREFIX = "SAFACTORY_RUNNER_DIAGNOSTIC ";
 
 async function main() {
   const startedAt = Date.now();

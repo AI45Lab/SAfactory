@@ -126,7 +126,7 @@ Files:
 
 - `env/dtap/dtap_config.yaml`
 - `env/dtap/dtap_start.yaml`
-- `clusters/dtap_safactory_runner.py`
+- `env/dtap/runner.py`
 
 DTAP runs DecodingTrust-Agent tasks. The start config mounts:
 
@@ -151,7 +151,7 @@ Files:
 
 - `env/clawenvkit/clawenvkit_config.yaml`
 - `env/clawenvkit/clawenvkit_start.yaml`
-- `clusters/clawenvkit_safactory_runner.py`
+- `env/clawenvkit/runner.py`
 
 ClawEnvKit runs Auto-ClawEval-style tasks with an OpenClaw harness. Update dataset and result mounts before running.
 

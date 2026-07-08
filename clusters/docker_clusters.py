@@ -95,7 +95,7 @@ def _merge_dicts(*values: Any) -> Dict[str, Any]:
 
 class DockerContainerBackend(ClusterBackend):
     """
-    OpenClaw Docker backend.
+    Docker backend for Safactory runtime containers.
 
     It owns Docker container lifecycle only. Agent runs are executed later with
     docker exec, so containers no longer need to expose an HTTP service.
@@ -107,7 +107,7 @@ class DockerContainerBackend(ClusterBackend):
         self._env_types = dict(self._cluster_cfg.get("env_types", {}) or {})
 
         self.docker_bin = str(self._docker_cfg.get("bin", "docker") or "docker")
-        self._name_prefix = _safe_name(str(self._docker_cfg.get("name_prefix", "safactory-openclaw")))
+        self._name_prefix = _safe_name(str(self._docker_cfg.get("name_prefix", "safactory-runtime")))
         self._startup_concurrency = max(1, int(self._docker_cfg.get("startup_concurrency", 8) or 8))
         self._cleanup_container_on_finish = bool(self._docker_cfg.get("cleanup_container_on_finish", True))
         self._remove_on_close = bool(
@@ -156,7 +156,7 @@ class DockerContainerBackend(ClusterBackend):
         if self._cleanup_stale_on_start:
             await self._cleanup_stale_containers_on_start()
         await self.validate_images(plan)
-        log.info("OpenClaw Docker backend ready for %d agent image(s)", len(plan.env_to_image))
+        log.info("Docker runtime backend ready for %d agent image(s)", len(plan.env_to_image))
 
     async def validate_images(self, plan: BindingPlan) -> None:
         missing_local: List[str] = []
@@ -252,7 +252,7 @@ class DockerContainerBackend(ClusterBackend):
             return
         if not self._cleanup_container_on_finish:
             log.info(
-                "preserving Docker container after run: agent=%s container=%s id=%s",
+                "preserving Docker container after run: env=%s container=%s id=%s",
                 record.env_name,
                 record.container_name,
                 record.container_id,
@@ -303,7 +303,7 @@ class DockerContainerBackend(ClusterBackend):
                 await asyncio.sleep(self._remove_retry_delay_s)
 
         log.warning(
-            "failed to remove Docker container after %d attempt(s): agent=%s container=%s id=%s",
+            "failed to remove Docker container after %d attempt(s): env=%s container=%s id=%s",
             self._remove_retries,
             record.env_name,
             record.container_name,
@@ -455,7 +455,7 @@ class DockerContainerBackend(ClusterBackend):
                     "--filter",
                     "label=safactory.managed=true",
                     "--filter",
-                    "label=safactory.component=openclaw",
+                    "label=safactory.component=runtime",
                     "--filter",
                     f"label=safactory.job_id={job_id}",
                 ],
@@ -528,15 +528,15 @@ class DockerContainerBackend(ClusterBackend):
         if runner_host_path is None:
             runner_host_path = self._runner_host_path
         if runner_host_path is None or not runner_host_path.is_file():
-            raise RuntimeError(f"OpenClaw runner script not found: {runner_host_path}")
+            raise RuntimeError(f"Safactory runner script not found: {runner_host_path}")
 
         await self._run_required(
             [self.docker_bin, "cp", str(runner_host_path), f"{record.container_id}:{self._runner_container_path}"],
-            action=f"install Safactory OpenClaw runner in {record.container_name}",
+            action=f"install Safactory runner in {record.container_name}",
             timeout_s=self._start_timeout_s,
         )
         log.debug(
-            "installed Safactory OpenClaw runner into %s:%s",
+            "installed Safactory runner into %s:%s",
             record.container_name,
             self._runner_container_path,
         )
@@ -574,17 +574,17 @@ class DockerContainerBackend(ClusterBackend):
             workdir=workdir,
         )
         log.info(
-            "Docker container create command: agent=%s image=%s command=%s",
+            "Docker container create command: env=%s image=%s command=%s",
             env_name,
             image,
             self._cmd_for_log(run_cmd),
         )
         log.info(
-            "Docker container create params: agent=%s params=%s",
+            "Docker container create params: env=%s params=%s",
             env_name,
             self._json_for_log(
                 {
-                    "agent": env_name,
+                    "env": env_name,
                     "image": image,
                     "container_name": container_name,
                     "docker_bin": self.docker_bin,
@@ -610,19 +610,23 @@ class DockerContainerBackend(ClusterBackend):
                     "remove_timeout_s": self._remove_timeout_s,
                     "remove_retries": self._remove_retries,
                     "remove_retry_delay_s": self._remove_retry_delay_s,
-                    "runner_container_path": self._runner_container_path,
                     "install_runner_script": bool(install_runner),
+                    **(
+                        {"runner_container_path": self._runner_container_path}
+                        if install_runner
+                        else {}
+                    ),
                 }
             ),
         )
         result = await self._run_required(
             run_cmd,
-            action=f"start OpenClaw container for {env_name}",
+            action=f"start Docker runtime container for {env_name}",
             timeout_s=self._start_timeout_s,
         )
         container_id = result.stdout.strip().splitlines()[-1].strip()
         if not container_id:
-            raise RuntimeError(f"docker run returned empty container id for agent={env_name} image={image}")
+            raise RuntimeError(f"docker run returned empty container id for env={env_name} image={image}")
 
         record = DockerContainerRecord(
             key=self._container_key(env_name, image),
@@ -652,7 +656,7 @@ class DockerContainerBackend(ClusterBackend):
             raise
         self._containers[container_id] = record
         log.info(
-            "OpenClaw container ready: agent=%s image=%s container=%s reuse=%s",
+            "Docker runtime container ready: env=%s image=%s container=%s reuse=%s",
             env_name,
             image,
             container_name,
@@ -683,7 +687,8 @@ class DockerContainerBackend(ClusterBackend):
         labels.update(
             {
                 "safactory.managed": "true",
-                "safactory.component": "openclaw",
+                "safactory.component": "runtime",
+                "safactory.runtime": "docker",
                 "safactory.env_name": _safe_name(env_name),
             }
         )
@@ -740,7 +745,7 @@ class DockerContainerBackend(ClusterBackend):
         if result.returncode == 0:
             return True
         log.warning(
-            "OpenClaw container %s failed %s command: stdout=%r stderr=%r",
+            "Docker runtime container %s failed %s command: stdout=%r stderr=%r",
             record.container_name,
             action,
             (result.stdout or "").strip()[-1000:],

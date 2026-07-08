@@ -9,10 +9,10 @@
 | 组件 | 位置 | 作用 | 示例 |
 |------|------|------|------|
 | `image` | `agent config` 的 `env_image`，RJob 可在 start config 里覆盖 | 运行时镜像。包含 agent/bench 依赖、benchmark harness、Python/Node 运行环境等。 | `myagent-image:latest`、`mybench-image:latest` |
-| `runner` | `env/<name>/runner.py`，并由 `start_config.container.run_command` 调用 | Safactory 和原生 agent/bench 之间的适配层。读取 `SimulationStartRequest`，取出 `env_params.dataset`，调用 gateway 中的被测模型，运行一个 task/case，向 stdout 输出 result JSON。 | `python /tmp/safactory-mybench-runner.py` |
+| `runner_entrypoint` | 通常是 `env/<name>/runner.py` 或 `env/<name>/runner.mjs`，并由 `start_config.container.runner_entrypoint.command` 调用 | Safactory 和原生 agent/bench 之间的适配层。读取 `SimulationStartRequest`，取出 `env_params.dataset`，调用 gateway 中的被测模型，运行一个 task/case，向 stdout 输出 result JSON。 | `python /tmp/safactory-mybench-runner.py` |
 | `rule_evaluator` | 可选，常见为 `env/<name>/rule_evaluator.py` | 把 runner 写入 `metrics` 的原始 bench 结果和 gateway 轨迹转换为 Safactory 的 0 到 10 分 reward。纯 agent smoke test 可以先不写；bench 通常建议写。 | `env/mybench/rule_evaluator.py` |
 | `config` | `env/<name>/<name>_config.yaml` | 定义 task 行：`env_name`、`env_image`、`dataset`、`env_num`、`env_params`，以及可选 evaluation 配置。 | `env/mybench/mybench_config.yaml` |
-| `start_config` | `env/<name>/<name>_start.yaml` | 定义同名 runtime 如何启动：挂载 runner、设置 workdir/env、Docker/RJob 参数、`run_command`。`agent_name` 必须匹配 `config` 里的 `env_name`。 | `env/mybench/mybench_start.yaml` |
+| `start_config` | `env/<name>/<name>_start.yaml` | 定义同名 runtime 如何启动：runner entrypoint、workdir/env、Docker/RJob 参数和额外挂载。`agent_name` 必须匹配 `config` 里的 `env_name`。 | `env/mybench/mybench_start.yaml` |
 
 Agent 和 bench 的差别主要在 runner 和 evaluator：
 
@@ -229,7 +229,7 @@ environments:
 
 ## 5. 添加 Agent Start Config
 
-Start config 描述 image 被拉起后如何执行 runner。通常把 runner 文件 mount 到容器里；如果 runner 已经 bake 进 image，也可以只写容器内路径。`run_command` 是每个 task/case 都会执行一次的命令，它必须读取 request JSON 并输出 result JSON。
+Start config 描述 image 被拉起后如何执行 runner entrypoint。`runner_entrypoint.command` 是每个 task/case 都会执行一次的命令，它必须读取 request JSON 并输出 result JSON。当 `runner_entrypoint.source` 指向本地文件时，Docker 会挂载它，RJob 会自动嵌入它；该 source 路径相对 start config 文件解析。
 
 创建 `env/myagent/myagent_start.yaml`：
 
@@ -238,10 +238,11 @@ agent_name: myagent
 
 container:
   workdir: /workspace
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-myagent-runner.py
+    command: "python /tmp/safactory-myagent-runner.py"
   mounts:
-    - source: ./env/myagent/runner.py
-      target: /tmp/safactory-myagent-runner.py
-      mode: ro
     - source: ./results
       target: /workspace/Safactory/results
       mode: rw
@@ -252,7 +253,6 @@ container:
   extra_args:
     - --add-host=host.docker.internal:host-gateway
   idle_command: "tail -f /dev/null"
-  run_command: "python /tmp/safactory-myagent-runner.py"
 ```
 
 Bench 的 start config 写法完全相同，只是换成 bench image 和 bench runner：
@@ -262,10 +262,11 @@ agent_name: mybench
 
 container:
   workdir: /workspace/MyBench
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-mybench-runner.py
+    command: "python /tmp/safactory-mybench-runner.py"
   mounts:
-    - source: ./env/mybench/runner.py
-      target: /tmp/safactory-mybench-runner.py
-      mode: ro
     - source: ./results
       target: /workspace/Safactory/results
       mode: rw
@@ -276,7 +277,6 @@ container:
   extra_args:
     - --add-host=host.docker.internal:host-gateway
   idle_command: "tail -f /dev/null"
-  run_command: "python /tmp/safactory-mybench-runner.py"
 ```
 
 `agent_name: mybench` 必须和 `mybench_config.yaml` 里的 `env_name: mybench` 一致；否则 launcher 找不到对应的启动方式。

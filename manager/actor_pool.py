@@ -249,7 +249,7 @@ class RuntimeAgentPool:
         async with self._lock:
             self._pool[(env_name, env_id)] = entry
         log.debug(
-            "allocated %s lease: agent=%s/%s resource=%s reuse=%s",
+            "allocated %s lease: env=%s agent_id=%s resource=%s reuse=%s",
             entry.runtime,
             env_name,
             env_id,

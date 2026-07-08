@@ -165,19 +165,19 @@ agent_name: openclaw
 
 container:
   workdir: /workspace
+  runner_entrypoint:
+    source: ./runner.mjs
+    target: /tmp/safactory-openclaw-runner.mjs
+    command: "node /tmp/safactory-openclaw-runner.mjs"
   mounts:
     - source: ./env/openclaw/workspace
       target: /workspace
       mode: rw
-    - source: ./env/openclaw/runner.mjs
-      target: /tmp/safactory-openclaw-runner.mjs
-      mode: ro
   env:
     NO_COLOR: "1"
   extra_args:
     - --add-host=host.docker.internal:host-gateway
   idle_command: "tail -f /dev/null"
-  run_command: "node /tmp/safactory-openclaw-runner.mjs"
 ```
 
 多 agent 写法：
@@ -187,11 +187,17 @@ agents:
   openclaw:
     container:
       workdir: /workspace
-      run_command: "node /tmp/runner.mjs"
+      runner_entrypoint:
+        source: ./env/openclaw/runner.mjs
+        target: /tmp/runner.mjs
+        command: "node /tmp/runner.mjs"
   openrt:
     container:
       workdir: /app
-      run_command: "python /tmp/runner.py"
+      runner_entrypoint:
+        source: ./env/openrt/runner.py
+        target: /tmp/runner.py
+        command: "python /tmp/runner.py"
 ```
 
 Docker container 字段：
@@ -199,8 +205,9 @@ Docker container 字段：
 | 字段 | 说明 |
 |------|------|
 | `workdir` | `docker exec` 的工作目录。 |
+| `runner_entrypoint` | 单个 episode 的 runner entrypoint。`source` 相对 start config 文件解析；本地文件会在 Docker 中挂载、在 RJob 中嵌入；`command` 是每个 episode 执行的命令。 |
 | `idle_command` | 让已分配容器保持存活的命令。 |
-| `run_command` | 每个 episode 执行的命令。它从 stdin 读取 request JSON，并向 stdout 输出 result JSON。 |
+| `run_command` | 兼容旧配置的命令字段。新配置优先使用 `runner_entrypoint.command`。 |
 | `result_mode` | 默认 `json`。`exit_code` 会把 0 exit code 视为成功。 |
 | `network`, `platform` | 可选 Docker runtime 设置。 |
 | `env` | 注入容器的环境变量。 |
@@ -253,14 +260,11 @@ rjob:
     cpu: 1
     gpu: 0
     memory_in_mb: 1024
-  embedded_files:
-    - source: ./runner.py
-      target: /tmp/safactory-openrt-runner.py
   mount_config:
     - "gpfs+gpfs://gpfs1/path/data:/app/data"
 ```
 
-支持的 per-agent RJob key 包括连接覆盖、image pull policy、`resources`、`requests`、`env`、`labels`、`annotations`、`affinity`、`mount_config`、`mount`、`before_script`、`depends_on`、`embedded_files`、`replicas`、`poll_interval_s`、`termination_grace_period_seconds`、`local_storage_in_mb` 和清理相关 flags。
+当 `container.runner_entrypoint.source` 指向本地文件时，RJob 模式会自动嵌入该文件。支持的 per-agent RJob key 包括连接覆盖、image pull policy、`resources`、`requests`、`env`、`labels`、`annotations`、`affinity`、`mount_config`、`mount`、`before_script`、`depends_on`、用于额外文件的 `embedded_files`、`replicas`、`poll_interval_s`、`termination_grace_period_seconds`、`local_storage_in_mb` 和清理相关 flags。
 
 ## 常用环境变量
 
