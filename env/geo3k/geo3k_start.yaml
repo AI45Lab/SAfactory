@@ -1,0 +1,28 @@
+agent_name: geo3k
+
+container:
+  workdir: /workspace
+  # Mount the whole env/geo3k dir so runner.py can import math_utils.py next to it.
+  runner_entrypoint:
+    source: ./
+    target: /tmp/safactory-geo3k
+    # Minimal image path: install the three pure-python deps on first run, then
+    # run the runner. `pip install` is a fast no-op once the layer is warm.
+    # For production, bake requests+sympy+pylatexenc into a custom image and
+    # replace this with `python /tmp/safactory-geo3k/runner.py`.
+    command: "pip install -q --disable-pip-version-check requests sympy pylatexenc && python /tmp/safactory-geo3k/runner.py"
+
+  mounts:
+    - source: ./results
+      target: /workspace/Safactory/results
+      mode: rw
+
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
+    no_proxy: host.docker.internal,localhost,127.0.0.1,::1
+
+  extra_args:
+    - --add-host=host.docker.internal:host-gateway
+
+  idle_command: "tail -f /dev/null"
