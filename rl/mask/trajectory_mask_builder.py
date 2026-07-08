@@ -69,12 +69,13 @@ class TrajectoryMaskBuilder:
         eos_id = getattr(self.tokenizer, "eos_token_id", None)
         if eos_id is None:
             return []
-
-        test_tokens = self.tokenizer.apply_chat_template(
+        
+        test_text = self.tokenizer.apply_chat_template(
             BASE_CHAT_HISTORY + [{"role": "assistant", "content": "response"}],
             add_generation_prompt=False,
-            tokenize=True,
+            tokenize=False,
         )
+        test_tokens = list(self.tokenizer.encode(test_text, add_special_tokens=False))
         for idx in range(len(test_tokens) - 1, -1, -1):
             if test_tokens[idx] == eos_id:
                 return list(test_tokens[idx + 1 :])
