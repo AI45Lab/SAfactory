@@ -24,6 +24,8 @@ DEFAULT_REPO_ROOT = "/Users/bin-mac/CodeX/WildClawBench"
 DEFAULT_OUTPUT_SUBDIR = "output/safactory"
 DEFAULT_TMP_WORKSPACE = "/tmp_workspace"
 TRANSCRIPT_PATH = Path("/root/.openclaw/agents/main/sessions/chat.jsonl")
+RESULT_JSON_PREFIX = "SAFACTORY_RESULT_JSON "
+RESULT_PATH_ENV = "SAFACTORY_RESULT_PATH"
 
 
 def main() -> int:
@@ -195,7 +197,9 @@ def main() -> int:
 
 
 def _read_request() -> dict[str, Any]:
-    raw = sys.stdin.read()
+    raw = sys.stdin.read().strip() or os.environ.get("SAFACTORY_START_REQUEST_JSON", "").strip()
+    if not raw:
+        raise RuntimeError("SimulationStartRequest JSON was not provided on stdin")
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise RuntimeError("SimulationStartRequest must be a JSON object")
@@ -638,8 +642,23 @@ def _write_failure(session_id: str, error: str, started_at: float) -> int:
 
 
 def _write_result(result: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+    _persist_result_artifact(result)
+    sys.stdout.write(RESULT_JSON_PREFIX + json.dumps(result, ensure_ascii=False) + "\n")
     sys.stdout.flush()
+
+
+def _persist_result_artifact(result: dict[str, Any]) -> None:
+    raw_path = str(os.environ.get(RESULT_PATH_ENV) or "").strip()
+    if not raw_path:
+        return
+    try:
+        path = Path(raw_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(path.name + ".tmp")
+        tmp_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp_path.replace(path)
+    except Exception as exc:
+        print(f"SAFACTORY_OPENCLAW_DIAGNOSTIC result_artifact_write_failed: {exc}", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

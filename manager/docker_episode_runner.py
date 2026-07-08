@@ -10,9 +10,11 @@ from .episode_common import (
     RUNNER_DIAGNOSTIC_PREFIX,
     json_for_log,
     normalize_result,
+    parse_result_artifact,
     parse_result_output,
     request_env,
     request_payload,
+    result_artifact_path,
     tail,
 )
 from .types import SimulationAgentLease, SimulationStartRequest, SimulationStartResult
@@ -50,6 +52,12 @@ class DockerEpisodeRunner:
             lease.agent_name,
             lease.agent_id,
             json_for_log(request_params),
+        )
+        log.debug(
+            "runner entrypoint result artifact: agent=%s/%s path=%s",
+            lease.agent_name,
+            lease.agent_id,
+            result_artifact_path(request),
         )
         try:
             result = await asyncio.to_thread(self._run, cmd, payload)
@@ -93,8 +101,7 @@ class DockerEpisodeRunner:
                 f"returncode={result.returncode} "
                 f"stdout={tail(result.stdout)} stderr={tail(result.stderr)}"
             )
-        body = parse_result_output(result.stdout)
-        return normalize_result(body, session_id=request.session_id)
+        return self._collect_json_result(result.stdout, request)
 
     async def close(self) -> None:
         return
@@ -141,6 +148,36 @@ class DockerEpisodeRunner:
             timeout=self.timeout_s,
             check=False,
         )
+
+    def _collect_json_result(
+        self,
+        stdout: str,
+        request: SimulationStartRequest,
+    ) -> SimulationStartResult:
+        try:
+            body = parse_result_output(stdout)
+            result = normalize_result(body, session_id=request.session_id)
+            result.metrics = dict(result.metrics or {})
+            result.metrics.setdefault("result_source", "stdout")
+            return result
+        except Exception as stdout_exc:
+            try:
+                body, path = parse_result_artifact(request)
+            except Exception as artifact_exc:
+                raise RuntimeError(
+                    "runner entrypoint produced no parseable SimulationStartResult: "
+                    f"stdout_error={stdout_exc}; artifact_error={artifact_exc}"
+                ) from artifact_exc
+            result = normalize_result(body, session_id=request.session_id)
+            result.metrics = dict(result.metrics or {})
+            result.metrics.update(
+                {
+                    "result_source": "artifact",
+                    "result_artifact_path": str(path),
+                    "stdout_parse_error": str(stdout_exc),
+                }
+            )
+            return result
 
     def _timeout_result(
         self,

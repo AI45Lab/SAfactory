@@ -17,9 +17,12 @@ from core.perf_trace import PerfTrace
 from .episode_common import (
     json_for_log,
     normalize_result,
+    parse_result_artifact,
     parse_result_output,
     request_env,
     request_payload,
+    result_artifact_candidates,
+    result_artifact_path,
     tail,
 )
 from .types import SimulationAgentLease, SimulationStartRequest, SimulationStartResult
@@ -64,6 +67,7 @@ class RJobEpisodeRunner:
         submitted_name = ""
         terminal_status = "Unknown"
         logs_text = ""
+        logs_error = ""
         result: SimulationStartResult | None = None
         timings_ms: Dict[str, float] = {}
         status_poll_count = 0
@@ -119,6 +123,7 @@ class RJobEpisodeRunner:
                         "image": lease.image,
                         "workdir": lease.workdir,
                         "run_command": lease.run_command,
+                        "result_artifact_path": result_artifact_path(request),
                         "submit": submit_kwargs,
                         "resources": cfg.get("resources") or cfg.get("default_resources") or {},
                         "mount_config": cfg.get("mount_config") or [],
@@ -166,24 +171,9 @@ class RJobEpisodeRunner:
                 timings_ms["rjob_fetch_logs_ms"] = _elapsed_ms(started)
                 trace.mark("logs_fetched", log_chars=len(logs_text))
             except Exception as exc:
-                result = SimulationStartResult(
-                    session_id=request.session_id,
-                    status="failed",
-                    total_reward=0.0,
-                    step_count=0,
-                    terminated=True,
-                    truncated=False,
-                    error_text=f"RJob {submitted_name} finished with status={terminal_status}, but logs_rjob failed: {exc}",
-                    metrics={
-                        "runtime": "rjob",
-                        "rjob_name": submitted_name,
-                        "rjob_status": terminal_status,
-                        "logs_error": str(exc),
-                    },
-                )
-                summary_status = result.status
-                summary_extra = {"logs_error": str(exc), "error_type": type(exc).__name__}
-                return result
+                logs_error = str(exc)
+                timings_ms["rjob_fetch_logs_ms"] = _elapsed_ms(started)
+                trace.mark("logs_fetch_failed", error=logs_error, error_type=type(exc).__name__)
 
             started = time.perf_counter()
             with trace.span("parse_result", submitted_rjob_name=submitted_name, terminal_status=terminal_status):
@@ -194,6 +184,9 @@ class RJobEpisodeRunner:
                     request=request,
                     job_name=submitted_name,
                 )
+            if logs_error:
+                result.metrics = dict(result.metrics or {})
+                result.metrics["logs_error"] = logs_error
             timings_ms["rjob_parse_result_ms"] = _elapsed_ms(started)
             summary_status = result.status
             return result
@@ -315,25 +308,42 @@ class RJobEpisodeRunner:
         try:
             body = parse_result_output(logs_text)
             result = normalize_result(body, session_id=request.session_id)
+            result_source = "stdout"
+            artifact_source_path = ""
+            stdout_parse_error = ""
         except Exception as exc:
-            return SimulationStartResult(
-                session_id=request.session_id,
-                status="failed",
-                total_reward=0.0,
-                step_count=0,
-                terminated=True,
-                truncated=False,
-                error_text=(
+            stdout_parse_error = str(exc)
+            try:
+                body, artifact_path = parse_result_artifact(request)
+                result = normalize_result(body, session_id=request.session_id)
+                result_source = "artifact"
+                artifact_source_path = str(artifact_path)
+            except Exception as artifact_exc:
+                artifact_path_text = result_artifact_path(request)
+                candidates = [str(path) for path in result_artifact_candidates(request, artifact_path_text)]
+                error_text = (
                     f"RJob {job_name} finished with status={terminal_status}, "
-                    f"but no SimulationStartResult JSON could be parsed: {exc}"
-                ),
-                metrics={
-                    "runtime": "rjob",
-                    "rjob_name": job_name,
-                    "rjob_status": terminal_status,
-                    "logs_tail": tail(logs_text),
-                },
-            )
+                    f"but no SimulationStartResult JSON could be parsed: {stdout_parse_error}; "
+                    f"artifact_error={artifact_exc}"
+                )
+                if candidates:
+                    error_text += f"; artifact_candidates={candidates}"
+                return SimulationStartResult(
+                    session_id=request.session_id,
+                    status="failed",
+                    total_reward=0.0,
+                    step_count=0,
+                    terminated=True,
+                    truncated=False,
+                    error_text=error_text,
+                    metrics={
+                        "runtime": "rjob",
+                        "rjob_name": job_name,
+                        "rjob_status": terminal_status,
+                        "result_artifact_path": artifact_path_text,
+                        "logs_tail": tail(logs_text),
+                    },
+                )
 
         result.metrics = dict(result.metrics or {})
         result.metrics.update(
@@ -342,8 +352,14 @@ class RJobEpisodeRunner:
                 "rjob_name": job_name,
                 "rjob_status": terminal_status,
                 "logs_tail": tail(logs_text),
+                "result_source": result_source,
             }
         )
+        if artifact_source_path:
+            result.metrics["result_artifact_path"] = artifact_source_path
+        if stdout_parse_error:
+            result.metrics["stdout_parse_error"] = stdout_parse_error
+
         if terminal_status in RJOB_FAILED_STATUSES and result.status == "succeeded":
             result.status = "failed"
             result.error_text = f"RJob {job_name} failed with status={terminal_status}"

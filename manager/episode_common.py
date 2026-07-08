@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, is_dataclass
+from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import urlsplit, urlunsplit
 
@@ -9,6 +10,9 @@ from .types import SimulationStartRequest, SimulationStartResult
 
 RUNNER_DIAGNOSTIC_PREFIX = "SAFACTORY_OPENCLAW_DIAGNOSTIC "
 RESULT_JSON_PREFIX = "SAFACTORY_RESULT_JSON "
+RESULT_PATH_ENV = "SAFACTORY_RESULT_PATH"
+DEFAULT_RESULT_ROOT = "/app/results"
+RESULT_FILENAME = "safactory_result.json"
 
 
 def request_payload(request: SimulationStartRequest) -> tuple[Dict[str, Any], str]:
@@ -56,6 +60,7 @@ def request_env(
             "1",
         ),
         "SAFACTORY_OUTPUT_SUBDIR": env_params.get("output_subdir"),
+        RESULT_PATH_ENV: result_artifact_path(request),
         "SAFACTORY_GATEWAY_BASE_URL": base_url,
         "SAFACTORY_GATEWAY_SESSION_URL": gateway_session_url,
         "SAFACTORY_GATEWAY_SESSION_URL_CONTAINER": runtime_session_url,
@@ -91,6 +96,84 @@ def containerize_local_gateway_url(url: str) -> str:
     if parts.port is not None:
         netloc = f"{netloc}:{parts.port}"
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def result_artifact_path(request: SimulationStartRequest) -> str:
+    env_params = request.env_params if isinstance(request.env_params, dict) else {}
+    dataset = env_params.get("dataset") if isinstance(env_params.get("dataset"), dict) else {}
+
+    explicit = first_text(
+        dataset.get("safactory_result_path"),
+        env_params.get("safactory_result_path"),
+    )
+    if explicit:
+        return explicit
+
+    root = first_text(
+        dataset.get("safactory_results_root"),
+        env_params.get("safactory_results_root"),
+        dataset.get("results_root"),
+        env_params.get("results_root"),
+        DEFAULT_RESULT_ROOT,
+    ).rstrip("/")
+    return "/".join(
+        [
+            root or DEFAULT_RESULT_ROOT,
+            safe_path_part(request.job_id),
+            safe_path_part(request.session_id),
+            RESULT_FILENAME,
+        ]
+    )
+
+
+def result_artifact_candidates(request: SimulationStartRequest, artifact_path: str | None = None) -> list[Path]:
+    raw = str(artifact_path or result_artifact_path(request) or "").strip()
+    if not raw:
+        return []
+
+    candidates: list[Path] = []
+
+    def add(path: Path) -> None:
+        if path not in candidates:
+            candidates.append(path)
+
+    path = Path(raw)
+    add(path)
+
+    marker_mappings = (
+        ("/app/results/", Path.cwd() / "results"),
+        ("/workspace/Safactory/results/", Path.cwd() / "results"),
+    )
+    for marker, local_root in marker_mappings:
+        if raw.startswith(marker):
+            add(local_root / raw[len(marker) :])
+
+    marker = "/results/"
+    if marker in raw:
+        add(Path.cwd() / "results" / raw.split(marker, 1)[1])
+
+    return candidates
+
+
+def parse_result_artifact(
+    request: SimulationStartRequest,
+    artifact_path: str | None = None,
+) -> tuple[Dict[str, Any], Path]:
+    candidates = result_artifact_candidates(request, artifact_path=artifact_path)
+    errors: list[str] = []
+    for path in candidates:
+        try:
+            if not path.is_file():
+                errors.append(f"{path}: not found")
+                continue
+            return json.loads(path.read_text(encoding="utf-8")), path
+        except json.JSONDecodeError as exc:
+            errors.append(f"{path}: invalid JSON: {exc.msg}")
+        except OSError as exc:
+            errors.append(f"{path}: {exc}")
+
+    detail = "; ".join(errors) if errors else "no candidate paths"
+    raise RuntimeError(f"SimulationStartResult artifact could not be read: {detail}")
 
 
 def parse_result_output(text: str) -> Dict[str, Any]:
@@ -144,6 +227,11 @@ def to_dict(result: Any) -> Dict[str, Any]:
 
 def json_for_log(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def safe_path_part(value: str) -> str:
+    text = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in str(value or "").strip())
+    return text.strip("._") or "item"
 
 
 def tail(value: str, limit: int = 1000) -> str:

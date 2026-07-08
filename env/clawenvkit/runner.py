@@ -19,6 +19,8 @@ DEFAULT_HARNESS_ENTRYPOINT = "/opt/clawenvkit/entrypoint_openclaw.sh"
 DEFAULT_WRITABLE_PLUGIN_DIR = "/tmp/clawenvkit-eval-plugin"
 DEFAULT_MODEL_REF = "openai/dsv4pro"
 DEFAULT_API_KEY = "dummy"
+RESULT_JSON_PREFIX = "SAFACTORY_RESULT_JSON "
+RESULT_PATH_ENV = "SAFACTORY_RESULT_PATH"
 
 
 def main() -> int:
@@ -374,12 +376,30 @@ def _reward(summary: dict[str, Any]) -> float:
 
 def _persist_result(results_dir: Path, result: dict[str, Any]) -> None:
     results_dir.mkdir(parents=True, exist_ok=True)
-    (results_dir / "safactory_result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    path = results_dir / "safactory_result.json"
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def _write_result(result: dict[str, Any]) -> None:
-    print(json.dumps(result, ensure_ascii=False))
+    _persist_result_artifact(result)
+    print(RESULT_JSON_PREFIX + json.dumps(result, ensure_ascii=False))
     sys.stdout.flush()
+
+
+def _persist_result_artifact(result: dict[str, Any]) -> None:
+    raw_path = str(os.environ.get(RESULT_PATH_ENV) or "").strip()
+    if not raw_path:
+        return
+    try:
+        path = Path(raw_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(path.name + ".tmp")
+        tmp_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp_path.replace(path)
+    except Exception as exc:
+        print(f"SAFACTORY_OPENCLAW_DIAGNOSTIC result_artifact_write_failed: {exc}", file=sys.stderr, flush=True)
 
 
 def _failure_result(session_id: str, error_text: str, started_at: float, *, truncated: bool = False) -> dict[str, Any]:
