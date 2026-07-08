@@ -6,11 +6,15 @@ export STORAGE_TYPE=sqlite
 export AIEVOBOX_DB_URL=sqlite:///${AIEVOBOX_ROOT}/rl/examples/geo3k_vl/geo3k_vl.db
 export AIEVOBOX_MAX_STEPS=10
 export AIEVOBOX_MESSAGE_CUT=0
-# ENV_CONFIG 指定单个 yaml 文件
-export AIEVOBOX_ENV_CONFIG=/root/AIEvoBox/env/geo3k_vl_test/geo3k_vl_test_env_configs.yaml
-# ENV_ROOT 指定读取目录下所有子目录的环境
-# export AIEVOBOX_ENV_ROOT=/root/AIEvoBox/env
-export AIEVOBOX_POOL_SIZE=256
+# v2: AGENT_CONFIG 指定单个 agent yaml；AGENT_START_CONFIG 指定容器启动 yaml。
+# 若不设 AGENT_START_CONFIG，buffer_server 会从 AGENT_CONFIG 自动推导
+# (<name>_config.yaml -> <name>_start.yaml)。
+export AIEVOBOX_AGENT_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_config.yaml
+export AIEVOBOX_AGENT_START_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_start.yaml
+# AGENT_ROOT 指定读取目录下所有子目录的环境（与 AGENT_CONFIG 二选一）
+# export AIEVOBOX_AGENT_ROOT=${AIEVOBOX_ROOT}/env
+# v2 docker 模式下每个 pool slot 是一个容器，pool_size 不宜过大。
+export AIEVOBOX_POOL_SIZE=16
 export AIEVOBOX_LLM_MAX_CONCURRENCY=$AIEVOBOX_POOL_SIZE
 export AIEVOBOX_LLM_PROXY_WORKERS=$AIEVOBOX_POOL_SIZE
 export AIEVOBOX_LLM_STARTUP_JITTER_S=0

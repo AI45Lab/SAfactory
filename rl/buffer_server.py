@@ -3,6 +3,7 @@ import copy
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -324,6 +325,15 @@ def start_aievobox_process(data: dict):
     launcher_script = os.path.join(aievobox_root, "launcher.py")
     agent_root = get_env("AIEVOBOX_AGENT_ROOT") or "env"
     agent_config = os.environ.get("AIEVOBOX_AGENT_CONFIG")
+    agent_start_config = os.environ.get("AIEVOBOX_AGENT_START_CONFIG")
+    # v2 docker/rjob runs need the container startup definition (env_types). When
+    # not set explicitly, derive it from the agent config path:
+    # env/<name>/<name>_config.yaml -> env/<name>/<name>_start.yaml.
+    if not agent_start_config and agent_config:
+        derived = re.sub(r"_config\.ya?ml$", "_start.yaml", agent_config)
+        if derived != agent_config and os.path.exists(derived):
+            agent_start_config = derived
+    mode = get_env("AIEVOBOX_MODE") or "docker"
     max_steps = int(get_env("AIEVOBOX_MAX_STEPS") or 10)
     llm_model = get_env("RL_MODEL") or "default"
     llm_temperature = float(get_env("LLM_TEMPERATURE") or 1.0)
@@ -333,10 +343,11 @@ def start_aievobox_process(data: dict):
 
     cmd = [
         "python3", launcher_script,
-        "--mode", "docker",
+        "--mode", mode,
         "--db-path", db_url,
         "--storage-type", storage_type,
         *(["--agent-config", agent_config] if agent_config else ["--agent-root", agent_root]),
+        *(["--agent-start-config", agent_start_config] if agent_start_config else []),
         "--gateway-base-url", gateway_base_url,
         "--llm-model", llm_model,
         "--llm-temperature", str(llm_temperature),
