@@ -178,13 +178,14 @@ python launcher.py \
 
 Evaluation specs can come from `env_params.eval`, `env_params.evaluation.specs`, markdown files under `env/<agent>/eval_tasks/<dataset>/`, or a rule evaluator file. RJob mode uses the same `--enable-evaluation`, `--evaluation-model`, and `--evaluation-config` parameters. See [Evaluation](docs/evaluation.md).
 
-## Query Run Data
+## Run Data
 
-The local Quick Start writes task rows and trajectories to `env_trajs.db`. Prefer passing an explicit `--job-id my-openrt-smoke` when launching; if omitted, the launcher generates a uuid hex for the run.
+Local runs write task rows and trajectories to `env_trajs.db` by default. Pass an explicit `--job-id my-openrt-smoke` when launching to make later querying, reproduction, and training filters clearer.
 
-`job_id` identifies one launcher run. `session_id` identifies one environment/task instance: it is stored as `env_id` in `job_environments`, as `session_id` in `session_steps`, and as the gateway URL suffix in `/v1/sessions/<session_id>`.
+- `job_id`: one `launcher.py` run.
+- `session_id`: one environment/task instance, matching `job_environments.env_id` and `session_steps.session_id`.
 
-Find recent runs and sessions:
+Find recent runs:
 
 ```bash
 sqlite3 env_trajs.db "
@@ -194,36 +195,18 @@ sqlite3 env_trajs.db "
   LIMIT 20;"
 ```
 
-Inspect one session's requests, rewards, and completion state:
+Inspect one session's steps, rewards, and completion state:
 
 ```bash
 sqlite3 env_trajs.db "
-  SELECT id, step_id, llm_model, step_reward, reward,
+  SELECT step_id, llm_model, step_reward, reward,
          is_terminal, is_session_completed, is_trainable, created_at
   FROM session_steps
   WHERE session_id = '<session-id>'
   ORDER BY step_id, id;"
 ```
 
-Inspect gateway model-request events for one run:
-
-```bash
-sqlite3 env_trajs.db "
-  SELECT id, session_id, step_id,
-         json_extract(env_state, '$.event_type') AS event_type,
-         json_extract(env_state, '$.status_code') AS status_code,
-         json_extract(env_state, '$.total_latency_ms') AS total_latency_ms
-  FROM session_steps
-  WHERE job_id = '<job-id>'
-  ORDER BY id DESC
-  LIMIT 50;"
-```
-
-The two main tables are `job_environments`, which stores expanded task rows, dataset parameters, images, and `group_id`, and `session_steps`, which stores messages, model responses, rewards, terminal state, gateway telemetry, and evaluation summaries. Use `job_id` to filter one run or RL Buffer Server data, and `session_id` to inspect one task trajectory, query gateway session status, or debug evaluation. See [Data Manager](docs/data-manager.md) for the full schema and more queries.
-
-## Data And Logs
-
-Default local paths:
+Default local artifacts:
 
 | Artifact | Default |
 |----------|---------|
@@ -231,9 +214,9 @@ Default local paths:
 | Launcher logs | `logs/<timestamp>/main.log` |
 | Gateway log | `logs/gateway.log` |
 | Gateway request log | `logs/gateway_requests.jsonl` |
-| Adapter outputs | Usually `results/` or adapter-specific mounted output directories |
+| Adapter outputs | `results/` or adapter-mounted directories |
 
-Use [Data Manager](docs/data-manager.md) for table details and query examples.
+See [Data Manager](docs/data-manager.md) for the full schema, row types, and more queries.
 
 ## RL Training
 

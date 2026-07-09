@@ -626,8 +626,28 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             pass
         binding = await resolver.close_session(session_id, reason=reason)
         log.info("Gateway session close requested: session_id=%s reason=%s", session_id, reason)
-        await telemetry.enqueue_session_close(binding)
-        return {"session_id": session_id, "status": binding.status}
+        drained = True
+        if cfg.close_mode == "soft_close":
+            drained = await _wait_for_session_drain(binding, cfg.drain_timeout_s)
+
+        telemetry_status = "flushed"
+        try:
+            await telemetry.enqueue_session_close(binding)
+        except asyncio.TimeoutError:
+            telemetry_status = "timeout"
+            log.warning(
+                "Gateway session close telemetry timed out; returning closed status: "
+                "session_id=%s reason=%s timeout_s=%.1f",
+                session_id,
+                reason,
+                cfg.telemetry_write_timeout_s,
+            )
+        return {
+            "session_id": session_id,
+            "status": binding.status,
+            "drained": drained,
+            "telemetry_status": telemetry_status,
+        }
 
     app.add_api_route(
         f"{session_root}/{{session_id}}/chat/completions",
@@ -1198,6 +1218,31 @@ async def _wait_for_drain(app: FastAPI, drain_timeout_s: int) -> None:
             )
             next_log_at = now + 1.0
         await asyncio.sleep(0.05)
+
+
+async def _wait_for_session_drain(binding: GatewaySessionBinding, drain_timeout_s: int) -> bool:
+    deadline = time.monotonic() + max(0, drain_timeout_s)
+    next_log_at = 0.0
+    while binding.active_request_count > 0 or binding.active_stream_count > 0:
+        if time.monotonic() >= deadline:
+            log.warning(
+                "Gateway session close drain timed out: session_id=%s active_requests=%d active_streams=%d",
+                binding.session_id,
+                binding.active_request_count,
+                binding.active_stream_count,
+            )
+            return False
+        now = time.monotonic()
+        if now >= next_log_at:
+            log.info(
+                "Gateway session close draining: session_id=%s active_requests=%d active_streams=%d",
+                binding.session_id,
+                binding.active_request_count,
+                binding.active_stream_count,
+            )
+            next_log_at = now + 1.0
+        await asyncio.sleep(0.05)
+    return True
 
 
 def _ready_storage_config(cfg: GatewayConfig) -> dict[str, Any]:

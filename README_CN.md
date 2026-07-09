@@ -169,13 +169,14 @@ python launcher.py \
 
 评测 spec 来自 `env/<agent>/eval_tasks/<dataset>/` 下的 markdown 文件，或 rule evaluator 文件，或者直接获取Bench运行后的结果。RJob 模式下也使用相同的 `--enable-evaluation`、`--evaluation-model` 和 `--evaluation-config` 参数。见[评测](docs/evaluation_CN.md)。
 
-## 查询运行数据
+## 运行数据
 
-以Sqlite `env_trajs.db`。建议启动时显式加上 `--job-id my-openrt-smoke`，后续查询和训练过滤都会更清楚；如果不传，launcher 会为本次运行自动生成一个 uuid hex。
+本地运行默认将任务行和轨迹写入 `env_trajs.db`。建议启动时显式传入 `--job-id my-openrt-smoke`，便于后续查询、复现和训练过滤。
 
-`job_id` 表示一次 launcher 运行。`session_id` 表示某个环境实例/任务实例，在 `job_environments` 表中叫 `env_id`，在 `session_steps` 表中叫 `session_id`，也是 runtime 调用 gateway 时使用的 `/v1/sessions/<session_id>`。
+- `job_id`：一次 `launcher.py` 运行。
+- `session_id`：一个环境实例/任务实例，对应 `job_environments.env_id` 和 `session_steps.session_id`。
 
-先找到最近运行和对应 session：
+查看最近运行：
 
 ```bash
 sqlite3 env_trajs.db "
@@ -185,36 +186,18 @@ sqlite3 env_trajs.db "
   LIMIT 20;"
 ```
 
-查看某个 session 的请求、奖励和完成状态：
+查看某个 session 的 step、奖励和完成状态：
 
 ```bash
 sqlite3 env_trajs.db "
-  SELECT id, step_id, llm_model, step_reward, reward,
+  SELECT step_id, llm_model, step_reward, reward,
          is_terminal, is_session_completed, is_trainable, created_at
   FROM session_steps
   WHERE session_id = '<session-id>'
   ORDER BY step_id, id;"
 ```
 
-查看 gateway 记录的模型请求事件：
-
-```bash
-sqlite3 env_trajs.db "
-  SELECT id, session_id, step_id,
-         json_extract(env_state, '$.event_type') AS event_type,
-         json_extract(env_state, '$.status_code') AS status_code,
-         json_extract(env_state, '$.total_latency_ms') AS total_latency_ms
-  FROM session_steps
-  WHERE job_id = '<job-id>'
-  ORDER BY id DESC
-  LIMIT 50;"
-```
-
-这些数据主要包括两类：`job_environments` 保存本次 run 展开的任务行、dataset 参数、镜像和 `group_id`；`session_steps` 保存每个 session 的消息、模型响应、奖励、终止状态、gateway telemetry 和 evaluation summary。`job_id` 常用于筛选一次运行或 RL Buffer Server 消费的数据，`session_id` 常用于定位单条任务轨迹、查看 gateway session 状态，或排查某次评测的完整交互。完整表结构和更多查询见[数据管理器](docs/data-manager_CN.md)。
-
-## 数据与日志
-
-默认本地路径：
+默认本地产物：
 
 | 产物 | 默认位置 |
 |------|----------|
@@ -222,9 +205,9 @@ sqlite3 env_trajs.db "
 | Launcher 日志 | `logs/<timestamp>/main.log` |
 | Gateway 日志 | `logs/gateway.log` |
 | Gateway 请求日志 | `logs/gateway_requests.jsonl` |
-| Adapter 输出 | 通常在 `results/` 或 adapter 自己挂载的输出目录 |
+| Adapter 输出 | `results/` 或 adapter 挂载目录 |
 
-表结构和查询示例见[数据管理器](docs/data-manager_CN.md)。
+完整表结构、行类型和更多查询见[数据管理器](docs/data-manager_CN.md)。
 
 ## RL 训练
 

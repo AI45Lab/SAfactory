@@ -201,6 +201,21 @@ def _is_trajectory_meta_json(meta_json: Any) -> bool:
     return event_type not in NON_TRAJECTORY_EVENT_TYPES
 
 
+def _truthy_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    try:
+        if value != value:
+            return False
+    except Exception:
+        pass
+    return bool(value)
+
+
 class CloudStrategy(StorageStrategy):
     """
     Cloud storage strategy:
@@ -628,7 +643,7 @@ class CloudStrategy(StorageStrategy):
                 candidates.append(
                     (
                         int(row["step_id"]),
-                        bool(row.get("is_session_completed")),
+                        _truthy_bool(row.get("is_session_completed")),
                         row.get("meta_json"),
                     )
                 )
@@ -644,15 +659,30 @@ class CloudStrategy(StorageStrategy):
             trajectory_candidates or candidates,
             key=lambda item: item[0],
         )
+        if latest_completed:
+            return 0
 
-        return await self.update_session_step(
-            session_id=session_id,
-            step_id=latest_step_id,
-            updates={
+        update_query = self._build_session_step_filter(
+            session_id,
+            latest_step_id,
+            llm_model=llm_model,
+        )
+        result = await asyncio.to_thread(
+            self.client.update_landing,
+            update_query,
+            {
                 "is_session_completed": True,
                 "is_terminal": True,
             },
         )
+        log.debug(
+            "Submitted cloud latest-session completion update: session_id=%s step_id=%s model=%s result=%s",
+            session_id,
+            latest_step_id,
+            llm_model,
+            result,
+        )
+        return 1
 
     async def close(self) -> None:
         """Clean up cloud clients"""
@@ -677,7 +707,12 @@ class CloudStrategy(StorageStrategy):
         """Get buffer statistics"""
         return self._stats if self._enable_buffer else None
 
-    def _build_session_step_filter(self, session_id: str, step_id: int) -> str:
+    def _build_session_step_filter(
+        self,
+        session_id: str,
+        step_id: int,
+        llm_model: Optional[str] = None,
+    ) -> str:
         session = self._sessions.get(session_id)
         job_id = session.job_id if session is not None else self.job_id
         clauses = []
@@ -686,6 +721,8 @@ class CloudStrategy(StorageStrategy):
         escaped_session_id = session_id.replace("'", "''")
         clauses.append(f"session_id = '{escaped_session_id}'")
         clauses.append(f"step_id = {int(step_id)}")
+        if llm_model:
+            clauses.append(f"agent_model = '{_escape_sql_literal(llm_model)}'")
         return " AND ".join(clauses)
 
     def _normalize_session_step_updates_for_cloud(

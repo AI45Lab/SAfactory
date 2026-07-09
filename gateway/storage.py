@@ -344,12 +344,25 @@ class GatewayStorage:
                 return
 
             updated_count = 0
-            for model in models:
-                with trace.span("mark_latest_session_completed", model=model):
-                    updated_count += await self.data_manager.mark_latest_session_completed(
-                        session_id=binding.session_id,
-                        llm_model=model,
+            if self.cfg.storage_type == "cloud" and len(models) > 1:
+                with trace.span("mark_latest_session_completed_models", model_count=len(models)):
+                    update_counts = await asyncio.gather(
+                        *(
+                            self.data_manager.mark_latest_session_completed(
+                                session_id=binding.session_id,
+                                llm_model=model,
+                            )
+                            for model in models
+                        )
                     )
+                updated_count = sum(update_counts)
+            else:
+                for model in models:
+                    with trace.span("mark_latest_session_completed", model=model):
+                        updated_count += await self.data_manager.mark_latest_session_completed(
+                            session_id=binding.session_id,
+                            llm_model=model,
+                        )
 
             if updated_count == 0:
                 with trace.span("mark_latest_session_completed_fallback"):
