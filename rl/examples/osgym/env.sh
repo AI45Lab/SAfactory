@@ -1,67 +1,160 @@
-# -------------------------------------------
-# AIEvobox (rollout) Settings
-# -------------------------------------------
-export AIEVOBOX_ROOT=/mnt/shared-storage-user/chenxinquan/Safactory
-export AIEVOBOX_MODE=remote
-export STORAGE_TYPE=sqlite
-export AIEVOBOX_DB_URL=sqlite:///mnt/shared-storage-user/evobox-share-gpfs2/chenxinquan/rl_db/osgym.db
-export AIEVOBOX_MAX_STEPS=30
-export AIEVOBOX_MESSAGE_CUT=1
-export AIEVOBOX_ENV_CONFIG=/mnt/shared-storage-user/chenxinquan/Safactory/env/osgym/os_config.yaml
-export AIEVOBOX_POOL_SIZE=32
-export AIEVOBOC_MULTIPLIER=1.0
-export AIEVOBOX_ENV_TRANSPORT=http
-export AIEVOBOX_LLM_MAX_CONCURRENCY=$AIEVOBOX_POOL_SIZE
-export AIEVOBOX_LLM_PROXY_WORKERS=32
-export AIEVOBOX_LLM_STARTUP_JITTER_S=0
-export AIEVOBOX_TRAININFO_WORKERS=8
-export AIEVOBOX_SQLITE_BULK_INSERT_BATCH_SIZE=128
-export AIEVOBOX_SQLITE_BULK_INSERT_PAUSE_S=0.01
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." &>/dev/null && pwd)"
+export AIEVOBOX_EXAMPLE_NAME="${AIEVOBOX_EXAMPLE_NAME:-osgym}"
 
 # -------------------------------------------
-# RL Settings
+# Safactory / rollout environment
 # -------------------------------------------
-export RL_GROUP_SIZE=8
-# RL_ROLLOUT_GROUP_BATCH_SIZE has priority. Leave it empty to derive from
-# RL_GLOBAL_BATCH_SIZE / RL_GROUP_SIZE.
-export RL_ROLLOUT_GROUP_BATCH_SIZE=1
-export RL_GLOBAL_BATCH_SIZE=8
-export RL_EPOCH=10
-export RL_OFF_BY_N=2
-# DAPO filter: when true, drops groups where all samples have the same reward.
-# Disabled for osgym cold-start: with sparse terminal rewards on 15-20 step
-# trajectories, almost every group is all-zero early in training, so the
-# filter discards ~96% of rollouts and starves the learner.
-# export DAPO_filter="${DAPO_filter:-false}"
+export AIEVOBOX_ROOT="${AIEVOBOX_ROOT:-${REPO_ROOT}}"
+export AIEVOBOX_MODE="${AIEVOBOX_MODE:-remote}"
+export STORAGE_TYPE="${STORAGE_TYPE:-sqlite}"
+export AIEVOBOX_DB_URL="${AIEVOBOX_DB_URL:-sqlite://${AIEVOBOX_ROOT}/rl/examples/osgym/osgym.db}"
+export AIEVOBOX_ENV_CONFIG="${AIEVOBOX_ENV_CONFIG:-${AIEVOBOX_ROOT}/env/osgym/os_config.yaml}"
 
-# no use, will be removed
-export RL_MODEL=model
-export RL_API_KEY=openai_api_key
+export AIEVOBOX_MAX_STEPS="${AIEVOBOX_MAX_STEPS:-30}"
+export AIEVOBOX_MESSAGE_CUT="${AIEVOBOX_MESSAGE_CUT:-1}"
+export AIEVOBOX_POOL_SIZE="${AIEVOBOX_POOL_SIZE:-32}"
+export AIEVOBOC_MULTIPLIER="${AIEVOBOC_MULTIPLIER:-1.0}"
+export AIEVOBOX_ENV_TRANSPORT="${AIEVOBOX_ENV_TRANSPORT:-http}"
 
+export AIEVOBOX_LLM_MAX_CONCURRENCY="${AIEVOBOX_LLM_MAX_CONCURRENCY:-${AIEVOBOX_POOL_SIZE}}"
+export AIEVOBOX_LLM_PROXY_WORKERS="${AIEVOBOX_LLM_PROXY_WORKERS:-32}"
+export AIEVOBOX_LLM_STARTUP_JITTER_S="${AIEVOBOX_LLM_STARTUP_JITTER_S:-0}"
+export AIEVOBOX_TRAININFO_WORKERS="${AIEVOBOX_TRAININFO_WORKERS:-8}"
 
-# -------------------------------------------
-# Buffer Server Settings (run_buffer_server.sh)
-# -------------------------------------------
-# Buffer Server 由 run_buffer_server.sh 启动，负责管理 rollout 数据并拉起 AIEvoBox launcher。
-# HOST 是其他服务连接 Buffer Server 用的地址（服务本身始终监听 0.0.0.0）。
-# Slime Generator 通过此地址调用 /get_rollout_data 和 /start_rollout。
-# 如果 Buffer Server 和 Slime Generator 运行在不同机器上，改为 Buffer Server 所在机器的 IP。
-export BUFFER_SERVER_HOST=127.0.0.1
-export BUFFER_SERVER_PORT=18889
+export AIEVOBOX_SQLITE_BULK_INSERT_BATCH_SIZE="${AIEVOBOX_SQLITE_BULK_INSERT_BATCH_SIZE:-128}"
+export AIEVOBOX_SQLITE_BULK_INSERT_PAUSE_S="${AIEVOBOX_SQLITE_BULK_INSERT_PAUSE_S:-0.01}"
+export AIEVOBOX_BUFFER_INCOMPLETE_GROUP_TTL_SECONDS="${AIEVOBOX_BUFFER_INCOMPLETE_GROUP_TTL_SECONDS:-1800}"
 
 # -------------------------------------------
-# LLM Proxy Settings (hosted in-process by Slime Generator)
+# RL rollout policy
 # -------------------------------------------
-# LLM Proxy 由 Slime Generator (run_slime_generator*.sh) 在进程内启动，提供 /v1 chat completions 接口。
-# HOST 是其他服务连接 LLM Proxy 用的地址（服务本身始终监听 0.0.0.0）。
-# AIEvoBox launcher（由 Buffer Server 拉起）通过此地址调用 LLM。
-# 如果 Buffer Server 和 Slime Generator 运行在不同机器上，改为 Slime Generator 所在机器的 IP。
-export LLM_PROXY_HOST=127.0.0.1
-export LLM_PROXY_PORT=18890
-export LLM_MAX_LENGTH=4096
-export LLM_TEMPERATURE=1.0
+export RL_GROUP_SIZE="${RL_GROUP_SIZE:-8}"
+export RL_ROLLOUT_GROUP_BATCH_SIZE="${RL_ROLLOUT_GROUP_BATCH_SIZE:-1}"
+export RL_GLOBAL_BATCH_SIZE="${RL_GLOBAL_BATCH_SIZE:-8}"
+export RL_EPOCH="${RL_EPOCH:-10}"
+export RL_OFF_BY_N="${RL_OFF_BY_N:-2}"
+
+# Sparse-reward cold starts often produce all-zero groups. Set false to avoid
+# starving training while the policy is still weak.
+export DAPO_filter="${DAPO_filter:-false}"
 
 # -------------------------------------------
-# Slime Training Settings (reference RL values)
+# Services
 # -------------------------------------------
-export SLIME_ROLLBUF_RESTART_TRAINING=True
+export BUFFER_SERVER_HOST="${BUFFER_SERVER_HOST:-127.0.0.1}"
+export BUFFER_SERVER_PORT="${BUFFER_SERVER_PORT:-18889}"
+
+export LLM_PROXY_HOST="${LLM_PROXY_HOST:-127.0.0.1}"
+export LLM_PROXY_PORT="${LLM_PROXY_PORT:-18890}"
+export LLM_MAX_LENGTH="${LLM_MAX_LENGTH:-4096}"
+export LLM_TEMPERATURE="${LLM_TEMPERATURE:-1.0}"
+export LLM_TOP_P="${LLM_TOP_P:-1.0}"
+export LLM_PROXY_ENABLE_CONSOLE_LOG="${LLM_PROXY_ENABLE_CONSOLE_LOG:-0}"
+
+export SLIME_ROLLBUF_RESTART_TRAINING="${SLIME_ROLLBUF_RESTART_TRAINING:-True}"
+
+# -------------------------------------------
+# Paths
+# -------------------------------------------
+export LOG_ROOT="${LOG_ROOT:-${AIEVOBOX_ROOT}/logs}"
+export SLIME_HOME="${SLIME_HOME:-/root/slime}"
+export MEGATRON_HOME="${MEGATRON_HOME:-/root/Megatron-LM}"
+export HF_CKPT_DIR="${HF_CKPT_DIR:-/mnt/shared-storage-user/evobox-share/hf-hub/models--Qwen--Qwen3-VL-8B-Instruct/snapshots/0c351dd01ed87e9c1b53cbc748cba10e6187ff3b}"
+export LOAD_DIR="${LOAD_DIR:-}"
+export SAVE_DIR="${SAVE_DIR:-/mnt/shared-storage-user/evobox-share-gpfs2/chenxinquan/slime-checkpoint/Qwen3-VL-8B-Instruct_megatron}"
+export WANDB_DIR="${WANDB_DIR:-/mnt/shared-storage-user/evobox-share-gpfs2/chenxinquan/wandb_logs}"
+export SGLANG_LOGGING_CONFIG_PATH="${SGLANG_LOGGING_CONFIG_PATH:-}"
+
+# Slime model script. It must define MODEL_ARGS.
+export MODEL_SCRIPT="${MODEL_SCRIPT:-${SLIME_HOME}/scripts/models/qwen3-8B.sh}"
+export MODEL_ARGS_ROTARY_BASE="${MODEL_ARGS_ROTARY_BASE:-5000000}"
+
+# -------------------------------------------
+# Ray / Slime placement
+# -------------------------------------------
+export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
+export RAY_ADDRESS="${RAY_ADDRESS:-http://127.0.0.1:8265}"
+export NUM_GPUS="${NUM_GPUS:-4}"
+export ACTOR_NUM_NODES="${ACTOR_NUM_NODES:-1}"
+export ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-2}"
+export ROLLOUT_NUM_GPUS="${ROLLOUT_NUM_GPUS:-2}"
+export ROLLOUT_NUM_GPUS_PER_ENGINE="${ROLLOUT_NUM_GPUS_PER_ENGINE:-1}"
+
+# Set CLEANUP_BEFORE_RUN=false when attaching to an existing Ray/SGLang setup.
+export CLEANUP_BEFORE_RUN="${CLEANUP_BEFORE_RUN:-true}"
+export KILL_PYTHON_BEFORE_RUN="${KILL_PYTHON_BEFORE_RUN:-false}"
+
+# -------------------------------------------
+# Slime checkpoint / rollout args
+# -------------------------------------------
+export SAVE_INTERVAL="${SAVE_INTERVAL:-20}"
+export ROLLOUT_FUNCTION_PATH="${ROLLOUT_FUNCTION_PATH:-rl.slime_generator.generate_rollout}"
+export NUM_ROLLOUT="${NUM_ROLLOUT:-300}"
+export LOSS_MASK_TYPE="${LOSS_MASK_TYPE:-qwen}"
+export CUSTOM_REWARD_POST_PROCESS_PATH="${CUSTOM_REWARD_POST_PROCESS_PATH:-}"
+
+# -------------------------------------------
+# Megatron backend
+# -------------------------------------------
+export TRAIN_BACKEND="${TRAIN_BACKEND:-megatron}"
+export MEGATRON_TO_HF_MODE="${MEGATRON_TO_HF_MODE:-bridge}"
+export TP_SIZE="${TP_SIZE:-2}"
+export PP_SIZE="${PP_SIZE:-1}"
+export CP_SIZE="${CP_SIZE:-1}"
+export EP_SIZE="${EP_SIZE:-1}"
+export ETP_SIZE="${ETP_SIZE:-1}"
+export RECOMPUTE_GRANULARITY="${RECOMPUTE_GRANULARITY:-full}"
+export RECOMPUTE_METHOD="${RECOMPUTE_METHOD:-uniform}"
+export RECOMPUTE_NUM_LAYERS="${RECOMPUTE_NUM_LAYERS:-1}"
+export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flash}"
+
+# -------------------------------------------
+# Training / optimizer
+# -------------------------------------------
+export USE_DYNAMIC_BATCH_SIZE="${USE_DYNAMIC_BATCH_SIZE:-true}"
+export USE_DYNAMIC_GLOBAL_BATCH_SIZE="${USE_DYNAMIC_GLOBAL_BATCH_SIZE:-false}"
+export MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-3000}"
+export CALCULATE_PER_TOKEN_LOSS="${CALCULATE_PER_TOKEN_LOSS:-true}"
+
+export ADVANTAGE_ESTIMATOR="${ADVANTAGE_ESTIMATOR:-grpo}"
+export ENTROPY_COEF="${ENTROPY_COEF:-0.00}"
+export EPS_CLIP="${EPS_CLIP:-0.2}"
+export EPS_CLIP_HIGH="${EPS_CLIP_HIGH:-0.2}"
+
+export OPTIMIZER="${OPTIMIZER:-adam}"
+export LR="${LR:-1e-6}"
+export LR_DECAY_STYLE="${LR_DECAY_STYLE:-constant}"
+export WEIGHT_DECAY="${WEIGHT_DECAY:-0.1}"
+export ADAM_BETA1="${ADAM_BETA1:-0.9}"
+export ADAM_BETA2="${ADAM_BETA2:-0.98}"
+
+# -------------------------------------------
+# W&B
+# -------------------------------------------
+export USE_WANDB="${USE_WANDB:-true}"
+export WANDB_MODE="${WANDB_MODE:-offline}"
+export WANDB_PROJECT="${WANDB_PROJECT:-slime}"
+export WANDB_TEAM="${WANDB_TEAM:-}"
+export WANDB_GROUP="${WANDB_GROUP:-slime}"
+export WANDB_ALWAYS_USE_TRAIN_STEP="${WANDB_ALWAYS_USE_TRAIN_STEP:-true}"
+
+# -------------------------------------------
+# SGLang
+# -------------------------------------------
+export SGLANG_MEM_FRACTION_STATIC="${SGLANG_MEM_FRACTION_STATIC:-0.85}"
+export SGLANG_ATTENTION_BACKEND="${SGLANG_ATTENTION_BACKEND:-fa3}"
+export SGLANG_CUDA_GRAPH_BS="${SGLANG_CUDA_GRAPH_BS:-1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128 136 144 152 160 168 176 184 192 200 208 216 224 232 240 248 256}"
+export SGLANG_MAX_RUNNING_REQUESTS="${SGLANG_MAX_RUNNING_REQUESTS:-256}"
+export SGLANG_SCHEDULE_CONSERVATIVENESS="${SGLANG_SCHEDULE_CONSERVATIVENESS:-0.8}"
+export SGLANG_CHUNKED_PREFILL_SIZE="${SGLANG_CHUNKED_PREFILL_SIZE:-8192}"
+export SGLANG_ENABLE_MIXED_CHUNK="${SGLANG_ENABLE_MIXED_CHUNK:-true}"
+export SGLANG_LOG_LEVEL="${SGLANG_LOG_LEVEL:-info}"
+export SGLANG_LOG_LEVEL_HTTP="${SGLANG_LOG_LEVEL_HTTP:-error}"
+
+# -------------------------------------------
+# Runtime environment
+# -------------------------------------------
+export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"

@@ -11,7 +11,7 @@
 [Quick Start](#quick-start) |
 [Demo](#demo) |
 [Environments](docs/environments.md) |
-[RL Training](docs/rl-training.md) |
+[RL Training](rl/README.md) |
 [Custom Environments](docs/custom-environment.md) |
 [Configuration](docs/configuration.md) |
 [Data](docs/data-manager.md) |
@@ -27,8 +27,6 @@
 ---
 
 ## <a id="why-safactory"></a>✨ Why Safactory
-
-![tax](fig/tax.png)
 
 Safactory is an agent sandbox for teams that need one pipeline for evaluation, data generation, and RL training. It provides a common environment interface, concurrent rollout management, OpenAI-compatible model access, trajectory persistence, and a Buffer Server bridge for Slime / GRPO training.
 
@@ -64,10 +62,16 @@ https://github.com/user-attachments/assets/4c551b27-ce4d-4fc8-8df6-d6dc8100cc88
 ```bash
 git clone https://github.com/AI45Lab/Safactory.git
 cd Safactory
+pip install -U pip
 pip install -r requirements.txt
 ```
 
-Some environments have extra runtime dependencies. See [Supported Environments](docs/environments.md) before running Docker, emulator, VM, or simulator-backed tasks.
+For RL training, prepare Slime separately before running the scripts under `rl/`:
+
+- Conda environment: follow Slime's [`build_conda.sh`](https://github.com/THUDM/slime/blob/main/build_conda.sh) setup.
+- Docker environment: follow Slime's [Docker quick start](https://github.com/THUDM/slime/blob/main/docs/en/get_started/quick_start.md).
+
+Some environments have extra runtime dependencies. Install `env/<name>/requirements.txt` only for the environment you plan to run, and see [Supported Environments](docs/environments.md) before starting Docker, emulator, VM, or simulator-backed tasks.
 
 ### Evaluate a model
 
@@ -82,72 +86,39 @@ python launcher.py \
 
 This starts the runner, loads the selected environment configuration, schedules tasks, calls the model endpoint, and writes step-level records to SQLite.
 
-### Collect trajectory data
-
-Every rollout is recorded automatically. The default CLI database path is `sqlite://env_trajs.db`; override it with `--db-path`:
-
-```bash
-python launcher.py \
-  --env-config env/osgym/os_config.yaml \
-  --db-path sqlite://runs/os_eval.db \
-  --llm-base-url http://YOUR_LLM_HOST/v1 \
-  --llm-api-key YOUR_API_KEY \
-  --llm-model YOUR_MODEL
-```
-
-See [Data Manager](docs/data-manager.md) for schema details and query examples.
-
 ### Train with RL
 
 Safactory integrates with [Slime](https://github.com/THUDM/slime) through a Buffer Server:
 
 ```bash
 # Terminal 1: Slime training process
-cd rl
-./run_slime_generator_vl.sh
+source rl/examples/osgym/env.sh
+bash rl/run_slime_generator_common.sh
 
 # Terminal 2: Safactory Buffer Server and rollout runner
-cd rl
-./run_buffer_server.sh
+source rl/examples/osgym/env.sh
+bash rl/run_buffer_server_common.sh
 ```
 
-Full instructions are in [RL Training](docs/rl-training.md).
+Full instructions are in [RL Training](rl/README.md).
 
 ## <a id="datasets"></a>📦 Datasets
+
+![tax](fig/tax.png)
 
 Safactory can generate reusable trajectory datasets. The public OS trajectory release is available on Hugging Face:
 
 - [AI45Research/SATraj-OS](https://huggingface.co/datasets/AI45Research/SATraj-OS), a Safactory-generated OS trajectory dataset for agent training and analysis.
 
-Safactory-generated data also supports safe agent training. In this experiment, **SATraj-Agent-8B** is obtained by fine-tuning Qwen3-vl-8B on SATraj-OS, then evaluated on OS-Harm for safety and OSWorld for task ability. The model reduces average unsafe behavior from 31.33% to **3.33%** while improving OSWorld Total from 14.40% to 22.16%, showing that safety can improve without a safty alignment tax.
+Models trained with Safactory-generated OS trajectories show gains on both task ability and safety benchmarks. Starting from **Qwen3-VL-8B**, supervised fine-tuning on SATraj-OS improves OSWorld success rate from **14.40%** to **30.19%**. Further RL training reaches **36.29%**, a **+21.89 pp** absolute improvement over the base model.
+
+The same training data also improves safety rather than trading safety for capability. On OS-Harm, SATraj-OS SFT raises the safety score from **68.67** to **96.67**, while the RL-trained model remains substantially safer than the base model at **91.33**. These results indicate that Safactory data can support joint improvements in agent ability and safety.
 
 <table>
-  <thead>
-    <tr>
-      <th rowspan="2">Model</th>
-      <th colspan="7">Safety (OS-Harm)</th>
-      <th colspan="5">Ability (OSWorld, higher is better)</th>
-    </tr>
-    <tr>
-      <th>Avg. Unsafe ↓</th>
-      <th>Misuse Unsafe ↓</th>
-      <th>Misuse Completed ↓</th>
-      <th>Injection Unsafe ↓</th>
-      <th>Injection Completed ↑</th>
-      <th>Misbehavior Unsafe ↓</th>
-      <th>Misbehavior Completed ↑</th>
-      <th>Total</th>
-      <th>Chrome</th>
-      <th>GIMP</th>
-      <th>OS</th>
-      <th>VS Code</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr><td>Qwen3.5-397B</td><td align="right">32.00%</td><td align="right">62.00%</td><td align="right">8.00%</td><td align="right">16.00%</td><td align="right">40.00%</td><td align="right">18.00%</td><td align="right">6.00%</td><td align="right"><strong>62.20%</strong></td><td align="right">-</td><td align="right">-</td><td align="right">-</td><td align="right">-</td></tr>
-    <tr><td>Qwen3vl-8b</td><td align="right">31.33%</td><td align="right">69.33%</td><td align="right">22.67%</td><td align="right">10.00%</td><td align="right">14.00%</td><td align="right">14.67%</td><td align="right">4.00%</td><td align="right">14.40%</td><td align="right">28.26%</td><td align="right">15.38%</td><td align="right">25.00%</td><td align="right">21.74%</td></tr>
-    <tr><td>SAModel-OS-8B</td><td align="right"><strong>3.33%</strong></td><td align="right"><strong>0.00%</strong></td><td align="right"><strong>0.00%</strong></td><td align="right"><strong>8.00%</strong></td><td align="right"><strong>54.00%</strong></td><td align="right"><strong>2.00%</strong></td><td align="right"><strong>10.00%</strong></td><td align="right">22.16%</td><td align="right"><strong>34.78%</strong></td><td align="right"><strong>42.31%</strong></td><td align="right"><strong>29.17%</strong></td><td align="right"><strong>56.52%</strong></td></tr>
-  </tbody>
+  <tr>
+    <td width="50%"><img src="fig/osworld.PNG" alt="OSWorld success rate comparison with SA-OS training improvements"></td>
+    <td width="50%"><img src="fig/osharm.PNG" alt="OS-Harm safety comparison across agent LLMs"></td>
+  </tr>
 </table>
 
 ## <a id="documentation"></a>📚 Documentation
@@ -157,7 +128,7 @@ Safactory-generated data also supports safe agent training. In this experiment, 
 | [Configuration](docs/configuration.md) | CLI flags, manager YAML, and environment YAML format. |
 | [Supported Environments](docs/environments.md) | Environment registry names, prerequisites, and setup links. |
 | [Data Manager](docs/data-manager.md) | SQLite schema, storage behavior, and query examples. |
-| [RL Training](docs/rl-training.md) | Slime integration, Buffer Server setup, and RL variables. |
+| [RL Training](rl/README.md) | Slime integration, Buffer Server setup, and RL variables. |
 | [Custom Environment](docs/custom-environment.md) | Minimal `BaseEnv` implementation and registration flow. |
 | [Experience Extraction and Injection](docs/experience-extraction-injection.md) | Reusing historical trajectories as prompt-time experience. |
 
