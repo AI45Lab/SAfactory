@@ -8,6 +8,8 @@
 
 **测训一体的下一代智能体基础设施，支持 Agent 快速接入、社区 Benchmark 快速接入、并发 rollout 运行、轨迹采集，以及在 OS、Android、Minecraft、具身智能、QA、数据处理、科学发现等多类任务上的强化学习训练。首次验证智能体可信 Scaling Law，实现安全能力提升且无对齐税。**
 
+**内置 Gateway 是具备会话感知能力的 OpenAI 兼容 API 层：它将模型请求路由到配置的上游 LLM 服务，负责并发和步数控制，并把轨迹写入指定的存储。**
+
 [快速开始](#quick-start) |
 [演示](#demo) |
 [RL 训练](docs/rl-training_CN.md) |
@@ -29,19 +31,19 @@
 
 ![tax](fig/tax.png)
 
-Safactory 是面向需要统一完成评测、数据生成和 RL 训练的团队的智能体沙箱。它帮助团队快速接入新的 Agent 和社区 Benchmark，通过可扩展的 rollout 池并发运行，统一路由 OpenAI 兼容模型流量，持久化轨迹数据，并将完成的数据桥接到 Slime / GRPO 训练。
+Safactory 是面向需要统一完成评测、数据生成和 RL 训练的团队的智能体沙箱。它帮助团队快速接入新的 Agent 和社区 Benchmark，通过可扩展的 rollout 池并发运行，经由 Gateway 统一路由 OpenAI 兼容模型流量，持久化轨迹数据，并将完成的数据桥接到 Slime / GRPO 训练。
 
-| 需求 | Safactory 提供 |
-|------|----------------|
+| 需求 | Safactory 提供                                   |
+|------|------------------------------------------------|
 | 评测 Agent 与 Benchmark | 在真实交互任务和社区 Benchmark 中运行 LLM 或 VLM Agent 并收集奖励。 |
-| 构建轨迹数据 | 将消息、动作、观察、奖励和环境状态持久化到 SQLite。 |
-| RL 训练 | 通过内置 Buffer Server 将 rollout 轨迹流式送入 Slime。 |
-| 接入新 Agent 与 Bench | 快速接入智能体运行时和 Benchmark 套件，并通过并发 rollout worker 扩展运行。 |
+| 构建轨迹数据 | 将消息、动作、观察、奖励和环境状态持久化到数据平台。                     |
+| RL 训练 | 通过内置 Buffer Server 将 rollout 轨迹流式送入 Slime。     |
+| 接入新 Agent 与 Bench | 快速接入智能体和Benchmark套件，并通过并发 rollout worker 扩展运行。 |
 
 核心能力：
 
 - 多领域 Agent 与 Benchmark adapter：OS、Android、Minecraft、RoboTrustBench、Embodied ALFRED、QA、DABStep、DiscoveryWorld、DeepEyes、Geo3K-VL 和 Math500。
-- 通过 runtime 池和异步 worker 支持高并发 rollout。
+- 通过池化管理和异步worker调度支持高并发运行。
 - 支持 vLLM、SGLang、托管 API 和本地代理等 OpenAI 兼容模型服务。
 - 支持本地单机模式和基于 RayJob 的远程集群模式。
 - 可选的经验抽取和 prompt 时经验注入。
@@ -69,7 +71,7 @@ pip install -r requirements.txt
 
 ### 2. 配置 Gateway
 
-复制示例配置，并将路由占位替换为自己的 OpenAI 兼容模型端点：
+复制示例配置，并新增目标LLM 相关参数：
 
 ```bash
 cp gateway/config.example.yaml gateway/config.local.yaml
@@ -84,7 +86,7 @@ storage_config:
   db_url: sqlite://env_trajs.db
 
 llm_routes:
-  YOUR_ROUTE_KEY:
+  LLM_MODEL_NAME:
     base_url: http://YOUR_LLM_HOST/v1
     api_key: YOUR_API_KEY
     supports_stream: true
@@ -103,14 +105,18 @@ python -m gateway --config gateway/config.local.yaml
 curl http://127.0.0.1:8000/readyz
 ```
 
-### 3. 运行一个 Agent 配置
+### 3. 启动运行
 
-下面示例用 Docker 模式运行仓库内置 OpenClaw adapter：
+
+#### 本地 Docker 运行任务
+
+对于并发数要求不高的任务，可以采用docker mode 启动；下面示例用 Docker 模式运行仓库内置OpenRT 环境：
 
 ```bash
 python launcher.py \
-  --agent-config env/openclaw/openclaw_config.yaml \
-  --agent-start-config env/openclaw/openclaw_start.yaml \
+  --mode docker \
+  --agent-config env/openrt/openrt_config.yaml \
+  --agent-start-config env/openrt/openrt_start.yaml \
   --gateway-base-url http://127.0.0.1:8000/v1/sessions \
   --llm-model YOUR_ROUTE_KEY \
   --db-path sqlite://env_trajs.db \
@@ -121,34 +127,15 @@ python launcher.py \
 
 关键点：
 
-- `--llm-model` 是 gateway `llm_routes` 中的 route key，不是任意上游模型名。
+- `--llm-model` 是 gateway `llm_routes` 中的 `LLM_MODEL_NAME`，不是任意上游模型名。
 - `--agent-config` 定义任务和数据集。
 - `--agent-start-config` 定义智能体运行时如何启动。
 - `--gateway-base-url` 指向 gateway 的 session root。
 - 使用 `sqlite` 时，`--db-path` 必须与 `gateway.storage_config.db_url` 一致。
 
-### 4. 启用评测
+#### 使用 RJob 扩展并发
 
-rollout 结束后执行 evaluator：
-
-```bash
-python launcher.py \
-  --agent-config env/openclaw/openclaw_config.yaml \
-  --agent-start-config env/openclaw/openclaw_start.yaml \
-  --gateway-base-url http://127.0.0.1:8000/v1/sessions \
-  --llm-model YOUR_ROUTE_KEY \
-  --evaluation-model YOUR_ROUTE_KEY \
-  --evaluation-config evaluator/configs/codex_cli_agent_eval.yaml \
-  --enable-evaluation \
-  --db-path sqlite://env_trajs.db \
-  --pool-size 1
-```
-
-评测 spec 来自 `env/<agent>/eval_tasks/<dataset>/` 下的 markdown 文件，或 rule evaluator 文件，或者直接获取Bench运行后的结果。见[评测](docs/evaluation_CN.md)。
-
-### 5. 使用 RJob 模式
-
-RJob 模式仍使用同一个 launcher，但运行时资源由 RJob 提交：
+如果本地 Docker 已跑通，并且需要更高并发或集群资源，可以切换到 RJob 模式。RJob 模式仍使用同一个 launcher，但运行时资源由 RJob 提交：
 
 ```bash
 python launcher.py \
@@ -158,11 +145,72 @@ python launcher.py \
   --agent-start-config env/openrt/openrt_start.rjob.yaml \
   --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
   --llm-model YOUR_ROUTE_KEY \
-  --storage-type cloud \
+  --db-path sqlite://env_trajs.db\
   --pool-size 8
 ```
 
-全局 RJob 鉴权放在 `config.yaml` 或 `--rjob-config`。每个 agent 的镜像、资源、挂载、嵌入文件和运行命令放在 `--agent-start-config`。
+全局 RJob 鉴权放在 `config.yaml` 或 `--rjob-config`。每个 agent 的镜像、资源、挂载、嵌入文件和运行命令放在 `--agent-start-config`。`--pool-size` 控制并发规模，具体上限取决于集群资源和 agent start config。
+
+#### 启用评测
+
+在 Docker 或 RJob 启动命令跑通后，如果需要执行评测任务，再追加 evaluator 相关参数：
+
+```bash
+python launcher.py \
+  --agent-config env/openclaw/openclaw_config.yaml \
+  --agent-start-config env/openclaw/openclaw_start.yaml \
+  --gateway-base-url http://127.0.0.1:8000/v1/sessions \
+  --llm-model YOUR_ROUTE_LLM_MODEL \
+  --evaluation-model YOUR_ROUTE_KEY \
+  --enable-evaluation \
+  --db-path sqlite://env_trajs.db \
+  --pool-size 1
+```
+
+评测 spec 来自 `env/<agent>/eval_tasks/<dataset>/` 下的 markdown 文件，或 rule evaluator 文件，或者直接获取Bench运行后的结果。RJob 模式下也使用相同的 `--enable-evaluation`、`--evaluation-model` 和 `--evaluation-config` 参数。见[评测](docs/evaluation_CN.md)。
+
+## 查询运行数据
+
+以Sqlite `env_trajs.db`。建议启动时显式加上 `--job-id my-openrt-smoke`，后续查询和训练过滤都会更清楚；如果不传，launcher 会为本次运行自动生成一个 uuid hex。
+
+`job_id` 表示一次 launcher 运行。`session_id` 表示某个环境实例/任务实例，在 `job_environments` 表中叫 `env_id`，在 `session_steps` 表中叫 `session_id`，也是 runtime 调用 gateway 时使用的 `/v1/sessions/<session_id>`。
+
+先找到最近运行和对应 session：
+
+```bash
+sqlite3 env_trajs.db "
+  SELECT id, job_id, env_id AS session_id, env_name, group_id, finished, created_at
+  FROM job_environments
+  ORDER BY id DESC
+  LIMIT 20;"
+```
+
+查看某个 session 的请求、奖励和完成状态：
+
+```bash
+sqlite3 env_trajs.db "
+  SELECT id, step_id, llm_model, step_reward, reward,
+         is_terminal, is_session_completed, is_trainable, created_at
+  FROM session_steps
+  WHERE session_id = '<session-id>'
+  ORDER BY step_id, id;"
+```
+
+查看 gateway 记录的模型请求事件：
+
+```bash
+sqlite3 env_trajs.db "
+  SELECT id, session_id, step_id,
+         json_extract(env_state, '$.event_type') AS event_type,
+         json_extract(env_state, '$.status_code') AS status_code,
+         json_extract(env_state, '$.total_latency_ms') AS total_latency_ms
+  FROM session_steps
+  WHERE job_id = '<job-id>'
+  ORDER BY id DESC
+  LIMIT 50;"
+```
+
+这些数据主要包括两类：`job_environments` 保存本次 run 展开的任务行、dataset 参数、镜像和 `group_id`；`session_steps` 保存每个 session 的消息、模型响应、奖励、终止状态、gateway telemetry 和 evaluation summary。`job_id` 常用于筛选一次运行或 RL Buffer Server 消费的数据，`session_id` 常用于定位单条任务轨迹、查看 gateway session 状态，或排查某次评测的完整交互。完整表结构和更多查询见[数据管理器](docs/data-manager_CN.md)。
 
 ## 数据与日志
 
@@ -218,11 +266,15 @@ Safactory 可以生成可复用的轨迹数据集。公开 OS 轨迹发布在 Hu
 
 欢迎贡献新的自定义环境、 bug 修复和可复现实例。
 
-1. 在 `env/<name>/` 下添加或更新自定义环境。
-2. 同时提供 `<name>_config.yaml` 和 `<name>_start.yaml`，需要包含必须的字段。
-3. 不要提交密钥和私有端点。
-4. 使用 `launcher.py` 运行本地 smoke test。
-5. 在 pull request 中说明安装步骤、预期输出和存储要求。
+每一个环境都为`env/`下的一个子目录，新增环境步骤如下：
+1. 在 `env/`下创建新的子目录，以环境名称命名
+2. 提供 `dataset/`， dataset 文件以`jsonl` 呈现，每一行为一个独立的调度任务
+3. 同时提供`<name>_config.yaml` 和 `<name>_start.yaml`，并包含必须的`docker image`。
+3. 按照环境需求字段添加启动运行脚本，统一命名为`runner`如 （`runner.py`/`runner.mjs`）, 
+4. 根据评测需求实现`rule_evaluator.py`，非必须
+5. 使用 `launcher.py` 运行本地 smoke test。
+
+完整步骤见 [自定义环境](docs/custom-environment_CN.md)。
 
 ## 引用
 

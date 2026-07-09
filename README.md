@@ -8,6 +8,8 @@
 
 **A next-generation agent infrastructure that integrates evaluation and training, supporting rapid agent onboarding, fast integration of community benchmarks, concurrent rollout execution, trajectory collection, and reinforcement learning training across domains such as OS, Android, Minecraft, embodied AI, QA, data processing, and scientific discovery. It is the first to validate a trustworthy scaling law for agents, achieving improved safety capabilities without an alignment tax.**
 
+**The built-in Gateway is a session-aware OpenAI-compatible API layer that routes model requests to configured upstream LLM services, applies concurrency and step controls, and records request telemetry into the same trajectory storage used by rollouts.**
+
 [Quick Start](#quick-start) |
 [Demo](#demo) |
 [Environments](docs/environments.md) |
@@ -30,7 +32,7 @@
 
 ![tax](fig/tax.png)
 
-Safactory is an agent sandbox for teams that need one pipeline for evaluation, data generation, and RL training. It helps teams plug in new agents and community benchmarks quickly, run them concurrently through scalable rollout pools, route OpenAI-compatible model traffic, persist trajectories, and bridge completed data into Slime / GRPO training.
+Safactory is an agent sandbox for teams that need one pipeline for evaluation, data generation, and RL training. It helps teams plug in new agents and community benchmarks quickly, run them concurrently through scalable rollout pools, route OpenAI-compatible model traffic through the Gateway, persist trajectories, and bridge completed data into Slime / GRPO training.
 
 | Need | Safactory provides |
 |------|--------------------|
@@ -111,7 +113,11 @@ Check readiness in another terminal:
 curl http://127.0.0.1:8000/readyz
 ```
 
-### 3. Run One Agent Config
+### 3. Start Runs
+
+The remaining quick-start commands follow the recommended path: start with a minimal local Docker run, switch to RJob when you need more concurrency, then add evaluation parameters when you need scoring.
+
+#### Module One: Run a Local Docker Task
 
 This example runs the checked-in OpenClaw adapter in Docker mode:
 
@@ -135,9 +141,27 @@ Important details:
 - `--gateway-base-url` should point at the gateway session root.
 - `--db-path` must match `gateway.storage_config.db_url` when `storage_type` is `sqlite`.
 
-### 4. Run With Evaluation
+#### Module Two: Scale With RJob
 
-Enable evaluator flow after rollout:
+After the local Docker path works, switch to RJob when you need higher concurrency or cluster resources. RJob mode uses the same launcher but replaces Docker allocation with RJob submission:
+
+```bash
+python launcher.py \
+  --mode rjob \
+  --rjob-config config.yaml \
+  --agent-config env/openrt/openrt_config.rjob.yaml \
+  --agent-start-config env/openrt/openrt_start.rjob.yaml \
+  --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
+  --llm-model YOUR_ROUTE_KEY \
+  --storage-type cloud \
+  --pool-size 8
+```
+
+Global RJob auth belongs in `config.yaml` or `--rjob-config`. Per-agent image, resources, mounts, embedded files, and run command belong in `--agent-start-config`. `--pool-size` controls the concurrency target, bounded by cluster resources and the agent start config.
+
+#### Module Three: Run With Evaluation
+
+After Docker or RJob startup works, add evaluator parameters when you need scoring:
 
 ```bash
 python launcher.py \
@@ -152,25 +176,50 @@ python launcher.py \
   --pool-size 1
 ```
 
-Evaluation specs can come from `env_params.eval`, `env_params.evaluation.specs`, markdown files under `env/<agent>/eval_tasks/<dataset>/`, or a rule evaluator file. See [Evaluation](docs/evaluation.md).
+Evaluation specs can come from `env_params.eval`, `env_params.evaluation.specs`, markdown files under `env/<agent>/eval_tasks/<dataset>/`, or a rule evaluator file. RJob mode uses the same `--enable-evaluation`, `--evaluation-model`, and `--evaluation-config` parameters. See [Evaluation](docs/evaluation.md).
 
-### 5. Run RJob Mode
+## Query Run Data
 
-RJob mode uses the same launcher but replaces Docker allocation with RJob submission:
+The local Quick Start writes task rows and trajectories to `env_trajs.db`. Prefer passing an explicit `--job-id my-openrt-smoke` when launching; if omitted, the launcher generates a uuid hex for the run.
+
+`job_id` identifies one launcher run. `session_id` identifies one environment/task instance: it is stored as `env_id` in `job_environments`, as `session_id` in `session_steps`, and as the gateway URL suffix in `/v1/sessions/<session_id>`.
+
+Find recent runs and sessions:
 
 ```bash
-python launcher.py \
-  --mode rjob \
-  --rjob-config config.yaml \
-  --agent-config env/openrt/openrt_config.rjob.yaml \
-  --agent-start-config env/openrt/openrt_start.rjob.yaml \
-  --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
-  --llm-model YOUR_ROUTE_KEY \
-  --storage-type cloud \
-  --pool-size 8
+sqlite3 env_trajs.db "
+  SELECT id, job_id, env_id AS session_id, env_name, group_id, finished, created_at
+  FROM job_environments
+  ORDER BY id DESC
+  LIMIT 20;"
 ```
 
-Global RJob auth belongs in `config.yaml` or `--rjob-config`. Per-agent image, resources, mounts, embedded files, and run command belong in `--agent-start-config`.
+Inspect one session's requests, rewards, and completion state:
+
+```bash
+sqlite3 env_trajs.db "
+  SELECT id, step_id, llm_model, step_reward, reward,
+         is_terminal, is_session_completed, is_trainable, created_at
+  FROM session_steps
+  WHERE session_id = '<session-id>'
+  ORDER BY step_id, id;"
+```
+
+Inspect gateway model-request events for one run:
+
+```bash
+sqlite3 env_trajs.db "
+  SELECT id, session_id, step_id,
+         json_extract(env_state, '$.event_type') AS event_type,
+         json_extract(env_state, '$.status_code') AS status_code,
+         json_extract(env_state, '$.total_latency_ms') AS total_latency_ms
+  FROM session_steps
+  WHERE job_id = '<job-id>'
+  ORDER BY id DESC
+  LIMIT 50;"
+```
+
+The two main tables are `job_environments`, which stores expanded task rows, dataset parameters, images, and `group_id`, and `session_steps`, which stores messages, model responses, rewards, terminal state, gateway telemetry, and evaluation summaries. Use `job_id` to filter one run or RL Buffer Server data, and `session_id` to inspect one task trajectory, query gateway session status, or debug evaluation. See [Data Manager](docs/data-manager.md) for the full schema and more queries.
 
 ## Data And Logs
 
@@ -225,7 +274,9 @@ Safactory can generate reusable trajectory datasets. The public OS trajectory re
 
 Contributions are welcome for new custom environments, bug fixes, and reproducible examples.
 
-1. Add or update a custom environment under `env/<name>/`.
+When adding an environment, Safactory usually treats a new agent or benchmark as an external runtime: add a runner such as `runner.py` or `runner.mjs`, dataset files, and an optional `rule_evaluator.py` under `env/<name>/`, then provide `<name>_config.yaml` and `<name>_start.yaml`. The config describes task data, image, and evaluation parameters; the start config describes the Docker/RJob launch method, entrypoint command, environment variables, and mounts. Each dataset row should represent one independent task/case. Run a small `launcher.py` smoke test before opening a PR. See [Custom Environments](docs/custom-environment.md) for the full guide.
+
+1. Add or update the runner, dataset, and optional evaluator under `env/<name>/`.
 2. Provide both `<name>_config.yaml` and `<name>_start.yaml`, including all required fields.
 3. Keep secrets and private endpoints out of committed configs.
 4. Run a local smoke test with `launcher.py`.

@@ -1,25 +1,31 @@
-# Custom Runtime
+# Custom Environments
 
-This page explains how to connect a new agent or benchmark as a Safactory custom environment. Safactory v2 treats both as external runtimes: a runtime can be Python, Node.js, shell, or a wrapper around the benchmark's native harness. It receives a `SimulationStartRequest`, runs exactly one task/case, calls the gateway for model requests, and prints one result JSON object.
+This page explains how to connect a new agent or benchmark to Safactory as a custom environment. In Safactory v2, a custom environment is an external runtime adapter: a Python script, Node.js script, shell command, or wrapper around an existing benchmark harness.
 
-The key scheduling model is: one dataset row is one task-level scheduling unit. The launcher creates a separate `job_environments` row, `session_id`, and gateway session for each task, then runs the same image + runner for that single task. This keeps model calls, gateway telemetry, runtime results, and evaluation rewards bound to one session, preventing trajectories from different cases from contaminating each other. When integrating a benchmark, do not make the runner loop over the entire benchmark dataset inside one episode; make each dataset row represent one benchmark case and let Safactory schedule cases task by task.
+Each runtime adapter receives one `SimulationStartRequest`, runs one task or benchmark case, sends model requests through the Safactory gateway, and returns one `SimulationStartResult` JSON object. The terms `agent config` and `agent start config` are historical Safactory names. They are used for both agents and benchmarks.
 
-You usually add or verify five core pieces:
+The most important scheduling rule is:
+
+> One dataset row is one scheduled episode.
+
+For every dataset row, the launcher creates a separate `job_environments` row, `session_id`, and gateway session. It then starts the same image and runner for that single row. This keeps model calls, gateway telemetry, runtime output, and evaluation rewards tied to one session. When integrating a benchmark, do not make the runner loop over the full benchmark dataset inside one episode. Put each benchmark case in its own dataset row and let Safactory schedule the rows independently.
+
+You usually need five pieces:
 
 | Piece | Where | Role | Example |
 |-------|-------|------|---------|
-| `image` | `env_image` in the agent config; RJob can override it in start config | Runtime image. It contains agent/benchmark dependencies, the benchmark harness, and Python/Node runtimes. | `myagent-image:latest`, `mybench-image:latest` |
-| `runner_entrypoint` | Usually `env/<name>/runner.py` or `env/<name>/runner.mjs`, invoked by `start_config.container.runner_entrypoint.command` | Adapter between Safactory and the native agent/benchmark. It reads `SimulationStartRequest`, extracts `env_params.dataset`, calls the gateway target model, runs one task/case, and prints result JSON to stdout. | `python /tmp/safactory-mybench-runner.py` |
-| `rule_evaluator` | Optional, commonly `env/<name>/rule_evaluator.py` | Converts raw benchmark results from `metrics` plus gateway trajectory into a Safactory reward on the 0 to 10 scale. Simple agent smoke tests can omit it; benchmarks usually should include it. | `env/mybench/rule_evaluator.py` |
-| `config` | `env/<name>/<name>_config.yaml` | Defines task rows: `env_name`, `env_image`, `dataset`, `env_num`, `env_params`, and optional evaluation settings. | `env/mybench/mybench_config.yaml` |
-| `start_config` | `env/<name>/<name>_start.yaml` | Defines how the matching runtime starts: runner entrypoint, workdir/env, Docker/RJob settings, and extra mounts. `agent_name` must match `env_name` in the config. | `env/mybench/mybench_start.yaml` |
+| Runtime image | `env_image` in the agent config. RJob deployments can override it from the start config. | Contains the agent or benchmark dependencies, the harness, and the language runtimes needed by the runner. | `myagent-image:latest`, `mybench-image:latest` |
+| Runner entrypoint | Usually `env/<name>/runner.py` or `env/<name>/runner.mjs`, invoked by `container.runner_entrypoint.command`. | Adapts Safactory to the native agent or benchmark. It reads the request, extracts `env_params.dataset`, calls the target model through the gateway, runs one task or case, and returns the result JSON. | `python /tmp/safactory-mybench-runner.py` |
+| Task config | `env/<name>/<name>_config.yaml`, passed with `--agent-config`. | Defines task rows: `env_name`, `env_image`, `dataset`, `env_num`, `env_params`, and optional evaluation settings. | `env/mybench/mybench_config.yaml` |
+| Start config | `env/<name>/<name>_start.yaml`, passed with `--agent-start-config`. | Defines how the matching runtime starts: runner entrypoint, working directory, environment variables, Docker or RJob settings, and mounts. `agent_name` must match `env_name`. | `env/mybench/mybench_start.yaml` |
+| Rule evaluator | Optional, commonly `env/<name>/rule_evaluator.py`. | Converts raw runtime metrics and the gateway trajectory into a Safactory score on the 0 to 10 scale. Simple smoke tests can omit it. Benchmarks usually should provide it. | `env/mybench/rule_evaluator.py` |
 
 Agents and benchmarks mostly differ in the runner and evaluator:
 
-- An agent runtime usually turns `env_params.dataset` into a prompt, tool task, or interaction flow. Evaluation can use the final response, markdown eval tasks, or a custom rule.
-- A benchmark runtime usually wraps an existing benchmark harness. The runner handles only the current dataset row, writes native benchmark score/pass/output metadata into `metrics`, and a `rule_evaluator.py` converts those results into reward.
+- An agent runtime usually turns `env_params.dataset` into a prompt, tool task, or interaction flow. Evaluation can use the final response, markdown eval tasks, or a custom rule evaluator.
+- A benchmark runtime usually wraps an existing benchmark harness. The runner handles only the current dataset row, writes native score, pass/fail status, reason, and output paths into `metrics`, and lets `rule_evaluator.py` normalize those details into a Safactory reward.
 
-## 1. Write A Runtime Script
+## 1. Write A Runner
 
 Create `env/myagent/runner.py`:
 
@@ -98,43 +104,50 @@ if __name__ == "__main__":
         raise SystemExit(0)
 ```
 
-The runtime should exit `0` after printing a failure result. If it exits non-zero in JSON mode, the Docker/RJob runner treats the whole episode as a runtime failure.
+The runner should print a failed result and exit `0` when the task fails in a controlled way. In JSON result mode, a non-zero process exit means the runtime command itself failed. Docker and RJob treat that as an infrastructure/runtime failure, even if some partial output was printed.
 
-## 2. Understand The Request
+For predictable parsing, keep stdout reserved for the result JSON. Send diagnostic logs to stderr. For long remote runs, the runner may also write the same result object to the path in `SAFACTORY_RESULT_PATH`; Safactory parses stdout first and falls back to that artifact path when stdout does not contain parseable JSON.
 
-The runtime receives `SimulationStartRequest` on stdin and through `SAFACTORY_START_REQUEST_JSON`.
+## 2. Read The Request
+
+Safactory passes `SimulationStartRequest` both on stdin and in `SAFACTORY_START_REQUEST_JSON`.
 
 Important fields:
 
 | Field | Meaning |
 |-------|---------|
 | `job_id` | Launcher run ID. |
-| `session_id` | Session/environment UUID. Use this in gateway URLs. |
-| `agent_name`, `agent_id` | Adapter name and environment row ID. |
-| `group_id` | RL grouping ID. |
+| `session_id` | Per-episode session UUID. Use it when building gateway URLs and result paths. |
+| `agent_name`, `agent_id` | Runtime name and environment row ID. |
+| `group_id` | RL grouping ID, if RL grouping is enabled. |
 | `gateway_base_url` | Gateway session root, for example `http://127.0.0.1:8000/v1/sessions`. |
 | `model` | Gateway route key from `--llm-model`. |
-| `temperature` | Sampling temperature. |
-| `max_steps` | Step budget passed by launcher. |
-| `storage_type`, `storage_config` | Storage details. |
-| `env_params` | Expanded YAML parameters, including `dataset`. |
+| `temperature` | Sampling temperature from the launcher. |
+| `max_steps` | Step budget passed by the launcher. |
+| `storage_type`, `storage_config` | Storage backend details. |
+| `env_params` | Expanded YAML parameters. The current dataset row is available at `env_params.dataset`. |
 | `metadata` | Runtime metadata such as container ID, image, row ID, and worker ID. |
 
 `request_env()` also injects useful environment variables:
 
 | Variable | Meaning |
 |----------|---------|
+| `SAFACTORY_START_REQUEST_JSON` | Full `SimulationStartRequest` JSON. |
+| `SAFACTORY_JOB_ID` | Launcher run ID. |
 | `SAFACTORY_SESSION_ID` | Current session ID. |
+| `SAFACTORY_AGENT_NAME`, `SAFACTORY_AGENT_ID` | Runtime name and environment row ID. |
+| `SAFACTORY_TASK_ID`, `SAFACTORY_TASK_PATH`, `SAFACTORY_CATEGORY` | Convenience values copied from the dataset row when present. |
+| `SAFACTORY_RESULT_PATH` | Preferred artifact path for a result JSON file. |
 | `SAFACTORY_GATEWAY_BASE_URL` | Gateway session root. |
 | `SAFACTORY_GATEWAY_SESSION_URL` | Host-side session URL. |
-| `SAFACTORY_GATEWAY_SESSION_URL_CONTAINER` | Container-friendly session URL. Localhost is rewritten to `host.docker.internal`. |
-| `SAFACTORY_ROUTE_MODEL` | Route model inferred from dataset/env params/request. |
-| `SAFACTORY_MODEL_REF` | Provider-style model ref, for example `safactory/<route>`. |
+| `SAFACTORY_GATEWAY_SESSION_URL_CONTAINER` | Container-friendly session URL. Local `localhost` addresses are rewritten to `host.docker.internal`. |
+| `SAFACTORY_ROUTE_MODEL` | Route model inferred from dataset, `env_params`, or request. |
+| `SAFACTORY_MODEL_REF` | Provider-style model reference, for example `safactory/<route>`. |
 | `OPENROUTER_BASE_URL` | Alias for the container-friendly gateway session URL. |
 
 ## 3. Return The Result
 
-Print exactly one result JSON object on stdout. Additional logs should go to stderr.
+Print one `SimulationStartResult` JSON object on stdout. Other logs should go to stderr.
 
 ```json
 {
@@ -154,15 +167,15 @@ Fields:
 | Field | Required | Meaning |
 |-------|----------|---------|
 | `session_id` | yes | Must match the request session ID. |
-| `status` | yes | Usually `succeeded` or `failed`. |
-| `total_reward` | yes | Rollout reward before optional evaluator override. |
-| `step_count` | yes | Runtime-reported step count. |
-| `terminated` | yes | Whether the episode ended naturally. |
-| `truncated` | yes | Whether the episode hit a timeout or step limit. |
-| `error_text` | no | Failure detail. |
-| `metrics` | no | JSON object with adapter-specific details. |
+| `status` | yes | Use `succeeded` when the runner completed normally, even if the task score is low. Use `failed` for runtime errors. |
+| `total_reward` | yes | Runtime-reported reward before any optional evaluator override. |
+| `step_count` | yes | Number of steps reported by the runtime. |
+| `terminated` | yes | Whether the episode reached a normal stopping point. |
+| `truncated` | yes | Whether the episode stopped because of a timeout or step limit. |
+| `error_text` | no | Failure detail for runtime errors. |
+| `metrics` | no | Adapter-specific JSON object. This is the best place to keep benchmark outputs and file paths. |
 
-For benchmarks, `metrics` is the most important interface between the runner and `rule_evaluator.py`. Prefer storing at least the case id, native score, pass/fail flag, reason, and detailed output path:
+For benchmarks, `metrics` is the main interface between the runner and `rule_evaluator.py`. Store enough information for evaluation to score the case without rerunning it:
 
 ```json
 {
@@ -176,9 +189,9 @@ For benchmarks, `metrics` is the most important interface between the runner and
 }
 ```
 
-## 4. Add Agent Config
+## 4. Add The Task Config
 
-The agent config is the source of task scheduling. `env_name` binds to the start config, `env_image` selects the runtime image, `dataset` determines how many tasks are expanded, and `env_params` is passed to the runner.
+The task config is the source of scheduled rows. `env_name` binds the rows to a start config, `env_image` selects the default runtime image, `dataset` controls how many rows are expanded, and `env_params` is passed to the runner.
 
 Create `env/myagent/myagent_config.yaml`:
 
@@ -200,9 +213,9 @@ Create `env/myagent/datasets/tasks.jsonl`:
 {"task_id": "hello-001", "prompt": "Write one short greeting."}
 ```
 
-Dataset rows are available as `request.env_params.dataset`.
+The dataset row appears in the request as `env_params.dataset`.
 
-Benchmark integration uses the same config structure, but each dataset row should represent one benchmark case rather than a full benchmark batch:
+Benchmark integration uses the same config shape. The key difference is that each dataset row should represent one benchmark case, not a full benchmark batch:
 
 ```yaml
 environments:
@@ -225,11 +238,13 @@ environments:
 {"task_id": "case-002", "case_id": "case-002", "input": "another input", "expected": "another answer"}
 ```
 
-Those two rows are scheduled as two independent episodes, each with its own `session_id`, gateway trajectory, and reward. Do not make `runner.py` read and loop over `cases.jsonl` again; otherwise multiple cases' model calls land in the same trajectory and training/evaluation becomes hard to interpret.
+Those two rows become two independent episodes, each with its own `session_id`, gateway trajectory, result, and reward. Do not have `runner.py` read `cases.jsonl` and loop over it again. If multiple cases run inside one episode, their model calls land in the same trajectory and the resulting training or evaluation data becomes ambiguous.
 
-## 5. Add Agent Start Config
+## 5. Add The Start Config
 
-The start config describes how to run the runner entrypoint after the image is allocated. `runner_entrypoint.command` is executed once per task/case and must read request JSON and print result JSON. When `runner_entrypoint.source` points to a local file, Docker mounts it and RJob embeds it automatically; the source path is relative to the start config file.
+The start config describes how to execute the runner after Safactory allocates the image. `container.runner_entrypoint.command` runs once per dataset row. It must read the request JSON and return the result JSON.
+
+When `container.runner_entrypoint.source` points to a local file, the path is resolved relative to the start config file. Docker adds it as a mount at `target`; RJob embeds or stages the file through the RJob runtime config. The `command` should execute the file at the target path.
 
 Create `env/myagent/myagent_start.yaml`:
 
@@ -279,9 +294,11 @@ container:
   idle_command: "tail -f /dev/null"
 ```
 
-`agent_name: mybench` must match `env_name: mybench` in `mybench_config.yaml`; otherwise the launcher cannot find the corresponding startup definition.
+`agent_name: mybench` must match `env_name: mybench` in `mybench_config.yaml`; otherwise the launcher cannot find the startup definition for the scheduled rows.
 
 ## 6. Run A Smoke Test
+
+Start the gateway first, then run one worker and one task at a time:
 
 ```bash
 python launcher.py \
@@ -294,25 +311,25 @@ python launcher.py \
   --max-workers 1
 ```
 
-Check logs:
+Check:
 
 - `logs/<run>/main.log` for launcher and scheduler events.
-- `logs/gateway.log` for gateway events.
-- `logs/gateway_requests.jsonl` for request/response logs.
+- `logs/<run>/gateway.log` for gateway events.
+- `logs/<run>/gateway_requests.jsonl` for request and response records.
 - Adapter-specific output directories under `results/`.
 
 ## Optional Evaluation
 
 You can add evaluation in one of three ways:
 
-- Add inline `env_params.evaluation.specs` in the agent config.
+- Add inline `env_params.evaluation.specs` in the task config.
 - Add markdown tasks under `env/myagent/eval_tasks/<dataset>/<task_name>.md`.
 - Add `env/myagent/rule_evaluator.py`.
 
-For new benchmarks, prefer `rule_evaluator.py`: the runner preserves raw benchmark output, and the rule evaluator normalizes different benchmark score scales, pass conditions, and error cases into Safactory reward. It runs only during evaluation and should not re-run the benchmark case.
+For new benchmarks, prefer `rule_evaluator.py`. The runner should preserve raw benchmark output in `metrics` or output files, and the rule evaluator should normalize benchmark-specific score scales, pass conditions, and error cases into Safactory's 0 to 10 score. It runs only during evaluation and should not rerun the benchmark case.
 
 See [Evaluation](evaluation.md).
 
 ## BaseEnv Note
 
-`core.env.BaseEnv` still exists for library-style environment implementations, but the current v2 launcher path schedules external runtimes through agent configs and start configs. Prefer the runtime approach above unless you are extending older in-process integrations.
+`core.env.BaseEnv` still exists for older library-style, in-process environment implementations. The current v2 launcher path schedules external runtimes through agent configs and start configs. Prefer the runtime adapter approach above unless you are extending an older in-process integration.
