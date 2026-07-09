@@ -50,15 +50,25 @@ export BUFFER_SERVER_PORT=18889
 # -------------------------------------------
 # LLM Proxy Settings (hosted in-process by Slime Generator)
 # -------------------------------------------
-# LLM Proxy 由 Slime Generator (run_slime_generator*.sh) 在进程内启动，提供 /v1 chat completions 接口。
-# HOST 是其他服务连接 LLM Proxy 用的地址（服务本身始终监听 0.0.0.0）。
-# AIEvoBox launcher（由 Buffer Server 拉起）通过此地址调用 LLM。
-# 如果 Buffer Server 和 Slime Generator 运行在不同机器上，改为 Slime Generator 所在机器的 IP。
+# LLM Proxy 由 Slime Generator (run_slime_generator*.sh) 在进程内启动，提供 /v1/chat/completions。
+# 链路：docker(env) -> gateway -> llm_proxy -> sglang。gateway 必须在前，
+# 它把 session id 通过 X-Safactory-Session-Id header 转发给 llm_proxy。
+# HOST 是 gateway 连接 llm_proxy 用的地址（llm_proxy 本身始终监听 0.0.0.0）。
 export LLM_PROXY_HOST=127.0.0.1
 export LLM_PROXY_PORT=18890
 export LLM_MAX_LENGTH=5120
 export LLM_TEMPERATURE=1.0
 export LLM_PROXY_ENABLE_CONSOLE_LOG=0
+
+# -------------------------------------------
+# Gateway Settings (must front the llm_proxy)
+# -------------------------------------------
+# runner 只打 gateway 的 session 端点；gateway 的 llm_routes 里把目标路由的
+# base_url 指向上面的 llm_proxy (http://LLM_PROXY_HOST:LLM_PROXY_PORT/v1)。
+# 训练时 gateway 的 max_steps 应设为 -1，避免注入合成 stop 打断 rollout。
+export AIEVOBOX_GATEWAY_HOST=127.0.0.1
+export AIEVOBOX_GATEWAY_PORT=8000
+export AIEVOBOX_GATEWAY_BASE_URL=http://${AIEVOBOX_GATEWAY_HOST}:${AIEVOBOX_GATEWAY_PORT}/v1/sessions
 
 # -------------------------------------------
 # Slime Training Settings (reference RL values)
