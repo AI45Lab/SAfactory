@@ -265,7 +265,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 ctx.is_stream,
             )
 
-            headers = forwarder.build_upstream_headers(target)
+            headers = forwarder.build_upstream_headers(target, session_id=ctx.session_id)
             with trace.span("request_log_write"):
                 await request_logger.log_request(ctx, binding, target, payload)
             if ctx.is_stream:
