@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import copy
 import json
 import logging
@@ -20,6 +21,7 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
 from utils import get_env
+import gateway_autostart
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -64,6 +66,9 @@ app = FastAPI(title="Rollout Buffer Server", debug=True)
 
 # Track subprocesses
 aievobox_process: Optional[subprocess.Popen] = None
+
+# Ensure the auto-started gateway is torn down when buffer_server exits.
+atexit.register(gateway_autostart.stop)
 
 # DataManager for querying the database
 data_manager: Optional[DataManager] = None
@@ -322,6 +327,11 @@ def start_aievobox_process(data: dict):
 
     # Build launcher.py command line arguments
     aievobox_root = os.environ.get("AIEVOBOX_ROOT", "/root/AIEvoBox")
+
+    # Bring up the gateway before the launcher: it must front the llm_proxy and
+    # the launcher validates gateway /readyz at startup. Idempotent across rollouts.
+    gateway_autostart.ensure_started(aievobox_root=aievobox_root, config_dir=LOG_DIR)
+
     launcher_script = os.path.join(aievobox_root, "launcher.py")
     agent_root = get_env("AIEVOBOX_AGENT_ROOT") or "env"
     agent_config = os.environ.get("AIEVOBOX_AGENT_CONFIG")

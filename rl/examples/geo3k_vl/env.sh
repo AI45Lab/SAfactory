@@ -63,12 +63,13 @@ export LLM_PROXY_ENABLE_CONSOLE_LOG=0
 # -------------------------------------------
 # Gateway Settings (must front the llm_proxy)
 # -------------------------------------------
-# runner 只打 gateway 的 session 端点；gateway 的 llm_routes 里把目标路由的
-# base_url 指向上面的 llm_proxy (http://LLM_PROXY_HOST:LLM_PROXY_PORT/v1)。
-# 训练时 gateway 的 max_steps 应设为 -1，避免注入合成 stop 打断 rollout。
+# buffer_server 会自动拉起 gateway（生成配置：route 指向 llm_proxy、共用 RL DB、
+# max_steps=-1），并等 /readyz。runner 只打 gateway 的 session 端点。
+# 想用外部/手动 gateway 时设 AIEVOBOX_GATEWAY_AUTOSTART=0 关掉自动拉起。
 export AIEVOBOX_GATEWAY_HOST=127.0.0.1
 export AIEVOBOX_GATEWAY_PORT=8000
 export AIEVOBOX_GATEWAY_BASE_URL=http://${AIEVOBOX_GATEWAY_HOST}:${AIEVOBOX_GATEWAY_PORT}/v1/sessions
+# export AIEVOBOX_GATEWAY_AUTOSTART=0
 
 # -------------------------------------------
 # Slime Training Settings (reference RL values)
