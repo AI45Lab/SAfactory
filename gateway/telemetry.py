@@ -39,7 +39,6 @@ class TelemetryRecorder:
         self._seq_by_session_model: dict[tuple[str, str], int] = {}
         self._lock = asyncio.Lock()
         self._flush_task: asyncio.Task | None = None
-        self._background_tasks: set[asyncio.Task] = set()
         self._running = False
         self.dropped_total = 0
         self.dropped_by_reason: defaultdict[str, int] = defaultdict(int)
@@ -77,20 +76,6 @@ class TelemetryRecorder:
             except asyncio.CancelledError:
                 pass
             self._flush_task = None
-        if self._background_tasks:
-            pending = list(self._background_tasks)
-            timeout_s = max(1.0, float(self.cfg.telemetry_write_timeout_s))
-            log.info("Gateway telemetry waiting for background writes: tasks=%d", len(pending))
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*pending, return_exceptions=True),
-                    timeout=timeout_s,
-                )
-            except asyncio.TimeoutError:
-                log.warning("Gateway telemetry background writes timed out during stop; cancelling")
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
         try:
             await self.flush_once(drain_all=True)
         except Exception:
@@ -332,12 +317,7 @@ class TelemetryRecorder:
                 record.seq_id,
                 record.requested_model,
             )
-            try:
-                await self._write_record(binding, record)
-            except asyncio.TimeoutError:
-                if record.event_type == "gateway_session_close":
-                    self._schedule_session_close_retry(binding, record)
-                raise
+            await self._write_record(binding, record)
             self.flushed_total += 1
             log.info(
                 "Gateway telemetry strict write complete: event_type=%s request_id=%s elapsed_ms=%.2f flushed_total=%d",
@@ -409,69 +389,6 @@ class TelemetryRecorder:
                 timeout_s,
             )
             raise
-
-    def _schedule_session_close_retry(
-        self,
-        binding: GatewaySessionBinding,
-        record: GatewayTelemetryRecord,
-    ) -> None:
-        task = asyncio.create_task(self._retry_session_close_write(binding, record))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
-        log.info(
-            "Gateway telemetry scheduled session close retry: request_id=%s session_id=%s background_tasks=%d",
-            record.request_id,
-            record.session_id,
-            len(self._background_tasks),
-        )
-
-    async def _retry_session_close_write(
-        self,
-        binding: GatewaySessionBinding,
-        record: GatewayTelemetryRecord,
-    ) -> None:
-        for attempt, delay_s in enumerate((1.0, 2.0, 4.0), start=1):
-            await asyncio.sleep(delay_s)
-            try:
-                log.info(
-                    "Gateway telemetry session close retry begin: request_id=%s session_id=%s attempt=%d",
-                    record.request_id,
-                    record.session_id,
-                    attempt,
-                )
-                await self._write_record(binding, record)
-            except asyncio.TimeoutError:
-                log.warning(
-                    "Gateway telemetry session close retry timed out: request_id=%s session_id=%s attempt=%d",
-                    record.request_id,
-                    record.session_id,
-                    attempt,
-                )
-                continue
-            except Exception:
-                log.exception(
-                    "Gateway telemetry session close retry failed: request_id=%s session_id=%s attempt=%d",
-                    record.request_id,
-                    record.session_id,
-                    attempt,
-                )
-                return
-
-            self.flushed_total += 1
-            log.info(
-                "Gateway telemetry session close retry complete: request_id=%s session_id=%s attempt=%d flushed_total=%d",
-                record.request_id,
-                record.session_id,
-                attempt,
-                self.flushed_total,
-            )
-            return
-
-        log.error(
-            "Gateway telemetry session close retry exhausted: request_id=%s session_id=%s",
-            record.request_id,
-            record.session_id,
-        )
 
     async def _drop(self, reason: str) -> None:
         async with self._lock:
