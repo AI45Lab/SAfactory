@@ -82,4 +82,4 @@ Recorded trajectories can be converted into SFT or RL data:
 - `step_reward` and `reward` provide reward signals.
 - `env_state` preserves environment-side context for debugging and filtering.
 
-For online RL, use the Buffer Server described in [RL Training](rl-training.md).
+For online RL, use the Buffer Server described in [RL Training](../rl/README.md).

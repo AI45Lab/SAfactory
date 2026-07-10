@@ -11,7 +11,7 @@
 [快速开始](#quick-start) |
 [演示](#demo) |
 [环境](docs/environments_CN.md) |
-[RL 训练](docs/rl-training_CN.md) |
+[RL 训练](rl/README_CN.md) |
 [自定义环境](docs/custom-environment_CN.md) |
 [配置](docs/configuration_CN.md) |
 [数据](docs/data-manager_CN.md) |
@@ -28,9 +28,7 @@
 
 ## <a id="why-safactory"></a>✨ 为什么使用 Safactory
 
-![tax](fig/tax.png)
-
-Safactory 是面向需要统一完成评测、数据生成和 RL 训练的团队的智能体沙箱。它提供统一的环境接口、并发 rollout 管理、OpenAI 兼容模型访问、轨迹持久化，以及面向 Slime / GRPO 训练的 Buffer Server 桥接。
+Safactory 是面向需要统一完成评测、数据生成和 RL 训练的团队的智能体沙箱。它提供统一的环境接口、并发 rollout 管理、OpenAI 兼容模型访问、轨迹持久化，以及面向 [Slime](https://github.com/THUDM/slime) 框架的 Buffer Server 桥接。
 
 | 需求 | Safactory 提供 |
 |------|----------------|
@@ -64,10 +62,20 @@ https://github.com/user-attachments/assets/4c551b27-ce4d-4fc8-8df6-d6dc8100cc88
 ```bash
 git clone https://github.com/AI45Lab/Safactory.git
 cd Safactory
+python -m venv .venv
+source .venv/bin/activate
+pip install -U pip
 pip install -r requirements.txt
 ```
 
-部分环境有额外运行时依赖。运行 Docker、模拟器、虚拟机或仿真器任务前，请先查看[支持的环境](docs/environments_CN.md)。
+根目录 `requirements.txt` 只安装 Safactory 基础运行依赖，包括 launcher、manager、data manager、OpenAI 兼容客户端、Ray/RayJob 集成和 Buffer Server 依赖。它不会安装 Slime / Megatron / SGLang 训练栈，也不会安装各环境的重型依赖。
+
+进行 RL 训练前，请单独准备 Slime 环境：
+
+- Conda 环境：参考 Slime 的 [`build_conda.sh`](https://github.com/THUDM/slime/blob/main/build_conda.sh)。
+- Docker 环境：参考 Slime 的 [Docker quick start](https://github.com/THUDM/slime/blob/main/docs/en/get_started/quick_start.md)。
+
+部分环境有额外运行时依赖。只需要为实际运行的环境安装 `env/<name>/requirements.txt`；运行 Docker、模拟器、虚拟机或仿真器任务前，请先查看[支持的环境](docs/environments_CN.md)。
 
 ### 评测模型
 
@@ -103,51 +111,33 @@ Safactory 通过 Buffer Server 与 [Slime](https://github.com/THUDM/slime) 集�
 
 ```bash
 # 终端 1：Slime 训练进程
-cd rl
-./run_slime_generator_vl.sh
+source rl/examples/osgym/env.sh
+bash rl/run_slime_generator_common.sh
 
 # 终端 2：Safactory Buffer Server 和 rollout runner
-cd rl
-./run_buffer_server.sh
+source rl/examples/osgym/env.sh
+bash rl/run_buffer_server_common.sh
 ```
 
-完整说明见 [RL 训练](docs/rl-training_CN.md)。
+完整说明见 [RL 训练](rl/README_CN.md)。
 
 ## <a id="datasets"></a>📦 数据集
+
+![tax](fig/tax.png)
 
 Safactory 可以生成可复用的轨迹数据集。公开 OS 轨迹发布在 Hugging Face：
 
 - [AI45Research/SATraj-OS](https://huggingface.co/datasets/AI45Research/SATraj-OS)，一个由 Safactory 生成、用于智能体训练和分析的 OS 轨迹数据集。
 
-Safactory 生成的数据也支持智能体安全训练。本实验使用 SATraj-OS 对 Qwen3-vl-8B进行微调，得到 **SATraj-Agent-8B**，并在 OS-Harm 上评估安全性、在 OSWorld 上评估任务能力。结果显示，SATraj-Agent-8B 将平均 Unsafe 从 31.33% 降至 **3.33%**，同时将 OSWorld Total 从 14.40% 提升至 22.16%，说明安全能力提升没有带来安全对齐税。
+使用 Safactory 生成的 OS 轨迹训练模型，可以在任务能力和安全 benchmark 上同时取得提升。以 **Qwen3-VL-8B** 为基座，在 SATraj-OS 上进行监督微调后，OSWorld 成功率从 **14.40%** 提升到 **30.19%**；继续进行 RL 训练后达到 **36.29%**，相比基座模型绝对提升 **+21.89 pp**。
+
+同一批训练数据也提升了安全性，而不是用安全下降换取能力提升。在 OS-Harm 上，SATraj-OS SFT 将安全分数从 **68.67** 提升到 **96.67**；RL 训练后的模型安全分数为 **91.33**，仍显著高于基座模型。这说明 Safactory 数据可以支持智能体能力和安全性的共同提升。
 
 <table>
-  <thead>
-    <tr>
-      <th rowspan="2">模型</th>
-      <th colspan="7">安全 (OS-Harm)</th>
-      <th colspan="5">能力 (OSWorld，越高越好)</th>
-    </tr>
-    <tr>
-      <th>平均 Unsafe ↓</th>
-      <th>误用 Unsafe ↓</th>
-      <th>误用 Completed ↓</th>
-      <th>注入 Unsafe ↓</th>
-      <th>注入 Completed ↑</th>
-      <th>失控 Unsafe ↓</th>
-      <th>失控 Completed ↑</th>
-      <th>Total</th>
-      <th>Chrome</th>
-      <th>GIMP</th>
-      <th>OS</th>
-      <th>VS Code</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr><td>Qwen3.5-397B</td><td align="right">32.00%</td><td align="right">62.00%</td><td align="right">8.00%</td><td align="right">16.00%</td><td align="right">40.00%</td><td align="right">18.00%</td><td align="right">6.00%</td><td align="right"><strong>62.20%</strong></td><td align="right">-</td><td align="right">-</td><td align="right">-</td><td align="right">-</td></tr>
-    <tr><td>Qwen3vl-8b</td><td align="right">31.33%</td><td align="right">69.33%</td><td align="right">22.67%</td><td align="right">10.00%</td><td align="right">14.00%</td><td align="right">14.67%</td><td align="right">4.00%</td><td align="right">14.40%</td><td align="right">28.26%</td><td align="right">15.38%</td><td align="right">25.00%</td><td align="right">21.74%</td></tr>
-    <tr><td>SAModel-OS-8B</td><td align="right"><strong>3.33%</strong></td><td align="right"><strong>0.00%</strong></td><td align="right"><strong>0.00%</strong></td><td align="right"><strong>8.00%</strong></td><td align="right"><strong>54.00%</strong></td><td align="right"><strong>2.00%</strong></td><td align="right"><strong>10.00%</strong></td><td align="right">22.16%</td><td align="right"><strong>34.78%</strong></td><td align="right"><strong>42.31%</strong></td><td align="right"><strong>29.17%</strong></td><td align="right"><strong>56.52%</strong></td></tr>
-  </tbody>
+  <tr>
+    <td width="50%"><img src="fig/osworld.PNG" alt="OSWorld success rate comparison with SA-OS training improvements"></td>
+    <td width="50%"><img src="fig/osharm.PNG" alt="OS-Harm safety comparison across agent LLMs"></td>
+  </tr>
 </table>
 
 ## <a id="documentation"></a>📚 文档
@@ -157,7 +147,7 @@ Safactory 生成的数据也支持智能体安全训练。本实验使用 SATraj
 | [配置](docs/configuration_CN.md) | CLI 参数、manager YAML 和环境 YAML 格式。 |
 | [支持的环境](docs/environments_CN.md) | 环境注册名、前置依赖和安装链接。 |
 | [数据管理器](docs/data-manager_CN.md) | SQLite 表结构、存储行为和查询示例。 |
-| [RL 训练](docs/rl-training_CN.md) | Slime 集成、Buffer Server 设置和 RL 变量。 |
+| [RL 训练](rl/README_CN.md) | Slime 集成、Buffer Server 设置和 RL 变量。 |
 | [自定义环境](docs/custom-environment_CN.md) | 最小 `BaseEnv` 实现和注册流程。 |
 | [经验抽取与注入](docs/experience-extraction-injection_CN.md) | 将历史轨迹作为 prompt 时经验复用。 |
 

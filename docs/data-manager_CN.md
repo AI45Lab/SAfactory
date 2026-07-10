@@ -82,4 +82,4 @@ sqlite3 env_trajs.db "
 - `step_reward` 和 `reward` 提供奖励信号。
 - `env_state` 保留环境侧上下文，便于调试和筛选。
 
-在线 RL 请使用 [RL 训练](rl-training_CN.md) 中介绍的 Buffer Server。
+在线 RL 请使用 [RL 训练](../rl/README_CN.md) 中介绍的 Buffer Server。
