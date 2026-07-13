@@ -16,7 +16,7 @@ from typing import Any, Deque, Dict, List, Optional
 from manager.binding_plan import BindingPlan
 from .base import ClusterBackend
 
-log = logging.getLogger("manager.docker_clusters")
+log = logging.getLogger("clusters.docker_clusters")
 
 _INVALID_NAME_CHARS = re.compile(r"[^a-zA-Z0-9_.-]+")
 _DEFAULT_RUNNER_CONTAINER_PATH = "/tmp/safactory-openclaw-runner.mjs"
@@ -156,7 +156,7 @@ class DockerContainerBackend(ClusterBackend):
         if self._cleanup_stale_on_start:
             await self._cleanup_stale_containers_on_start()
         await self.validate_images(plan)
-        log.info("Docker runtime backend ready for %d agent image(s)", len(plan.env_to_image))
+        log.debug("Docker runtime backend ready for %d agent image(s)", len(plan.env_to_image))
 
     async def validate_images(self, plan: BindingPlan) -> None:
         missing_local: List[str] = []
@@ -573,13 +573,13 @@ class DockerContainerBackend(ClusterBackend):
             idle_command=idle_command,
             workdir=workdir,
         )
-        log.info(
+        log.debug(
             "Docker container create command: env=%s image=%s command=%s",
             env_name,
             image,
             self._cmd_for_log(run_cmd),
         )
-        log.info(
+        log.debug(
             "Docker container create params: env=%s params=%s",
             env_name,
             self._json_for_log(
@@ -655,7 +655,7 @@ class DockerContainerBackend(ClusterBackend):
                 log.warning("failed to remove partially initialized container %s", container_id, exc_info=True)
             raise
         self._containers[container_id] = record
-        log.info(
+        log.debug(
             "Docker runtime container ready: env=%s image=%s container=%s reuse=%s",
             env_name,
             image,
