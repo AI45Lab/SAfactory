@@ -281,6 +281,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     "upstream_stream_opened",
                     status_code=opened.status_code,
                     upstream_latency_ms=opened.upstream_latency_ms,
+                    upstream_open_latency_ms=opened.upstream_latency_ms,
                 )
                 log.info(
                     "Gateway upstream stream opened: request_id=%s status=%d upstream_latency_ms=%.2f",
@@ -373,16 +374,18 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             raise
         except Exception as exc:
             latency_ms = (time.perf_counter() - started) * 1000
+            upstream_latency_ms = _upstream_latency_ms_from_exception(exc)
             status_code, error_body = forwarder.normalize_error(exc)
             log.warning(
                 "Gateway request failed: request_id=%s session_id=%s endpoint=%s model=%s status=%d "
-                "latency_ms=%.2f error=%s",
+                "latency_ms=%.2f upstream_latency_ms=%s error=%s",
                 ctx.request_id if ctx else None,
                 ctx.session_id if ctx else path_session_id,
                 endpoint,
                 ctx.requested_model if ctx else None,
                 status_code,
                 latency_ms,
+                f"{upstream_latency_ms:.2f}" if upstream_latency_ms is not None else None,
                 exc,
             )
             if target is not None:
@@ -397,6 +400,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     error_text=str(exc),
                     status_code=status_code,
                     latency_ms=latency_ms,
+                    upstream_latency_ms=upstream_latency_ms,
                     ctx=ctx,
                     binding=binding,
                     target=target,
@@ -411,11 +415,13 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                         str(exc),
                         status_code,
                         latency_ms,
+                        upstream_latency_ms=upstream_latency_ms,
                     )
             trace_status = "failed"
             trace_extra = {
                 "status_code": status_code,
                 "total_latency_ms": latency_ms,
+                "upstream_latency_ms": upstream_latency_ms,
                 "error_type": type(exc).__name__,
                 "error": str(exc),
             }
@@ -525,6 +531,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     "upstream_stream_opened",
                     status_code=opened.status_code,
                     upstream_latency_ms=opened.upstream_latency_ms,
+                    upstream_open_latency_ms=opened.upstream_latency_ms,
                 )
                 log.info(
                     "Gateway standard upstream stream opened: endpoint=%s model=%s status=%d upstream_latency_ms=%.2f",
@@ -580,13 +587,15 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             raise
         except Exception as exc:
             latency_ms = (time.perf_counter() - started) * 1000
+            upstream_latency_ms = _upstream_latency_ms_from_exception(exc)
             status_code, error_body = forwarder.normalize_error(exc)
             log.warning(
-                "Gateway standard request failed: endpoint=%s model=%s status=%d latency_ms=%.2f error=%s",
+                "Gateway standard request failed: endpoint=%s model=%s status=%d latency_ms=%.2f upstream_latency_ms=%s error=%s",
                 endpoint,
                 payload.get("model") if isinstance(payload, dict) else None,
                 status_code,
                 latency_ms,
+                f"{upstream_latency_ms:.2f}" if upstream_latency_ms is not None else None,
                 exc,
             )
             if target is not None:
@@ -596,6 +605,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             trace_extra = {
                 "status_code": status_code,
                 "total_latency_ms": latency_ms,
+                "upstream_latency_ms": upstream_latency_ms,
                 "error_type": type(exc).__name__,
                 "error": str(exc),
             }
@@ -925,6 +935,16 @@ def _sse_data(payload: dict[str, Any]) -> bytes:
     return f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n".encode("utf-8")
 
 
+def _upstream_latency_ms_from_exception(exc: Exception) -> float | None:
+    value = getattr(exc, "upstream_latency_ms", None)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 async def _stream_and_finalize(
     *,
     opened: StreamForwardContext,
@@ -1004,6 +1024,7 @@ async def _stream_and_finalize(
     finally:
         opened.response.close()
         latency_ms = (time.perf_counter() - started) * 1000
+        upstream_stream_total_ms = (time.perf_counter() - opened.upstream_started_perf) * 1000
         ttft_ms = (first_chunk_at - started) * 1000 if first_chunk_at is not None else None
         stats = StreamTelemetryStats(
             ttft_ms=ttft_ms,
@@ -1030,6 +1051,8 @@ async def _stream_and_finalize(
                 chunk_count=chunk_count,
                 output_bytes=output_bytes,
                 total_latency_ms=latency_ms,
+                upstream_open_latency_ms=opened.upstream_latency_ms,
+                upstream_stream_total_ms=upstream_stream_total_ms,
                 ttft_ms=ttft_ms,
             )
             stream_body = stream_capture.snapshot()
@@ -1049,12 +1072,14 @@ async def _stream_and_finalize(
                     stream_body=stream_body,
                     stream_summary=stream_response_body,
                     latency_ms=latency_ms,
-                    upstream_latency_ms=opened.upstream_latency_ms,
+                    upstream_latency_ms=upstream_stream_total_ms,
                     ttft_ms=ttft_ms,
                     output_chunk_count=chunk_count,
                     client_cancelled=client_cancelled,
                     upstream_cancelled=upstream_cancelled,
                     error_text=error_text,
+                    upstream_open_latency_ms=opened.upstream_latency_ms,
+                    upstream_stream_total_ms=upstream_stream_total_ms,
                 )
             if ok:
                 with trace.span("telemetry_enqueue_stream_success"):
@@ -1065,7 +1090,7 @@ async def _stream_and_finalize(
                         payload,
                         telemetry_response_body,
                         latency_ms,
-                        upstream_latency_ms=opened.upstream_latency_ms,
+                        upstream_latency_ms=upstream_stream_total_ms,
                         stream_stats=stats,
                     )
             else:
@@ -1078,7 +1103,7 @@ async def _stream_and_finalize(
                         error_text or "stream failed",
                         status_code,
                         latency_ms,
-                        upstream_latency_ms=opened.upstream_latency_ms,
+                        upstream_latency_ms=upstream_stream_total_ms,
                         stream_stats=stats,
                         response_body=telemetry_response_body,
                     )
@@ -1110,6 +1135,8 @@ async def _stream_and_finalize(
                 ),
                 status_code=status_code,
                 total_latency_ms=latency_ms,
+                upstream_open_latency_ms=opened.upstream_latency_ms,
+                upstream_stream_total_ms=upstream_stream_total_ms,
                 ttft_ms=ttft_ms,
             )
             log.debug("Gateway stream resources released: request_id=%s", ctx.request_id)
@@ -1162,6 +1189,7 @@ async def _standard_stream_and_finalize(
     finally:
         opened.response.close()
         latency_ms = (time.perf_counter() - started) * 1000
+        upstream_stream_total_ms = (time.perf_counter() - opened.upstream_started_perf) * 1000
         ttft_ms = (first_chunk_at - started) * 1000 if first_chunk_at is not None else None
         with trace.span("router_mark_stream_result"):
             await router.mark_route_result(target.route_model, status_code < 400, latency_ms, status_code)
@@ -1184,6 +1212,8 @@ async def _standard_stream_and_finalize(
             ),
             status_code=status_code,
             total_latency_ms=latency_ms,
+            upstream_open_latency_ms=opened.upstream_latency_ms,
+            upstream_stream_total_ms=upstream_stream_total_ms,
             ttft_ms=ttft_ms,
         )
         log.info(

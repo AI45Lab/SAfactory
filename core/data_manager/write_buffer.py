@@ -11,12 +11,19 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Type, TypeVar, Set, Optional, Any
 from datetime import datetime
 import logging
+import time
 
+from core.perf_trace import PerfTrace
 from tortoise import Model
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=Model)
+
+
+def _model_table(model_class: Type[Model]) -> str:
+    meta = getattr(model_class, "_meta", None)
+    return str(getattr(meta, "db_table", "") or model_class.__name__)
 
 
 @dataclass
@@ -293,21 +300,46 @@ class WriteBuffer:
         if not to_create:
             return 0
 
+        trace = PerfTrace(
+            "write_buffer.flush_creates",
+            logger=logger,
+            context={
+                "operation": "db_write",
+                "table": _model_table(model_class),
+                "model": model_class.__name__,
+                "row_count": len(to_create),
+            },
+        )
         try:
-            await model_class.bulk_create(to_create)
+            with trace.span("db_write.bulk_create", row_count=len(to_create)):
+                await model_class.bulk_create(to_create)
             count = len(to_create)
             self._stats["total_create_flushed"] += count
             logger.debug(f"Bulk created {count} {model_class.__name__} records")
 
             # bulk_create 不会在原对象上设置 pk（SQLite 限制）
             # 需要通过唯一字段查询并更新 pk，以便后续 update 能正常工作
-            await self._update_pks_after_bulk_create(model_class, to_create)
+            with trace.span("db_read.update_pks_after_bulk_create", row_count=len(to_create)):
+                await self._update_pks_after_bulk_create(model_class, to_create)
 
+            trace.emit_summary(status="success", created_count=count)
             return count
         except Exception as e:
+            trace.mark("db_write.bulk_create_failed", error_type=type(e).__name__, error=str(e))
             logger.error(f"Bulk create failed for {model_class.__name__}: {e}")
             # 降级逐条插入（save() 会设置 pk）
-            return await self._fallback_create(to_create)
+            try:
+                with trace.span("db_write.fallback_create", row_count=len(to_create)):
+                    created = await self._fallback_create(to_create)
+                trace.emit_summary(status="fallback_success", created_count=created)
+                return created
+            except Exception as fallback_exc:
+                trace.emit_summary(
+                    status="failed",
+                    error_type=type(fallback_exc).__name__,
+                    error=str(fallback_exc),
+                )
+                raise
 
     async def _update_pks_after_bulk_create(
         self,
@@ -335,7 +367,15 @@ class WriteBuffer:
 
         # 批量查询
         unique_values = [getattr(inst, unique_field) for inst in no_pk_instances]
+        started = time.perf_counter()
         db_records = await model_class.filter(**{f"{unique_field}__in": unique_values})
+        logger.debug(
+            "WriteBuffer pk lookup complete: model=%s field=%s rows=%d elapsed_ms=%.2f",
+            model_class.__name__,
+            unique_field,
+            len(db_records),
+            (time.perf_counter() - started) * 1000,
+        )
 
         # 建立映射并更新 pk
         value_to_pk = {getattr(r, unique_field): r.pk for r in db_records}
@@ -374,31 +414,63 @@ class WriteBuffer:
         # 按 update_fields 分组，相同字段的可以批量更新
         grouped = self._group_updates_by_fields(to_update)
         total = 0
+        trace = PerfTrace(
+            "write_buffer.flush_updates",
+            logger=logger,
+            context={
+                "operation": "db_write",
+                "table": _model_table(model_class),
+                "model": model_class.__name__,
+                "row_count": len(to_update),
+                "group_count": len(grouped),
+            },
+        )
 
-        for fields, entries in grouped.items():
-            instances = [e.instance for e in entries]
-            try:
-                if fields:
-                    # 有指定字段时使用 bulk_update
-                    await model_class.bulk_update(instances, fields=list(fields))
-                else:
-                    # 无指定字段时逐个 save
-                    for inst in instances:
-                        await inst.save()
-                total += len(instances)
-            except Exception as e:
-                logger.error(f"Bulk update failed for {model_class.__name__}: {e}")
-                # 降级逐条更新
-                for inst in instances:
-                    try:
-                        await inst.save()
-                        total += 1
-                    except Exception as inner_e:
-                        logger.error(f"Failed to update {model_class.__name__}: {inner_e}")
+        try:
+            for fields, entries in grouped.items():
+                instances = [e.instance for e in entries]
+                field_names = sorted(str(field) for field in fields)
+                try:
+                    if fields:
+                        # 有指定字段时使用 bulk_update
+                        with trace.span(
+                            "db_write.bulk_update",
+                            row_count=len(instances),
+                            field_count=len(field_names),
+                            fields=field_names,
+                        ):
+                            await model_class.bulk_update(instances, fields=list(fields))
+                    else:
+                        # 无指定字段时逐个 save
+                        with trace.span("db_write.save_updates", row_count=len(instances)):
+                            for inst in instances:
+                                await inst.save()
+                    total += len(instances)
+                except Exception as e:
+                    trace.mark(
+                        "db_write.bulk_update_failed",
+                        row_count=len(instances),
+                        field_count=len(field_names),
+                        error_type=type(e).__name__,
+                        error=str(e),
+                    )
+                    logger.error(f"Bulk update failed for {model_class.__name__}: {e}")
+                    # 降级逐条更新
+                    with trace.span("db_write.fallback_update", row_count=len(instances)):
+                        for inst in instances:
+                            try:
+                                await inst.save()
+                                total += 1
+                            except Exception as inner_e:
+                                logger.error(f"Failed to update {model_class.__name__}: {inner_e}")
 
-        self._stats["total_update_flushed"] += total
-        logger.debug(f"Bulk updated {total} {model_class.__name__} records")
-        return total
+            self._stats["total_update_flushed"] += total
+            logger.debug(f"Bulk updated {total} {model_class.__name__} records")
+            trace.emit_summary(status="success", updated_count=total)
+            return total
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
 
     def _group_updates_by_fields(
         self,

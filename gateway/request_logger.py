@@ -159,6 +159,8 @@ class GatewayRequestLogger:
         client_cancelled: bool,
         upstream_cancelled: bool,
         error_text: str | None,
+        upstream_open_latency_ms: float | None = None,
+        upstream_stream_total_ms: float | None = None,
     ) -> None:
         response: dict[str, Any] = {
             "stream_text": stream_body.text,
@@ -177,6 +179,8 @@ class GatewayRequestLogger:
                 "status_code": status_code,
                 "latency_ms": latency_ms,
                 "upstream_latency_ms": upstream_latency_ms,
+                "upstream_open_latency_ms": upstream_open_latency_ms,
+                "upstream_stream_total_ms": upstream_stream_total_ms,
                 "ttft_ms": ttft_ms,
                 "output_chunk_count": output_chunk_count,
                 "client_cancelled": client_cancelled,
@@ -213,6 +217,7 @@ class GatewayRequestLogger:
         error_text: str,
         status_code: int,
         latency_ms: float,
+        upstream_latency_ms: float | None = None,
         ctx: GatewayRequestContext | None = None,
         binding: GatewaySessionBinding | None = None,
         target: LLMRouteTarget | None = None,
@@ -224,6 +229,7 @@ class GatewayRequestLogger:
             "path_session_id": path_session_id,
             "status_code": status_code,
             "latency_ms": latency_ms,
+            "upstream_latency_ms": upstream_latency_ms,
             "error_text": error_text,
             "error": self._safe_body(error_body),
         }

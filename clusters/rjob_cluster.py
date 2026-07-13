@@ -241,12 +241,56 @@ class RJobClusterBackend(ClusterBackend):
         unknown_count = 0
         poll_count = 0
         last_status = ""
+        wait_started = time.perf_counter()
+        first_status_ms: float | None = None
+        submit_to_starting_ms: float | None = None
+        submit_to_running_ms: float | None = None
         while True:
             status = await self._get_status(client, job_name)
             poll_count += 1
+            elapsed_ms = round((time.perf_counter() - wait_started) * 1000, 3)
+            if status != "Unknown" and first_status_ms is None:
+                first_status_ms = elapsed_ms
+                if trace is not None:
+                    trace.mark(
+                        "rjob_first_status",
+                        status=status,
+                        poll_count=poll_count,
+                        job_name=job_name,
+                        submit_to_first_status_ms=first_status_ms,
+                    )
+                    trace.update_context(rjob_submit_to_first_status_ms=first_status_ms)
+            if status == "Starting" and submit_to_starting_ms is None:
+                submit_to_starting_ms = elapsed_ms
+                if trace is not None:
+                    trace.mark(
+                        "rjob_starting",
+                        status=status,
+                        poll_count=poll_count,
+                        job_name=job_name,
+                        submit_to_starting_ms=submit_to_starting_ms,
+                    )
+                    trace.update_context(rjob_submit_to_starting_ms=submit_to_starting_ms)
+            if status == "Running" and submit_to_running_ms is None:
+                submit_to_running_ms = elapsed_ms
+                if trace is not None:
+                    trace.mark(
+                        "rjob_running",
+                        status=status,
+                        poll_count=poll_count,
+                        job_name=job_name,
+                        submit_to_running_ms=submit_to_running_ms,
+                    )
+                    trace.update_context(rjob_submit_to_running_ms=submit_to_running_ms)
             if status != last_status:
                 if trace is not None:
-                    trace.mark("status_poll", status=status, poll_count=poll_count, job_name=job_name)
+                    trace.mark(
+                        "status_poll",
+                        status=status,
+                        poll_count=poll_count,
+                        job_name=job_name,
+                        submit_to_status_ms=elapsed_ms,
+                    )
                 log.info("RJob status changed: name=%s status=%s poll_count=%d", job_name, status, poll_count)
                 last_status = status
             if status in RJOB_SUCCEEDED_STATUSES or status in RJOB_FAILED_STATUSES:

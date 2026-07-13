@@ -38,6 +38,7 @@ class StreamForwardContext:
     status_code: int
     headers: dict[str, str]
     upstream_latency_ms: float
+    upstream_started_perf: float
 
     @property
     def media_type(self) -> str:
@@ -45,11 +46,18 @@ class StreamForwardContext:
 
 
 class UpstreamHTTPError(Exception):
-    def __init__(self, status_code: int, body: Any, upstream_request_id: str | None = None):
+    def __init__(
+        self,
+        status_code: int,
+        body: Any,
+        upstream_request_id: str | None = None,
+        upstream_latency_ms: float | None = None,
+    ):
         super().__init__(f"upstream returned HTTP {status_code}")
         self.status_code = status_code
         self.body = body
         self.upstream_request_id = upstream_request_id
+        self.upstream_latency_ms = upstream_latency_ms
 
 
 class InferenceForwarder:
@@ -135,31 +143,43 @@ class InferenceForwarder:
             url,
             bool(self._proxy_for(url)),
         )
-        async with self._client.post(
-            url,
-            json=payload,
-            headers=headers,
-            proxy=self._proxy_for(url),
-        ) as response:
-            log.debug(
-                "Gateway forwarder json response headers received: route_model=%s status=%d",
-                target.route_model,
-                response.status,
-            )
-            body_bytes = await response.read()
+        try:
+            async with self._client.post(
+                url,
+                json=payload,
+                headers=headers,
+                proxy=self._proxy_for(url),
+            ) as response:
+                log.debug(
+                    "Gateway forwarder json response headers received: route_model=%s status=%d",
+                    target.route_model,
+                    response.status,
+                )
+                body_bytes = await response.read()
+                latency_ms = (time.perf_counter() - started) * 1000
+                upstream_request_id = response.headers.get("x-request-id") or response.headers.get("x-openai-request-id")
+                body = self._parse_bytes_body(body_bytes)
+                status_code = response.status
+                response_headers = dict(response.headers)
+                log.debug(
+                    "Gateway forwarder json response body read: route_model=%s status=%d bytes=%d latency_ms=%.2f upstream_request_id=%s",
+                    target.route_model,
+                    status_code,
+                    len(body_bytes),
+                    latency_ms,
+                    upstream_request_id,
+                )
+        except Exception as exc:
             latency_ms = (time.perf_counter() - started) * 1000
-            upstream_request_id = response.headers.get("x-request-id") or response.headers.get("x-openai-request-id")
-            body = self._parse_bytes_body(body_bytes)
-            status_code = response.status
-            response_headers = dict(response.headers)
-            log.debug(
-                "Gateway forwarder json response body read: route_model=%s status=%d bytes=%d latency_ms=%.2f upstream_request_id=%s",
+            setattr(exc, "upstream_latency_ms", latency_ms)
+            log.warning(
+                "Gateway forwarder json request failed: route_model=%s endpoint=%s latency_ms=%.2f error=%s",
                 target.route_model,
-                status_code,
-                len(body_bytes),
+                endpoint,
                 latency_ms,
-                upstream_request_id,
+                exc,
             )
+            raise
 
         if status_code >= 400:
             log.warning(
@@ -169,7 +189,12 @@ class InferenceForwarder:
                 latency_ms,
                 upstream_request_id,
             )
-            raise UpstreamHTTPError(status_code, body, upstream_request_id)
+            raise UpstreamHTTPError(
+                status_code,
+                body,
+                upstream_request_id,
+                upstream_latency_ms=latency_ms,
+            )
 
         return ForwardResult(
             body=body if isinstance(body, dict) else {"data": body},
@@ -200,12 +225,24 @@ class InferenceForwarder:
             "Cache-Control": "no-cache",
             "Accept-Encoding": "identity",
         }
-        response = await self._client.post(
-            url,
-            json=payload,
-            headers=stream_headers,
-            proxy=self._proxy_for(url),
-        )
+        try:
+            response = await self._client.post(
+                url,
+                json=payload,
+                headers=stream_headers,
+                proxy=self._proxy_for(url),
+            )
+        except Exception as exc:
+            latency_ms = (time.perf_counter() - started) * 1000
+            setattr(exc, "upstream_latency_ms", latency_ms)
+            log.warning(
+                "Gateway forwarder stream open failed: route_model=%s endpoint=%s latency_ms=%.2f error=%s",
+                target.route_model,
+                endpoint,
+                latency_ms,
+                exc,
+            )
+            raise
         latency_ms = (time.perf_counter() - started) * 1000
         upstream_request_id = response.headers.get("x-request-id") or response.headers.get("x-openai-request-id")
         log.debug(
@@ -218,22 +255,30 @@ class InferenceForwarder:
 
         if response.status >= 400:
             body_bytes = await response.read()
+            latency_ms = (time.perf_counter() - started) * 1000
             response.close()
             body = self._parse_bytes_body(body_bytes)
             log.warning(
-                "Gateway forwarder stream upstream error: route_model=%s status=%d bytes=%d upstream_request_id=%s",
+                "Gateway forwarder stream upstream error: route_model=%s status=%d bytes=%d latency_ms=%.2f upstream_request_id=%s",
                 target.route_model,
                 response.status,
                 len(body_bytes),
+                latency_ms,
                 upstream_request_id,
             )
-            raise UpstreamHTTPError(response.status, body, upstream_request_id)
+            raise UpstreamHTTPError(
+                response.status,
+                body,
+                upstream_request_id,
+                upstream_latency_ms=latency_ms,
+            )
 
         return StreamForwardContext(
             response=response,
             status_code=response.status,
             headers=dict(response.headers),
             upstream_latency_ms=latency_ms,
+            upstream_started_perf=started,
         )
 
     def build_upstream_headers(

@@ -159,10 +159,21 @@ class GatewayStorage:
         return environment
 
     async def _query_session_environment(self, session_id: str) -> _SessionEnvironment | None:
+        trace = PerfTrace(
+            "gateway.storage.environment_lookup",
+            logger=log,
+            context={
+                "operation": "db_read",
+                "table": "job_environments",
+                "session_id": session_id,
+            },
+        )
         try:
             log.debug("Gateway storage environment lookup begin: env_id=%s", session_id)
-            environment = await self._load_environment_config(session_id)
+            with trace.span("db_read.environment_lookup"):
+                environment = await self._load_environment_config(session_id)
         except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             log.warning("Failed to resolve gateway session environment for session_id=%s: %s", session_id, exc)
             return None
 
@@ -174,6 +185,9 @@ class GatewayStorage:
                 resolved.job_id,
                 resolved.env_name,
             )
+            trace.emit_summary(status="success", row_count=1, job_id=resolved.job_id, env_name=resolved.env_name)
+        else:
+            trace.emit_summary(status="miss", row_count=0)
         return resolved
 
     async def _load_environment_config(self, env_id: str) -> dict[str, Any] | None:
@@ -227,22 +241,37 @@ class GatewayStorage:
             self._patched_environment_sessions.add(session_id)
 
         try:
+            trace = PerfTrace(
+                "gateway.storage.patch_session_environment",
+                logger=log,
+                context={
+                    "operation": "db_write",
+                    "table": "session_steps",
+                    "session_id": session_id,
+                    "job_id": environment.job_id,
+                    "env_name": environment.env_name,
+                },
+            )
             log.debug(
                 "Gateway storage patch session environment begin: session_id=%s job_id=%s env_name=%s",
                 session_id,
                 environment.job_id,
                 environment.env_name,
             )
-            await self.data_manager.patch_session_environment(
-                session_id=session_id,
-                job_id=environment.job_id,
-                env_name=environment.env_name,
-                group_id=environment.group_id,
-            )
+            with trace.span("db_write.patch_session_environment"):
+                updated = await self.data_manager.patch_session_environment(
+                    session_id=session_id,
+                    job_id=environment.job_id,
+                    env_name=environment.env_name,
+                    group_id=environment.group_id,
+                )
+            trace.emit_summary(status="success", updated_count=updated)
             log.debug("Gateway storage patch session environment complete: session_id=%s", session_id)
         except Exception as exc:
             async with self._lock:
                 self._patched_environment_sessions.discard(session_id)
+            if "trace" in locals():
+                trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             log.warning("Failed to patch session environment for session_id=%s: %s", session_id, exc)
 
     @staticmethod
@@ -280,9 +309,9 @@ class GatewayStorage:
             record.status_code,
         )
         try:
-            with trace.span("get_or_create_session"):
+            with trace.span("get_or_create_session", operation="db_read_or_create", table="session_steps"):
                 session = await self.get_or_create_session(binding, record.requested_model)
-            with trace.span("data_manager_record_step"):
+            with trace.span("data_manager_record_step", operation="db_write", table="session_steps"):
                 await self.data_manager.record_step(
                     session=session,
                     step_id=record.seq_id,
@@ -332,7 +361,11 @@ class GatewayStorage:
                 binding.close_reason,
             )
             if not models:
-                with trace.span("mark_latest_session_completed_without_model"):
+                with trace.span(
+                    "mark_latest_session_completed_without_model",
+                    operation="db_write",
+                    table="session_steps",
+                ):
                     await self.data_manager.mark_latest_session_completed(session_id=binding.session_id)
                 elapsed_ms = (time.perf_counter() - started) * 1000
                 trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_without_model=True)
@@ -345,7 +378,12 @@ class GatewayStorage:
 
             updated_count = 0
             if self.cfg.storage_type == "cloud" and len(models) > 1:
-                with trace.span("mark_latest_session_completed_models", model_count=len(models)):
+                with trace.span(
+                    "mark_latest_session_completed_models",
+                    operation="db_write",
+                    table="session_steps",
+                    model_count=len(models),
+                ):
                     update_counts = await asyncio.gather(
                         *(
                             self.data_manager.mark_latest_session_completed(
@@ -358,14 +396,23 @@ class GatewayStorage:
                 updated_count = sum(update_counts)
             else:
                 for model in models:
-                    with trace.span("mark_latest_session_completed", model=model):
+                    with trace.span(
+                        "mark_latest_session_completed",
+                        operation="db_write",
+                        table="session_steps",
+                        model=model,
+                    ):
                         updated_count += await self.data_manager.mark_latest_session_completed(
                             session_id=binding.session_id,
                             llm_model=model,
                         )
 
             if updated_count == 0:
-                with trace.span("mark_latest_session_completed_fallback"):
+                with trace.span(
+                    "mark_latest_session_completed_fallback",
+                    operation="db_write",
+                    table="session_steps",
+                ):
                     await self.data_manager.mark_latest_session_completed(session_id=binding.session_id)
             elapsed_ms = (time.perf_counter() - started) * 1000
             log.info(

@@ -8,6 +8,8 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
+from core.perf_trace import PerfTrace
+
 from .db_loader import (
     get_active_data,
     get_active_data_after_id,
@@ -68,14 +70,36 @@ class AgentDataRepository:
         self._fetch_executor.shutdown(wait=False, cancel_futures=True)
 
     def get_env_image_map(self) -> Dict[str, str]:
-        m = get_env_image_map(self._conn, job_id=self._job_id) or {}
+        trace = PerfTrace(
+            "manager.repository.get_env_image_map",
+            logger=log,
+            context={"operation": "db_read", "table": "job_environments", "job_id": self._job_id},
+        )
+        try:
+            with trace.span("db_read.env_image_map"):
+                m = get_env_image_map(self._conn, job_id=self._job_id) or {}
+            trace.emit_summary(status="success", row_count=len(m))
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
         out: Dict[str, str] = {}
         for k, v in m.items():
             out[str(k)] = "" if v is None else str(v)
         return out
 
     def get_image_to_env_map(self) -> Dict[str, str]:
-        m = get_all_image(self._conn, job_id=self._job_id) or {}
+        trace = PerfTrace(
+            "manager.repository.get_image_to_env_map",
+            logger=log,
+            context={"operation": "db_read", "table": "job_environments", "job_id": self._job_id},
+        )
+        try:
+            with trace.span("db_read.image_to_env_map"):
+                m = get_all_image(self._conn, job_id=self._job_id) or {}
+            trace.emit_summary(status="success", row_count=len(m))
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
         out: Dict[str, str] = {}
         for k, v in m.items():
             out[str(k)] = str(v)
@@ -286,28 +310,63 @@ class AgentDataRepository:
         last_seen_id: int,
         fallback_offset: int,
     ) -> Tuple[List[Dict[str, Any]], int, int]:
+        trace = PerfTrace(
+            "manager.repository.fetch_rows",
+            logger=log,
+            context={
+                "operation": "db_read",
+                "table": "job_environments",
+                "job_id": self._job_id,
+                "limit": int(limit),
+                "last_seen_id": int(last_seen_id),
+                "fallback_offset": int(fallback_offset),
+                "cursor_reads_enabled": self._cursor_reads_enabled,
+            },
+        )
         if self._cursor_reads_enabled:
-            rows = get_active_data_after_id(
-                self._conn,
-                int(limit),
-                int(last_seen_id),
-                job_id=self._job_id,
-            ) or []
-            next_last_seen_id = int(last_seen_id)
-            if rows:
-                next_last_seen_id = int(rows[-1].get("id") or next_last_seen_id)
-            return rows, next_last_seen_id, int(fallback_offset)
+            try:
+                with trace.span("db_read.active_data_after_id"):
+                    rows = get_active_data_after_id(
+                        self._conn,
+                        int(limit),
+                        int(last_seen_id),
+                        job_id=self._job_id,
+                    ) or []
+                next_last_seen_id = int(last_seen_id)
+                if rows:
+                    next_last_seen_id = int(rows[-1].get("id") or next_last_seen_id)
+                trace.emit_summary(
+                    status="success",
+                    row_count=len(rows),
+                    next_last_seen_id=next_last_seen_id,
+                    next_fallback_offset=int(fallback_offset),
+                )
+                return rows, next_last_seen_id, int(fallback_offset)
+            except Exception as exc:
+                trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+                raise
 
-        rows = get_active_data(
-            self._conn,
-            int(limit),
-            int(fallback_offset),
-            job_id=self._job_id,
-        ) or []
-        next_fallback_offset = int(fallback_offset)
-        if rows:
-            next_fallback_offset += len(rows)
-        return rows, int(last_seen_id), next_fallback_offset
+        try:
+            with trace.span("db_read.active_data_page"):
+                rows = get_active_data(
+                    self._conn,
+                    int(limit),
+                    int(fallback_offset),
+                    job_id=self._job_id,
+                ) or []
+            next_fallback_offset = int(fallback_offset)
+            if rows:
+                next_fallback_offset += len(rows)
+            trace.emit_summary(
+                status="success",
+                row_count=len(rows),
+                next_last_seen_id=int(last_seen_id),
+                next_fallback_offset=next_fallback_offset,
+            )
+            return rows, int(last_seen_id), next_fallback_offset
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
 
     def _update_stop_state_locked(self) -> None:
         if self._stop_db_reads:

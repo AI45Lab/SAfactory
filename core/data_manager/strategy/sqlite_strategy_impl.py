@@ -1,6 +1,7 @@
 from core.data_manager.strategy.base_strategy import StorageStrategy, SessionContext
 from core.data_manager.models import JobEnvironment, SessionStep
 from core.data_manager.write_buffer import WriteBuffer
+from core.perf_trace import PerfTrace
 from tortoise import Tortoise
 from typing import List, Dict, Optional, Tuple, Any
 import asyncio
@@ -145,7 +146,24 @@ class SqliteStrategy(StorageStrategy):
             image=image,
             group_id=group_id
         )
-        await env_record.save()
+        trace = PerfTrace(
+            "sqlite_strategy.add_environment",
+            logger=log,
+            context={
+                "operation": "db_write",
+                "table": "job_environments",
+                "job_id": job_id,
+                "env_id": env_id,
+                "env_name": env_name,
+            },
+        )
+        try:
+            with trace.span("db_write.job_environment_save", row_count=1):
+                await env_record.save()
+            trace.emit_summary(status="success", row_count=1)
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
 
         # Cache the config
         self._env_cache[env_id] = {
@@ -164,45 +182,79 @@ class SqliteStrategy(StorageStrategy):
         """Retrieve all registered environments"""
         await self.init()
 
-        if job_id:
-            envs = await JobEnvironment.filter(job_id=job_id)
-        else:
-            envs = await JobEnvironment.all()
+        trace = PerfTrace(
+            "sqlite_strategy.get_all_environments",
+            logger=log,
+            context={
+                "operation": "db_read",
+                "table": "job_environments",
+                "job_id": job_id or self.job_id,
+                "filter_job_id": bool(job_id),
+            },
+        )
+        try:
+            with trace.span("db_read.job_environments_select"):
+                if job_id:
+                    envs = await JobEnvironment.filter(job_id=job_id)
+                else:
+                    envs = await JobEnvironment.all()
 
-        return [
-            {
-                "job_id": e.job_id,
-                "env_id": e.env_id,
-                "env_name": e.env_name,
-                "env_params": e.env_params,
-                "image": e.image,
-                "group_id": e.group_id,
-                "created_at": e.created_at.isoformat() if e.created_at else None
-            }
-            for e in envs
-        ]
+            rows = [
+                {
+                    "job_id": e.job_id,
+                    "env_id": e.env_id,
+                    "env_name": e.env_name,
+                    "env_params": e.env_params,
+                    "image": e.image,
+                    "group_id": e.group_id,
+                    "created_at": e.created_at.isoformat() if e.created_at else None
+                }
+                for e in envs
+            ]
+            trace.emit_summary(status="success", row_count=len(rows))
+            return rows
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
 
     async def get_environment_by_env_id(self, env_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve one active environment by env_id."""
         await self.init()
 
-        env = await JobEnvironment.filter(
-            env_id=env_id,
-            is_deleted=False,
-        ).order_by("-id").first()
-        if env is None:
-            return None
+        trace = PerfTrace(
+            "sqlite_strategy.get_environment_by_env_id",
+            logger=log,
+            context={
+                "operation": "db_read",
+                "table": "job_environments",
+                "env_id": env_id,
+            },
+        )
+        try:
+            with trace.span("db_read.job_environment_select_latest"):
+                env = await JobEnvironment.filter(
+                    env_id=env_id,
+                    is_deleted=False,
+                ).order_by("-id").first()
+            if env is None:
+                trace.emit_summary(status="miss", row_count=0)
+                return None
 
-        return {
-            "id": env.id,
-            "job_id": env.job_id,
-            "env_id": env.env_id,
-            "env_name": env.env_name,
-            "env_params": env.env_params,
-            "image": env.image,
-            "group_id": env.group_id,
-            "created_at": env.created_at.isoformat() if env.created_at else None,
-        }
+            result = {
+                "id": env.id,
+                "job_id": env.job_id,
+                "env_id": env.env_id,
+                "env_name": env.env_name,
+                "env_params": env.env_params,
+                "image": env.image,
+                "group_id": env.group_id,
+                "created_at": env.created_at.isoformat() if env.created_at else None,
+            }
+            trace.emit_summary(status="success", row_count=1, job_id=env.job_id, env_name=env.env_name)
+            return result
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
 
     async def create_session(
         self,
@@ -246,42 +298,68 @@ class SqliteStrategy(StorageStrategy):
         Base64 images in messages are stored directly (no extraction).
         """
         await self.init()
-
-        # Update session total reward
-        session.total_reward += step_reward
-
-        # Build full message history including current response
-        full_messages = list(messages)
-        # full_messages.append({"role": "assistant", "content": response})
-
-        # Update session's message history
-        session.message_history = full_messages
-
-        # Create step record
-        step_record = SessionStep(
-            session_id=session.session_id,
-            step_id=step_id,
-            env_id=session.env_id,
-            env_name=session.env_name,
-            llm_model=session.llm_model,
-            group_id=session.group_id,
-            job_id=session.job_id,
-            messages=json.dumps(full_messages, ensure_ascii=False),
-            response=response,
-            step_reward=step_reward,
-            reward=session.total_reward,
-            env_state=env_state,
-            is_terminal=terminated or truncated,
-            is_truncated=truncated,
-            is_session_completed=terminated or truncated,
-            is_trainable=is_trainable,
+        trace = PerfTrace(
+            "sqlite_strategy.record_step",
+            logger=log,
+            context={
+                "operation": "db_write",
+                "table": "session_steps",
+                "session_id": session.session_id,
+                "step_id": step_id,
+                "model": session.llm_model,
+                "job_id": session.job_id,
+                "buffered": bool(self._write_buffer),
+            },
         )
 
-        # Use buffer or direct save
-        if self._write_buffer:
-            await self._write_buffer.buffer_create(step_record)
-        else:
-            await step_record.save()
+        try:
+            # Update session total reward
+            session.total_reward += step_reward
+
+            # Build full message history including current response
+            full_messages = list(messages)
+            # full_messages.append({"role": "assistant", "content": response})
+
+            # Update session's message history
+            session.message_history = full_messages
+
+            # Create step record
+            step_record = SessionStep(
+                session_id=session.session_id,
+                step_id=step_id,
+                env_id=session.env_id,
+                env_name=session.env_name,
+                llm_model=session.llm_model,
+                group_id=session.group_id,
+                job_id=session.job_id,
+                messages=json.dumps(full_messages, ensure_ascii=False),
+                response=response,
+                step_reward=step_reward,
+                reward=session.total_reward,
+                env_state=env_state,
+                is_terminal=terminated or truncated,
+                is_truncated=truncated,
+                is_session_completed=terminated or truncated,
+                is_trainable=is_trainable,
+            )
+
+            # Use buffer or direct save
+            if self._write_buffer:
+                with trace.span("db_write_buffer.enqueue_create", row_count=1):
+                    await self._write_buffer.buffer_create(step_record)
+            else:
+                with trace.span("db_write.session_step_save", row_count=1):
+                    await step_record.save()
+            trace.emit_summary(
+                status="success",
+                row_count=1,
+                buffered=bool(self._write_buffer),
+                is_terminal=terminated or truncated,
+                is_truncated=truncated,
+            )
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
 
         log.debug(
             "Recorded step %d for session %s: reward=%.4f total=%.4f",
@@ -301,14 +379,34 @@ class SqliteStrategy(StorageStrategy):
         if not normalized_updates:
             return 0
 
-        # Make pending buffered creates visible before applying a direct query update.
-        if self._write_buffer:
-            await self._write_buffer.flush_model(SessionStep, operation="create")
+        trace = PerfTrace(
+            "sqlite_strategy.update_session_step",
+            logger=log,
+            context={
+                "operation": "db_write",
+                "table": "session_steps",
+                "session_id": session_id,
+                "step_id": step_id,
+                "field_count": len(normalized_updates),
+                "buffered": bool(self._write_buffer),
+            },
+        )
+        try:
+            # Make pending buffered creates visible before applying a direct query update.
+            if self._write_buffer:
+                with trace.span("db_write.flush_pending_creates"):
+                    await self._write_buffer.flush_model(SessionStep, operation="create")
 
-        return await SessionStep.filter(
-            session_id=session_id,
-            step_id=step_id,
-        ).update(**normalized_updates)
+            with trace.span("db_write.session_step_update", field_count=len(normalized_updates)):
+                updated = await SessionStep.filter(
+                    session_id=session_id,
+                    step_id=step_id,
+                ).update(**normalized_updates)
+            trace.emit_summary(status="success", updated_count=updated)
+            return updated
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
 
     async def patch_session_environment(
         self,
@@ -321,17 +419,37 @@ class SqliteStrategy(StorageStrategy):
         """Patch session rows with their resolved environment metadata."""
         await self.init()
 
-        if self._write_buffer:
-            await self._write_buffer.flush_model(SessionStep, operation="create")
+        trace = PerfTrace(
+            "sqlite_strategy.patch_session_environment",
+            logger=log,
+            context={
+                "operation": "db_write",
+                "table": "session_steps",
+                "session_id": session_id,
+                "job_id": job_id,
+                "env_name": env_name,
+                "buffered": bool(self._write_buffer),
+            },
+        )
+        try:
+            if self._write_buffer:
+                with trace.span("db_write.flush_pending_creates"):
+                    await self._write_buffer.flush_model(SessionStep, operation="create")
 
-        updates: Dict[str, Any] = {
-            "job_id": job_id,
-            "env_name": env_name,
-        }
-        if group_id is not None:
-            updates["group_id"] = group_id
+            updates: Dict[str, Any] = {
+                "job_id": job_id,
+                "env_name": env_name,
+            }
+            if group_id is not None:
+                updates["group_id"] = group_id
 
-        return await SessionStep.filter(session_id=session_id).update(**updates)
+            with trace.span("db_write.patch_session_environment", field_count=len(updates)):
+                updated = await SessionStep.filter(session_id=session_id).update(**updates)
+            trace.emit_summary(status="success", updated_count=updated)
+            return updated
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
 
     async def mark_latest_session_completed(
         self,
@@ -341,29 +459,63 @@ class SqliteStrategy(StorageStrategy):
         """Mark the latest trajectory row for a session as completed."""
         await self.init()
 
-        # Make pending buffered creates visible before selecting the latest row.
-        if self._write_buffer:
-            await self._write_buffer.flush_model(SessionStep, operation="create")
-
-        query = SessionStep.filter(session_id=session_id)
-        if llm_model:
-            query = query.filter(llm_model=llm_model)
-
-        candidates = await query.order_by("-step_id", "-id").limit(50)
-        if not candidates:
-            return 0
-
-        latest = next(
-            (step for step in candidates if _is_trajectory_env_state(step.env_state)),
-            candidates[0],
+        trace = PerfTrace(
+            "sqlite_strategy.mark_latest_session_completed",
+            logger=log,
+            context={
+                "operation": "db_write",
+                "table": "session_steps",
+                "session_id": session_id,
+                "model": llm_model,
+                "buffered": bool(self._write_buffer),
+            },
         )
-        if latest.is_session_completed and latest.is_terminal:
-            return 0
+        try:
+            # Make pending buffered creates visible before selecting the latest row.
+            if self._write_buffer:
+                with trace.span("db_write.flush_pending_creates"):
+                    await self._write_buffer.flush_model(SessionStep, operation="create")
 
-        return await SessionStep.filter(id=latest.id).update(
-            is_session_completed=True,
-            is_terminal=True,
-        )
+            query = SessionStep.filter(session_id=session_id)
+            if llm_model:
+                query = query.filter(llm_model=llm_model)
+
+            with trace.span("db_read.select_latest_session_step", limit=50):
+                candidates = await query.order_by("-step_id", "-id").limit(50)
+            if not candidates:
+                trace.emit_summary(status="miss", candidate_count=0, updated_count=0)
+                return 0
+
+            latest = next(
+                (step for step in candidates if _is_trajectory_env_state(step.env_state)),
+                candidates[0],
+            )
+            if latest.is_session_completed and latest.is_terminal:
+                trace.emit_summary(
+                    status="skipped",
+                    candidate_count=len(candidates),
+                    updated_count=0,
+                    step_id=latest.step_id,
+                    row_id=latest.id,
+                )
+                return 0
+
+            with trace.span("db_write.mark_session_completed", row_id=latest.id, step_id=latest.step_id):
+                updated = await SessionStep.filter(id=latest.id).update(
+                    is_session_completed=True,
+                    is_terminal=True,
+                )
+            trace.emit_summary(
+                status="success",
+                candidate_count=len(candidates),
+                updated_count=updated,
+                step_id=latest.step_id,
+                row_id=latest.id,
+            )
+            return updated
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
 
     def _normalize_session_step_updates(self, updates: Dict[str, Any]) -> Dict[str, Any]:
         if not updates:
@@ -428,35 +580,69 @@ class SqliteStrategy(StorageStrategy):
         """
         await self.init()
 
-        steps = await SessionStep.filter(
-            job_id=job_id,
-            is_trainable=True,
-            id__gt=after_id
-        ).order_by("id").limit(limit)
+        trace = PerfTrace(
+            "sqlite_strategy.fetch_done_steps_with_context",
+            logger=log,
+            context={
+                "operation": "db_read",
+                "table": "session_steps",
+                "job_id": job_id,
+                "after_id": after_id,
+                "limit": limit,
+            },
+        )
+        try:
+            with trace.span("db_read.fetch_done_steps", limit=limit):
+                steps = await SessionStep.filter(
+                    job_id=job_id,
+                    is_trainable=True,
+                    id__gt=after_id
+                ).order_by("id").limit(limit)
 
-        return [
-            {
-                "step_pk": s.id,
-                "step_id": s.step_id,
-                "env_name": s.env_name,
-                "env_id": s.session_id,
-                "env_state": s.env_state,
-                "prompt": s.messages,
-                "response": s.response,
-                "reward": s.step_reward,
-                "step_reward": s.step_reward,
-                "total_reward": s.reward,
-                "session_id": s.session_id,
-                "session_end_time": s.created_at.isoformat() if s.created_at else None,
-                "group_id": s.group_id,
-                "truncated": s.is_truncated,
-                "is_session_completed": s.is_session_completed,
-            }
-            for s in steps
-        ]
+            rows = [
+                {
+                    "step_pk": s.id,
+                    "step_id": s.step_id,
+                    "env_name": s.env_name,
+                    "env_id": s.session_id,
+                    "env_state": s.env_state,
+                    "prompt": s.messages,
+                    "response": s.response,
+                    "reward": s.step_reward,
+                    "step_reward": s.step_reward,
+                    "total_reward": s.reward,
+                    "session_id": s.session_id,
+                    "session_end_time": s.created_at.isoformat() if s.created_at else None,
+                    "group_id": s.group_id,
+                    "truncated": s.is_truncated,
+                    "is_session_completed": s.is_session_completed,
+                }
+                for s in steps
+            ]
+            trace.emit_summary(status="success", row_count=len(rows))
+            return rows
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
 
     async def get_max_step_id(self, job_id: str) -> int:
         """Get maximum primary key for pagination"""
         await self.init()
-        latest = await SessionStep.filter(job_id=job_id, is_terminal=True).order_by("-id").first()
-        return latest.id if latest else 0
+        trace = PerfTrace(
+            "sqlite_strategy.get_max_step_id",
+            logger=log,
+            context={
+                "operation": "db_read",
+                "table": "session_steps",
+                "job_id": job_id,
+            },
+        )
+        try:
+            with trace.span("db_read.max_terminal_step_id"):
+                latest = await SessionStep.filter(job_id=job_id, is_terminal=True).order_by("-id").first()
+            max_id = latest.id if latest else 0
+            trace.emit_summary(status="success", row_count=1 if latest else 0, max_step_id=max_id)
+            return max_id
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from core.perf_trace import PerfTrace
 from gateway.config import GatewayConfig
 from gateway.llm_router import LLMRouteTarget
 from gateway.models import GatewayRequestContext, GatewaySessionBinding, GatewayTelemetryRecord
@@ -378,9 +379,25 @@ class TelemetryRecorder:
                 await self.storage.record_inference_step(binding, record)
 
         timeout_s = max(0.001, float(self.cfg.telemetry_write_timeout_s))
+        trace = PerfTrace(
+            "gateway.telemetry.write_record",
+            logger=log,
+            context={
+                "operation": "db_write",
+                "event_type": record.event_type,
+                "request_id": record.request_id,
+                "session_id": record.session_id,
+                "seq_id": record.seq_id,
+                "model": record.requested_model,
+                "telemetry_mode": self.cfg.telemetry_mode,
+            },
+        )
         try:
-            await asyncio.wait_for(_write(), timeout=timeout_s)
+            with trace.span("storage_write_record", timeout_s=timeout_s):
+                await asyncio.wait_for(_write(), timeout=timeout_s)
+            trace.emit_summary(status="success")
         except asyncio.TimeoutError:
+            trace.emit_summary(status="timeout", timeout_s=timeout_s)
             log.error(
                 "Gateway telemetry write timed out: event_type=%s request_id=%s session_id=%s timeout_s=%.1f",
                 record.event_type,
@@ -388,6 +405,9 @@ class TelemetryRecorder:
                 record.session_id,
                 timeout_s,
             )
+            raise
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
 
     async def _drop(self, reason: str) -> None:

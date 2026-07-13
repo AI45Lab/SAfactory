@@ -135,9 +135,14 @@ class RJobEpisodeRunner:
             with trace.span("submit_job", requested_rjob_name=rjob_name):
                 submitted = await self._cluster.submit_job(client, job, submit_kwargs)
             timings_ms["rjob_submit_ms"] = _elapsed_ms(started)
+            trace.update_context(rjob_submit_ms=timings_ms["rjob_submit_ms"])
             submitted_name = str(submitted or rjob_name).strip()
             trace.update_context(submitted_rjob_name=submitted_name)
-            trace.mark("job_submitted", submitted_rjob_name=submitted_name)
+            trace.mark(
+                "job_submitted",
+                submitted_rjob_name=submitted_name,
+                rjob_submit_ms=timings_ms["rjob_submit_ms"],
+            )
             if not submitted_name and (submit_kwargs.get("dry_run") or submit_kwargs.get("predict_only")):
                 result = SimulationStartResult(
                     session_id=request.session_id,
@@ -252,6 +257,7 @@ class RJobEpisodeRunner:
                     )
                 timings_ms["rjob_cleanup_ms"] = _elapsed_ms(cleanup_started)
             timings_ms["rjob_total_ms"] = _elapsed_ms(episode_started)
+            trace.update_context(**timings_ms)
             if result is not None:
                 self._attach_timing_metrics(
                     result,
