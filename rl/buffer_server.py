@@ -122,7 +122,14 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
         base_messages = json.loads(prompt_str) if prompt_str else []
     else:
         base_messages = prompt_str
-    messages = base_messages + [{"role": "assistant", "content": row.get("response", "")}]
+    messages = list(base_messages or [])
+    # Gateway rows already store the assistant response in ``prompt`` as part of
+    # the full trajectory. Legacy rows keep it in the separate response field.
+    # Appending an empty response to gateway rows prevents exact trajectory
+    # matching in the training-side mask builder.
+    response = row.get("response", "")
+    if response:
+        messages.append({"role": "assistant", "content": response})
 
     session_id = row.get("session_id", "")
     env_id = row.get("env_id", "")
@@ -131,7 +138,13 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     # 从 env_state 中解析 weight_version
     weight_version = 0
     if env_state_raw := row.get("env_state"):
-        weight_version = int(json.loads(env_state_raw)["weight_version"])
+        try:
+            env_state = json.loads(env_state_raw) if isinstance(env_state_raw, str) else env_state_raw
+            raw_weight_version = env_state.get("weight_version") if isinstance(env_state, dict) else None
+            if raw_weight_version is not None:
+                weight_version = int(raw_weight_version)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            weight_version = 0
 
     extra_info = {
         "timestamp": _parse_timestamp(row.get("session_end_time")) or _parse_timestamp(row.get("timestamp")) or time.time(),

@@ -437,6 +437,7 @@ class GatewayStorage:
             "is_session_completed": record.is_session_completed,
             "truncate_reason": record.truncate_reason if record.is_truncated else None,
             "synthetic_stop": record.synthetic_stop,
+            "weight_version": _response_weight_version(record.response),
             "created_at": record.created_at.isoformat(),
             "completed_at": record.completed_at.isoformat(),
         }
@@ -662,6 +663,19 @@ def _json_loads(value: str) -> Any:
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return None
+
+
+def _response_weight_version(response: str) -> Any:
+    parsed = _json_loads(response)
+    payloads = parsed if isinstance(parsed, list) else [parsed]
+    for payload in reversed(payloads):
+        if not isinstance(payload, dict):
+            continue
+        for key in ("metadata", "meta_info"):
+            metadata = payload.get(key)
+            if isinstance(metadata, dict) and metadata.get("weight_version") is not None:
+                return metadata["weight_version"]
+    return None
 
 
 def _first_string(payload: dict[str, Any], keys: tuple[str, ...]) -> str:

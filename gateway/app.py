@@ -1253,6 +1253,10 @@ def _merge_stream_event(
     if isinstance(usage, dict):
         summary["usage"] = usage
 
+    metadata = event.get("metadata")
+    if isinstance(metadata, dict):
+        summary["metadata"] = metadata
+
     choices = event.get("choices")
     if isinstance(choices, list):
         for choice in choices:
