@@ -73,11 +73,6 @@ atexit.register(gateway_autostart.stop)
 # DataManager for querying the database
 data_manager: Optional[DataManager] = None
 
-# LLM Proxy URL (constructed from host and port)
-_llm_proxy_host = get_env("LLM_PROXY_HOST")
-_llm_proxy_port = get_env("LLM_PROXY_PORT")
-llm_proxy_url: str = f"http://{_llm_proxy_host}:{_llm_proxy_port}/v1"
-
 # Track last served step ID for cursor-based pagination
 last_served_id: int = 0
 
@@ -112,6 +107,15 @@ def _parse_timestamp(ts: Optional[str]) -> Optional[float]:
             return float(ts)
         except Exception:
             return None
+
+
+def _required_gateway_base_url() -> str:
+    gateway_base_url = str(os.environ.get("AIEVOBOX_GATEWAY_BASE_URL") or "").strip().rstrip("/")
+    if not gateway_base_url:
+        raise RuntimeError(
+            "AIEVOBOX_GATEWAY_BASE_URL is required; the llm_proxy cannot be used as a gateway"
+        )
+    return gateway_base_url
 
 
 def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -327,6 +331,7 @@ def start_aievobox_process(data: dict):
     # Database path
     storage_type = os.environ.get("STORAGE_TYPE", "sqlite")
     db_url = os.environ.get("AIEVOBOX_DB_URL", f"sqlite:///{AIEVOBOX_ROOT}/rl/rl.db")
+    gateway_base_url = _required_gateway_base_url()
 
     # Run async init in a new event loop (since we're in a thread)
     loop = asyncio.new_event_loop()
@@ -362,7 +367,9 @@ def start_aievobox_process(data: dict):
     llm_temperature = float(get_env("LLM_TEMPERATURE") or 1.0)
     pool_size = int(get_env("AIEVOBOX_POOL_SIZE") or 16)
     rl_epoch = int(get_env("RL_EPOCH") or 1)
-    gateway_base_url = os.environ.get("AIEVOBOX_GATEWAY_BASE_URL", llm_proxy_url).rstrip("/")
+    evaluation_config = str(os.environ.get("AIEVOBOX_EVALUATION_CONFIG") or "").strip()
+    evaluation_flag = str(os.environ.get("AIEVOBOX_ENABLE_EVALUATION") or "").strip().lower()
+    evaluation_enabled = evaluation_flag in {"1", "true", "yes", "on"}
 
     cmd = [
         "python3", launcher_script,
@@ -371,6 +378,8 @@ def start_aievobox_process(data: dict):
         "--storage-type", storage_type,
         *(["--agent-config", agent_config] if agent_config else ["--agent-root", agent_root]),
         *(["--agent-start-config", agent_start_config] if agent_start_config else []),
+        *(["--enable-evaluation"] if evaluation_enabled else []),
+        *(["--evaluation-config", evaluation_config] if evaluation_config else []),
         "--gateway-base-url", gateway_base_url,
         "--llm-model", llm_model,
         "--llm-temperature", str(llm_temperature),
@@ -409,6 +418,11 @@ async def start_rollout(request: Request):
     if aievobox_process is not None and aievobox_process.poll() is None:
         return {"message": "AIEvoBox is already running", "pid": aievobox_process.pid}
 
+    try:
+        _required_gateway_base_url()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     # Start AIEvoBox in a background thread
     thread = threading.Thread(target=start_aievobox_process, args=(payload,), daemon=True)
     thread.start()
@@ -422,7 +436,6 @@ async def health_check():
     return {
         "status": "healthy",
         "aievobox_running": aievobox_process is not None and aievobox_process.poll() is None,
-        "llm_proxy_running": llm_proxy_process is not None and llm_proxy_process.poll() is None,
         "data_manager_initialized": data_manager is not None,
     }
 
