@@ -146,6 +146,7 @@ environments:
 | `env_num` | 否 | 每条 dataset row 的并行拷贝数。必须为正整数。 |
 | `dataset` | 否 | JSON、JSONL、YAML 或 parquet 数据路径。相对路径从配置文件所在目录解析。 |
 | `dataset_load_mode` | 否 | 默认 `eager`。`parquet_row_ref` 为 parquet 文件保存轻量 row reference。 |
+| `dataset_columns` | 否 | 可选的 parquet 列白名单。使用 `parquet_row_ref` 时，仅向 runtime 物化这些列。 |
 | `env_params` | 否 | 通过 `SimulationStartRequest.env_params` 传给 runtime 的公开参数。 |
 
 每个 dataset item 会被处理为：

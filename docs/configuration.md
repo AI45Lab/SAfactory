@@ -146,6 +146,7 @@ environments:
 | `env_num` | no | Number of parallel copies for each dataset row. Must be a positive integer. |
 | `dataset` | no | Path to JSON, JSONL, YAML, or parquet data. Relative paths resolve from the config file directory. |
 | `dataset_load_mode` | no | `eager` by default. `parquet_row_ref` stores lightweight row references for parquet files. |
+| `dataset_columns` | no | Optional parquet column allowlist. With `parquet_row_ref`, only these columns are materialized for the runtime. |
 | `env_params` | no | Public parameters passed to the runtime in `SimulationStartRequest.env_params`. |
 
 For each dataset item, Safactory sets:

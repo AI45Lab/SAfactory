@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from core.data_manager.load_yaml import materialize_dataset_env_params
 from core.data_manager.manager import DataManager, SessionContext
 from core.perf_trace import PerfTrace
 from core.runtime_metadata import strip_internal_env_params
@@ -547,6 +548,9 @@ class SimulationWorkerGroup:
         storage_config: Dict[str, Any] = {}
         if self.cfg.storage_type == "sqlite":
             storage_config["db_url"] = self.cfg.db_url
+        public_env_params = materialize_dataset_env_params(
+            strip_internal_env_params(lease.env_params)
+        )
 
         return SimulationStartRequest(
             job_id=self.cfg.job_id,
@@ -557,7 +561,7 @@ class SimulationWorkerGroup:
             temperature=self.cfg.llm_temperature,
             max_steps=self.cfg.max_steps,
             storage_type=self.cfg.storage_type,
-            env_params=strip_internal_env_params(lease.env_params),
+            env_params=public_env_params,
             storage_config=storage_config,
             agent_start_timeout_s=self.cfg.agent_start_timeout_s,
             record_mode="agent_runtime",

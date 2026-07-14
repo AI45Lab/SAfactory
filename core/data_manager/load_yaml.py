@@ -1,14 +1,39 @@
-import os
-import logging
-import yaml
 import json
+import logging
+import os
+from functools import lru_cache
 from typing import Any, Dict, List
 
 import numpy as np
+import yaml
 
 from core.runtime_metadata import SAFACTORY_INTERNAL_ENV_KEY
 
 log = logging.getLogger("core.data_manager.load_yaml")
+
+DATASET_REF_KEY = "__dataset_ref__"
+
+
+@lru_cache(maxsize=16)
+def _cached_parquet_file(path: str):
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise ImportError("materializing parquet row references requires pyarrow") from exc
+    return pq.ParquetFile(path)
+
+
+@lru_cache(maxsize=4)
+def _cached_parquet_row_group(
+    path: str,
+    row_group: int,
+    columns: tuple[str, ...] | None,
+) -> List[Dict[str, Any]]:
+    parquet_file = _cached_parquet_file(path)
+    return parquet_file.read_row_group(
+        row_group,
+        columns=list(columns) if columns else None,
+    ).to_pylist()
 
 
 def _convert_numpy_types(obj: Any) -> Any:
@@ -25,7 +50,18 @@ def _convert_numpy_types(obj: Any) -> Any:
     return obj
 
 
-def _build_parquet_row_refs(path: str) -> List[Dict[str, Any]]:
+def _normalize_dataset_columns(value: Any) -> List[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("dataset_columns must be a list of parquet column names")
+    columns = [str(item).strip() for item in value if str(item).strip()]
+    if not columns:
+        raise ValueError("dataset_columns must contain at least one parquet column name")
+    return columns
+
+
+def _build_parquet_row_refs(path: str, columns: List[str] | None = None) -> List[Dict[str, Any]]:
     """
     Build lightweight references to each parquet row instead of eagerly
     materializing the full dataset into memory.
@@ -36,27 +72,81 @@ def _build_parquet_row_refs(path: str) -> List[Dict[str, Any]]:
         raise ImportError("parquet_row_ref 模式需要安装 pyarrow: pip install pyarrow")
 
     parquet_file = pq.ParquetFile(path)
+    if columns:
+        missing = sorted(set(columns) - set(parquet_file.schema_arrow.names))
+        if missing:
+            raise ValueError(f"parquet dataset is missing requested columns: {missing}")
     refs: List[Dict[str, Any]] = []
     row_idx = 0
 
     for row_group in range(parquet_file.num_row_groups):
         group_rows = parquet_file.metadata.row_group(row_group).num_rows
         for row_in_group in range(group_rows):
-            refs.append({
-                "__dataset_ref__": {
-                    "kind": "parquet_row",
-                    "path": os.path.abspath(path),
-                    "row_group": row_group,
-                    "row_in_group": row_in_group,
-                    "row_idx": row_idx,
-                }
-            })
+            dataset_ref: Dict[str, Any] = {
+                "kind": "parquet_row",
+                "path": os.path.abspath(path),
+                "row_group": row_group,
+                "row_in_group": row_in_group,
+                "row_idx": row_idx,
+            }
+            if columns:
+                dataset_ref["columns"] = list(columns)
+            refs.append({DATASET_REF_KEY: dataset_ref})
             row_idx += 1
 
     return refs
 
 
-def load_dataset_file(base_dir: str, path: str, load_mode: str = "eager"):
+def materialize_dataset_item(item: Any) -> Any:
+    """Resolve one lightweight parquet row reference into a JSON-safe dataset row."""
+    if not isinstance(item, dict):
+        return item
+    raw_ref = item.get(DATASET_REF_KEY)
+    if not isinstance(raw_ref, dict):
+        return item
+    if str(raw_ref.get("kind") or "") != "parquet_row":
+        raise ValueError(f"unsupported dataset reference kind: {raw_ref.get('kind')!r}")
+
+    path = str(raw_ref.get("path") or "").strip()
+    if not path:
+        raise ValueError("parquet dataset reference is missing path")
+    columns = _normalize_dataset_columns(raw_ref.get("columns"))
+    try:
+        row_group = int(raw_ref["row_group"])
+        row_in_group = int(raw_ref["row_in_group"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("parquet dataset reference has invalid row coordinates") from exc
+
+    parquet_file = _cached_parquet_file(path)
+    if row_group < 0 or row_group >= parquet_file.num_row_groups:
+        raise IndexError(f"parquet row_group out of range: {row_group}")
+    group_rows = parquet_file.metadata.row_group(row_group).num_rows
+    if row_in_group < 0 or row_in_group >= group_rows:
+        raise IndexError(f"parquet row_in_group out of range: {row_in_group}")
+
+    rows = _cached_parquet_row_group(path, row_group, tuple(columns) if columns else None)
+    if row_in_group >= len(rows):
+        raise RuntimeError("parquet dataset reference resolved to no row")
+    materialized = _convert_numpy_types(rows[row_in_group])
+    extras = {key: value for key, value in item.items() if key != DATASET_REF_KEY}
+    extras.update(materialized)
+    return extras
+
+
+def materialize_dataset_env_params(env_params: Dict[str, Any]) -> Dict[str, Any]:
+    """Materialize env_params.dataset when it contains a lightweight row reference."""
+    materialized = dict(env_params or {})
+    if "dataset" in materialized:
+        materialized["dataset"] = materialize_dataset_item(materialized["dataset"])
+    return materialized
+
+
+def load_dataset_file(
+    base_dir: str,
+    path: str,
+    load_mode: str = "eager",
+    columns: List[str] | None = None,
+):
     """
     根据后缀加载数据文件
     支持: .json, .jsonl, .yaml/.yml, .parquet
@@ -110,14 +200,14 @@ def load_dataset_file(base_dir: str, path: str, load_mode: str = "eager"):
         # 4. Parquet (需安装pandas和pyarrow/fastparquet)
         elif ext == ".parquet":
             if load_mode == "parquet_row_ref":
-                return _build_parquet_row_refs(path)
+                return _build_parquet_row_refs(path, columns=columns)
 
             try:
                 import pandas as pd
             except ImportError:
                 raise ImportError("加载parquet文件需要安装pandas: pip install pandas pyarrow")
 
-            df = pd.read_parquet(path)
+            df = pd.read_parquet(path, columns=columns)
             # 将DataFrame转换为字典列表，并转换 numpy 类型
             data_list = [_convert_numpy_types(row) for row in df.to_dict(orient="records")]
 
@@ -128,6 +218,7 @@ def load_dataset_file(base_dir: str, path: str, load_mode: str = "eager"):
         raise RuntimeError(f"解析dataset文件失败 [{path}]: {str(e)}")
 
     return data_list
+
 
 def load_yaml_configs(yaml_path: str) -> List[Dict]:
     """加载YAML配置并验证格式"""
@@ -156,6 +247,7 @@ def load_yaml_configs(yaml_path: str) -> List[Dict]:
         
         dataset_path = env.get("dataset")
         dataset_load_mode = str(env.get("dataset_load_mode", "eager")).strip() or "eager"
+        dataset_columns = _normalize_dataset_columns(env.get("dataset_columns"))
         dataset_abs_path = ""
         dataset_name = ""
         if dataset_path:
@@ -167,7 +259,12 @@ def load_yaml_configs(yaml_path: str) -> List[Dict]:
         dataset_items = []
         if dataset_path:
             try:
-                dataset_items = load_dataset_file(base_dir, dataset_path, load_mode=dataset_load_mode)
+                dataset_items = load_dataset_file(
+                    base_dir,
+                    dataset_path,
+                    load_mode=dataset_load_mode,
+                    columns=dataset_columns,
+                )
             except Exception as e:
                 log.warning("Environment %s dataset load failed; skipping: %s", env_name, e)
                 continue
@@ -188,6 +285,7 @@ def load_yaml_configs(yaml_path: str) -> List[Dict]:
                     "dataset_path": dataset_abs_path,
                     "dataset_name": dataset_name,
                     "dataset_load_mode": dataset_load_mode,
+                    "dataset_columns": dataset_columns,
                 }
 
                 # 构造最终配置对象
@@ -208,6 +306,7 @@ def load_yaml_configs(yaml_path: str) -> List[Dict]:
                 "dataset_path": dataset_abs_path,
                 "dataset_name": dataset_name,
                 "dataset_load_mode": dataset_load_mode,
+                "dataset_columns": dataset_columns,
             }
             config = {
                 "env_name": env_name,

@@ -10,6 +10,7 @@ numpy==1.26.4
 openai==1.108.0
 pandas==2.3.3
 pillow==11.3.0
+pyarrow==23.0.0
 prometheus-client==0.25.0
 pydantic==2.12.0
 PyYAML==6.0.2
