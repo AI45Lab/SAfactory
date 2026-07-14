@@ -8,8 +8,8 @@ pkill -9 sglang || true
 sleep 2
 ray stop --force || true
 pkill -9 ray || true
-# Don't kill all python processes to preserve buffer server
-pkill -9 python || true
+# Do not kill all Python processes here: Buffer Server is a Python process and
+# must already be listening when Slime begins a rollout.
 sleep 2
 
 set -ex
@@ -23,11 +23,16 @@ ROLLOUT_BUFFER_URL="http://${BUFFER_SERVER_HOST}:${BUFFER_SERVER_PORT}"
 LLM_PROXY_URL="http://${LLM_PROXY_HOST}:${LLM_PROXY_PORT}"
 
 export PYTHONBUFFERED=16
-NUM_GPUS=${NUM_GPUS:-8}
+NUM_GPUS=${NUM_GPUS:-4}
 
 SLIME_HOME=${SLIME_HOME:-/root/slime}
-HF_CKPT_DIR="/mnt/shared-storage-user/evobox-share/hf-hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots/89644892e4d85e24eaac8bacfd4f463576704203"
-SAVE_DIR="/mnt/shared-storage-user/evobox-share/yinzhenyun/slime/checkpoints/Qwen3-VL-2B-Instruct_megatron"
+HF_CKPT_DIR=${HF_CKPT_DIR:-"/mnt/shared-storage-gpfs2/gpfs2-shared-public/huggingface/hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots/89644892e4d85e24eaac8bacfd4f463576704203"}
+SAVE_DIR=${SAVE_DIR:-"/mnt/shared-storage-user/evobox-share/yinzhenyun/slime/checkpoints/Qwen3-VL-2B-Instruct_megatron"}
+if [[ ! -d "${HF_CKPT_DIR}" ]]; then
+   echo "Geo3K checkpoint does not exist: ${HF_CKPT_DIR}" >&2
+   exit 1
+fi
+mkdir -p "${SAVE_DIR}"
 MODEL_ARGS_ROTARY_BASE=5000000 source "${SLIME_HOME}/scripts/models/qwen3-1.7B.sh"
 
 CKPT_ARGS=(
@@ -111,9 +116,12 @@ SGLANG_ARGS=(
 
 # Start Ray
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus ${NUM_GPUS} --disable-usage-stats
 
-export SGLANG_LOGGING_CONFIG_PATH=${SGLANG_LOGGING_CONFIG_PATH:-"/root/AIEvoBox/rl/sglang_logging.json"}
+if [[ -n "${SGLANG_LOGGING_CONFIG_PATH:-}" && ! -f "${SGLANG_LOGGING_CONFIG_PATH}" ]]; then
+   echo "SGLANG_LOGGING_CONFIG_PATH does not exist: ${SGLANG_LOGGING_CONFIG_PATH}" >&2
+   exit 1
+fi
 
 RUNTIME_ENV_JSON="{\
   \"env_vars\": {\
@@ -130,7 +138,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    -- python3 ${SLIME_HOME}/train.py \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node 1 \
-   --rollout-num-gpus 7 \
+   --rollout-num-gpus 3 \
    ${MODEL_ARGS[@]} \
    ${MEGATRON_ARGS[@]} \
    ${CKPT_ARGS[@]} \

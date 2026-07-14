@@ -177,7 +177,7 @@ class _RunState:
                     score = 0.0
                     reward_source = "missing_boxed_answer"
                 self.final_answer = self.latest_boxed_answer
-                truncated = True
+                terminated = True
                 break
 
         return {

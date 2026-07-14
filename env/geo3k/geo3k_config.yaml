@@ -1,11 +1,13 @@
 environments:
   - env_name: geo3k
-    env_image: python:3.11-slim
+    env_image: safactory-geo3k:py311
     env_num: 1
-    # Geo3K-VL parquet with columns: problem, answer, images (image data urls).
-    # Reused from the v1 geo3k_vl_test dataset. Point this at your parquet path.
-    dataset: ./datasets/geo3k_vl_train.parquet
+    # chenhegu/geo3k_imgurl train split at the pinned Hugging Face snapshot.
+    dataset: /mnt/shared-storage-user/yinzhenyun/datasets--chenhegu--geo3k_imgurl/snapshots/a924f868cefdf3b8306196b04edaa88d930978e5/train.parquet
     dataset_load_mode: parquet_row_ref
+    # Exclude preprocessed_images: it contains binary image bytes and the runner
+    # only consumes the data URLs already stored in images.
+    dataset_columns: [problem, answer, images]
 
     env_params:
       task_family: geo3k

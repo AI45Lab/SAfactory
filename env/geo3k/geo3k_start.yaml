@@ -6,11 +6,7 @@ container:
   runner_entrypoint:
     source: ./
     target: /tmp/safactory-geo3k
-    # Minimal image path: install the three pure-python deps on first run, then
-    # run the runner. `pip install` is a fast no-op once the layer is warm.
-    # For production, bake requests+sympy+pylatexenc into a custom image and
-    # replace this with `python /tmp/safactory-geo3k/runner.py`.
-    command: "pip install -q --disable-pip-version-check requests sympy pylatexenc && python /tmp/safactory-geo3k/runner.py"
+    command: "python /tmp/safactory-geo3k/runner.py"
 
   mounts:
     - source: ./results
