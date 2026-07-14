@@ -7,10 +7,12 @@ __pycache__/
 # Local IDE state
 .idea/
 
-# Gateway local storage
-gateway.db
-gateway.db-shm
-gateway.db-wal
+# Runtime logs and local SQLite storage
+logs/
+*.log
+*.db
+*.db-shm
+*.db-wal
 
 # Local scratch exports
 tmp/
