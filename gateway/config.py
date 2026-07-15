@@ -42,6 +42,8 @@ class GatewayConfig:
     redact_sensitive_fields: bool = True
     telemetry_batch_size: int = 200
     telemetry_flush_interval_ms: int = 100
+    telemetry_writer_count: int = 4
+    telemetry_async_cloud_writes: bool = True
     request_log_enabled: bool = True
     request_log_path: str | None = "logs/gateway_requests.jsonl"
     request_log_max_bytes: int = 100 * 1024 * 1024
@@ -82,6 +84,8 @@ class GatewayConfig:
             )
         if float(self.telemetry_write_timeout_s) <= 0.0:
             raise ValueError("telemetry_write_timeout_s must be positive")
+        if int(self.telemetry_writer_count) <= 0:
+            raise ValueError("telemetry_writer_count must be positive")
         if self.per_llm_route_max_concurrency <= 0:
             raise ValueError("per_llm_route_max_concurrency must be positive")
         if self.request_log_max_bytes < 0:
@@ -123,6 +127,8 @@ def _dict_to_config(data: dict[str, Any]) -> GatewayConfig:
         normalized.setdefault("max_queue_size", telemetry.get("queue_max_size"))
         normalized.setdefault("telemetry_batch_size", telemetry.get("batch_size"))
         normalized.setdefault("telemetry_flush_interval_ms", telemetry.get("flush_interval_ms"))
+        normalized.setdefault("telemetry_writer_count", telemetry.get("writer_count"))
+        normalized.setdefault("telemetry_async_cloud_writes", telemetry.get("async_cloud_writes"))
         normalized.setdefault("telemetry_loss_policy", telemetry.get("loss_policy"))
         normalized.setdefault("telemetry_write_timeout_s", telemetry.get("write_timeout_s"))
         normalized.setdefault("payload_capture_policy", telemetry.get("capture_payload"))

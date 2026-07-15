@@ -122,7 +122,7 @@ class StorageStrategy(ABC):
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
-        execution_time: Optional[float] = None
+        is_trainable: bool = True,
     ) -> None:
         """
         Record a single interaction step with full conversation history.
@@ -143,9 +143,25 @@ class StorageStrategy(ABC):
             env_state: Optional JSON string of environment state
             terminated: Whether this is a terminal step
             truncated: Whether episode was truncated
-            execution_time: Optional execution time in seconds
+            is_trainable: Whether this step is eligible for training
         """
         pass
+
+    async def record_steps_batch(self, steps: List[Dict[str, Any]]) -> List[Optional[str]]:
+        """Persist multiple steps.
+
+        Backends may override this to use a native bulk API. The default keeps
+        existing strategies compatible and preserves input ordering.
+        """
+        record_ids: List[Optional[str]] = []
+        for step in steps:
+            await self.record_step(**step)
+            record_ids.append(None)
+        return record_ids
+
+    async def mark_records_completed(self, record_ids: List[str]) -> int:
+        """Mark known records completed without discovering them by a table scan."""
+        return 0
 
     @abstractmethod
     async def update_session_step(

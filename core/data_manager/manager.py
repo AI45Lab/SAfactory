@@ -133,6 +133,14 @@ class DataManager:
             is_trainable=is_trainable,
         )
 
+    async def record_steps_batch(self, steps: List[Dict[str, Any]]) -> List[Optional[str]]:
+        """Persist multiple steps using the backend's native bulk API when available."""
+        return await self.strategy.record_steps_batch(steps)
+
+    async def mark_records_completed(self, record_ids: List[str]) -> int:
+        """Mark known records completed without a latest-row lookup."""
+        return await self.strategy.mark_records_completed(record_ids)
+
     async def update_session_step(
         self,
         session_id: str,

@@ -207,7 +207,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 return response
 
             if cfg.max_steps < 0 or binding.step_count_for(ctx.requested_model) < cfg.max_steps:
-                if telemetry.should_reject_new_requests():
+                if telemetry.should_reject_new_requests(ctx.session_id):
                     raise AdmissionRejected("telemetry queue is full", 503)
                 with trace.span("select_target_initial"):
                     target = await router.select_target(ctx, binding)
@@ -640,7 +640,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         if cfg.close_mode == "soft_close":
             drained = await _wait_for_session_drain(binding, cfg.drain_timeout_s)
 
-        telemetry_status = "flushed"
+        telemetry_status = "queued" if telemetry.async_writes_enabled else "flushed"
         try:
             await telemetry.enqueue_session_close(binding)
         except asyncio.TimeoutError:

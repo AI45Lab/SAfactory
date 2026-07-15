@@ -491,7 +491,90 @@ class CloudStrategy(StorageStrategy):
         Images are extracted, uploaded to S3 (with retry), and URLs stored.
         """
         await self.init()
-        
+
+        record, record_id = await self._build_step_record(
+            session=session,
+            step_id=step_id,
+            messages=messages,
+            response=response,
+            step_reward=step_reward,
+            env_state=env_state,
+            terminated=terminated,
+            truncated=truncated,
+            is_trainable=is_trainable,
+        )
+
+        if self._enable_buffer:
+            await self._buffer_record(record)
+        else:
+            try:
+                await asyncio.to_thread(self.client.ingest_landing, record)
+                log.debug("Step %d recorded to cloud: %s", step_id, record_id)
+            except Exception as e:
+                log.error("Failed to ingest step %d: %s", step_id, e)
+                raise
+
+        return record_id
+
+    async def record_steps_batch(self, steps: List[Dict[str, Any]]) -> List[Optional[str]]:
+        """Build step records in order and persist them with one cloud batch call."""
+        await self.init()
+        if not steps:
+            return []
+
+        records: List[Any] = []
+        record_ids: List[Optional[str]] = []
+        for step in steps:
+            record, record_id = await self._build_step_record(**step)
+            records.append(record)
+            record_ids.append(record_id)
+
+        if self._enable_buffer:
+            await self._buffer_records(records)
+        else:
+            try:
+                await asyncio.to_thread(self.client.ingest_landing_batch, records)
+                log.debug("Recorded %d steps to cloud in one batch", len(records))
+            except Exception as e:
+                log.error("Failed to ingest %d cloud steps as a batch: %s", len(records), e)
+                raise
+
+        return record_ids
+
+    async def mark_records_completed(self, record_ids: List[str]) -> int:
+        """Mark known landing record IDs completed without scanning session rows."""
+        await self.init()
+        unique_ids = list(dict.fromkeys(str(record_id) for record_id in record_ids if record_id))
+        if not unique_ids:
+            return 0
+        if self._enable_buffer:
+            await self._flush_records()
+
+        quoted_ids = ", ".join(f"'{_escape_sql_literal(record_id)}'" for record_id in unique_ids)
+        await asyncio.to_thread(
+            self.client.update_landing,
+            f"id IN ({quoted_ids})",
+            {
+                "is_session_completed": True,
+                "is_terminal": True,
+            },
+        )
+        log.debug("Marked %d known cloud records completed", len(unique_ids))
+        return len(unique_ids)
+
+    async def _build_step_record(
+        self,
+        *,
+        session: SessionContext,
+        step_id: int,
+        messages: List[Dict],
+        response: str,
+        step_reward: float,
+        env_state: Optional[str] = None,
+        terminated: bool = False,
+        truncated: bool = False,
+        is_trainable: bool = True,
+    ) -> tuple[Any, str]:
         session.total_reward += step_reward
 
         env_key = f"{session.env_name}_{session.env_id}"
@@ -560,15 +643,7 @@ class CloudStrategy(StorageStrategy):
             })
         )
         
-        if self._enable_buffer:
-            await self._buffer_record(record)
-        else:
-            try:
-                await asyncio.to_thread(self.client.ingest_landing, record)
-                log.debug("Step %d recorded to cloud: %s", step_id, record_id)
-            except Exception as e:
-                log.error("Failed to ingest step %d: %s", step_id, e)
-                raise
+        return record, record_id
 
     async def update_session_step(
         self,
@@ -943,11 +1018,14 @@ class CloudStrategy(StorageStrategy):
         return processed_messages, uploaded_urls
 
     async def _buffer_record(self, record: Any) -> None:
+        await self._buffer_records([record])
+
+    async def _buffer_records(self, records: List[Any]) -> None:
         should_flush = False
 
         async with self._buffer_lock:
-            self._record_buffer.append(record)
-            self._stats["total_create_buffered"] += 1
+            self._record_buffer.extend(records)
+            self._stats["total_create_buffered"] += len(records)
             if len(self._record_buffer) >= self._buffer_size:
                 should_flush = True
 

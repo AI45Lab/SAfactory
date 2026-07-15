@@ -40,6 +40,7 @@ class GatewayStorage:
         self._sessions: dict[tuple[str, str], _CachedSession] = {}
         self._environments: dict[str, _SessionEnvironment] = {}
         self._patched_environment_sessions: set[str] = set()
+        self._latest_record_ids: dict[tuple[str, str], str] = {}
         self._lock = asyncio.Lock()
 
     @classmethod
@@ -288,47 +289,74 @@ class GatewayStorage:
         binding: GatewaySessionBinding,
         record: GatewayTelemetryRecord,
     ) -> None:
+        await self.record_inference_steps_batch([(binding, record)])
+
+    async def record_telemetry_batch(
+        self,
+        batch: list[tuple[GatewaySessionBinding, GatewayTelemetryRecord]],
+    ) -> None:
+        """Persist an ordered telemetry batch, flushing inference rows before close events."""
+        inference_batch: list[tuple[GatewaySessionBinding, GatewayTelemetryRecord]] = []
+        for binding, record in batch:
+            if record.event_type != "gateway_session_close":
+                inference_batch.append((binding, record))
+                continue
+            if inference_batch:
+                await self.record_inference_steps_batch(inference_batch)
+                inference_batch = []
+            await self.record_session_close(binding, record)
+        if inference_batch:
+            await self.record_inference_steps_batch(inference_batch)
+
+    async def record_inference_steps_batch(
+        self,
+        batch: list[tuple[GatewaySessionBinding, GatewayTelemetryRecord]],
+    ) -> None:
+        if not batch:
+            return
         started = time.perf_counter()
         trace = PerfTrace(
-            "gateway.storage.record_inference_step",
+            "gateway.storage.record_inference_steps_batch",
             logger=log,
             context={
-                "request_id": record.request_id,
-                "session_id": record.session_id,
-                "seq_id": record.seq_id,
-                "model": record.requested_model,
-                "status_code": record.status_code,
+                "record_count": len(batch),
+                "session_count": len({record.session_id for _, record in batch}),
             },
         )
         log.info(
-            "Gateway storage record_step begin: request_id=%s session_id=%s seq_id=%s model=%s status=%d",
-            record.request_id,
-            record.session_id,
-            record.seq_id,
-            record.requested_model,
-            record.status_code,
+            "Gateway storage record_step batch begin: records=%d sessions=%d",
+            len(batch),
+            len({record.session_id for _, record in batch}),
         )
         try:
-            with trace.span("get_or_create_session", operation="db_read_or_create", table="session_steps"):
-                session = await self.get_or_create_session(binding, record.requested_model)
-            with trace.span("data_manager_record_step", operation="db_write", table="session_steps"):
-                await self.data_manager.record_step(
-                    session=session,
-                    step_id=record.seq_id,
-                    messages=_trajectory_messages(record),
-                    response="",
-                    step_reward=0.0,
-                    env_state=json.dumps(self._metadata(record), ensure_ascii=False, default=str),
-                    terminated=False,
-                    truncated=record.is_truncated,
-                    is_trainable=False,
-                )
+            steps: list[dict[str, Any]] = []
+            with trace.span("get_or_create_sessions", operation="db_read_or_create", table="session_steps"):
+                for binding, record in batch:
+                    session = await self.get_or_create_session(binding, record.requested_model)
+                    steps.append(
+                        {
+                            "session": session,
+                            "step_id": record.seq_id,
+                            "messages": _trajectory_messages(record),
+                            "response": "",
+                            "step_reward": 0.0,
+                            "env_state": json.dumps(self._metadata(record), ensure_ascii=False, default=str),
+                            "terminated": False,
+                            "truncated": record.is_truncated,
+                            "is_trainable": False,
+                        }
+                    )
+            with trace.span("data_manager_record_steps_batch", operation="db_write", table="session_steps"):
+                record_ids = await self.data_manager.record_steps_batch(steps)
+
+            async with self._lock:
+                for (_, record), record_id in zip(batch, record_ids):
+                    if record_id:
+                        self._latest_record_ids[(record.session_id, record.requested_model)] = record_id
             elapsed_ms = (time.perf_counter() - started) * 1000
             log.info(
-                "Gateway storage record_step complete: request_id=%s session_id=%s seq_id=%s elapsed_ms=%.2f",
-                record.request_id,
-                record.session_id,
-                record.seq_id,
+                "Gateway storage record_step batch complete: records=%d elapsed_ms=%.2f",
+                len(batch),
                 elapsed_ms,
             )
             trace.emit_summary(status="success", elapsed_ms=elapsed_ms)
@@ -351,6 +379,39 @@ class GatewayStorage:
             context={"session_id": binding.session_id, "reason": binding.close_reason},
         )
         try:
+            if self.cfg.storage_type == "cloud":
+                async with self._lock:
+                    record_ids = [
+                        record_id
+                        for (session_id, _model), record_id in self._latest_record_ids.items()
+                        if session_id == binding.session_id
+                    ]
+                trace.update_context(record_id_count=len(record_ids), close_strategy="known_record_ids")
+                if not record_ids:
+                    elapsed_ms = (time.perf_counter() - started) * 1000
+                    log.info(
+                        "Gateway storage session_close skipped: session_id=%s has no persisted record IDs",
+                        binding.session_id,
+                    )
+                    trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_count=0)
+                    return
+                with trace.span(
+                    "mark_known_records_completed",
+                    operation="db_write",
+                    table="session_steps",
+                    record_count=len(record_ids),
+                ):
+                    updated_count = await self.data_manager.mark_records_completed(record_ids)
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                log.info(
+                    "Gateway storage session_close complete: session_id=%s updated_count=%d elapsed_ms=%.2f",
+                    binding.session_id,
+                    updated_count,
+                    elapsed_ms,
+                )
+                trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_count=updated_count)
+                return
+
             with trace.span("models_for_session"):
                 models = await self._models_for_session(binding)
             trace.update_context(model_count=len(models), models=models)
@@ -460,6 +521,7 @@ class GatewayStorage:
             ]
             for cache_key in expired:
                 self._sessions.pop(cache_key, None)
+                self._latest_record_ids.pop(cache_key, None)
 
     @staticmethod
     def _metadata(record: GatewayTelemetryRecord) -> dict[str, Any]:

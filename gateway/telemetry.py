@@ -5,6 +5,7 @@ import json
 import logging
 import random
 import time
+import zlib
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -34,12 +35,17 @@ class TelemetryRecorder:
     def __init__(self, cfg: GatewayConfig, storage: GatewayStorage):
         self.cfg = cfg
         self.storage = storage
-        self._queue: asyncio.Queue[tuple[GatewaySessionBinding, GatewayTelemetryRecord]] = asyncio.Queue(
-            maxsize=cfg.max_queue_size
-        )
+        self._async_writes = bool(cfg.storage_type == "cloud" and cfg.telemetry_async_cloud_writes)
+        writer_count = int(cfg.telemetry_writer_count) if self._async_writes else 1
+        queue_capacity = max(writer_count, int(cfg.max_queue_size))
+        base_capacity, extra = divmod(queue_capacity, writer_count)
+        self._queues: list[asyncio.Queue[tuple[GatewaySessionBinding, GatewayTelemetryRecord]]] = [
+            asyncio.Queue(maxsize=base_capacity + (1 if index < extra else 0))
+            for index in range(writer_count)
+        ]
         self._seq_by_session_model: dict[tuple[str, str], int] = {}
         self._lock = asyncio.Lock()
-        self._flush_task: asyncio.Task | None = None
+        self._writer_tasks: list[asyncio.Task] = []
         self._running = False
         self.dropped_total = 0
         self.dropped_by_reason: defaultdict[str, int] = defaultdict(int)
@@ -57,10 +63,17 @@ class TelemetryRecorder:
         if self._running:
             return
         self._running = True
-        self._flush_task = asyncio.create_task(self.flush_loop())
+        if self._async_writes or self.cfg.telemetry_mode != "strict":
+            self._writer_tasks = [
+                asyncio.create_task(self._writer_loop(index), name=f"gateway-telemetry-writer-{index}")
+                for index in range(len(self._queues))
+            ]
         log.info(
-            "Gateway telemetry recorder started: mode=%s loss_policy=%s queue_max_size=%d batch_size=%d flush_interval_ms=%d",
+            "Gateway telemetry recorder started: mode=%s async_writes=%s writers=%d loss_policy=%s "
+            "queue_max_size=%d batch_size=%d flush_interval_ms=%d",
             self.cfg.telemetry_mode,
+            self._async_writes,
+            len(self._writer_tasks),
             self.cfg.telemetry_loss_policy,
             self.cfg.max_queue_size,
             self.cfg.telemetry_batch_size,
@@ -68,24 +81,31 @@ class TelemetryRecorder:
         )
 
     async def stop(self) -> None:
-        log.info("Gateway telemetry recorder stopping: queued=%d", self._queue.qsize())
+        log.info("Gateway telemetry recorder stopping: queued=%d", self.queue_depth())
         self._running = False
-        if self._flush_task:
-            self._flush_task.cancel()
+        if self._writer_tasks:
             try:
-                await self._flush_task
-            except asyncio.CancelledError:
-                pass
-            self._flush_task = None
-        try:
-            await self.flush_once(drain_all=True)
-        except Exception:
-            log.exception("Gateway telemetry final flush failed")
+                drain_timeout_s = max(30.0, float(self.cfg.telemetry_write_timeout_s) * 2)
+                await asyncio.wait_for(
+                    asyncio.gather(*(queue.join() for queue in self._queues)),
+                    timeout=drain_timeout_s,
+                )
+            except asyncio.TimeoutError:
+                log.error("Gateway telemetry drain timed out: queued=%d", self.queue_depth())
+            finally:
+                for task in self._writer_tasks:
+                    task.cancel()
+                await asyncio.gather(*self._writer_tasks, return_exceptions=True)
+                self._writer_tasks = []
         log.info(
             "Gateway telemetry recorder stopped: flushed_total=%d dropped_total=%d",
             self.flushed_total,
             self.dropped_total,
         )
+
+    @property
+    def async_writes_enabled(self) -> bool:
+        return self._async_writes
 
     async def enqueue_success(
         self,
@@ -197,66 +217,78 @@ class TelemetryRecorder:
                 self._truncated_sessions.add(truncated_key)
                 self._session_truncated_total[binding.model_truncate_reason(ctx.requested_model) or reason] += 1
 
-    async def flush_loop(self) -> None:
+    async def _writer_loop(self, writer_index: int) -> None:
+        queue = self._queues[writer_index]
         interval_s = max(0.001, self.cfg.telemetry_flush_interval_ms / 1000)
+        batch_size = max(1, int(self.cfg.telemetry_batch_size))
         try:
-            while self._running:
-                await asyncio.sleep(interval_s)
+            while self._running or not queue.empty():
                 try:
-                    await self.flush_once()
+                    first = await asyncio.wait_for(queue.get(), timeout=interval_s)
+                except asyncio.TimeoutError:
+                    continue
+
+                batch = [first]
+                deadline = asyncio.get_running_loop().time() + interval_s
+                while len(batch) < batch_size:
+                    try:
+                        batch.append(queue.get_nowait())
+                        continue
+                    except asyncio.QueueEmpty:
+                        remaining = deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            break
+                    try:
+                        batch.append(await asyncio.wait_for(queue.get(), timeout=remaining))
+                    except asyncio.TimeoutError:
+                        break
+
+                try:
+                    await self._write_batch(batch, writer_index=writer_index)
+                    self.flushed_total += len(batch)
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
-                    log.exception("Gateway telemetry flush failed")
+                    log.exception(
+                        "Gateway telemetry batch write failed: writer=%d records=%d",
+                        writer_index,
+                        len(batch),
+                    )
+                    for _binding, _record in batch:
+                        await self._drop("write_failed")
+                finally:
+                    for _ in batch:
+                        queue.task_done()
         except asyncio.CancelledError:
             raise
 
     async def flush_once(self, *, drain_all: bool = False) -> None:
-        limit = self._queue.qsize() if drain_all else self.cfg.telemetry_batch_size
-        batch: list[tuple[GatewaySessionBinding, GatewayTelemetryRecord]] = []
-        for _ in range(max(0, limit)):
+        for writer_index, queue in enumerate(self._queues):
+            limit = queue.qsize() if drain_all else self.cfg.telemetry_batch_size
+            batch: list[tuple[GatewaySessionBinding, GatewayTelemetryRecord]] = []
+            for _ in range(max(0, limit)):
+                try:
+                    batch.append(queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            if not batch:
+                continue
             try:
-                batch.append(self._queue.get_nowait())
-            except asyncio.QueueEmpty:
-                break
-
-        if batch:
-            log.info(
-                "Gateway telemetry flush begin: records=%d drain_all=%s queued_after_take=%d",
-                len(batch),
-                drain_all,
-                self._queue.qsize(),
-            )
-            started = time.perf_counter()
-        else:
-            started = 0.0
-
-        for binding, record in batch:
-            log.debug(
-                "Gateway telemetry flush record: event_type=%s request_id=%s session_id=%s seq_id=%s model=%s",
-                record.event_type,
-                record.request_id,
-                record.session_id,
-                record.seq_id,
-                record.requested_model,
-            )
-            await self._write_record(binding, record)
-            self.flushed_total += 1
-
-        if batch:
-            log.info(
-                "Gateway telemetry flush complete: records=%d elapsed_ms=%.2f flushed_total=%d",
-                len(batch),
-                (time.perf_counter() - started) * 1000,
-                self.flushed_total,
-            )
+                await self._write_batch(batch, writer_index=writer_index)
+                self.flushed_total += len(batch)
+            finally:
+                for _ in batch:
+                    queue.task_done()
 
     def queue_depth(self) -> int:
-        return self._queue.qsize()
+        return sum(queue.qsize() for queue in self._queues)
 
-    def should_reject_new_requests(self) -> bool:
+    def should_reject_new_requests(self, session_id: str | None = None) -> bool:
+        queues = [self._queue_for_session(session_id)] if session_id else self._queues
         return (
-            self.cfg.telemetry_mode != "strict"
+            (self._async_writes or self.cfg.telemetry_mode != "strict")
             and self.cfg.telemetry_loss_policy == "fail_closed"
-            and self._queue.full()
+            and any(queue.full() for queue in queues)
         )
 
     async def metrics_snapshot(self) -> dict[str, Any]:
@@ -308,7 +340,7 @@ class TelemetryRecorder:
                 self._ttft_sum_ms[record.requested_model] += record.ttft_ms
                 self._ttft_count[record.requested_model] += 1
 
-        if self.cfg.telemetry_mode == "strict":
+        if self.cfg.telemetry_mode == "strict" and not self._async_writes:
             started = time.perf_counter()
             log.info(
                 "Gateway telemetry strict write begin: event_type=%s request_id=%s session_id=%s seq_id=%s model=%s",
@@ -329,14 +361,28 @@ class TelemetryRecorder:
             )
             return
 
+        queue = self._queue_for_session(record.session_id)
+        if self._async_writes and self.cfg.telemetry_mode == "strict":
+            await queue.put((binding, record))
+            log.info(
+                "Gateway telemetry submitted: event_type=%s request_id=%s session_id=%s seq_id=%s queued=%d",
+                record.event_type,
+                record.request_id,
+                record.session_id,
+                record.seq_id,
+                self.queue_depth(),
+            )
+            return
+
         policy = self.cfg.telemetry_loss_policy
-        if self._queue.full():
+        if queue.full():
             if policy == "drop_newest":
                 await self._drop("drop_newest")
                 return
             if policy == "drop_oldest":
                 try:
-                    self._queue.get_nowait()
+                    queue.get_nowait()
+                    queue.task_done()
                 except asyncio.QueueEmpty:
                     pass
                 await self._drop("drop_oldest")
@@ -345,20 +391,21 @@ class TelemetryRecorder:
                 return
 
         try:
-            self._queue.put_nowait((binding, record))
+            queue.put_nowait((binding, record))
             log.info(
                 "Gateway telemetry queued: event_type=%s request_id=%s session_id=%s seq_id=%s queued=%d",
                 record.event_type,
                 record.request_id,
                 record.session_id,
                 record.seq_id,
-                self._queue.qsize(),
+                self.queue_depth(),
             )
         except asyncio.QueueFull:
             if policy == "drop_oldest":
                 try:
-                    self._queue.get_nowait()
-                    self._queue.put_nowait((binding, record))
+                    queue.get_nowait()
+                    queue.task_done()
+                    queue.put_nowait((binding, record))
                     await self._drop("drop_oldest")
                     return
                 except asyncio.QueueEmpty:
@@ -366,6 +413,45 @@ class TelemetryRecorder:
                 except asyncio.QueueFull:
                     pass
             await self._drop("queue_full")
+
+    def _queue_for_session(
+        self,
+        session_id: str,
+    ) -> asyncio.Queue[tuple[GatewaySessionBinding, GatewayTelemetryRecord]]:
+        if len(self._queues) == 1:
+            return self._queues[0]
+        shard = zlib.crc32(session_id.encode("utf-8")) % len(self._queues)
+        return self._queues[shard]
+
+    async def _write_batch(
+        self,
+        batch: list[tuple[GatewaySessionBinding, GatewayTelemetryRecord]],
+        *,
+        writer_index: int,
+    ) -> None:
+        if not batch:
+            return
+        started = time.perf_counter()
+        log.info(
+            "Gateway telemetry batch write begin: writer=%d records=%d queued=%d",
+            writer_index,
+            len(batch),
+            self.queue_depth(),
+        )
+        if self._async_writes:
+            # A timeout around asyncio.to_thread cannot stop the underlying SDK call.
+            # Fixed writers bound concurrency, so let each cloud batch finish instead
+            # of leaking timed-out writes into the default executor.
+            await self.storage.record_telemetry_batch(batch)
+        else:
+            for binding, record in batch:
+                await self._write_record(binding, record)
+        log.info(
+            "Gateway telemetry batch write complete: writer=%d records=%d elapsed_ms=%.2f",
+            writer_index,
+            len(batch),
+            (time.perf_counter() - started) * 1000,
+        )
 
     async def _write_record(
         self,
