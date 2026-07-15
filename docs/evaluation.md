@@ -17,6 +17,8 @@ A run with evaluation follows this flow:
 
 When integrating a benchmark, design one dataset row as one benchmark case and let Safactory schedule at task level. Each case then gets its own `session_id` and gateway trajectory, so the rule evaluator never sees model calls from other cases mixed into the current trajectory.
 
+Docker, RJob, and Sandbox rollout modes share this evaluation order. Sandbox instances remain alive through evaluation. Agent-eval may request `target_access_mode: sandbox_proxy`; `direct_docker` is not available for a Sandbox target.
+
 Example command:
 
 ```bash

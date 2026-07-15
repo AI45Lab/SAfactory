@@ -17,6 +17,8 @@
 
 接入 bench 时应把 dataset 的一行设计成一个 bench case，让 Safactory 以 task 级别调度。这样每个 case 都有独立 `session_id` 和 gateway trajectory，rule evaluator 读到的轨迹不会混入其他 case 的模型调用。
 
+Docker、RJob 和 Sandbox rollout 都遵循相同的评测顺序，Sandbox 实例会保留到评测结束。Agent-eval 可使用 `target_access_mode: sandbox_proxy`；Sandbox target 不支持 `direct_docker`。
+
 启动命令示例：
 
 ```bash

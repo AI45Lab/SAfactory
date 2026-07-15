@@ -7,7 +7,12 @@ from typing import Any, Callable, Dict, List, Optional
 from .actor_pool import RuntimeAgentPool
 from .binding_plan import build_binding_plan
 from .repository import AgentDataRepository
-from .runtime_allocator import DockerLeaseAllocator, RJobLeaseAllocator, RuntimeLeaseAllocator
+from .runtime_allocator import (
+    DockerLeaseAllocator,
+    RJobLeaseAllocator,
+    RuntimeLeaseAllocator,
+    SandboxLeaseAllocator,
+)
 from .types import PoolEntry
 
 log = logging.getLogger("manager")
@@ -18,8 +23,8 @@ class AgentPoolManager:
     Safactory runtime scheduler facade.
 
     It exposes ready runtime leases and refills from the DB after each episode.
-    Docker mode warms containers; RJob mode reserves rows and submits the remote
-    job later in the episode runner.
+    Docker and Sandbox modes warm runtime instances; RJob mode reserves rows
+    and submits the remote job later in the episode runner.
     """
 
     def __init__(
@@ -39,7 +44,7 @@ class AgentPoolManager:
         )
         self._pool_size = int(self.cfg.get("pool_size", 0) or 0)
         self._mode = str(self.cfg.get("mode", "docker") or "docker").strip().lower()
-        if self._mode not in {"docker", "rjob"}:
+        if self._mode not in {"docker", "rjob", "sandbox"}:
             raise ValueError(f"Unsupported runtime workflow mode: {self._mode!r}")
         self._row_wait_timeout_s = float(self.cfg.get("row_wait_timeout_s", 60.0) or 60.0)
         self._row_fetch_timeout_s = float(self.cfg.get("row_fetch_timeout_s", 30.0) or 30.0)
@@ -130,4 +135,6 @@ class AgentPoolManager:
             return DockerLeaseAllocator(cluster_cfg=cluster_cfg)
         if self._mode == "rjob":
             return RJobLeaseAllocator(cluster_cfg=cluster_cfg)
+        if self._mode == "sandbox":
+            return SandboxLeaseAllocator(cluster_cfg=cluster_cfg)
         raise ValueError(f"Unsupported runtime workflow mode: {self._mode!r}")

@@ -14,7 +14,11 @@ DEFAULT_AGENT_EVAL_TEMPLATE = """\
 - container_alias: {{ target.container_alias }}
 - container_name: {{ target.container_name }}
 - container_id: {{ target.container_id }}
+- runtime: {{ target.runtime }}
+- resource_id: {{ target.resource_id }}
 - access_mode: {{ target.access_mode }}
+- sandbox_endpoint: {{ target.sandbox_endpoint }}
+- sandbox_headers: {{ target.sandbox_headers }}
 - exec_hint: {{ target.exec_hint }}
 
 请只输出 JSON，格式必须满足：

@@ -157,6 +157,10 @@ class TargetAgentRef:
     container_alias: str
     image: str
 
+    runtime: str = "docker"
+    resource_id: str = ""
+    sandbox_endpoint: str | None = None
+    sandbox_headers: dict[str, str] = field(default_factory=dict)
     workspace_path: str | None = None
     artifact_paths: dict[str, str] = field(default_factory=dict)
 
@@ -393,8 +397,8 @@ def validate_eval_specs(specs: list[EvalSpec]) -> None:
             invalid = set(spec.evaluator_base_agents) - {"codex", "claude_code"}
             if invalid:
                 raise ValueError(f"{spec.eval_id}: unsupported evaluator_base_agents: {sorted(invalid)}")
-            if spec.target_access_mode == "direct_docker" and not spec.requires_container:
-                raise ValueError(f"{spec.eval_id}: direct_docker requires requires_container=true")
+            if spec.target_access_mode in {"direct_docker", "sandbox_proxy"} and not spec.requires_container:
+                raise ValueError(f"{spec.eval_id}: {spec.target_access_mode} requires requires_container=true")
 
 
 def merge_eval_results(

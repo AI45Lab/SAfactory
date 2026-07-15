@@ -7,7 +7,10 @@ Safactory 有几类明确的配置入口：
 3. `--agent-config` 指定的 agent config YAML，或 `--agent-root` 下的全部配置。
 4. `--agent-start-config` 指定的 agent start config YAML。
 5. 可选的 `--rjob-config` 全局 RJob 配置。
-6. 可选的 `--evaluation-config` evaluator runtime 配置。
+6. 可选的 `--sandbox-config` 全局 Sandbox 配置。
+7. 可选的 `--evaluation-config` evaluator runtime 配置。
+
+`--mode` 支持 `docker`、`rjob` 和 `sandbox`。第三种运行时详见 [Sandbox 模式](sandbox-mode_CN.md)。
 
 本地 SQLite 运行时，gateway 和 launcher 必须共享同一个 DB URI。
 
@@ -37,11 +40,12 @@ python launcher.py \
 | 类别 | 参数 | 默认值 | 说明 |
 |------|------|--------|------|
 | Job | `--job-id` | 为空时生成 | 写入环境行和轨迹行的标识符。 |
-| Runtime | `--mode` | `docker` | 运行时分配器：`docker` 或 `rjob`。 |
+| Runtime | `--mode` | `docker` | 运行时分配器：`docker`、`rjob` 或 `sandbox`。 |
 | Config | `--agent-config` | `None` | 单个 agent task YAML 路径。 |
 | Config | `--agent-root` | `env` | 未设置 `--agent-config` 时扫描子目录 YAML。无法解析的 YAML 会 warning 后跳过。 |
-| Config | `--agent-start-config` | `None` | 定义每个 agent runtime 如何以 Docker 或 RJob 启动。 |
+| Config | `--agent-start-config` | `None` | 定义每个 agent runtime 如何以 Docker、RJob 或 Sandbox 启动。 |
 | Config | `--rjob-config` | `config.yaml` | 全局 RJob 连接和鉴权配置。 |
+| Config | `--sandbox-config` | `config.yaml` | 全局 OpenSandbox/Brainbox 连接与 Environment 配置。 |
 | Storage | `--storage-type` | `sqlite` | `sqlite` 或 `cloud`。 |
 | Storage | `--db-path` | SQLite 下为 `sqlite://env_trajs.db` | SQLite DB URI。Cloud storage 会忽略。 |
 | Gateway | `--gateway-base-url` | `http://127.0.0.1:8080/v1/sessions` | Gateway session root。需要按实际 gateway 端口覆盖。 |

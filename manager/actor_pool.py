@@ -15,9 +15,9 @@ class RuntimeAgentPool:
     """
     Assigns DB rows to runtime leases.
 
-    Docker mode allocates a real container before the lease becomes ready.
-    RJob mode only reserves the row and attaches RJob runtime config; the actual
-    remote job is submitted later by the episode runner.
+    Docker and Sandbox modes allocate a real runtime before the lease becomes
+    ready. RJob mode only reserves the row and attaches runtime config; the
+    actual remote job is submitted later by the episode runner.
     """
 
     def __init__(

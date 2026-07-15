@@ -21,6 +21,7 @@ class PoolEntry:
     status: str = "ready"
     runtime: str = "docker"
     runtime_config: Dict[str, Any] = field(default_factory=dict)
+    runtime_handle: Any = field(default=None, repr=False)
     resource_id: str = ""
     resource_name: str = ""
     container_id: str = ""
@@ -73,6 +74,7 @@ class SimulationRunConfig:
     docker_remove_retry_delay_s: float = 2.0
     docker_lifecycle_timeout_s: float = 60.0
     rjob_config: Dict[str, Any] = field(default_factory=dict)
+    sandbox_config: Dict[str, Any] = field(default_factory=dict)
     cleanup_docker_container: bool = True
     cleanup_stale_docker_containers: bool = True
     max_workers: Optional[int] = None
@@ -103,6 +105,7 @@ class SimulationAgentLease:
     env_params: Dict[str, Any] = field(default_factory=dict)
     runtime: str = "docker"
     runtime_config: Dict[str, Any] = field(default_factory=dict)
+    runtime_handle: Any = field(default=None, repr=False)
     resource_id: str = ""
     resource_name: str = ""
     container_id: str = ""

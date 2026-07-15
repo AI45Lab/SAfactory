@@ -8,6 +8,7 @@ loguru>=0.7.2
 matplotlib==3.10.6
 numpy==1.26.4
 openai==1.108.0
+opensandbox==0.1.9
 pandas==2.3.3
 pillow==11.3.0
 prometheus-client==0.25.0

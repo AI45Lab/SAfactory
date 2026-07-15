@@ -4,6 +4,7 @@ from typing import Any, Dict, Protocol
 
 from clusters.docker_clusters import DockerContainerBackend, DockerContainerRecord
 from clusters.rjob_cluster import RJobClusterBackend
+from clusters.sandbox_cluster import SandboxClusterBackend
 
 from .binding_plan import BindingPlan
 from .types import PoolEntry
@@ -120,3 +121,7 @@ class DockerLeaseAllocator:
 
 class RJobLeaseAllocator(RJobClusterBackend):
     """RJob lease allocation is implemented by the cluster backend."""
+
+
+class SandboxLeaseAllocator(SandboxClusterBackend):
+    """Sandbox lease allocation is implemented by the cluster backend."""

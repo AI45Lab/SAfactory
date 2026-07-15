@@ -13,7 +13,9 @@ class TargetContainerAccessService:
         spec: EvalSpec,
     ) -> TargetAgentRef:
         lease = request.lease
-        container_id = str(getattr(lease, "container_id", "") or "")
+        runtime = str(getattr(lease, "runtime", "docker") or "docker")
+        resource_id = str(getattr(lease, "resource_id", "") or "")
+        container_id = str(getattr(lease, "container_id", "") or (resource_id if runtime == "sandbox" else ""))
         resource_name = str(getattr(lease, "resource_name", "") or getattr(lease, "resource_id", "") or "")
         container_name = str(getattr(lease, "container_name", "") or container_id or resource_name)
         image = str(getattr(lease, "image", "") or "")
@@ -24,12 +26,26 @@ class TargetContainerAccessService:
         )
         artifact_paths = dict(request.env_params.get("artifact_paths") or {})
         alias_map = {alias: container_name or container_id} if alias else {}
+        runtime_config = dict(getattr(lease, "runtime_config", {}) or {})
+        sandbox_endpoint = None
+        sandbox_headers: dict[str, str] = {}
+        if spec.target_access_mode == "sandbox_proxy":
+            endpoint = str(runtime_config.get("endpoint") or "").rstrip("/")
+            sandbox_endpoint = f"{endpoint}/command" if endpoint else None
+            sandbox_headers = {
+                str(key): str(value)
+                for key, value in dict(runtime_config.get("endpoint_headers", {}) or {}).items()
+            }
         return TargetAgentRef(
             session_id=request.session_id,
             container_id=container_id,
             container_name=container_name,
             container_alias=alias,
             image=image,
+            runtime=runtime,
+            resource_id=resource_id,
+            sandbox_endpoint=sandbox_endpoint,
+            sandbox_headers=sandbox_headers,
             workspace_path=workspace_path,
             artifact_paths=artifact_paths,
             access_mode=spec.target_access_mode,
@@ -45,6 +61,11 @@ class TargetContainerAccessService:
         spec: EvalSpec,
     ) -> TargetAgentRef:
         target = self.build_target_ref(request=request, spec=spec)
+        if target.access_mode == "direct_docker" and target.runtime != "docker":
+            raise ValueError(f"direct_docker target access is unavailable for runtime={target.runtime!r}")
+        if target.access_mode == "sandbox_proxy":
+            if target.runtime != "sandbox" or not target.sandbox_endpoint or not target.sandbox_headers:
+                raise ValueError("sandbox_proxy requires an active Sandbox endpoint and access headers")
         if target.access_mode == "snapshot":
             target.artifact_paths.update(
                 await self.create_snapshot(
@@ -97,6 +118,8 @@ def _first_present(data: dict[str, Any], keys: list[str]) -> str | None:
 
 
 def _build_exec_hint(alias: str, container: str, access_mode: str) -> str | None:
+    if access_mode == "sandbox_proxy" and container:
+        return f"Use the Sandbox proxy described in the structured target; its alias is {alias!r}."
     if access_mode != "direct_docker" or not container:
         return None
     return f"Use docker exec {container!r}; the task may refer to this target as {alias!r}."

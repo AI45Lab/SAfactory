@@ -7,7 +7,10 @@ Safactory v2 uses several explicit configuration surfaces:
 3. Agent config YAML passed with `--agent-config`, or all configs under `--agent-root`.
 4. Agent start config YAML passed with `--agent-start-config`.
 5. Optional global RJob config passed with `--rjob-config`.
-6. Optional evaluator runtime config passed with `--evaluation-config`.
+6. Optional global Sandbox config passed with `--sandbox-config`.
+7. Optional evaluator runtime config passed with `--evaluation-config`.
+
+`--mode` accepts `docker`, `rjob`, or `sandbox`. See [Sandbox mode](sandbox-mode.md) for the third runtime.
 
 For a local SQLite run, gateway and launcher must share the same DB URI.
 
@@ -37,11 +40,12 @@ python launcher.py \
 | Category | Flag | Default | Description |
 |----------|------|---------|-------------|
 | Job | `--job-id` | generated when empty | Identifier written to environment rows and trajectory rows. |
-| Runtime | `--mode` | `docker` | Runtime allocator: `docker` or `rjob`. |
+| Runtime | `--mode` | `docker` | Runtime allocator: `docker`, `rjob`, or `sandbox`. |
 | Config | `--agent-config` | `None` | Path to one agent task YAML. |
 | Config | `--agent-root` | `env` | Directory scanned for child YAML files when `--agent-config` is not set. Invalid YAMLs are skipped with warnings. |
 | Config | `--agent-start-config` | `None` | YAML that defines how each agent runtime starts in Docker and optionally RJob. |
 | Config | `--rjob-config` | `config.yaml` | Global RJob connection and auth config. |
+| Config | `--sandbox-config` | `config.yaml` | Global OpenSandbox/Brainbox connection and Environment config. |
 | Storage | `--storage-type` | `sqlite` | `sqlite` or `cloud`. |
 | Storage | `--db-path` | `sqlite://env_trajs.db` for SQLite | SQLite DB URI. Ignored by cloud storage. |
 | Gateway | `--gateway-base-url` | `http://127.0.0.1:8080/v1/sessions` | Gateway session root. Override this to match your gateway port. |

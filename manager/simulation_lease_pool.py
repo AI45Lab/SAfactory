@@ -294,6 +294,7 @@ class SimulationLeasePool:
             env_params=dict(entry.env_params or {}),
             runtime=str(getattr(entry, "runtime", "docker") or "docker"),
             runtime_config=dict(getattr(entry, "runtime_config", {}) or {}),
+            runtime_handle=getattr(entry, "runtime_handle", None),
             resource_id=str(getattr(entry, "resource_id", "") or ""),
             resource_name=str(getattr(entry, "resource_name", "") or ""),
             container_id=str(getattr(entry, "container_id", "") or ""),

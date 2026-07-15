@@ -159,9 +159,27 @@ python launcher.py \
 
 Global RJob auth belongs in `config.yaml` or `--rjob-config`. Per-agent image, resources, mounts, embedded files, and run command belong in `--agent-start-config`. `--pool-size` controls the concurrency target, bounded by cluster resources and the agent start config.
 
+#### Run With Brainbox Sandbox
+
+Use `--mode sandbox` to allocate rollout instances from a pre-created Brainbox Sandbox Environment. Connection settings and the Environment ID belong in `--sandbox-config`; the agent runner is still defined by `--agent-start-config`.
+
+```bash
+export OPEN_SANDBOX_API_KEY='<ak>:<sk>'
+python launcher.py \
+  --mode sandbox \
+  --sandbox-config config.sandbox.example.yaml \
+  --agent-config env/openrt/openrt_config.yaml \
+  --agent-start-config env/openrt/openrt_start.yaml \
+  --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
+  --llm-model YOUR_ROUTE_KEY \
+  --pool-size 8
+```
+
+See [Sandbox mode](docs/sandbox-mode.md) for Environment, volume, lifecycle, and evaluation requirements.
+
 #### Module Three: Run With Evaluation
 
-After Docker or RJob startup works, add evaluator parameters when you need scoring:
+After Docker, RJob, or Sandbox startup works, add evaluator parameters when you need scoring:
 
 ```bash
 python launcher.py \

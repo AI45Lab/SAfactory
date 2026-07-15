@@ -3,6 +3,7 @@ from __future__ import annotations
 from .docker_episode_runner import DockerEpisodeRunner
 from .episode_runner import EpisodeRunnerDispatcher
 from .rjob_episode_runner import RJobEpisodeRunner
+from .sandbox_episode_runner import SandboxEpisodeRunner
 
 
 class AgentStartClient(EpisodeRunnerDispatcher):
@@ -18,5 +19,6 @@ class AgentStartClient(EpisodeRunnerDispatcher):
             {
                 "docker": DockerEpisodeRunner(timeout_s=timeout_s),
                 "rjob": RJobEpisodeRunner(timeout_s=timeout_s),
+                "sandbox": SandboxEpisodeRunner(timeout_s=timeout_s),
             }
         )

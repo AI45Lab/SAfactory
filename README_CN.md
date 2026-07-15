@@ -151,9 +151,27 @@ python launcher.py \
 
 全局 RJob 鉴权放在 `config.yaml` 或 `--rjob-config`。每个 agent 的镜像、资源、挂载、嵌入文件和运行命令放在 `--agent-start-config`。`--pool-size` 控制并发规模，具体上限取决于集群资源和 agent start config。
 
+#### 使用 Brainbox Sandbox
+
+`--mode sandbox` 会从预先创建的 Brainbox Sandbox Environment 分配 rollout 实例。连接配置和 Environment ID 放在 `--sandbox-config`，runner 仍由 `--agent-start-config` 定义。
+
+```bash
+export OPEN_SANDBOX_API_KEY='<ak>:<sk>'
+python launcher.py \
+  --mode sandbox \
+  --sandbox-config config.sandbox.example.yaml \
+  --agent-config env/openrt/openrt_config.yaml \
+  --agent-start-config env/openrt/openrt_start.yaml \
+  --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
+  --llm-model YOUR_ROUTE_KEY \
+  --pool-size 8
+```
+
+Environment、volume、生命周期和评测要求见 [Sandbox 模式](docs/sandbox-mode_CN.md)。
+
 #### 启用评测
 
-在 Docker 或 RJob 启动命令跑通后，如果需要执行评测任务，再追加 evaluator 相关参数：
+在 Docker、RJob 或 Sandbox 启动命令跑通后，如果需要执行评测任务，再追加 evaluator 相关参数：
 
 ```bash
 python launcher.py \

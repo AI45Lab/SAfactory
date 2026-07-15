@@ -4,6 +4,7 @@ import argparse
 from collections.abc import Sequence
 
 DEFAULT_RJOB_CONFIG_PATH = "config.yaml"
+DEFAULT_SANDBOX_CONFIG_PATH = "config.yaml"
 
 
 def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -13,12 +14,18 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
     )
     parser.add_argument("--job-id", type=str, default="", help="Simulation workflow id")
     parser.add_argument("--evaluation-config",type=str, default="",help="Optional evaluator runtime YAML for judge endpoints, evaluator pools, and default specs.")
-    parser.add_argument("--mode", choices=["docker", "rjob"], default="docker")
+    parser.add_argument("--mode", choices=["docker", "rjob", "sandbox"], default="docker")
     parser.add_argument(
         "--rjob-config",
         type=str,
         default=DEFAULT_RJOB_CONFIG_PATH,
         help="YAML file for global RJob connection/auth settings",
+    )
+    parser.add_argument(
+        "--sandbox-config",
+        type=str,
+        default=DEFAULT_SANDBOX_CONFIG_PATH,
+        help="YAML file for global OpenSandbox/Brainbox connection settings",
     )
 
     parser.add_argument("--agent-config", type=str, default=None, help="Single agent YAML config")

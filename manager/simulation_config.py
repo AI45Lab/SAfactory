@@ -34,6 +34,25 @@ _RJOB_DEFAULT_CONFIG: Dict[str, Any] = {
     "submit_concurrency": 0,
 }
 
+_SANDBOX_DEFAULT_CONFIG: Dict[str, Any] = {
+    "domain": "https://h.pjlab.org.cn/brainbox",
+    "protocol": "https",
+    "project": "",
+    "api_key": "",
+    "api_key_env": "OPEN_SANDBOX_API_KEY",
+    "environment_id": "",
+    "gateway_base_url": "",
+    "command_port": 44772,
+    "lifecycle_minutes": 120,
+    "request_timeout_s": 60.0,
+    "create_timeout_s": 600.0,
+    "command_timeout_s": 720.0,
+    "startup_concurrency": 8,
+    "cleanup_on_finish": True,
+    "use_server_proxy": True,
+    "skip_health_check": False,
+}
+
 
 def load_rjob_global_config(path: str) -> Dict[str, Any]:
     path = str(path or "").strip()
@@ -101,6 +120,47 @@ def _normalize_rjob_config(section: Dict[str, Any]) -> Dict[str, Any]:
     return merged
 
 
+def load_sandbox_global_config(path: str) -> Dict[str, Any]:
+    path = str(path or "").strip()
+    if not path:
+        return _normalize_sandbox_config({})
+    cfg = load_yaml_file(str(_resolve_config_path(path)))
+    cluster = cfg.get("cluster") if isinstance(cfg.get("cluster"), dict) else {}
+    section: Dict[str, Any] = {}
+    if isinstance(cluster.get("sandbox"), dict):
+        section.update(cluster.get("sandbox") or {})
+    if isinstance(cfg.get("sandbox"), dict):
+        section.update(cfg.get("sandbox") or {})
+    return _normalize_sandbox_config(section)
+
+
+def _normalize_sandbox_config(section: Dict[str, Any]) -> Dict[str, Any]:
+    merged = {**_SANDBOX_DEFAULT_CONFIG, **dict(section or {})}
+    for key in (
+        "domain",
+        "protocol",
+        "project",
+        "api_key",
+        "api_key_env",
+        "environment_id",
+        "gateway_base_url",
+    ):
+        merged[key] = str(merged.get(key) or "").strip()
+    if not merged["api_key"] and merged["api_key_env"]:
+        merged["api_key"] = str(os.getenv(merged["api_key_env"], "")).strip()
+    merged["command_port"] = min(65535, max(1, int(merged.get("command_port") or 44772)))
+    merged["lifecycle_minutes"] = min(1440, max(3, int(merged.get("lifecycle_minutes") or 120)))
+    merged["startup_concurrency"] = max(1, int(merged.get("startup_concurrency") or 8))
+    for key in ("request_timeout_s", "create_timeout_s", "command_timeout_s"):
+        merged[key] = max(1.0, float(merged.get(key) or _SANDBOX_DEFAULT_CONFIG[key]))
+    for key in ("cleanup_on_finish", "use_server_proxy", "skip_health_check"):
+        merged[key] = _as_bool(merged.get(key), default=bool(_SANDBOX_DEFAULT_CONFIG[key]))
+    merged["domain"] = merged["domain"].rstrip("/")
+    if merged["domain"].endswith("/v1"):
+        raise ValueError("sandbox.domain must not include the /v1 suffix")
+    return merged
+
+
 def _as_bool(value: Any, *, default: bool) -> bool:
     if value is None:
         return default
@@ -116,18 +176,26 @@ def _as_bool(value: Any, *, default: bool) -> bool:
 
 
 def load_simulation_run_config(args: Any) -> SimulationRunConfig:
-    rjob_config_arg = str(getattr(args, "rjob_config", "") or "").strip()
-    rjob_section = load_rjob_global_config(rjob_config_arg)
+    mode = str(args.mode or "docker").strip().lower()
+    if mode not in {"docker", "rjob", "sandbox"}:
+        raise ValueError(f"Unsupported simulation mode: {mode!r}")
+
+    rjob_section = (
+        load_rjob_global_config(str(getattr(args, "rjob_config", "") or ""))
+        if mode == "rjob"
+        else _normalize_rjob_config({})
+    )
+    sandbox_section = (
+        load_sandbox_global_config(str(getattr(args, "sandbox_config", "") or ""))
+        if mode == "sandbox"
+        else _normalize_sandbox_config({})
+    )
 
     pool_size, warm_pool_size, startup_submit_count, followup_submit_batch = derive_pool_sizing(
         configured_pool_size=int(args.pool_size),
         pool_size_override=0,
         multiplier=float(args.multiplier),
     )
-
-    mode = str(args.mode or "docker").strip().lower()
-    if mode not in {"docker", "rjob"}:
-        raise ValueError(f"Unsupported simulation mode: {mode!r}")
 
     job_id = str(args.job_id or "").strip() or uuid.uuid4().hex
     max_workers = int(args.max_workers) if int(args.max_workers or 0) > 0 else None
@@ -248,6 +316,7 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
             minimum=1.0,
         ),
         rjob_config=rjob_section,
+        sandbox_config=sandbox_section,
         cleanup_docker_container=bool(getattr(args, "cleanup_docker_container", True)),
         cleanup_stale_docker_containers=bool(getattr(args, "cleanup_stale_docker_containers", True)),
         max_workers=max_workers,
@@ -377,6 +446,7 @@ def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
                 },
             },
             "rjob": rjob_cfg,
+            "sandbox": dict(cfg.sandbox_config or {}),
             "env_types": env_types,
         },
     }
@@ -421,9 +491,11 @@ def load_evaluation_runtime_config(path: str) -> Dict[str, Any]:
 
 
 def _normalize_agent_start_entry(agent_name: Any, spec: Any, cfg_path: Path) -> Dict[str, Any]:
+    docker = _normalize_agent_start_docker(agent_name, spec, cfg_path)
     return {
-        "docker": _normalize_agent_start_docker(agent_name, spec, cfg_path),
+        "docker": docker,
         "rjob": _normalize_agent_start_rjob(agent_name, spec, cfg_path),
+        "sandbox": _normalize_agent_start_sandbox(agent_name, spec, cfg_path, docker),
     }
 
 
@@ -568,6 +640,78 @@ def _normalize_agent_start_rjob(agent_name: Any, spec: Any, cfg_path: Path) -> D
         rjob["embedded_files"] = [_normalize_embedded_file(item, cfg_path) for item in value]
 
     return rjob
+
+
+def _normalize_agent_start_sandbox(
+    agent_name: Any,
+    spec: Any,
+    cfg_path: Path,
+    docker: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not isinstance(spec, dict):
+        raise ValueError(f"agent start config for {agent_name!r} must be a mapping in {cfg_path}")
+    raw = spec.get("sandbox", {}) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"sandbox config for {agent_name!r} must be a mapping in {cfg_path}")
+
+    sandbox: Dict[str, Any] = {}
+    for key in (
+        "environment_id",
+        "workdir",
+        "run_command",
+        "result_mode",
+        "gateway_base_url",
+    ):
+        _copy_non_empty(raw, sandbox, key)
+    sandbox.setdefault("workdir", str(docker.get("workdir") or ""))
+    sandbox.setdefault("run_command", str(docker.get("run_command") or ""))
+    sandbox.setdefault("result_mode", str(docker.get("result_mode") or docker.get("run_result_mode") or "json"))
+
+    env = {str(key): str(value) for key, value in dict(docker.get("env") or {}).items()}
+    raw_env = raw.get("env", {}) or {}
+    if not isinstance(raw_env, dict):
+        raise ValueError(f"sandbox.env for {agent_name!r} must be a mapping in {cfg_path}")
+    env.update({str(key): str(value) for key, value in raw_env.items()})
+    sandbox["env"] = env
+
+    resources = raw.get("resource", raw.get("resources", {})) or {}
+    if not isinstance(resources, dict):
+        raise ValueError(f"sandbox.resources for {agent_name!r} must be a mapping in {cfg_path}")
+    sandbox["resource"] = {str(key): str(value) for key, value in resources.items()}
+    extensions = raw.get("extensions", {}) or {}
+    if not isinstance(extensions, dict):
+        raise ValueError(f"sandbox.extensions for {agent_name!r} must be a mapping in {cfg_path}")
+    sandbox["extensions"] = {str(key): str(value) for key, value in extensions.items()}
+
+    for key in ("lifecycle_minutes", "command_port"):
+        if raw.get(key) is not None:
+            sandbox[key] = int(raw[key])
+    if "lifecycle_minutes" in sandbox:
+        sandbox["lifecycle_minutes"] = min(1440, max(3, sandbox["lifecycle_minutes"]))
+    if "command_port" in sandbox:
+        sandbox["command_port"] = min(65535, max(1, sandbox["command_port"]))
+    for key in ("skip_health_check", "cleanup_on_finish"):
+        if key in raw:
+            sandbox[key] = _as_bool(raw[key], default=bool(_SANDBOX_DEFAULT_CONFIG[key]))
+
+    raw_embedded = raw.get("embedded_files", []) or []
+    if not isinstance(raw_embedded, list):
+        raise ValueError(f"sandbox.embedded_files for {agent_name!r} must be a list in {cfg_path}")
+    embedded = [_normalize_embedded_file(item, cfg_path) for item in raw_embedded]
+    runner = docker.get("runner_entrypoint") or {}
+    if runner.get("source") and runner.get("target"):
+        runner_file = {"source": str(runner["source"]), "target": str(runner["target"])}
+        if runner_file not in embedded:
+            embedded.append(runner_file)
+    sandbox["embedded_files"] = embedded
+
+    required_paths = raw.get("required_mount_paths", []) or []
+    if isinstance(required_paths, str):
+        required_paths = [required_paths]
+    if not isinstance(required_paths, list):
+        raise ValueError(f"sandbox.required_mount_paths for {agent_name!r} must be a list in {cfg_path}")
+    sandbox["required_mount_paths"] = [str(path) for path in required_paths]
+    return sandbox
 
 
 def _copy_non_empty(src: Dict[str, Any], dst: Dict[str, Any], key: str) -> None:
