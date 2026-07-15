@@ -1,0 +1,21 @@
+sandbox:
+  domain: "https://h.pjlab.org.cn/brainbox"
+  protocol: "https"
+  project: "ailab-pj"
+  api_key_env: "OPEN_SANDBOX_API_KEY"
+
+  # The Sandbox Environment must already exist and expose command_port.
+  environment_id: "env-replace-me"
+  command_port: 44772
+
+  # Use an address reachable from the Sandbox cluster.
+  gateway_base_url: "http://YOUR_GATEWAY_HOST:8000/v1/sessions"
+
+  lifecycle_minutes: 120
+  request_timeout_s: 60
+  create_timeout_s: 600
+  command_timeout_s: 720
+  startup_concurrency: 8
+  use_server_proxy: true
+  skip_health_check: false
+  cleanup_on_finish: true
