@@ -46,7 +46,6 @@ Safactory 是面向需要统一完成评测、数据生成和 RL 训练的团队
 - 通过池化管理和异步worker调度支持高并发运行。
 - 支持 vLLM、SGLang、托管 API 和本地代理等 OpenAI 兼容模型服务。
 - 支持本地单机模式和基于 RayJob 的远程集群模式。
-- 可选的经验抽取和 prompt 时经验注入。
 
 ## <a id="demo"></a>🎬 演示
 
@@ -175,17 +174,16 @@ Environment、volume、生命周期和评测要求见 [Sandbox 模式](docs/sand
 
 ```bash
 python launcher.py \
-  --agent-config env/openclaw/openclaw_config.yaml \
-  --agent-start-config env/openclaw/openclaw_start.yaml \
+  --agent-config env/openrt/openrt_config.yaml \
+  --agent-start-config env/openrt/openrt_start.yaml \
   --gateway-base-url http://127.0.0.1:8000/v1/sessions \
   --llm-model YOUR_ROUTE_LLM_MODEL \
-  --evaluation-model YOUR_ROUTE_KEY \
   --enable-evaluation \
   --db-path sqlite://env_trajs.db \
   --pool-size 1
 ```
 
-评测 spec 来自 `env/<agent>/eval_tasks/<dataset>/` 下的 markdown 文件，或 rule evaluator 文件，或者直接获取Bench运行后的结果。RJob 模式下也使用相同的 `--enable-evaluation`、`--evaluation-model` 和 `--evaluation-config` 参数。见[评测](docs/evaluation_CN.md)。
+评测只使用按约定动态发现的 `<agent-root>/<env_name>/rule_evaluator.py`。RJob 和 Sandbox 模式使用相同的 `--enable-evaluation` 参数。见[评测](docs/evaluation_CN.md)。
 
 ## 运行数据
 
@@ -246,7 +244,7 @@ Buffer Server 会启动 `launcher.py`，读取已完成的可训练行，按 `gr
 | [Gateway](docs/gateway_CN.md)          | Gateway 端点、路由、Admission Control、telemetry、请求日志和存储一致性。                     |
 | [配置](docs/configuration_CN.md)         | 当前 `launcher.py`、gateway、agent config、agent start config 和 RJob 字段。       |
 | [支持的环境](docs/environments_CN.md)       | 当前仓库内置 adapter 及运行时依赖。                                                    |
-| [评测](docs/evaluation_CN.md)            | LLM judge、agent-eval、rule evaluator、markdown eval task 和 reward commit 行为。 |
+| [评测](docs/evaluation_CN.md)            | Rule evaluator 配置和 reward commit 行为。 |
 | [数据管理器](docs/data-manager_CN.md)       | SQLite/cloud 存储行为、表、事件类型和查询示例。                                            |
 | [自定义环境](docs/custom-environment_CN.md) | 如何新增自定义环境。                                                                |
 | [RL 训练](docs/rl-training_CN.md)        | Buffer Server 与 Slime 集成细节。                                               |

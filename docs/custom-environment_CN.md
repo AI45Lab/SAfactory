@@ -320,10 +320,9 @@ python launcher.py \
 
 ## 可选评测
 
-可以通过两种方式添加 rule 评测：
-
-- 在任务配置中添加 inline `env_params.evaluation.specs`。
-- 添加 `env/myagent/rule_evaluator.py`。
+添加 `env/myagent/rule_evaluator.py`，并使用 `--enable-evaluation` 启动
+launcher。系统根据 `agent_root` 和 `env_name` 自动发现该文件，不从
+`env_params` 读取 evaluator 注册信息。
 
 runner 应该把原始 benchmark 输出保存在 `metrics` 或输出文件中，rule evaluator 负责把 benchmark 自己的分数尺度、通过条件和错误情况统一成 Safactory 的 0 到 10 分。它只在 evaluation 阶段执行，不应该重新运行 benchmark case。
 

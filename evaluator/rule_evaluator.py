@@ -1,24 +1,48 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import importlib.util
 import inspect
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
 from evaluator.eval_types import EvalRequest, EvalResult, EvalSpec, EvalStatus, Trajectory
-from evaluator.rule_eval_resolver import resolve_rule_evaluator_locator
 
 log = logging.getLogger("evaluator.rule_evaluator")
+
+
+def discover_rule_eval_spec(
+    *,
+    agent_name: str,
+    env_root: str | Path = "env",
+) -> EvalSpec | None:
+    """Discover ``<env_root>/<agent_name>/rule_evaluator.py`` by convention."""
+    name = str(agent_name or "").strip()
+    if not name:
+        return None
+
+    root = Path(env_root).expanduser().resolve(strict=False)
+    env_dir = (root / name).resolve(strict=False)
+    try:
+        env_dir.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"agent_name escapes agent root: {name!r}") from exc
+
+    rule_file = env_dir / "rule_evaluator.py"
+    if not rule_file.is_file():
+        return None
+    return EvalSpec(
+        eval_id=f"{name}_rule",
+        rule_evaluator=f"file:{rule_file}",
+    )
 
 
 class RuleEvaluatorBackend:
     """Load and run trusted environment-local rule evaluators."""
 
-    def __init__(self, *, env_root: str | Path = "env") -> None:
-        self.env_root = Path(env_root).expanduser().resolve(strict=False)
+    def __init__(self) -> None:
         self._cache: dict[str, Any] = {}
 
     async def evaluate(
@@ -29,7 +53,9 @@ class RuleEvaluatorBackend:
         trajectory: Trajectory,
     ) -> EvalResult:
         try:
-            locator = self._resolve_locator(request=request, spec=spec)
+            locator = str(spec.rule_evaluator or "").strip()
+            if not locator:
+                raise ValueError(f"{spec.eval_id}: rule evaluator path is required")
             evaluator, source = self._load_locator(locator)
             log.info(
                 "EVAL RULE start: session=%s eval_id=%s source=%s",
@@ -69,24 +95,6 @@ class RuleEvaluatorBackend:
                 error_text=str(exc),
             )
 
-    def _resolve_locator(self, *, request: EvalRequest, spec: EvalSpec) -> str:
-        configured = str(spec.rule_evaluator or "").strip()
-        if configured and configured.lower() not in {"1", "true", "yes", "default", "auto"}:
-            return configured
-
-        raw_env_params = _raw_env_params(request)
-        locator = resolve_rule_evaluator_locator(
-            raw_env_params,
-            agent_name=_agent_name(request),
-            env_root=self.env_root,
-        )
-        if not locator:
-            raise FileNotFoundError(
-                "no rule evaluator configured or discovered for "
-                f"agent={_agent_name(request)!r}"
-            )
-        return locator
-
     def _load_locator(self, locator: str) -> tuple[Any, str]:
         text = str(locator or "").strip()
         if not text:
@@ -95,20 +103,7 @@ class RuleEvaluatorBackend:
             return self._load_file(Path(text[len("file:") :]))
         if text.endswith(".py") or text.startswith("/") or text.startswith("."):
             return self._load_file(Path(text))
-
-        module_name, _, attr = text.partition(":")
-        module_name = module_name.strip()
-        attr = attr.strip()
-        if not module_name.startswith("env."):
-            raise ValueError(
-                "rule evaluator module locator must start with 'env.' "
-                f"or point to a local file, got {locator!r}"
-            )
-        source = f"{module_name}:{attr}" if attr else module_name
-        if source not in self._cache:
-            module = importlib.import_module(module_name)
-            self._cache[source] = _select_evaluator(module, attr=attr)
-        return self._cache[source], source
+        raise ValueError(f"rule evaluator must point to a Python file, got {locator!r}")
 
     def _load_file(self, path: Path) -> tuple[Any, str]:
         resolved = path.expanduser().resolve(strict=False)
@@ -121,8 +116,13 @@ class RuleEvaluatorBackend:
             if module_spec is None or module_spec.loader is None:
                 raise ImportError(f"cannot import rule evaluator file: {resolved}")
             module = importlib.util.module_from_spec(module_spec)
-            module_spec.loader.exec_module(module)
-            self._cache[source] = _select_evaluator(module, attr="")
+            sys.modules[module_name] = module
+            try:
+                module_spec.loader.exec_module(module)
+            except Exception:
+                sys.modules.pop(module_name, None)
+                raise
+            self._cache[source] = _select_evaluator(module)
         return self._cache[source], source
 
     async def _invoke(
@@ -205,15 +205,12 @@ def _call_evaluator(
     return fn(request, spec, trajectory)
 
 
-def _select_evaluator(module: Any, *, attr: str) -> Any:
-    if attr:
-        evaluator = getattr(module, attr)
-    else:
-        evaluator = (
-            getattr(module, "RuleEvaluator", None)
-            or getattr(module, "evaluate_rule", None)
-            or getattr(module, "evaluate", None)
-        )
+def _select_evaluator(module: Any) -> Any:
+    evaluator = (
+        getattr(module, "RuleEvaluator", None)
+        or getattr(module, "evaluate_rule", None)
+        or getattr(module, "evaluate", None)
+    )
     if evaluator is None:
         raise AttributeError(
             "rule evaluator module must export RuleEvaluator, evaluate_rule, or evaluate"
@@ -230,23 +227,6 @@ def _supports_keyword_call(fn: Any) -> bool:
     if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()):
         return True
     return {"request", "spec", "trajectory"}.issubset(params)
-
-
-def _raw_env_params(request: EvalRequest) -> dict[str, Any]:
-    lease = getattr(request, "lease", None)
-    env_params = getattr(lease, "env_params", None)
-    if isinstance(env_params, dict):
-        return env_params
-    return request.env_params if isinstance(request.env_params, dict) else {}
-
-
-def _agent_name(request: EvalRequest) -> str:
-    lease = getattr(request, "lease", None)
-    return str(
-        getattr(lease, "agent_name", None)
-        or request.env_params.get("task_family")
-        or ""
-    ).strip()
 
 
 def _float_or_none(value: Any) -> float | None:

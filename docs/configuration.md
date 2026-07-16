@@ -8,7 +8,6 @@ Safactory v2 uses several explicit configuration surfaces:
 4. Agent start config YAML passed with `--agent-start-config`.
 5. Optional global RJob config passed with `--rjob-config`.
 6. Optional global Sandbox config passed with `--sandbox-config`.
-7. Optional evaluator runtime config passed with `--evaluation-config`.
 
 `--mode` accepts `docker`, `rjob`, or `sandbox`. See [Sandbox mode](sandbox-mode.md) for the third runtime.
 
@@ -87,7 +86,6 @@ python launcher.py \
 | Docker timeout | `--docker-remove-retry-delay-s` | `2.0` | Delay between removal retries. |
 | Docker timeout | `--docker-lifecycle-timeout-s` | `60.0` | Optional per-container cleanup and healthcheck timeout. |
 | Evaluation | `--enable-evaluation` | `false` | Run evaluator flow after rollout. |
-| Evaluation | `--evaluation-config` | empty | Optional rule-evaluator runtime YAML. |
 | RL | `--rl-group-size` | `0` | Override each YAML environment group's `env_num`. |
 | RL | `--rl-epoch` | `1` | Duplicate environment configs for multiple rollout epochs. |
 | Circuit breaker | `--circuit-breaker` / `--no-circuit-breaker` | `true` | Stop scheduling when recent failures/timeouts exceed thresholds. |

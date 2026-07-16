@@ -200,7 +200,6 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
     job_id = str(args.job_id or "").strip() or uuid.uuid4().hex
     max_workers = int(args.max_workers) if int(args.max_workers or 0) > 0 else None
 
-    evaluation_config = load_evaluation_runtime_config(str(getattr(args, "evaluation_config", "") or ""))
     _validate_gateway_route_key(str(args.llm_model), arg_name="--llm-model")
     agent_config = getattr(args, "agent_config", None)
     agent_start_config = getattr(args, "agent_start_config", None)
@@ -321,7 +320,6 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         rl_group_size=int(args.rl_group_size),
         rl_epoch=max(1, int(args.rl_epoch)),
         evaluation_enabled=bool(args.evaluation_enabled),
-        evaluation_config=evaluation_config,
         circuit_breaker_enabled=bool(getattr(args, "circuit_breaker", True)),
         circuit_breaker_window=_int_at_least(getattr(args, "circuit_breaker_window", 50), default=50, minimum=1),
         circuit_breaker_min_samples=_int_at_least(
@@ -466,21 +464,6 @@ def load_agent_start_config(path: Optional[str]) -> Dict[str, Any]:
     return {
         agent_name: _normalize_agent_start_entry(agent_name, cfg, cfg_path)
     }
-
-
-def load_evaluation_runtime_config(path: str) -> Dict[str, Any]:
-    path = str(path or "").strip()
-    if not path:
-        return {}
-
-    cfg_path = Path(path).expanduser()
-    if not cfg_path.is_absolute():
-        cfg_path = Path.cwd() / cfg_path
-    cfg = load_yaml_file(str(cfg_path))
-    data = cfg.get("evaluation") if isinstance(cfg.get("evaluation"), dict) else cfg
-    if not isinstance(data, dict):
-        raise ValueError(f"evaluation config root must be a mapping: {cfg_path}")
-    return dict(data)
 
 
 def _normalize_agent_start_entry(agent_name: Any, spec: Any, cfg_path: Path) -> Dict[str, Any]:

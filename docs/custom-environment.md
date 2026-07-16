@@ -320,10 +320,9 @@ Check:
 
 ## Optional Evaluation
 
-You can add rule evaluation in one of two ways:
-
-- Add inline `env_params.evaluation.specs` in the task config.
-- Add `env/myagent/rule_evaluator.py`.
+Add `env/myagent/rule_evaluator.py` and start the launcher with
+`--enable-evaluation`. The file is discovered from `agent_root` and `env_name`;
+no evaluator registration is read from `env_params`.
 
 The runner should preserve raw benchmark output in `metrics` or output files, and the rule evaluator should normalize benchmark-specific score scales, pass conditions, and error cases into Safactory's 0 to 10 score. It runs only during evaluation and should not rerun the benchmark case.
 

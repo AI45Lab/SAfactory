@@ -47,7 +47,6 @@ Core features:
 - High-concurrency rollouts through runtime pools and async workers.
 - OpenAI-compatible model integration for vLLM, SGLang, hosted APIs, and local proxies.
 - Local single-machine mode and remote RayJob-backed cluster mode.
-- Optional experience extraction and prompt-time experience injection.
 
 ## <a id="demo"></a>🎬 Demo
 
@@ -183,18 +182,16 @@ After Docker, RJob, or Sandbox startup works, add evaluator parameters when you 
 
 ```bash
 python launcher.py \
-  --agent-config env/openclaw/openclaw_config.yaml \
-  --agent-start-config env/openclaw/openclaw_start.yaml \
+  --agent-config env/openrt/openrt_config.yaml \
+  --agent-start-config env/openrt/openrt_start.yaml \
   --gateway-base-url http://127.0.0.1:8000/v1/sessions \
   --llm-model YOUR_ROUTE_KEY \
-  --evaluation-model YOUR_ROUTE_KEY \
-  --evaluation-config evaluator/configs/codex_cli_agent_eval.yaml \
   --enable-evaluation \
   --db-path sqlite://env_trajs.db \
   --pool-size 1
 ```
 
-Evaluation specs can come from `env_params.eval`, `env_params.evaluation.specs`, markdown files under `env/<agent>/eval_tasks/<dataset>/`, or a rule evaluator file. RJob mode uses the same `--enable-evaluation`, `--evaluation-model`, and `--evaluation-config` parameters. See [Evaluation](docs/evaluation.md).
+Evaluation dynamically discovers `<agent-root>/<env_name>/rule_evaluator.py` by convention. RJob and Sandbox modes use the same `--enable-evaluation` flag. See [Evaluation](docs/evaluation.md).
 
 ## Run Data
 
@@ -254,7 +251,7 @@ The Buffer Server starts `launcher.py`, reads completed trainable rows, groups s
 | [Gateway](docs/gateway.md) | Gateway endpoints, routing, telemetry, request logs, and storage matching. |
 | [Configuration](docs/configuration.md) | Current `launcher.py`, gateway, agent config, agent start config, and RJob fields. |
 | [Supported Environments](docs/environments.md) | Checked-in v2 adapters and their runtime requirements. |
-| [Evaluation](docs/evaluation.md) | LLM judge, agent-eval, rule evaluator, markdown eval tasks, and reward commit behavior. |
+| [Evaluation](docs/evaluation.md) | Rule evaluator configuration and reward commit behavior. |
 | [Data Manager](docs/data-manager.md) | SQLite/cloud storage behavior, tables, event types, and useful queries. |
 | [Custom Runtime](docs/custom-environment.md) | How to add a v2 external agent runtime and the two required YAML files. |
 | [RL Training](docs/rl-training.md) | Buffer Server and Slime integration details. |

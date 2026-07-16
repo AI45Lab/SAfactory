@@ -84,7 +84,6 @@ class SimulationRunConfig:
     rl_group_size: int = 0
     rl_epoch: int = 1
     evaluation_enabled: bool = False
-    evaluation_config: Dict[str, Any] = field(default_factory=dict)
     circuit_breaker_enabled: bool = True
     circuit_breaker_window: int = 50
     circuit_breaker_min_samples: int = 20

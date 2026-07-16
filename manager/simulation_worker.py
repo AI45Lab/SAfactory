@@ -12,10 +12,10 @@ import httpx
 from core.data_manager.manager import DataManager, SessionContext
 from core.perf_trace import PerfTrace
 from core.runtime_metadata import strip_internal_env_params
-from evaluator.eval_types import EvalRequest, parse_eval_specs
+from evaluator.eval_types import EvalRequest
 from evaluator.gateway_client import GatewayClient
 from evaluator.reward_committer import RewardCommitter
-from evaluator.rule_eval_resolver import resolve_rule_eval_specs
+from evaluator.rule_evaluator import discover_rule_eval_spec
 from evaluator.service import EvaluationService
 
 from .agent_start_client import AgentStartClient
@@ -275,36 +275,31 @@ class SimulationWorkerGroup:
                 if self.evaluation_service is None or self.reward_committer is None:
                     release_reusable = False
                 else:
-                    with trace.span("eval_resolve_specs"):
+                    with trace.span("eval_discover_rule"):
                         public_env_params = strip_internal_env_params(lease.env_params)
-                        eval_specs = parse_eval_specs(
-                            public_env_params,
-                            default_specs=getattr(self.evaluation_service, "default_specs", []),
+                        eval_spec = discover_rule_eval_spec(
+                            agent_name=lease.agent_name,
+                            env_root=self.cfg.agent_root,
                         )
-                        if not eval_specs:
-                            eval_specs = resolve_rule_eval_specs(
-                                lease.env_params,
-                                agent_name=lease.agent_name,
-                            )
-                    trace.mark("eval_specs_resolved", eval_spec_count=len(eval_specs))
-                    if eval_specs:
+                    trace.mark("eval_spec_resolved", eval_spec_found=eval_spec is not None)
+                    if eval_spec is not None:
                         log.debug(
-                            "worker=%d agent=%s evaluation specs resolved: %s",
+                            "worker=%d agent=%s rule evaluator resolved: %s",
                             worker_id,
                             agent_key,
-                            [spec.eval_id for spec in eval_specs],
+                            eval_spec.eval_id,
                         )
                     else:
-                        log.debug("worker=%d agent=%s has no eval specs; skip evaluation", worker_id, agent_key)
+                        log.debug("worker=%d agent=%s has no rule evaluator; skip evaluation", worker_id, agent_key)
 
-                    if eval_specs:
+                    if eval_spec is not None:
                         eval_request = EvalRequest(
                             job_id=self.cfg.job_id,
                             session_id=result.session_id,
                             lease=lease,
                             start_result=result,
                             env_params=public_env_params,
-                            eval_specs=eval_specs,
+                            eval_spec=eval_spec,
                         )
                         with trace.span("evaluation_service"):
                             eval_result = await self.evaluation_service.evaluate(eval_request)

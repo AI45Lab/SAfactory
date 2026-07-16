@@ -8,7 +8,6 @@ Safactory 有几类明确的配置入口：
 4. `--agent-start-config` 指定的 agent start config YAML。
 5. 可选的 `--rjob-config` 全局 RJob 配置。
 6. 可选的 `--sandbox-config` 全局 Sandbox 配置。
-7. 可选的 `--evaluation-config` evaluator runtime 配置。
 
 `--mode` 支持 `docker`、`rjob` 和 `sandbox`。第三种运行时详见 [Sandbox 模式](sandbox-mode_CN.md)。
 
@@ -87,7 +86,6 @@ python launcher.py \
 | Docker timeout | `--docker-remove-retry-delay-s` | `2.0` | 删除重试间隔。 |
 | Docker timeout | `--docker-lifecycle-timeout-s` | `60.0` | 可选 per-container cleanup 和 healthcheck 超时。 |
 | Evaluation | `--enable-evaluation` | `false` | Rollout 后运行 evaluator flow。 |
-| Evaluation | `--evaluation-config` | 空 | 可选的 rule evaluator runtime YAML。 |
 | RL | `--rl-group-size` | `0` | 覆盖每个 YAML 环境组的 `env_num`。 |
 | RL | `--rl-epoch` | `1` | 为多个 rollout epoch 复制环境配置。 |
 | Circuit breaker | `--circuit-breaker` / `--no-circuit-breaker` | `true` | 最近失败/超时超过阈值时停止调度。 |

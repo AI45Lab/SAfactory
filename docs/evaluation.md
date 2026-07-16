@@ -1,25 +1,25 @@
-# Evaluation After Bench Integration: Custom rule_evaluator
+# Rule Evaluator
 
-This page covers the simplest evaluation path: a benchmark is already integrated as a Safactory runtime, and evaluation only uses a custom `rule_evaluator.py` to convert the benchmark's raw result into a Safactory reward.
+Safactory only supports environment-local Python rule evaluation. When evaluation is enabled, the evaluator is discovered by convention:
+
+```text
+<agent-root>/<env_name>/rule_evaluator.py
+```
+
+The default agent root is `env`. For an environment named `mybench`, the file must be `env/mybench/rule_evaluator.py`. If the file does not exist, evaluation is skipped for that environment. No YAML registration, `env_params` evaluator setting, or separate evaluation config is required.
 
 ## Runtime Flow
 
-A run with evaluation follows this flow:
+1. A worker runs one case and receives its `SimulationStartResult`.
+2. The launcher closes the gateway session and waits for trajectory persistence.
+3. It discovers `rule_evaluator.py` from the agent root and environment name.
+4. The rule reads the current case, runtime metrics, and trajectory, then returns a score from 0 to 10.
+5. Safactory writes the score back to trajectory `reward` / `step_reward` fields.
+6. The runtime resource is released after evaluation.
 
-1. The launcher reads the benchmark agent config and expands the dataset into cases.
-2. A worker creates a gateway session for each case and invokes the benchmark runtime.
-3. The benchmark runtime runs the native benchmark harness and calls the target model through the current gateway session.
-4. The benchmark runtime prints one `SimulationStartResult` JSON object to stdout and stores raw benchmark results in `metrics`.
-5. The launcher closes the gateway session and waits for the trajectory to flush.
-6. Evaluation calls `rule_evaluator.py`.
-7. `rule_evaluator.py` reads the dataset row, benchmark metrics, and trajectory, then returns a 0 to 10 score.
-8. Safactory writes that score back to `session_steps.reward` / `session_steps.step_reward`.
+Docker, RJob, and Sandbox use the same flow.
 
-When integrating a benchmark, design one dataset row as one benchmark case and let Safactory schedule at task level. Each case then gets its own `session_id` and gateway trajectory, so the rule evaluator never sees model calls from other cases mixed into the current trajectory.
-
-Docker, RJob, and Sandbox rollout modes share this evaluation order. Sandbox instances remain alive through evaluation. Agent-eval may request `target_access_mode: sandbox_proxy`; `direct_docker` is not available for a Sandbox target.
-
-Example command:
+Example:
 
 ```bash
 python launcher.py \
@@ -27,19 +27,14 @@ python launcher.py \
   --agent-start-config env/mybench/mybench_start.yaml \
   --gateway-base-url http://127.0.0.1:8000/v1/sessions \
   --llm-model YOUR_ROUTE_KEY \
-  --evaluation-config evaluator/configs/mybench_rule_eval.yaml \
   --enable-evaluation \
   --db-path sqlite://env_trajs.db \
   --pool-size 1
 ```
 
-`--llm-model` is the gateway route key for the rollout model. Rule evaluation does not require a separate evaluation model.
+## Runtime Output
 
-## Benchmark Runtime Output
-
-The benchmark runtime still uses the normal runtime contract: read `SimulationStartRequest`, run one case, and print one `SimulationStartResult` JSON object.
-
-The important part is to keep raw benchmark results in `metrics`:
+The runtime reads `SimulationStartRequest`, runs one case, and prints one `SimulationStartResult` JSON object. Put raw inputs needed by the rule in `metrics`:
 
 ```json
 {
@@ -54,73 +49,25 @@ The important part is to keep raw benchmark results in `metrics`:
     "bench_case_id": "case-001",
     "bench_score": 0.73,
     "bench_passed": true,
-    "bench_reason": "all required checks passed",
-    "bench_output_path": "/workspace/results/mybench/case-001.json"
+    "bench_reason": "all required checks passed"
   }
 }
 ```
 
-Recommended fields:
-
-| Field | Purpose |
-|-------|---------|
-| `bench_case_id` | Matches the dataset case id for debugging. |
-| `bench_score` | Native benchmark score, such as 0 to 1 or 0 to 100. |
-| `bench_passed` | Optional binary pass/fail result. |
-| `bench_reason` | Native benchmark judgment reason. |
-| `bench_output_path` | Optional path to detailed benchmark output. |
-
-`total_reward` can be `0.0` or the native benchmark reward. When `rule_evaluator` is enabled, the final reward used by Safactory is the score returned by `rule_evaluator.py`.
-
-## Evaluation Config
-
-If a job runs only one benchmark, put the rule evaluator directly in `--evaluation-config` through `default_specs`.
-
-Create `evaluator/configs/mybench_rule_eval.yaml`:
-
-```yaml
-evaluation:
-  max_concurrency: 4
-
-  default_specs:
-    - eval_id: mybench_rule
-      method: rule_evaluator
-      rule_evaluator: env/mybench/rule_evaluator.py
-      timeout_s: 60
-```
-
-Fields:
-
-| Field | Meaning |
-|-------|---------|
-| `max_concurrency` | Maximum number of rule evaluators running at once. |
-| `default_specs` | Default evaluation spec when a case has no case-specific spec. |
-| `method: rule_evaluator` | Use Python rule evaluation. |
-| `rule_evaluator` | Python file path, resolved from the run directory. |
-| `timeout_s` | Timeout for one case evaluation. |
-
-This config only needs the fields above; keep it minimal.
+When evaluation is enabled, the score returned by `rule_evaluator.py` becomes the final reward used for training and reporting.
 
 ## rule_evaluator.py Interface
 
-Create `env/mybench/rule_evaluator.py`. The file must export `evaluate`, `evaluate_rule`, or `RuleEvaluator`.
-
-The common form is `evaluate(request, spec, trajectory)`:
+The file must export `evaluate`, `evaluate_rule`, or `RuleEvaluator`. The common form is:
 
 ```python
 def evaluate(request, spec, trajectory):
     dataset = request.env_params.get("dataset", {})
-    start_result = request.start_result
-    metrics = getattr(start_result, "metrics", {}) or {}
+    metrics = getattr(request.start_result, "metrics", {}) or {}
 
     raw_score = float(metrics.get("bench_score", 0.0) or 0.0)
     passed = bool(metrics.get("bench_passed", False))
-
-    # Example: bench_score is 0 to 1, convert it to Safactory's 0 to 10 scale.
-    score = max(0.0, min(10.0, raw_score * 10.0))
-
-    if not passed:
-        score = 0.0
+    score = max(0.0, min(10.0, raw_score * 10.0)) if passed else 0.0
 
     return {
         "score": score,
@@ -128,73 +75,42 @@ def evaluate(request, spec, trajectory):
         "artifacts": {
             "task_id": dataset.get("task_id") or dataset.get("case_id"),
             "bench_case_id": metrics.get("bench_case_id"),
-            "bench_output_path": metrics.get("bench_output_path"),
             "raw_bench_score": raw_score,
-            "bench_passed": passed,
         },
     }
 ```
 
-`evaluate` can read:
+Available data:
 
-| Object | Available data |
-|--------|----------------|
-| `request.env_params["dataset"]` | The current dataset row, i.e. the benchmark case input. |
-| `request.start_result.metrics` | Raw benchmark result returned by the runtime. |
-| `trajectory.final_response` | The model's final response. |
+| Object | Content |
+|--------|---------|
+| `request.env_params["dataset"]` | Current dataset case. It is rule input only and is not used for evaluator discovery or configuration. |
+| `request.start_result.metrics` | Raw runtime result. |
+| `trajectory.final_response` | Final model response. |
 | `trajectory.steps` | Full interaction trajectory. |
-| `spec` | Current eval spec, such as `eval_id`, `timeout_s`, and `rule_evaluator`. |
+| `spec` | Automatically generated rule evaluation spec. |
 
-The evaluator may return a number:
+The return value may be a number or a dict containing `score`, `normalized_score_10`, or `reward`. Safactory clamps the final score to 0 through 10.
 
-```python
-10.0
+Synchronous rules run in a thread to avoid blocking async workers. Each evaluation has a default 60-second timeout, and total evaluator concurrency follows launcher worker concurrency.
+
+## Multiple Environments
+
+A job may contain multiple environments. Put one evaluator in each environment directory:
+
+```text
+env/
+├── bench_a/rule_evaluator.py
+└── bench_b/rule_evaluator.py
 ```
 
-or a dict:
-
-```python
-{
-    "score": 8.0,
-    "reason": "passed 4 of 5 checks",
-    "artifacts": {"passed_checks": 4, "total_checks": 5},
-}
-```
-
-Use one of `score`, `normalized_score_10`, or `reward`. Safactory clamps the final score to 0 through 10.
-
-## Multiple Benchmarks
-
-If one job contains multiple benchmarks, do not put one benchmark's evaluator in global `default_specs`. Configure each benchmark in its own agent config:
-
-```yaml
-environments:
-  - env_name: mybench
-    env_image: mybench-image:latest
-    env_num: 1
-    dataset: ./datasets/cases.jsonl
-    env_params:
-      task_family: mybench
-      evaluation:
-        rule_evaluator: env/mybench/rule_evaluator.py
-        rule_evaluator_timeout_s: 60
-```
-
-Then `--evaluation-config` can keep only global runtime settings:
-
-```yaml
-evaluation:
-  max_concurrency: 4
-```
-
-If `env/<bench>/rule_evaluator.py` exists, `evaluation.rule_evaluator` can be omitted; Safactory will try to discover that file automatically.
+The lease environment name selects the file. Safactory does not read evaluator settings from task data or accept custom evaluator paths.
 
 ## Troubleshooting
 
 | Symptom | Check |
 |---------|-------|
-| Evaluation does not run | Confirm the command includes `--enable-evaluation`. |
-| Rule evaluator not found | Check the `rule_evaluator` path or ensure `env/<bench>/rule_evaluator.py` exists. |
-| Score is always 0 | Check that the benchmark runtime writes raw results to `metrics`, and that `rule_evaluator.py` reads the same field names. |
-| Evaluation failure gives 0 reward | Inspect the rule evaluator exception in logs; failed rule evaluation is committed as 0. |
-| Empty trajectory | Check that gateway and launcher use the same `--db-path`, and that the benchmark runtime calls the model through the current gateway session. |
+| Evaluation does not run | Confirm `--enable-evaluation` is present and `<agent-root>/<env_name>/rule_evaluator.py` exists. |
+| Score is always 0 | Confirm the runtime writes the raw result to `metrics` and the rule reads matching field names. |
+| Evaluation failure gives 0 reward | Inspect the rule evaluator exception; failures and timeouts are committed as 0. |
+| Empty trajectory | Confirm gateway and launcher use the same SQLite DB URI and the runtime calls the model through the current gateway session. |

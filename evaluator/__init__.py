@@ -6,14 +6,10 @@ from evaluator.eval_types import (
     EvalStatus,
     Trajectory,
     coerce_eval_method,
-    coerce_eval_spec,
-    merge_eval_results,
-    parse_eval_specs,
     to_jsonable,
-    validate_eval_specs,
 )
 from evaluator.factory import build_evaluation_service
-from evaluator.rule_evaluator import RuleEvaluatorBackend
+from evaluator.rule_evaluator import RuleEvaluatorBackend, discover_rule_eval_spec
 from evaluator.service import EvaluationService
 
 __all__ = [
@@ -26,10 +22,7 @@ __all__ = [
     "EvaluationService",
     "RuleEvaluatorBackend",
     "build_evaluation_service",
+    "discover_rule_eval_spec",
     "coerce_eval_method",
-    "coerce_eval_spec",
-    "merge_eval_results",
-    "parse_eval_specs",
     "to_jsonable",
-    "validate_eval_specs",
 ]

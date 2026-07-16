@@ -12,9 +12,6 @@ from evaluator.eval_types import (
     EvalSpec,
     EvalStatus,
     Trajectory,
-    merge_eval_results,
-    parse_eval_specs,
-    validate_eval_specs,
 )
 from evaluator.trajectory_reader import TrajectoryReader
 
@@ -39,12 +36,10 @@ class EvaluationService:
         trajectory_reader: TrajectoryReader | None,
         backend: RuleEvaluationBackend,
         max_concurrency: int = 64,
-        default_specs: list[EvalSpec | dict] | None = None,
     ) -> None:
         self.trajectory_reader = trajectory_reader
         self.backend = backend
         self.max_concurrency = max(1, int(max_concurrency or 1))
-        self.default_specs = default_specs or []
         self._sem = asyncio.Semaphore(self.max_concurrency)
 
     async def evaluate(self, request: EvalRequest) -> EvalResult:
@@ -59,16 +54,12 @@ class EvaluationService:
             },
         )
         try:
-            with trace.span("resolve_specs"):
-                specs = request.eval_specs or parse_eval_specs(
-                    request.env_params,
-                    default_specs=self.default_specs,
-                )
-                validate_eval_specs(specs)
+            spec = request.eval_spec
+            if spec is None:
+                raise ValueError("rule evaluator spec is required")
             trace.mark(
-                "specs_validated",
-                spec_count=len(specs),
-                eval_ids=[spec.eval_id for spec in specs],
+                "spec_ready",
+                eval_id=spec.eval_id,
             )
 
             with trace.span("read_trajectory"):
@@ -80,19 +71,15 @@ class EvaluationService:
                 warning_count=len(trajectory.warnings),
             )
 
-            tasks = [self._evaluate_one_spec(request, spec, trajectory) for spec in specs]
-            with trace.span("rule_evaluate_all", spec_count=len(specs)):
-                results = await asyncio.gather(*tasks)
-            with trace.span("merge_results"):
-                final_result = merge_eval_results(results, specs)
-                final_result.session_id = request.session_id
+            with trace.span("rule_evaluate", eval_id=spec.eval_id):
+                final_result = await self._evaluate_rule(request, spec, trajectory)
+            final_result.session_id = request.session_id
 
             log.info(
-                "EVAL complete: session=%s status=%s score=%.4f specs=%d elapsed=%.2fs",
+                "EVAL complete: session=%s status=%s score=%.4f elapsed=%.2fs",
                 request.session_id,
                 final_result.status,
                 final_result.normalized_score_10,
-                len(specs),
                 time.perf_counter() - started_at,
             )
             trace.emit_summary(
@@ -108,7 +95,7 @@ class EvaluationService:
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
 
-    async def _evaluate_one_spec(
+    async def _evaluate_rule(
         self,
         request: EvalRequest,
         spec: EvalSpec,

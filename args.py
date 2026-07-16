@@ -13,12 +13,6 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--job-id", type=str, default="", help="Simulation workflow id")
-    parser.add_argument(
-        "--evaluation-config",
-        type=str,
-        default="",
-        help="Optional rule-evaluator YAML for concurrency and default specs.",
-    )
     parser.add_argument("--mode", choices=["docker", "rjob", "sandbox"], default="docker")
     parser.add_argument(
         "--rjob-config",
