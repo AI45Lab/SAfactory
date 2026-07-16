@@ -164,14 +164,14 @@ class GatewayStorage:
             "gateway.storage.environment_lookup",
             logger=log,
             context={
-                "operation": "db_read",
+                "operation": "storage_lookup",
                 "table": "job_environments",
                 "session_id": session_id,
             },
         )
         try:
             log.debug("Gateway storage environment lookup begin: env_id=%s", session_id)
-            with trace.span("db_read.environment_lookup"):
+            with trace.span("storage.environment_lookup"):
                 environment = await self._load_environment_config(session_id)
         except Exception as exc:
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
@@ -240,6 +240,13 @@ class GatewayStorage:
             if session_id in self._patched_environment_sessions:
                 return
             self._patched_environment_sessions.add(session_id)
+
+        if self.cfg.storage_type == "cloud":
+            log.debug(
+                "Gateway storage patch session environment skipped: storage_type=cloud session_id=%s",
+                session_id,
+            )
+            return
 
         try:
             trace = PerfTrace(
@@ -330,7 +337,7 @@ class GatewayStorage:
         )
         try:
             steps: list[dict[str, Any]] = []
-            with trace.span("get_or_create_sessions", operation="db_read_or_create", table="session_steps"):
+            with trace.span("session_context.prepare", operation="in_memory"):
                 for binding, record in batch:
                     session = await self.get_or_create_session(binding, record.requested_model)
                     steps.append(
@@ -346,7 +353,7 @@ class GatewayStorage:
                             "is_trainable": False,
                         }
                     )
-            with trace.span("data_manager_record_steps_batch", operation="db_write", table="session_steps"):
+            with trace.span("storage.record_steps_batch", table="session_steps"):
                 record_ids = await self.data_manager.record_steps_batch(steps)
 
             async with self._lock:
@@ -396,8 +403,7 @@ class GatewayStorage:
                     trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_count=0)
                     return
                 with trace.span(
-                    "mark_known_records_completed",
-                    operation="db_write",
+                    "storage.mark_known_records_completed",
                     table="session_steps",
                     record_count=len(record_ids),
                 ):

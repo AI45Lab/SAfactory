@@ -13,6 +13,7 @@ from typing import List, Dict, Optional, Any, Set
 from datetime import date
 
 from core.data_manager.strategy.base_strategy import StorageStrategy, SessionContext
+from core.perf_trace import PerfTrace
 
 log = logging.getLogger("cloud_strategy")
 
@@ -341,6 +342,37 @@ class CloudStrategy(StorageStrategy):
                 self._flush_interval,
             )
 
+    async def _timed_db_call(
+        self,
+        sdk_operation: str,
+        func: Any,
+        *args: Any,
+        trace_context: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Run one synchronous DB SDK call in a thread and log its client-side latency."""
+        trace = PerfTrace(
+            "cloud_strategy.db_sdk_call",
+            logger=log,
+            context={
+                "operation": "db_read" if sdk_operation.startswith("filter") else "db_write",
+                "sdk_operation": sdk_operation,
+                "table": self.landing_table,
+                **(trace_context or {}),
+            },
+        )
+        try:
+            with trace.span("db_sdk.call"):
+                result = await asyncio.to_thread(func, *args, **kwargs)
+            trace.emit_summary(status="success")
+            return result
+        except asyncio.CancelledError:
+            trace.emit_summary(status="cancelled")
+            raise
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
+
     async def add_environment(
         self,
         job_id: str,
@@ -508,7 +540,12 @@ class CloudStrategy(StorageStrategy):
             await self._buffer_record(record)
         else:
             try:
-                await asyncio.to_thread(self.client.ingest_landing, record)
+                await self._timed_db_call(
+                    "ingest_landing",
+                    self.client.ingest_landing,
+                    record,
+                    trace_context={"session_id": session.session_id, "step_id": step_id},
+                )
                 log.debug("Step %d recorded to cloud: %s", step_id, record_id)
             except Exception as e:
                 log.error("Failed to ingest step %d: %s", step_id, e)
@@ -533,7 +570,12 @@ class CloudStrategy(StorageStrategy):
             await self._buffer_records(records)
         else:
             try:
-                await asyncio.to_thread(self.client.ingest_landing_batch, records)
+                await self._timed_db_call(
+                    "ingest_landing_batch",
+                    self.client.ingest_landing_batch,
+                    records,
+                    trace_context={"record_count": len(records)},
+                )
                 log.debug("Recorded %d steps to cloud in one batch", len(records))
             except Exception as e:
                 log.error("Failed to ingest %d cloud steps as a batch: %s", len(records), e)
@@ -551,13 +593,15 @@ class CloudStrategy(StorageStrategy):
             await self._flush_records()
 
         quoted_ids = ", ".join(f"'{_escape_sql_literal(record_id)}'" for record_id in unique_ids)
-        await asyncio.to_thread(
+        await self._timed_db_call(
+            "update_landing",
             self.client.update_landing,
             f"id IN ({quoted_ids})",
             {
                 "is_session_completed": True,
                 "is_terminal": True,
             },
+            trace_context={"record_count": len(unique_ids)},
         )
         log.debug("Marked %d known cloud records completed", len(unique_ids))
         return len(unique_ids)
@@ -665,10 +709,16 @@ class CloudStrategy(StorageStrategy):
         if not normalized_updates:
             return 0
 
-        result = await asyncio.to_thread(
+        result = await self._timed_db_call(
+            "update_landing",
             self.client.update_landing,
             filter_query,
             normalized_updates,
+            trace_context={
+                "session_id": session_id,
+                "step_id": step_id,
+                "field_count": len(normalized_updates),
+            },
         )
         log.debug(
             "Submitted cloud session step update: session_id=%s step_id=%s result=%s",
@@ -701,13 +751,15 @@ class CloudStrategy(StorageStrategy):
             clauses.append(f"agent_model = '{escaped_llm_model}'")
         query = " AND ".join(clauses)
 
-        rows = await asyncio.to_thread(
+        rows = await self._timed_db_call(
+            "filter_landing",
             self.client.session.filter,
             self.client.config.tables.landing_table,
             query=query,
             limit=1000,
             columns=["step_id", "is_session_completed", "meta_json", "agent_model"],
             partition_cond=None,
+            trace_context={"session_id": session_id, "model": llm_model},
         )
         if rows is None or len(rows) == 0:
             return 0
@@ -742,12 +794,18 @@ class CloudStrategy(StorageStrategy):
             latest_step_id,
             llm_model=llm_model,
         )
-        result = await asyncio.to_thread(
+        result = await self._timed_db_call(
+            "update_landing",
             self.client.update_landing,
             update_query,
             {
                 "is_session_completed": True,
                 "is_terminal": True,
+            },
+            trace_context={
+                "session_id": session_id,
+                "step_id": latest_step_id,
+                "model": llm_model,
             },
         )
         log.debug(
@@ -1071,7 +1129,12 @@ class CloudStrategy(StorageStrategy):
                 self._record_buffer.clear()
 
             try:
-                await asyncio.to_thread(self.client.ingest_landing_batch, records)
+                await self._timed_db_call(
+                    "ingest_landing_batch",
+                    self.client.ingest_landing_batch,
+                    records,
+                    trace_context={"record_count": len(records), "buffer_flush": True},
+                )
             except Exception as e:
                 async with self._buffer_lock:
                     self._record_buffer = records + self._record_buffer
