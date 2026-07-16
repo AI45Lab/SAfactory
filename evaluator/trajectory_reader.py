@@ -36,9 +36,6 @@ class TrajectoryReader:
                 return last
             await asyncio.sleep(poll_interval_s)
 
-    def compact_for_judge(self, trajectory: Trajectory, max_chars: int = 60000) -> str:
-        return trajectory.compact(max_chars=max_chars)
-
     def _read_by_session_sync(self, session_id: str) -> Trajectory:
         if not Path(self.db_path).exists():
             return Trajectory(session_id=session_id, warnings=[f"db not found: {self.db_path}"])

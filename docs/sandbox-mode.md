@@ -51,6 +51,6 @@ python launcher.py \
 
 `--pool-size` controls the number of active instances. The manager fills those leases before workers start, and the Environment capacity must cover that concurrency.
 
-Trajectory, rule, and LLM-judge evaluation work without runtime-specific settings. For direct evaluator access, set `requires_container: true` and `target_access_mode: sandbox_proxy`, and add `sandbox_proxy` to the evaluator pool member's `allowed_target_access_modes`. Only that access mode exposes the command endpoint and SAT header to the evaluator.
+Rule evaluation needs no Sandbox-specific settings. The rule evaluator receives the rollout result and the persisted trajectory after the Gateway session is closed.
 
 Brainbox does not implement pause. Set `lifecycle_minutes` long enough to cover rollout, telemetry flush, and evaluation. Use `cleanup_on_finish: false` only for debugging because it preserves quota-consuming instances.

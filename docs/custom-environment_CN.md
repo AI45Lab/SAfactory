@@ -22,7 +22,7 @@ Launcher 会为每一行 dataset 创建独立的 `job_environments` 记录、`se
 
 Agent 和 benchmark 的差别主要体现在 runner 和 evaluator：
 
-- Agent 运行时通常把 `env_params.dataset` 转换为 prompt、工具任务或交互流程。评测可以基于最终回复、markdown eval task，或自定义 rule evaluator。
+- Agent 运行时通常把 `env_params.dataset` 转换为 prompt、工具任务或交互流程。评测使用自定义 rule evaluator。
 - Benchmark 运行时通常包装已有 benchmark harness。runner 只处理当前 dataset 行对应的单个 case，把原生分数、通过状态、原因和输出路径写入 `metrics`，再由 `rule_evaluator.py` 统一换算成 Safactory reward。
 
 ## 1. 编写 Runner
@@ -320,13 +320,12 @@ python launcher.py \
 
 ## 可选评测
 
-可以通过三种方式添加评测：
+可以通过两种方式添加 rule 评测：
 
 - 在任务配置中添加 inline `env_params.evaluation.specs`。
-- 在 `env/myagent/eval_tasks/<dataset>/<task_name>.md` 下添加 markdown task。
 - 添加 `env/myagent/rule_evaluator.py`。
 
-新增 benchmark 时，优先使用 `rule_evaluator.py`。runner 应该把原始 benchmark 输出保存在 `metrics` 或输出文件中，rule evaluator 负责把 benchmark 自己的分数尺度、通过条件和错误情况统一成 Safactory 的 0 到 10 分。它只在 evaluation 阶段执行，不应该重新运行 benchmark case。
+runner 应该把原始 benchmark 输出保存在 `metrics` 或输出文件中，rule evaluator 负责把 benchmark 自己的分数尺度、通过条件和错误情况统一成 Safactory 的 0 到 10 分。它只在 evaluation 阶段执行，不应该重新运行 benchmark case。
 
 见[评测](evaluation_CN.md)。
 

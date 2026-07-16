@@ -24,19 +24,20 @@ class GatewayClient:
         self.close_timeout_s = close_timeout_s
         self.close_retries = max(0, int(close_retries))
         self.retry_backoff_s = max(0.0, float(retry_backoff_s))
+        self._client = httpx.AsyncClient(timeout=self.timeout_s)
 
     async def close_session(self, session_id: str, reason: str) -> None:
         timeout = httpx.Timeout(self.close_timeout_s, connect=min(self.timeout_s, self.close_timeout_s))
         attempts = self.close_retries + 1
         for attempt in range(1, attempts + 1):
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.post(
-                        f"{self.gateway_base_url}/{session_id}/close",
-                        json={"reason": reason},
-                    )
-                    response.raise_for_status()
-                    return
+                response = await self._client.post(
+                    f"{self.gateway_base_url}/{session_id}/close",
+                    json={"reason": reason},
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                return
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code < 500 or attempt >= attempts:
                     raise
@@ -47,12 +48,14 @@ class GatewayClient:
                 await self._sleep_before_retry(session_id, attempt, attempts, exc)
 
     async def get_session_status(self, session_id: str) -> dict[str, Any] | None:
-        async with httpx.AsyncClient(timeout=self.timeout_s) as client:
-            response = await client.get(f"{self.gateway_base_url}/{session_id}")
-            if response.status_code == 404:
-                return None
-            response.raise_for_status()
-            return response.json()
+        response = await self._client.get(f"{self.gateway_base_url}/{session_id}")
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.json()
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
     async def wait_telemetry_flush(
         self,

@@ -87,9 +87,7 @@ python launcher.py \
 | Docker timeout | `--docker-remove-retry-delay-s` | `2.0` | 删除重试间隔。 |
 | Docker timeout | `--docker-lifecycle-timeout-s` | `60.0` | 可选 per-container cleanup 和 healthcheck 超时。 |
 | Evaluation | `--enable-evaluation` | `false` | Rollout 后运行 evaluator flow。 |
-| Evaluation | `--evaluation-config` | 空 | Evaluator runtime YAML。 |
-| Evaluation | `--evaluation-model` | 空 | Evaluator 模型调用使用的 gateway route key。 |
-| Evaluation | `--strict-eval-tasks` | `false` | 预期 markdown eval task 缺失时失败。 |
+| Evaluation | `--evaluation-config` | 空 | 可选的 rule evaluator runtime YAML。 |
 | RL | `--rl-group-size` | `0` | 覆盖每个 YAML 环境组的 `env_num`。 |
 | RL | `--rl-epoch` | `1` | 为多个 rollout epoch 复制环境配置。 |
 | Circuit breaker | `--circuit-breaker` / `--no-circuit-breaker` | `true` | 最近失败/超时超过阈值时停止调度。 |

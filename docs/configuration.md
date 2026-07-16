@@ -87,9 +87,7 @@ python launcher.py \
 | Docker timeout | `--docker-remove-retry-delay-s` | `2.0` | Delay between removal retries. |
 | Docker timeout | `--docker-lifecycle-timeout-s` | `60.0` | Optional per-container cleanup and healthcheck timeout. |
 | Evaluation | `--enable-evaluation` | `false` | Run evaluator flow after rollout. |
-| Evaluation | `--evaluation-config` | empty | Evaluator runtime YAML. |
-| Evaluation | `--evaluation-model` | empty | Gateway route key used by evaluator model calls. |
-| Evaluation | `--strict-eval-tasks` | `false` | Fail when expected markdown eval task is missing. |
+| Evaluation | `--evaluation-config` | empty | Optional rule-evaluator runtime YAML. |
 | RL | `--rl-group-size` | `0` | Override each YAML environment group's `env_num`. |
 | RL | `--rl-epoch` | `1` | Duplicate environment configs for multiple rollout epochs. |
 | Circuit breaker | `--circuit-breaker` / `--no-circuit-breaker` | `true` | Stop scheduling when recent failures/timeouts exceed thresholds. |

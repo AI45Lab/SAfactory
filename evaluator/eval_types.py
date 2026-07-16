@@ -2,70 +2,33 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import Enum
-import shlex
 from typing import Any
 
 
 class EvalMethod(str, Enum):
-    LLM_JUDGE = "llm_judge"
-    AGENT_EVAL = "agent_eval"
     RULE_EVALUATOR = "rule_evaluator"
 
 
 class EvalStatus(str, Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
-    SKIPPED = "skipped"
     TIMEOUT = "timeout"
-
-
-SUPPORTED_EVALUATOR_AGENT_TYPES = {"docker_container", "codex_cli"}
 
 
 @dataclass
 class EvalSpec:
     eval_id: str
-    method: EvalMethod | str
-    requires_container: bool = False
-    timeout_s: float = 600.0
-
-    judge_id: str | None = None
-    judge_version: str | None = None
-    judge_model: str | None = None
-    prompt_template_id: str | None = None
-    judge_prompt_template: str | None = None
-    rubric: dict[str, Any] | None = None
-    variables: dict[str, Any] = field(default_factory=dict)
-    input_builder: str = "trajectory_final_answer"
-    output_parser: str = "json_score_reason"
-
-    evaluator_agent_id: str | None = None
-    evaluator_pool_id: str | None = None
-    evaluator_agent_type: str | None = None
-    evaluator_agent_image: str | None = None
-    evaluator_base_agents: list[str] = field(default_factory=list)
-    evaluator_required_capabilities: set[str] = field(default_factory=set)
-    evaluator_task_input: dict[str, Any] = field(default_factory=dict)
-    evaluator_task_template_id: str | None = None
-    evaluator_task_template: str | None = None
-    evaluator_output_path: str | None = None
-    target_access_mode: str = "snapshot"
-    target_container_alias: str | None = None
-
+    method: EvalMethod | str = EvalMethod.RULE_EVALUATOR
+    timeout_s: float = 60.0
     rule_evaluator: str | None = None
-
-    score_min: float = 0.0
-    score_max: float = 10.0
     weight: float = 1.0
 
     def __post_init__(self) -> None:
         self.method = coerce_eval_method(self.method)
-        if self.evaluator_agent_type:
-            self.evaluator_agent_type = normalize_evaluator_agent_type(self.evaluator_agent_type)
-        self.evaluator_required_capabilities = set(self.evaluator_required_capabilities or set())
-        self.evaluator_base_agents = list(self.evaluator_base_agents or [])
-        self.variables = dict(self.variables or {})
-        self.evaluator_task_input = dict(self.evaluator_task_input or {})
+        self.timeout_s = float(self.timeout_s)
+        self.weight = float(self.weight)
+        if self.rule_evaluator is not None:
+            self.rule_evaluator = str(self.rule_evaluator).strip() or None
 
 
 @dataclass
@@ -130,180 +93,6 @@ class Trajectory:
     sealed: bool = False
     warnings: list[str] = field(default_factory=list)
 
-    def compact(self, max_chars: int = 60000) -> str:
-        chunks: list[str] = []
-        for step in self.steps:
-            step_id = step.get("step_id", step.get("id", "?"))
-            messages = step.get("messages")
-            response = step.get("response")
-            if messages:
-                chunks.append(f"[step {step_id} messages]\n{safe_dumps(messages)}")
-            if response:
-                chunks.append(f"[step {step_id} response]\n{response}")
-        text = "\n\n".join(chunks)
-        if len(text) <= max_chars:
-            return text
-        head = max_chars // 2
-        tail = max_chars - head
-        return text[:head] + "\n\n[trajectory truncated]\n\n" + text[-tail:]
-
-
-@dataclass
-class TargetAgentRef:
-    session_id: str
-
-    container_id: str
-    container_name: str
-    container_alias: str
-    image: str
-
-    runtime: str = "docker"
-    resource_id: str = ""
-    sandbox_endpoint: str | None = None
-    sandbox_headers: dict[str, str] = field(default_factory=dict)
-    workspace_path: str | None = None
-    artifact_paths: dict[str, str] = field(default_factory=dict)
-
-    access_mode: str = "snapshot"
-    broker_base_url: str | None = None
-    broker_token: str | None = None
-    docker_host: str | None = None
-    docker_socket_path: str | None = None
-    alias_map: dict[str, str] = field(default_factory=dict)
-    exec_hint: str | None = None
-
-
-@dataclass
-class AgentEvalTask:
-    eval_task_id: str
-    session_id: str
-
-    instruction: str
-    task_input: dict[str, Any]
-    rubric: dict[str, Any]
-    variables: dict[str, Any]
-
-    target: TargetAgentRef
-    trajectory: Trajectory | None
-    artifacts: dict[str, Any]
-
-    output_contract: dict[str, Any]
-    timeout_s: float
-    evaluation_model: str | None = None
-    gateway_base_url: str | None = None
-
-
-@dataclass
-class EvaluatorAgentSpec:
-    evaluator_agent_id: str
-    image: str = ""
-    command_template: str = ""
-    pool_id: str = "default"
-    base_agent: str = "codex"
-    agent_type: str = "docker_container"
-    pool_size: int = 1
-    max_concurrency_per_container: int = 1
-    weight: float = 1.0
-    capabilities: set[str] = field(default_factory=set)
-
-    workdir: str = "/workspace"
-    input_mode: str = "prompt_file"
-    task_input_path: str = "/tmp/agent_eval_task.json"
-    prompt_path: str = "/tmp/agent_eval_prompt.md"
-    gateway_base_url: str | None = None
-    model: str | None = None
-    max_eval_llm_calls: int = -1
-    result_path: str = "/tmp/eval_result.json"
-    env: dict[str, str] = field(default_factory=dict)
-    mounts: list[dict[str, str]] = field(default_factory=list)
-
-    cli_bin: str = "codex"
-    cli_args: list[str] = field(default_factory=list)
-    cli_profile: str | None = None
-    sandbox: str = "read-only"
-    approval_policy: str = "never"
-    ephemeral: bool = True
-    runtime_dir: str | None = None
-    cleanup_runtime_dir: bool = True
-
-    requires_docker_socket: bool = False
-    allow_direct_docker: bool = False
-    allowed_target_access_modes: set[str] = field(default_factory=lambda: {"snapshot"})
-
-    def __post_init__(self) -> None:
-        self.agent_type = normalize_evaluator_agent_type(self.agent_type)
-        self.evaluator_agent_id = str(self.evaluator_agent_id)
-        self.image = str(self.image or "")
-        self.command_template = str(self.command_template or "")
-        self.base_agent = str(self.base_agent or "codex").strip() or "codex"
-        self.workdir = str(self.workdir or "").strip()
-        self.capabilities = set(self.capabilities or set())
-        self.allowed_target_access_modes = set(self.allowed_target_access_modes or {"snapshot"})
-        self.pool_size = max(1, int(self.pool_size or 1))
-        self.max_concurrency_per_container = max(1, int(self.max_concurrency_per_container or 1))
-        if self.agent_type == "codex_cli":
-            # A CLI lease represents one local process slot; use pool_size for
-            # parallelism so prompt/result files never collide inside a slot.
-            self.max_concurrency_per_container = 1
-            if self.workdir == "/workspace":
-                self.workdir = ""
-        self.env = {str(key): str(value) for key, value in dict(self.env or {}).items()}
-        self.mounts = [dict(mount) for mount in (self.mounts or [])]
-        if isinstance(self.cli_args, str):
-            self.cli_args = shlex.split(self.cli_args)
-        else:
-            self.cli_args = [str(arg) for arg in (self.cli_args or [])]
-        self.cli_bin = str(self.cli_bin or "codex")
-        self.sandbox = str(self.sandbox or "").strip()
-        self.approval_policy = str(self.approval_policy or "").strip()
-        if self.cli_profile is not None:
-            self.cli_profile = str(self.cli_profile).strip() or None
-        if self.runtime_dir is not None:
-            self.runtime_dir = str(self.runtime_dir).strip() or None
-
-
-@dataclass
-class EvaluatorAgentPoolSpec:
-    pool_id: str
-    members: list[EvaluatorAgentSpec]
-    selection_policy: str = "least_busy"
-    acquire_timeout_s: float = 60.0
-    max_queue_size: int = 1024
-
-
-@dataclass
-class EvaluatorAgentLease:
-    lease_id: str
-    pool_id: str
-    evaluator_agent_id: str
-    base_agent: str
-    container_id: str
-    container_name: str
-    spec: EvaluatorAgentSpec
-    active_slots: int = 0
-
-    @property
-    def agent_type(self) -> str:
-        return self.spec.agent_type
-
-
-@dataclass
-class EvaluatorRunResult:
-    stdout: str = ""
-    stderr: str = ""
-    result_text: str | None = None
-    result_path: str | None = None
-    exit_code: int | None = None
-    timed_out: bool = False
-    artifacts: dict[str, Any] = field(default_factory=dict)
-
-
-def normalize_score(raw_score: float, min_score: float, max_score: float) -> float:
-    if max_score <= min_score:
-        raise ValueError("score_max must be greater than score_min")
-    normalized = (float(raw_score) - float(min_score)) / (float(max_score) - float(min_score)) * 10.0
-    return max(0.0, min(10.0, normalized))
-
 
 def parse_eval_specs(
     env_params: dict[str, Any] | None,
@@ -329,10 +118,8 @@ def coerce_eval_spec(value: EvalSpec | dict[str, Any]) -> EvalSpec:
     if isinstance(value, EvalSpec):
         return value
     data = dict(value)
-    if "method" not in data:
-        raise ValueError("EvalSpec requires method")
-    if "eval_id" not in data:
-        data["eval_id"] = str(data["method"])
+    data.setdefault("method", EvalMethod.RULE_EVALUATOR)
+    data.setdefault("eval_id", str(data["method"]))
     return EvalSpec(**data)
 
 
@@ -340,43 +127,11 @@ def coerce_eval_method(value: EvalMethod | str) -> EvalMethod:
     if isinstance(value, EvalMethod):
         return value
     text = str(value).strip().lower()
-    aliases = {
-        "llm": EvalMethod.LLM_JUDGE,
-        "judge": EvalMethod.LLM_JUDGE,
-        "llm_judge": EvalMethod.LLM_JUDGE,
-        "agent": EvalMethod.AGENT_EVAL,
-        "agent_judge": EvalMethod.AGENT_EVAL,
-        "agent_eval": EvalMethod.AGENT_EVAL,
-        "rule": EvalMethod.RULE_EVALUATOR,
-        "rule_eval": EvalMethod.RULE_EVALUATOR,
-        "rule_judge": EvalMethod.RULE_EVALUATOR,
-        "rule_evaluator": EvalMethod.RULE_EVALUATOR,
-    }
-    try:
-        return aliases[text]
-    except KeyError as exc:
-        supported = ", ".join(sorted(aliases))
-        raise ValueError(f"unsupported eval method {value!r}; supported methods: {supported}") from exc
-
-
-def normalize_evaluator_agent_type(value: str | None) -> str:
-    text = str(value or "docker_container").strip().lower()
-    aliases = {
-        "container": "docker_container",
-        "docker": "docker_container",
-        "docker_container": "docker_container",
-        "docker-agent": "docker_container",
-        "docker_agent": "docker_container",
-        "cli": "codex_cli",
-        "codex": "codex_cli",
-        "codex_cli": "codex_cli",
-        "codex-cli": "codex_cli",
-    }
-    try:
-        return aliases[text]
-    except KeyError as exc:
-        supported = ", ".join(sorted(SUPPORTED_EVALUATOR_AGENT_TYPES))
-        raise ValueError(f"unsupported evaluator agent_type {value!r}; supported types: {supported}") from exc
+    if text in {"rule", "rule_eval", "rule_judge", "rule_evaluator"}:
+        return EvalMethod.RULE_EVALUATOR
+    raise ValueError(
+        f"unsupported eval method {value!r}; this build only supports rule_evaluator"
+    )
 
 
 def validate_eval_specs(specs: list[EvalSpec]) -> None:
@@ -387,26 +142,13 @@ def validate_eval_specs(specs: list[EvalSpec]) -> None:
         if spec.eval_id in seen:
             raise ValueError(f"duplicate eval_id: {spec.eval_id}")
         seen.add(spec.eval_id)
-        if spec.score_max <= spec.score_min:
-            raise ValueError(f"{spec.eval_id}: score_max must be greater than score_min")
+        if spec.timeout_s <= 0:
+            raise ValueError(f"{spec.eval_id}: timeout_s must be > 0")
         if spec.weight < 0:
             raise ValueError(f"{spec.eval_id}: weight must be >= 0")
-        if spec.method == EvalMethod.AGENT_EVAL:
-            if spec.evaluator_agent_type:
-                normalize_evaluator_agent_type(spec.evaluator_agent_type)
-            invalid = set(spec.evaluator_base_agents) - {"codex", "claude_code"}
-            if invalid:
-                raise ValueError(f"{spec.eval_id}: unsupported evaluator_base_agents: {sorted(invalid)}")
-            if spec.target_access_mode in {"direct_docker", "sandbox_proxy"} and not spec.requires_container:
-                raise ValueError(f"{spec.eval_id}: {spec.target_access_mode} requires requires_container=true")
 
 
-def merge_eval_results(
-    results: list[EvalResult],
-    specs: list[EvalSpec],
-    *,
-    fail_policy: str = "zero_reward",
-) -> EvalResult:
+def merge_eval_results(results: list[EvalResult], specs: list[EvalSpec]) -> EvalResult:
     if not results:
         return EvalResult.failed(session_id="", reason="no eval results")
 
@@ -439,18 +181,12 @@ def merge_eval_results(
     return EvalResult(
         session_id=session_id,
         status=EvalStatus.SUCCEEDED.value,
-        normalized_score_10=normalize_score(score, 0, 10),
+        normalized_score_10=_clamp_score_10(score),
         raw_score=score,
-        reason=f"merged {len(succeeded)} succeeded eval result(s), {failed_count} failed/skipped",
+        reason=f"merged {len(succeeded)} succeeded eval result(s), {failed_count} failed",
         method_results=method_results,
         artifacts=artifacts,
     )
-
-
-def safe_dumps(value: Any) -> str:
-    import json
-
-    return json.dumps(to_jsonable(value), ensure_ascii=False, sort_keys=True)
 
 
 def to_jsonable(value: Any) -> Any:
@@ -463,3 +199,7 @@ def to_jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [to_jsonable(item) for item in value]
     return value
+
+
+def _clamp_score_10(value: float) -> float:
+    return max(0.0, min(10.0, float(value)))

@@ -14,10 +14,8 @@ from core.perf_trace import PerfTrace
 from core.runtime_metadata import strip_internal_env_params
 from evaluator.eval_types import EvalRequest, parse_eval_specs
 from evaluator.gateway_client import GatewayClient
-from evaluator.markdown_eval_resolver import MarkdownEvalTaskResolver
 from evaluator.reward_committer import RewardCommitter
 from evaluator.rule_eval_resolver import resolve_rule_eval_specs
-from evaluator.run_registry import InMemoryRunRegistry
 from evaluator.service import EvaluationService
 
 from .agent_start_client import AgentStartClient
@@ -130,7 +128,6 @@ class SimulationWorkerGroup:
         data_manager: DataManager,
         agent_start_client: AgentStartClient,
         cfg: SimulationRunConfig,
-        registry: InMemoryRunRegistry | None = None,
         gateway_client: GatewayClient | None = None,
         evaluation_service: EvaluationService | None = None,
         reward_committer: RewardCommitter | None = None,
@@ -139,13 +136,9 @@ class SimulationWorkerGroup:
         self.data_manager = data_manager
         self.agent_start_client = agent_start_client
         self.cfg = cfg
-        self.registry = registry
         self.gateway_client = gateway_client
         self.evaluation_service = evaluation_service
         self.reward_committer = reward_committer
-        self.markdown_eval_resolver = MarkdownEvalTaskResolver(
-            strict=self.cfg.strict_eval_tasks,
-        )
         self.worker_count = self._derive_worker_count()
         self._results: Dict[str, SimulationStartResult] = {}
         self._results_lock = asyncio.Lock()
@@ -242,7 +235,6 @@ class SimulationWorkerGroup:
             session: SessionContext | None = None
             result: SimulationStartResult | None = None
             release_reusable: bool | None = None
-            run_failed = False
             cancelled = False
             try:
                 log.debug(
@@ -263,26 +255,6 @@ class SimulationWorkerGroup:
                     storage_type=request.storage_type,
                     record_mode=request.record_mode,
                 )
-                if self.registry is not None:
-                    with trace.span("registry_create_run"):
-                        await self.registry.create_run(
-                            job_id=self.cfg.job_id,
-                            session_id=session.session_id,
-                            metadata={
-                                "agent_name": lease.agent_name,
-                                "agent_id": lease.agent_id,
-                                "group_id": lease.group_id,
-                                "row_id": lease.row_id,
-                                "image": lease.image,
-                                "runtime": lease.runtime,
-                                "resource_id": lease.resource_id,
-                                "resource_name": lease.resource_name,
-                                "container_id": lease.container_id,
-                                "container_name": lease.container_name,
-                            },
-                        )
-                        await self.registry.mark_running(session.session_id)
-
                 with trace.span("agent_rollout"):
                     result = await self._run_one_episode(lease, session, request, worker_id)
                 trace.update_context(
@@ -291,10 +263,6 @@ class SimulationWorkerGroup:
                     rollout_reward=result.total_reward,
                     rollout_truncated=result.truncated,
                 )
-                if self.registry is not None:
-                    with trace.span("registry_rollout_finished"):
-                        await self.registry.mark_rollout_finished(session.session_id, result)
-
                 if self.gateway_client is not None:
                     with trace.span("gateway_finalize"):
                         await self._finalize_gateway_session(
@@ -309,12 +277,10 @@ class SimulationWorkerGroup:
                 else:
                     with trace.span("eval_resolve_specs"):
                         public_env_params = strip_internal_env_params(lease.env_params)
-                        eval_specs = self.markdown_eval_resolver.resolve_specs(lease.env_params)
-                        if not eval_specs:
-                            eval_specs = parse_eval_specs(
-                                public_env_params,
-                                default_specs=getattr(self.evaluation_service, "default_specs", []),
-                            )
+                        eval_specs = parse_eval_specs(
+                            public_env_params,
+                            default_specs=getattr(self.evaluation_service, "default_specs", []),
+                        )
                         if not eval_specs:
                             eval_specs = resolve_rule_eval_specs(
                                 lease.env_params,
@@ -340,9 +306,6 @@ class SimulationWorkerGroup:
                             env_params=public_env_params,
                             eval_specs=eval_specs,
                         )
-                        if self.registry is not None:
-                            with trace.span("registry_awaiting_eval"):
-                                await self.registry.mark_awaiting_eval(result.session_id, eval_request)
                         with trace.span("evaluation_service"):
                             eval_result = await self.evaluation_service.evaluate(eval_request)
                         trace.update_context(
@@ -355,12 +318,6 @@ class SimulationWorkerGroup:
                                 eval_result=eval_result,
                             )
                         if eval_result.status == "succeeded":
-                            if self.registry is not None:
-                                with trace.span("registry_reward_committed"):
-                                    await self.registry.mark_reward_committed(
-                                        result.session_id,
-                                        eval_result.normalized_score_10,
-                                    )
                             result.total_reward = eval_result.normalized_score_10
                         else:
                             result.total_reward = 0.0
@@ -374,13 +331,11 @@ class SimulationWorkerGroup:
                     async with self._results_lock:
                         self._results[agent_key] = result
             except asyncio.CancelledError:
-                run_failed = True
                 cancelled = True
                 release_reusable = False
                 trace.update_context(error_type="CancelledError", error="worker task cancelled")
                 raise
             except Exception as exc:
-                run_failed = True
                 trace.update_context(error_type=type(exc).__name__, error=str(exc))
                 log.warning("worker=%d agent=%s failed before summary: %s", worker_id, agent_key, exc, exc_info=True)
                 if result is None:
@@ -398,9 +353,6 @@ class SimulationWorkerGroup:
                     result.status = "failed"
                     result.error_text = str(exc)
                 release_reusable = False
-                if self.registry is not None and session is not None:
-                    with trace.span("registry_mark_failed"):
-                        await self.registry.mark_failed(session.session_id, str(exc))
                 with trace.span("store_failed_result"):
                     async with self._results_lock:
                         self._results[agent_key] = result
@@ -409,19 +361,11 @@ class SimulationWorkerGroup:
                     if result is not None:
                         with trace.span("record_circuit_result"):
                             await self._record_circuit_result(result, worker_id=worker_id, agent_key=agent_key)
-                    if self.registry is not None and session is not None and not run_failed:
-                        with trace.span("registry_releasing_container"):
-                            await self.registry.mark_releasing_container(session.session_id)
                     with trace.span("lease_pool_done"):
                         await self.lease_pool.done(lease, result, reusable=release_reusable)
-                    if self.registry is not None and session is not None and not run_failed:
-                        with trace.span("registry_done"):
-                            await self.registry.mark_done(session.session_id)
                 except Exception as exc:
                     trace.update_context(release_error_type=type(exc).__name__, release_error=str(exc))
                     log.exception("worker=%d agent=%s critical error in lease_pool.done()", worker_id, agent_key)
-                    if self.registry is not None and session is not None:
-                        await self.registry.mark_failed(session.session_id, f"container release failed: {exc}")
                 if cancelled:
                     trace.update_context(final_status="cancelled")
                     trace.emit_summary(status="cancelled")

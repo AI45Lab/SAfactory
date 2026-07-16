@@ -17,16 +17,12 @@ def resolve_rule_eval_specs(
     env_root: str | Path = "env",
 ) -> list[EvalSpec]:
     env_params = env_params if isinstance(env_params, dict) else {}
-    rule_config = _rule_evaluator_config(env_params)
-    if rule_config is False:
-        return []
-
-    default_path = _default_rule_evaluator_path(
+    locator = resolve_rule_evaluator_locator(
         env_params,
         agent_name=agent_name,
         env_root=env_root,
     )
-    if not rule_config and default_path is None:
+    if not locator:
         return []
 
     evaluation = env_params.get("evaluation")
@@ -40,17 +36,44 @@ def resolve_rule_eval_specs(
         eval_id=str(evaluation.get("rule_evaluator_eval_id") or f"{resolved_agent}_rule"),
         method=EvalMethod.RULE_EVALUATOR,
         timeout_s=timeout_s,
-        rule_evaluator=rule_config if isinstance(rule_config, str) else None,
+        rule_evaluator=locator,
     )
     log.info(
-        "EVAL RESOLVER rule evaluator fallback: agent=%s rule_config=%s default_path=%s eval_id=%s timeout_s=%.2f",
+        "EVAL RESOLVER rule evaluator: agent=%s locator=%s eval_id=%s timeout_s=%.2f",
         resolved_agent,
-        rule_config,
-        default_path,
+        locator,
         spec.eval_id,
         spec.timeout_s,
     )
     return [spec]
+
+
+def resolve_rule_evaluator_locator(
+    env_params: dict[str, Any] | None,
+    *,
+    agent_name: str = "",
+    env_root: str | Path = "env",
+) -> str | None:
+    env_params = env_params if isinstance(env_params, dict) else {}
+    configured = _rule_evaluator_config(env_params)
+    if configured is False:
+        return None
+    if isinstance(configured, str) and configured.lower() not in {
+        "",
+        "1",
+        "true",
+        "yes",
+        "default",
+        "auto",
+    }:
+        return configured
+
+    default_path = _default_rule_evaluator_path(
+        env_params,
+        agent_name=agent_name,
+        env_root=env_root,
+    )
+    return f"file:{default_path}" if default_path is not None else None
 
 
 def _rule_evaluator_config(env_params: dict[str, Any]) -> str | bool:

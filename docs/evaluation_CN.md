@@ -33,7 +33,7 @@ python launcher.py \
   --pool-size 1
 ```
 
-`--llm-model` 是被测模型在 gateway 里的 route key。这个简单路径不需要 `--evaluation-model`，因为 `rule_evaluator` 不调用评测模型。
+`--llm-model` 是 rollout 模型在 gateway 里的 route key。Rule evaluator 不需要单独的评测模型。
 
 ## Bench runtime 需要产出什么
 
@@ -81,7 +81,6 @@ Bench runtime 仍然按普通 runtime 接口运行：读取 `SimulationStartRequ
 ```yaml
 evaluation:
   max_concurrency: 4
-  fail_policy: zero_reward
 
   default_specs:
     - eval_id: mybench_rule
@@ -95,7 +94,6 @@ evaluation:
 | 字段 | 含义 |
 |------|------|
 | `max_concurrency` | 最多同时运行多少个 rule evaluator。 |
-| `fail_policy` | 评测失败时的 reward 策略。`zero_reward` 表示失败给 0 分。 |
 | `default_specs` | 当 case 没有单独 eval spec 时，默认使用这里的评测规则。 |
 | `method: rule_evaluator` | 指定使用 Python 规则评测。 |
 | `rule_evaluator` | Python 文件路径。相对路径按运行目录解析。 |
@@ -187,7 +185,6 @@ environments:
 ```yaml
 evaluation:
   max_concurrency: 4
-  fail_policy: zero_reward
 ```
 
 如果 `env/<bench>/rule_evaluator.py` 存在，也可以不写 `evaluation.rule_evaluator`，Safactory 会自动尝试发现该文件。
@@ -199,5 +196,5 @@ evaluation:
 | 没有执行 evaluation | 确认启动命令包含 `--enable-evaluation`。 |
 | 没有找到 rule evaluator | 检查 `rule_evaluator` 路径，或确认 `env/<bench>/rule_evaluator.py` 存在。 |
 | 分数一直是 0 | 检查 bench runtime 是否把原始结果写进 `metrics`，以及 `rule_evaluator.py` 是否正确读取字段。 |
-| 评测失败后 reward 为 0 | `fail_policy: zero_reward` 会把失败评测记为 0 分；查看日志里的 rule evaluator exception。 |
+| 评测失败后 reward 为 0 | 查看日志里的 rule evaluator exception；失败的 rule 评测会按 0 分回写。 |
 | 轨迹为空 | 检查 gateway 和 launcher 是否使用同一个 `--db-path`，以及 bench runtime 是否确实通过当前 gateway session 调模型。 |

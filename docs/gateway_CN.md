@@ -71,7 +71,7 @@ llm_routes:
 
 请求体里的 `model` 必须是其中一个 key。对于 `launcher.py` 来说，`--llm-model dsv4pro` 必须匹配 `gateway.config.llm_routes.dsv4pro`。
 
-如果 `AIEVOBOX_GATEWAY_CONFIG` 指向 gateway 配置文件，`launcher.py` 会在启动前校验 `--llm-model` 和 `--evaluation-model`。
+如果 `AIEVOBOX_GATEWAY_CONFIG` 指向 gateway 配置文件，`launcher.py` 会在启动前校验 `--llm-model`。
 
 ## 存储必须与 Launcher 一致
 
@@ -148,5 +148,5 @@ curl http://127.0.0.1:8000/v1/sessions/<session-id>
 |------|----------|
 | `gateway is not reachable` | Gateway 没启动，或 `--gateway-base-url` host/port 写错。 |
 | `gateway SQLite DB does not match launcher --db-path` | `storage_config.db_url` 与 `--db-path` 不一致。 |
-| `gateway model route(s) are not configured` | `--llm-model` 或 `--evaluation-model` 不在 `llm_routes` 中。 |
+| `gateway model route(s) are not configured` | `--llm-model` 不在 `llm_routes` 中。 |
 | 上游 401 或 404 | route 的 `api_key`、`base_url` 或上游模型命名不正确。 |

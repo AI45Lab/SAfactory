@@ -201,12 +201,7 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
     max_workers = int(args.max_workers) if int(args.max_workers or 0) > 0 else None
 
     evaluation_config = load_evaluation_runtime_config(str(getattr(args, "evaluation_config", "") or ""))
-    evaluation_model = str(
-        getattr(args, "evaluation_model", "") or evaluation_config.get("evaluation_model") or ""
-    ).strip()
     _validate_gateway_route_key(str(args.llm_model), arg_name="--llm-model")
-    if evaluation_model:
-        _validate_gateway_route_key(evaluation_model, arg_name="--evaluation-model")
     agent_config = getattr(args, "agent_config", None)
     agent_start_config = getattr(args, "agent_start_config", None)
 
@@ -229,7 +224,6 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         gateway_base_url=str(args.gateway_base_url).rstrip("/"),
         llm_model=str(args.llm_model),
         llm_temperature=float(args.llm_temperature),
-        evaluation_model=evaluation_model,
         max_steps=int(args.max_steps),
         agent_start_timeout_s=float(args.agent_start_timeout_s),
         docker_bin=str(args.docker_bin or "docker"),
@@ -328,7 +322,6 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         rl_epoch=max(1, int(args.rl_epoch)),
         evaluation_enabled=bool(args.evaluation_enabled),
         evaluation_config=evaluation_config,
-        strict_eval_tasks=bool(args.strict_eval_tasks),
         circuit_breaker_enabled=bool(getattr(args, "circuit_breaker", True)),
         circuit_breaker_window=_int_at_least(getattr(args, "circuit_breaker_window", 50), default=50, minimum=1),
         circuit_breaker_min_samples=_int_at_least(

@@ -67,7 +67,8 @@ class RewardCommitter:
         eval_result: EvalResult,
     ) -> None:
         metadata = self._build_reward_metadata(session_id=session_id, eval_result=eval_result)
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+            conn.execute("PRAGMA busy_timeout = 30000")
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """

@@ -18,10 +18,10 @@ from core.data_manager.yaml_aggregator import (
     wait_for_pending_inserts,
 )
 from core.perf_trace import PerfTrace
-from evaluator.factory import EvaluationRuntime, build_evaluation_runtime
+from evaluator.factory import build_evaluation_service
 from evaluator.gateway_client import GatewayClient
 from evaluator.reward_committer import RewardCommitter
-from evaluator.run_registry import InMemoryRunRegistry
+from evaluator.service import EvaluationService
 from evaluator.trajectory_reader import TrajectoryReader
 from .agent_start_client import AgentStartClient
 from .db_loader import scheduler_db_reader
@@ -50,9 +50,8 @@ class SimulationFlow:
         self.lease_pool: Optional[SimulationLeasePool] = None
         self.agent_start_client: Optional[AgentStartClient] = None
         self.worker_group: Optional[SimulationWorkerGroup] = None
-        self.run_registry: Optional[InMemoryRunRegistry] = None
         self.gateway_client: Optional[GatewayClient] = None
-        self.evaluation_runtime: Optional[EvaluationRuntime] = None
+        self.evaluation_service: Optional[EvaluationService] = None
         self.reward_committer: Optional[RewardCommitter] = None
         self._shutdown_started = False
 
@@ -172,8 +171,6 @@ class SimulationFlow:
             log.debug("gateway metrics exposed no llm route labels; skip route-key preflight")
             return
         required_models = [self.cfg.llm_model]
-        if self.cfg.evaluation_model:
-            required_models.append(self.cfg.evaluation_model)
         missing = [model for model in required_models if model not in available]
         if missing:
             raise RuntimeError(
@@ -208,7 +205,6 @@ class SimulationFlow:
         self.agent_start_client = AgentStartClient(
             timeout_s=self.cfg.agent_start_timeout_s + self.cfg.agent_start_timeout_grace_s,
         )
-        self.run_registry = InMemoryRunRegistry()
         self.gateway_client = GatewayClient(
             gateway_base_url=self.cfg.gateway_base_url,
             close_timeout_s=self.cfg.gateway_close_timeout_s,
@@ -217,20 +213,12 @@ class SimulationFlow:
         )
         evaluation_service = None
         if self.cfg.evaluation_enabled:
-            log.info(
-                "EVAL FLOW enabled: markdown eval task dir=eval_tasks strict_eval_tasks=%s",
-                self.cfg.strict_eval_tasks,
-            )
-            self.evaluation_runtime = build_evaluation_runtime(
+            log.info("EVAL FLOW enabled: rule evaluator only")
+            self.evaluation_service = build_evaluation_service(
                 config=self.cfg.evaluation_config,
-                gateway_base_url=self.cfg.gateway_base_url,
-                evaluation_model=self.cfg.evaluation_model,
                 trajectory_reader=TrajectoryReader(db_url=self.cfg.db_url, storage_type=self.cfg.storage_type),
-                registry=self.run_registry,
             )
-            await self.evaluation_runtime.start()
-            log.info("EVAL FLOW runtime started")
-            evaluation_service = self.evaluation_runtime.service
+            evaluation_service = self.evaluation_service
             self.reward_committer = RewardCommitter(db_url=self.cfg.db_url)
         else:
             log.debug("EVAL FLOW disabled: launcher was not started with --enable-evaluation")
@@ -239,7 +227,6 @@ class SimulationFlow:
             data_manager=self.data_manager,
             agent_start_client=self.agent_start_client,
             cfg=self.cfg,
-            registry=self.run_registry,
             gateway_client=self.gateway_client,
             evaluation_service=evaluation_service,
             reward_committer=self.reward_committer,
@@ -270,12 +257,12 @@ class SimulationFlow:
             except Exception:
                 log.exception("agent start client close failed (ignored)")
 
-        if self.evaluation_runtime is not None:
+        if self.gateway_client is not None:
             try:
-                with trace.span("evaluation_runtime_stop"):
-                    await self.evaluation_runtime.stop()
+                with trace.span("gateway_client_close"):
+                    await self.gateway_client.aclose()
             except Exception:
-                log.exception("evaluation runtime stop failed (ignored)")
+                log.exception("gateway client close failed (ignored)")
 
         try:
             with trace.span("wait_for_pending_inserts"):

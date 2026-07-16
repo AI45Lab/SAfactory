@@ -33,7 +33,7 @@ python launcher.py \
   --pool-size 1
 ```
 
-`--llm-model` is the gateway route key for the target model. This simple path does not need `--evaluation-model` because `rule_evaluator` does not call a judge model.
+`--llm-model` is the gateway route key for the rollout model. Rule evaluation does not require a separate evaluation model.
 
 ## Benchmark Runtime Output
 
@@ -81,7 +81,6 @@ Create `evaluator/configs/mybench_rule_eval.yaml`:
 ```yaml
 evaluation:
   max_concurrency: 4
-  fail_policy: zero_reward
 
   default_specs:
     - eval_id: mybench_rule
@@ -95,7 +94,6 @@ Fields:
 | Field | Meaning |
 |-------|---------|
 | `max_concurrency` | Maximum number of rule evaluators running at once. |
-| `fail_policy` | Reward behavior when evaluation fails. `zero_reward` gives 0. |
 | `default_specs` | Default evaluation spec when a case has no case-specific spec. |
 | `method: rule_evaluator` | Use Python rule evaluation. |
 | `rule_evaluator` | Python file path, resolved from the run directory. |
@@ -187,7 +185,6 @@ Then `--evaluation-config` can keep only global runtime settings:
 ```yaml
 evaluation:
   max_concurrency: 4
-  fail_policy: zero_reward
 ```
 
 If `env/<bench>/rule_evaluator.py` exists, `evaluation.rule_evaluator` can be omitted; Safactory will try to discover that file automatically.
@@ -199,5 +196,5 @@ If `env/<bench>/rule_evaluator.py` exists, `evaluation.rule_evaluator` can be om
 | Evaluation does not run | Confirm the command includes `--enable-evaluation`. |
 | Rule evaluator not found | Check the `rule_evaluator` path or ensure `env/<bench>/rule_evaluator.py` exists. |
 | Score is always 0 | Check that the benchmark runtime writes raw results to `metrics`, and that `rule_evaluator.py` reads the same field names. |
-| Evaluation failure gives 0 reward | `fail_policy: zero_reward` turns failed evaluation into 0 reward; inspect the rule evaluator exception in logs. |
+| Evaluation failure gives 0 reward | Inspect the rule evaluator exception in logs; failed rule evaluation is committed as 0. |
 | Empty trajectory | Check that gateway and launcher use the same `--db-path`, and that the benchmark runtime calls the model through the current gateway session. |

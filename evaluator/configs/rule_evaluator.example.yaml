@@ -1,0 +1,7 @@
+evaluation:
+  max_concurrency: 4
+  default_specs:
+    - eval_id: openrt_rule
+      method: rule_evaluator
+      rule_evaluator: env/openrt/rule_evaluator.py
+      timeout_s: 60

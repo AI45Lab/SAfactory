@@ -71,7 +71,7 @@ llm_routes:
 
 The request body `model` must be one of these keys. For `launcher.py`, this means `--llm-model dsv4pro` must match `gateway.config.llm_routes.dsv4pro`.
 
-If `AIEVOBOX_GATEWAY_CONFIG` points to the gateway config file, `launcher.py` validates `--llm-model` and `--evaluation-model` before starting.
+If `AIEVOBOX_GATEWAY_CONFIG` points to the gateway config file, `launcher.py` validates `--llm-model` before starting.
 
 ## Storage Must Match Launcher
 
@@ -148,5 +148,5 @@ Common startup failures:
 |---------|--------------|
 | `gateway is not reachable` | Gateway process is not running or `--gateway-base-url` points to the wrong host or port. |
 | `gateway SQLite DB does not match launcher --db-path` | `storage_config.db_url` and `--db-path` differ. |
-| `gateway model route(s) are not configured` | `--llm-model` or `--evaluation-model` is not present in `llm_routes`. |
+| `gateway model route(s) are not configured` | `--llm-model` is not present in `llm_routes`. |
 | Upstream 401 or 404 | Route `api_key`, `base_url`, or upstream model naming is wrong. |

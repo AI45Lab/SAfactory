@@ -57,18 +57,7 @@ python launcher.py \
 
 ## Evaluation
 
-Trajectory、rule evaluator 和 LLM judge 不需要额外设置。需要 evaluator 直接访问运行中的 Sandbox 时，将 eval spec 设置为：
-
-```yaml
-requires_container: true
-target_access_mode: sandbox_proxy
-```
-
-对应 evaluator pool member 还需显式允许 `sandbox_proxy`：
-
-```yaml
-allowed_target_access_modes: [snapshot, sandbox_proxy]
-```
+Rule evaluator 不需要额外的 Sandbox 设置。Gateway session 关闭后，rule evaluator 会收到 rollout 结果和已经落盘的轨迹。
 
 只有该模式会把当前 Sandbox command endpoint 和 SAT header 传给 evaluator。Sandbox 不支持 `direct_docker`。
 

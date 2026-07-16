@@ -13,7 +13,12 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--job-id", type=str, default="", help="Simulation workflow id")
-    parser.add_argument("--evaluation-config",type=str, default="",help="Optional evaluator runtime YAML for judge endpoints, evaluator pools, and default specs.")
+    parser.add_argument(
+        "--evaluation-config",
+        type=str,
+        default="",
+        help="Optional rule-evaluator YAML for concurrency and default specs.",
+    )
     parser.add_argument("--mode", choices=["docker", "rjob", "sandbox"], default="docker")
     parser.add_argument(
         "--rjob-config",
@@ -165,15 +170,6 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
     parser.add_argument("--max-steps", type=int, default=1000)
     parser.add_argument("--llm-model", type=str, default="default")
     parser.add_argument("--llm-temperature", type=float, default=0.3)
-    parser.add_argument(
-        "--evaluation-model",
-        type=str,
-        default="",
-        help=(
-            "Optional gateway llm_routes key used for evaluation. When set, "
-            "LLM judge requests and agent-eval model configuration use this model."
-        ),
-    )
     parser.add_argument("--rl-group-size", type=int, default=0)
     parser.add_argument("--rl-epoch", type=int, default=1)
     parser.add_argument(
@@ -185,12 +181,6 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
             "Enable evaluator flow after rollout. When disabled, rollout containers are released immediately "
             "after rollout according to --cleanup-docker-container."
         ),
-    )
-    parser.add_argument(
-        "--strict-eval-tasks",
-        action="store_true",
-        default=False,
-        help="Fail evaluation when the expected markdown eval task file is missing.",
     )
     parser.add_argument(
         "--circuit-breaker",

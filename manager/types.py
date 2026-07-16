@@ -51,7 +51,6 @@ class SimulationRunConfig:
     gateway_base_url: str
     llm_model: str
     llm_temperature: float
-    evaluation_model: str
     max_steps: int
     agent_start_timeout_s: float
     docker_bin: str
@@ -86,7 +85,6 @@ class SimulationRunConfig:
     rl_epoch: int = 1
     evaluation_enabled: bool = False
     evaluation_config: Dict[str, Any] = field(default_factory=dict)
-    strict_eval_tasks: bool = False
     circuit_breaker_enabled: bool = True
     circuit_breaker_window: int = 50
     circuit_breaker_min_samples: int = 20

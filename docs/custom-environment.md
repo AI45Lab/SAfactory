@@ -22,7 +22,7 @@ You usually need five pieces:
 
 Agents and benchmarks mostly differ in the runner and evaluator:
 
-- An agent runtime usually turns `env_params.dataset` into a prompt, tool task, or interaction flow. Evaluation can use the final response, markdown eval tasks, or a custom rule evaluator.
+- An agent runtime usually turns `env_params.dataset` into a prompt, tool task, or interaction flow. Evaluation uses a custom rule evaluator.
 - A benchmark runtime usually wraps an existing benchmark harness. The runner handles only the current dataset row, writes native score, pass/fail status, reason, and output paths into `metrics`, and lets `rule_evaluator.py` normalize those details into a Safactory reward.
 
 ## 1. Write A Runner
@@ -320,13 +320,12 @@ Check:
 
 ## Optional Evaluation
 
-You can add evaluation in one of three ways:
+You can add rule evaluation in one of two ways:
 
 - Add inline `env_params.evaluation.specs` in the task config.
-- Add markdown tasks under `env/myagent/eval_tasks/<dataset>/<task_name>.md`.
 - Add `env/myagent/rule_evaluator.py`.
 
-For new benchmarks, prefer `rule_evaluator.py`. The runner should preserve raw benchmark output in `metrics` or output files, and the rule evaluator should normalize benchmark-specific score scales, pass conditions, and error cases into Safactory's 0 to 10 score. It runs only during evaluation and should not rerun the benchmark case.
+The runner should preserve raw benchmark output in `metrics` or output files, and the rule evaluator should normalize benchmark-specific score scales, pass conditions, and error cases into Safactory's 0 to 10 score. It runs only during evaluation and should not rerun the benchmark case.
 
 See [Evaluation](evaluation.md).
 
