@@ -9,7 +9,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/env.sh"
 
-export PYTHONPATH="${PYTHONPATH:-}:/root/AIEvoBox"
+export PYTHONPATH="${PYTHONPATH:-}:${AIEVOBOX_ROOT}"
 export AIEVOBOX_ROOT="${AIEVOBOX_ROOT:-/root/AIEvoBox}"
 export AIEVOBOX_DB_URL="${AIEVOBOX_DB_URL:-sqlite://${SCRIPT_DIR}/rl.db}"
 export ROLLBUF_HOST="${ROLLBUF_HOST:-0.0.0.0}"

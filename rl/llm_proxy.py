@@ -3,9 +3,9 @@
 LLM Proxy Server
 
 Embedded in the slime_generator process.  Provides a single HTTP endpoint
-consumed by AIEvoBox environments:
+fronted by the Safactory gateway (docker -> gateway -> llm_proxy -> sglang):
 
-    POST /v1/{session_id}/chat/completions
+    POST /v1/chat/completions   (session id via X-Safactory-Session-Id header)
 
 Training data (tokens, masks, mm_train_inputs) is read directly from the
 shared TrajectoryMaskBuilder in memory — no HTTP round-trip needed.
@@ -159,12 +159,21 @@ class ProxyState:
 STATE = ProxyState()
 
 
-@app.post("/v1/{session_id}/chat/completions")
-async def proxy_chat_completions(session_id: str, request: Request):
+@app.post("/v1/chat/completions")
+async def proxy_chat_completions(request: Request):
     """
     Proxy chat completions to the remote engine via /generate API.
     Records the trajectory (tokens, mask, logprobs) for training.
+
+    The Safactory gateway always fronts this proxy and passes the session id
+    via the X-Safactory-Session-Id header; that id keys the training trajectory.
     """
+    session_id = request.headers.get("x-safactory-session-id")
+    if not session_id:
+        raise HTTPException(
+            status_code=400,
+            detail="missing X-Safactory-Session-Id header (gateway must front the llm_proxy)",
+        )
     if STATE.remote_engine_url is None or STATE.tokenizer is None:
         raise HTTPException(status_code=503, detail="Proxy not initialized.")
 

@@ -11,17 +11,23 @@ RL bridge 仍使用历史的 `AIEVOBOX_*` 环境变量前缀。部分示例脚�
 ## 架构
 
 ```text
-Slime generator
+Safactory runtime  <--- 由 launcher.py / rl/buffer_server.py 启动
   |
-  | hosts rl/llm_proxy.py
+  | 带 session 的 rollout 模型请求
   v
-LLM proxy
-  ^
-  | rollout model requests
+Gateway
   |
-Safactory launcher.py  <--- started by rl/buffer_server.py
+  | X-Safactory-Session-Id
+  v
+LLM proxy  <--- 由 Slime generator 托管
   |
-  | trainable rows in session_steps
+  | 生成请求
+  v
+SGLang rollout engine
+
+Gateway / evaluator
+  |
+  | session_steps 中带 reward 的可训练记录
   v
 Buffer Server /get_rollout_data
   |
@@ -38,9 +44,10 @@ Slime trainer
 
 - `buffer_server.py` 会将 `AIEVOBOX_AGENT_CONFIG` 映射为 `launcher.py --agent-config`。
 - 如果未设置 `AIEVOBOX_AGENT_CONFIG`，则将 `AIEVOBOX_AGENT_ROOT` 映射为 `--agent-root`。
+- 将 `AIEVOBOX_AGENT_START_CONFIG` 映射为 `--agent-start-config`；未设置时会尽量推导同目录的 `_start.yaml`。
 - 将 `RL_MODEL` 映射为 `launcher.py --llm-model`。
-- 将 `AIEVOBOX_GATEWAY_BASE_URL` 映射为 `launcher.py --gateway-base-url`；未设置时会回退到进程内 LLM proxy URL。
-- 当前没有传递 `--agent-start-config`。对于 v2 Docker/RJob adapter，请在本地启动 wrapper 中补上，或在生产 RL 前更新 `buffer_server.py`。
+- 必须设置 `AIEVOBOX_GATEWAY_BASE_URL`，并映射为 `launcher.py --gateway-base-url`；不再使用 LLM proxy 作为 gateway 回退。
+- `AIEVOBOX_ENABLE_EVALUATION=1` 会启用 evaluator flow；`AIEVOBOX_EVALUATION_CONFIG` 可指定 evaluator 配置。
 
 因此，仓库中的 RL examples 更适合作为模板，而不是直接可用的 v2 命令。
 
@@ -75,7 +82,9 @@ Launcher 和数据：
 | `AIEVOBOX_DB_URL` | `--db-path` | Launcher 和 Buffer Server 使用的 SQLite URI。 |
 | `AIEVOBOX_AGENT_CONFIG` | `--agent-config` | 单个 v2 agent config YAML。 |
 | `AIEVOBOX_AGENT_ROOT` | `--agent-root` | 未设置 `AIEVOBOX_AGENT_CONFIG` 时的 agent config 根目录。 |
-| `AIEVOBOX_GATEWAY_BASE_URL` | `--gateway-base-url` | Gateway session root。未设置时回退到 LLM proxy URL。 |
+| `AIEVOBOX_GATEWAY_BASE_URL` | `--gateway-base-url` | 必填的 Gateway session root；不会回退到 LLM proxy。 |
+| `AIEVOBOX_ENABLE_EVALUATION` | `--enable-evaluation` | 设为 `1`、`true`、`yes` 或 `on` 时运行 evaluator 并提交可训练 reward。 |
+| `AIEVOBOX_EVALUATION_CONFIG` | `--evaluation-config` | 可选的 evaluator runtime YAML。 |
 | `RL_MODEL` | `--llm-model` | Gateway route key 或 rollout model 标识。 |
 | `LLM_TEMPERATURE` | `--llm-temperature` | 采样温度。 |
 | `AIEVOBOX_MAX_STEPS` | `--max-steps` | Episode 步数限制。 |
@@ -97,7 +106,7 @@ RL grouping：
 |------|------|
 | `BUFFER_SERVER_HOST` | Slime 访问 Buffer Server 使用的 host。 |
 | `BUFFER_SERVER_PORT` | Buffer Server 端口，常用 `18889`。 |
-| `LLM_PROXY_HOST` | Rollout 进程访问 Slime-hosted LLM proxy 使用的 host。 |
+| `LLM_PROXY_HOST` | Gateway 访问 Slime-hosted LLM proxy 使用的 host。 |
 | `LLM_PROXY_PORT` | LLM proxy 端口，常用 `18890`。 |
 
 ## Buffer Server API
@@ -106,7 +115,7 @@ RL grouping：
 |------|------|
 | `POST /start_rollout` | 如果当前没有 launcher 子进程，则启动一次 rollout。 |
 | `POST /get_rollout_data` | 返回从上次 cursor 之后读取到的 grouped rollout samples。 |
-| `GET /health` | 诊断端点。当前代码仍引用旧的 `llm_proxy_process` 变量，修复前不建议作为生产 readiness probe。 |
+| `GET /health` | 返回 Buffer Server 健康状态、launcher 进程状态和 DataManager 初始化状态。 |
 
 `/get_rollout_data` 返回给 Slime 的 item 形态：
 
@@ -131,7 +140,7 @@ RL grouping：
 1. 先在 RL 外部用 `launcher.py` 和 gateway 跑通 adapter。
 2. 确认 `session_steps` 中出现期望 `job_id` 的 trainable 行。
 3. 设置 `AIEVOBOX_AGENT_CONFIG`、`AIEVOBOX_DB_URL`、`AIEVOBOX_GATEWAY_BASE_URL`、`RL_MODEL`、`RL_GROUP_SIZE` 和 `AIEVOBOX_POOL_SIZE`。
-4. 确保本地 Buffer Server wrapper 会传 `--agent-start-config`，或使用已 patch 的 `buffer_server.py`。
+4. 设置 `AIEVOBOX_AGENT_START_CONFIG`；如果环境依赖 evaluator 提交 reward，同时启用 evaluation。
 5. 启动 Slime generator 和 Buffer Server。
 6. 由 trainer 或脚本调用 `/start_rollout`。
 7. 观察 `logs/buffer_server.log`、`logs/main.log`、gateway 日志和 Slime 日志。
@@ -141,7 +150,8 @@ RL grouping：
 | 现象 | 检查项 |
 |------|--------|
 | Buffer Server 启动 launcher 时仍像旧 `--env-config` 流程 | 使用 `AIEVOBOX_AGENT_CONFIG` 或 `AIEVOBOX_AGENT_ROOT`，更新旧示例 `env.sh`。 |
-| Launcher 因缺少 start config 失败 | 当前 `buffer_server.py` 不传 `--agent-start-config`；请在 wrapper 中补上或 patch command builder。 |
+| Launcher 因缺少 start config 失败 | 设置 `AIEVOBOX_AGENT_START_CONFIG`，或采用同目录 `<name>_start.yaml` 命名供 Buffer Server 自动推导。 |
+| Launcher 提示缺少 gateway URL | 将 `AIEVOBOX_GATEWAY_BASE_URL` 设置为 Gateway session root；不要指向 LLM proxy。 |
 | `/get_rollout_data` 没有样本 | 检查 `session_steps` 是否有 `is_trainable = 1`、`job_id` 是否正确、`group_id` 数量是否匹配。 |
 | Group 一直不 ready | `RL_GROUP_SIZE` 大于该 `group_id` 下已完成样本数。 |
 | Weight-version 解析失败 | 如果训练策略依赖版本，请确保 `env_state.weight_version` 存在。 |

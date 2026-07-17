@@ -284,12 +284,18 @@ class InferenceForwarder:
     def build_upstream_headers(
         self,
         target: LLMRouteTarget,
+        session_id: str | None = None,
     ) -> dict[str, str]:
         headers = {
             "Content-Type": "application/json",
         }
         if target.api_key:
             headers["Authorization"] = f"Bearer {target.api_key}"
+        # Forward the Safactory session id out-of-band so session-aware upstreams
+        # (e.g. the RL llm_proxy) can bind trajectories to the same session.
+        # Plain OpenAI-compatible upstreams ignore the unknown header.
+        if session_id:
+            headers["X-Safactory-Session-Id"] = session_id
         return headers
 
     def normalize_error(self, exc: Exception) -> tuple[int, dict[str, Any]]:

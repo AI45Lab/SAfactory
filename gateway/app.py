@@ -265,7 +265,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 ctx.is_stream,
             )
 
-            headers = forwarder.build_upstream_headers(target)
+            headers = forwarder.build_upstream_headers(target, session_id=ctx.session_id)
             with trace.span("request_log_write"):
                 await request_logger.log_request(ctx, binding, target, payload)
             if ctx.is_stream:
@@ -1327,6 +1327,10 @@ def _merge_stream_event(
     usage = event.get("usage")
     if isinstance(usage, dict):
         summary["usage"] = usage
+
+    metadata = event.get("metadata")
+    if isinstance(metadata, dict):
+        summary["metadata"] = metadata
 
     choices = event.get("choices")
     if isinstance(choices, list):

@@ -1,0 +1,2 @@
+{"task_id": "geo3k-sample-1", "problem": "A right triangle has legs of length 3 and 4. What is the length of the hypotenuse? Reason step by step and give the final answer as Answer: \\boxed{...}.", "answer": "5", "images": []}
+{"task_id": "geo3k-sample-2", "problem": "A circle has radius 2. What is its area? Give the answer in terms of pi as Answer: \\boxed{...}.", "answer": "4\\pi", "images": []}

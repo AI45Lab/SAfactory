@@ -1,8 +1,10 @@
 import asyncio
+import atexit
 import copy
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -19,6 +21,7 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
 from utils import get_env
+import gateway_autostart
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -64,13 +67,11 @@ app = FastAPI(title="Rollout Buffer Server", debug=True)
 # Track subprocesses
 aievobox_process: Optional[subprocess.Popen] = None
 
+# Ensure the auto-started gateway is torn down when buffer_server exits.
+atexit.register(gateway_autostart.stop)
+
 # DataManager for querying the database
 data_manager: Optional[DataManager] = None
-
-# LLM Proxy URL (constructed from host and port)
-_llm_proxy_host = get_env("LLM_PROXY_HOST")
-_llm_proxy_port = get_env("LLM_PROXY_PORT")
-llm_proxy_url: str = f"http://{_llm_proxy_host}:{_llm_proxy_port}/v1"
 
 # Track last served step ID for cursor-based pagination
 last_served_id: int = 0
@@ -108,6 +109,15 @@ def _parse_timestamp(ts: Optional[str]) -> Optional[float]:
             return None
 
 
+def _required_gateway_base_url() -> str:
+    gateway_base_url = str(os.environ.get("AIEVOBOX_GATEWAY_BASE_URL") or "").strip().rstrip("/")
+    if not gateway_base_url:
+        raise RuntimeError(
+            "AIEVOBOX_GATEWAY_BASE_URL is required; the llm_proxy cannot be used as a gateway"
+        )
+    return gateway_base_url
+
+
 def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a database row to the expected item format."""
     # Parse stored prompt (JSON serialized messages list)
@@ -116,7 +126,14 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
         base_messages = json.loads(prompt_str) if prompt_str else []
     else:
         base_messages = prompt_str
-    messages = base_messages + [{"role": "assistant", "content": row.get("response", "")}]
+    messages = list(base_messages or [])
+    # Gateway rows already store the assistant response in ``prompt`` as part of
+    # the full trajectory. Legacy rows keep it in the separate response field.
+    # Appending an empty response to gateway rows prevents exact trajectory
+    # matching in the training-side mask builder.
+    response = row.get("response", "")
+    if response:
+        messages.append({"role": "assistant", "content": response})
 
     session_id = row.get("session_id", "")
     env_id = row.get("env_id", "")
@@ -125,7 +142,13 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     # 从 env_state 中解析 weight_version
     weight_version = 0
     if env_state_raw := row.get("env_state"):
-        weight_version = int(json.loads(env_state_raw)["weight_version"])
+        try:
+            env_state = json.loads(env_state_raw) if isinstance(env_state_raw, str) else env_state_raw
+            raw_weight_version = env_state.get("weight_version") if isinstance(env_state, dict) else None
+            if raw_weight_version is not None:
+                weight_version = int(raw_weight_version)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            weight_version = 0
 
     extra_info = {
         "timestamp": _parse_timestamp(row.get("session_end_time")) or _parse_timestamp(row.get("timestamp")) or time.time(),
@@ -308,6 +331,7 @@ def start_aievobox_process(data: dict):
     # Database path
     storage_type = os.environ.get("STORAGE_TYPE", "sqlite")
     db_url = os.environ.get("AIEVOBOX_DB_URL", f"sqlite:///{AIEVOBOX_ROOT}/rl/rl.db")
+    gateway_base_url = _required_gateway_base_url()
 
     # Run async init in a new event loop (since we're in a thread)
     loop = asyncio.new_event_loop()
@@ -321,22 +345,41 @@ def start_aievobox_process(data: dict):
 
     # Build launcher.py command line arguments
     aievobox_root = os.environ.get("AIEVOBOX_ROOT", "/root/AIEvoBox")
+
+    # Bring up the gateway before the launcher: it must front the llm_proxy and
+    # the launcher validates gateway /readyz at startup. Idempotent across rollouts.
+    gateway_autostart.ensure_started(aievobox_root=aievobox_root, config_dir=LOG_DIR)
+
     launcher_script = os.path.join(aievobox_root, "launcher.py")
     agent_root = get_env("AIEVOBOX_AGENT_ROOT") or "env"
     agent_config = os.environ.get("AIEVOBOX_AGENT_CONFIG")
+    agent_start_config = os.environ.get("AIEVOBOX_AGENT_START_CONFIG")
+    # v2 docker/rjob runs need the container startup definition (env_types). When
+    # not set explicitly, derive it from the agent config path:
+    # env/<name>/<name>_config.yaml -> env/<name>/<name>_start.yaml.
+    if not agent_start_config and agent_config:
+        derived = re.sub(r"_config\.ya?ml$", "_start.yaml", agent_config)
+        if derived != agent_config and os.path.exists(derived):
+            agent_start_config = derived
+    mode = get_env("AIEVOBOX_MODE") or "docker"
     max_steps = int(get_env("AIEVOBOX_MAX_STEPS") or 10)
     llm_model = get_env("RL_MODEL") or "default"
     llm_temperature = float(get_env("LLM_TEMPERATURE") or 1.0)
     pool_size = int(get_env("AIEVOBOX_POOL_SIZE") or 16)
     rl_epoch = int(get_env("RL_EPOCH") or 1)
-    gateway_base_url = os.environ.get("AIEVOBOX_GATEWAY_BASE_URL", llm_proxy_url).rstrip("/")
+    evaluation_config = str(os.environ.get("AIEVOBOX_EVALUATION_CONFIG") or "").strip()
+    evaluation_flag = str(os.environ.get("AIEVOBOX_ENABLE_EVALUATION") or "").strip().lower()
+    evaluation_enabled = evaluation_flag in {"1", "true", "yes", "on"}
 
     cmd = [
         "python3", launcher_script,
-        "--mode", "docker",
+        "--mode", mode,
         "--db-path", db_url,
         "--storage-type", storage_type,
         *(["--agent-config", agent_config] if agent_config else ["--agent-root", agent_root]),
+        *(["--agent-start-config", agent_start_config] if agent_start_config else []),
+        *(["--enable-evaluation"] if evaluation_enabled else []),
+        *(["--evaluation-config", evaluation_config] if evaluation_config else []),
         "--gateway-base-url", gateway_base_url,
         "--llm-model", llm_model,
         "--llm-temperature", str(llm_temperature),
@@ -375,6 +418,11 @@ async def start_rollout(request: Request):
     if aievobox_process is not None and aievobox_process.poll() is None:
         return {"message": "AIEvoBox is already running", "pid": aievobox_process.pid}
 
+    try:
+        _required_gateway_base_url()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     # Start AIEvoBox in a background thread
     thread = threading.Thread(target=start_aievobox_process, args=(payload,), daemon=True)
     thread.start()
@@ -388,7 +436,6 @@ async def health_check():
     return {
         "status": "healthy",
         "aievobox_running": aievobox_process is not None and aievobox_process.poll() is None,
-        "llm_proxy_running": llm_proxy_process is not None and llm_proxy_process.poll() is None,
         "data_manager_initialized": data_manager is not None,
     }
 
