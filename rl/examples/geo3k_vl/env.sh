@@ -12,7 +12,7 @@ export AIEVOBOX_MESSAGE_CUT=0
 export AIEVOBOX_AGENT_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_config.yaml
 export AIEVOBOX_AGENT_START_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_start.yaml
 export AIEVOBOX_ENABLE_EVALUATION=1
-export AIEVOBOX_EVALUATION_CONFIG=${AIEVOBOX_ROOT}/evaluator/configs/geo3k_rule_eval.yaml
+export AIEVOBOX_EVALUATION_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_rule_eval.yaml
 # AGENT_ROOT 指定读取目录下所有子目录的环境（与 AGENT_CONFIG 二选一）
 # export AIEVOBOX_AGENT_ROOT=${AIEVOBOX_ROOT}/env
 # v2 docker 模式下每个 pool slot 是一个容器，pool_size 不宜过大。
