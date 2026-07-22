@@ -367,7 +367,6 @@ def start_aievobox_process(data: dict):
     llm_temperature = float(get_env("LLM_TEMPERATURE") or 1.0)
     pool_size = int(get_env("AIEVOBOX_POOL_SIZE") or 16)
     rl_epoch = int(get_env("RL_EPOCH") or 1)
-    evaluation_config = str(os.environ.get("AIEVOBOX_EVALUATION_CONFIG") or "").strip()
     evaluation_flag = str(os.environ.get("AIEVOBOX_ENABLE_EVALUATION") or "").strip().lower()
     evaluation_enabled = evaluation_flag in {"1", "true", "yes", "on"}
 
@@ -379,7 +378,6 @@ def start_aievobox_process(data: dict):
         *(["--agent-config", agent_config] if agent_config else ["--agent-root", agent_root]),
         *(["--agent-start-config", agent_start_config] if agent_start_config else []),
         *(["--enable-evaluation"] if evaluation_enabled else []),
-        *(["--evaluation-config", evaluation_config] if evaluation_config else []),
         "--gateway-base-url", gateway_base_url,
         "--llm-model", llm_model,
         "--llm-temperature", str(llm_temperature),

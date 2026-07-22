@@ -1,9 +1,0 @@
-evaluation:
-  max_concurrency: 4
-  fail_policy: zero_reward
-
-  default_specs:
-    - eval_id: geo3k_rule
-      method: rule_evaluator
-      rule_evaluator: env/geo3k/rule_evaluator.py
-      timeout_s: 60
