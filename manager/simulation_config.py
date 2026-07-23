@@ -519,6 +519,7 @@ def _normalize_agent_start_docker(agent_name: Any, spec: Any, cfg_path: Path) ->
     if not isinstance(mounts, list):
         raise ValueError(f"container.mounts for {agent_name!r} must be a list in {cfg_path}")
     normalized_mounts = [_normalize_mount(mount, cfg_path) for mount in mounts]
+    _resolve_relative_mount_references(docker, mounts, normalized_mounts)
     runner_mount = _mount_from_runner_entrypoint(runner_entrypoint)
     if runner_mount:
         _append_mount_if_missing(normalized_mounts, runner_mount, agent_name=agent_name, cfg_path=cfg_path)
@@ -788,6 +789,61 @@ def _normalize_mount(mount: Any, cfg_path: Path) -> Any:
             source_path = (Path.cwd() / source_path).resolve(strict=False)
         normalized["source"] = str(source_path)
     return normalized
+
+
+def _resolve_relative_mount_references(
+    docker: Dict[str, Any],
+    mounts: List[Any],
+    normalized_mounts: List[Any],
+) -> None:
+    """Resolve repeated relative mount paths to the normalized host path.
+
+    Some Docker-outside-of-Docker workloads must mount a host directory at the
+    exact same absolute path inside their controller container. Start configs
+    can express that portably by repeating one relative path as the mount
+    source, mount target, workdir, and environment value. The source is
+    normalized first; every exact reference to it then receives that value.
+    """
+    aliases: Dict[str, str] = {}
+    for raw_mount, normalized_mount in zip(mounts, normalized_mounts):
+        if not isinstance(raw_mount, dict) or not isinstance(normalized_mount, dict):
+            continue
+        raw_source = (
+            raw_mount.get("source")
+            or raw_mount.get("hostPath")
+            or raw_mount.get("host_path")
+        )
+        normalized_source = normalized_mount.get("source")
+        if not raw_source or not normalized_source:
+            continue
+        source_text = str(raw_source)
+        if Path(source_text).expanduser().is_absolute():
+            continue
+        aliases[source_text] = str(normalized_source)
+
+    if not aliases:
+        return
+
+    for normalized_mount in normalized_mounts:
+        if not isinstance(normalized_mount, dict):
+            continue
+        target = normalized_mount.get("target")
+        if target is None:
+            target = normalized_mount.get("containerPath") or normalized_mount.get("container_path")
+        resolved_target = aliases.get(str(target))
+        if resolved_target:
+            normalized_mount["target"] = resolved_target
+
+    workdir = str(docker.get("workdir") or "")
+    if workdir in aliases:
+        docker["workdir"] = aliases[workdir]
+
+    env = docker.get("env")
+    if isinstance(env, dict):
+        docker["env"] = {
+            key: aliases.get(str(value), str(value))
+            for key, value in env.items()
+        }
 
 
 def _normalize_embedded_file(item: Any, cfg_path: Path) -> Dict[str, str]:

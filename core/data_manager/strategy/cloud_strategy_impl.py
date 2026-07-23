@@ -217,6 +217,8 @@ def _truthy_bool(value: Any) -> bool:
     return bool(value)
 
 
+
+
 class CloudStrategy(StorageStrategy):
     """
     Cloud storage strategy:
@@ -727,6 +729,74 @@ class CloudStrategy(StorageStrategy):
             result,
         )
         return 1
+
+    async def list_session_steps(self, session_id: str) -> List[Dict[str, Any]]:
+        """Read one cloud-backed session in deterministic trajectory order."""
+        await self.init()
+
+        if self._enable_buffer:
+            await self._flush_records()
+
+        session = self._sessions.get(session_id)
+        job_id = session.job_id if session is not None else self.job_id
+        clauses = []
+        if job_id:
+            clauses.append(f"job_id = '{_escape_sql_literal(job_id)}'")
+        clauses.append(f"session_id = '{_escape_sql_literal(session_id)}'")
+        query = " AND ".join(clauses)
+        columns = [
+            "id",
+            "session_id",
+            "step_id",
+            "env_name",
+            "agent_model",
+            "job_id",
+            "messages",
+            "response",
+            "step_reward",
+            "reward",
+            "meta_json",
+            "is_terminal",
+            "is_truncated",
+            "is_session_completed",
+            "is_trainable",
+            "created_at",
+        ]
+        frame = await self._timed_db_call(
+            "filter_landing",
+            self.client.session.filter,
+            self.client.config.tables.landing_table,
+            query=query,
+            limit=10000,
+            columns=columns,
+            partition_cond=None,
+            trace_context={"session_id": session_id},
+        )
+        if frame is None or len(frame) == 0:
+            return []
+
+        rows: List[Dict[str, Any]] = []
+        for _, cloud_row in frame.iterrows():
+            row = {
+                key: self.ndarray_to_native(cloud_row.get(key))
+                for key in columns
+            }
+            meta = _json_object(row.pop("meta_json", None))
+            row["llm_model"] = row.pop("agent_model", None)
+            row["env_state"] = _json_object(meta.get("env_state"))
+            row["group_id"] = meta.get("group_id")
+            if row.get("is_trainable") is None:
+                row["is_trainable"] = meta.get("is_trainable", True)
+            rows.append(row)
+
+        rows.sort(
+            key=lambda row: (
+                int(row.get("step_id") or 0),
+                str(row.get("created_at") or ""),
+                str(row.get("id") or ""),
+            )
+        )
+        return rows
 
     async def mark_latest_session_completed(
         self,

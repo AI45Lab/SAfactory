@@ -14,8 +14,23 @@ log = logging.getLogger("evaluator.reward_committer")
 
 
 class RewardCommitter:
-    def __init__(self, *, db_url: str) -> None:
-        self.db_path = _sqlite_path(db_url)
+    def __init__(
+        self,
+        *,
+        db_url: str,
+        storage_type: str = "sqlite",
+        data_manager: Any | None = None,
+    ) -> None:
+        self.storage_type = str(storage_type or "sqlite").strip().lower()
+        self.data_manager = data_manager
+        if self.storage_type == "sqlite":
+            self.db_path = _sqlite_path(db_url)
+        elif self.storage_type == "cloud":
+            if data_manager is None:
+                raise ValueError("RewardCommitter cloud mode requires a data manager")
+            self.db_path = ""
+        else:
+            raise ValueError(f"RewardCommitter does not support storage type {storage_type!r}")
 
     async def commit(
         self,
@@ -30,23 +45,32 @@ class RewardCommitter:
                 "session_id": session_id,
                 "score": eval_result.normalized_score_10,
                 "status": eval_result.status,
-                "db_path": self.db_path,
+                "storage_type": self.storage_type,
+                "db_path": self.db_path or None,
             },
         )
         log.info(
-            "EVAL REWARD commit start: session=%s score=%.4f status=%s db=%s",
+            "EVAL REWARD commit start: session=%s score=%.4f status=%s storage=%s db=%s",
             session_id,
             eval_result.normalized_score_10,
             eval_result.status,
-            self.db_path,
+            self.storage_type,
+            self.db_path or None,
         )
         try:
-            with trace.span("sqlite_commit"):
-                await asyncio.to_thread(
-                    self._commit_sqlite,
-                    session_id=session_id,
-                    eval_result=eval_result,
-                )
+            if self.storage_type == "cloud":
+                with trace.span("cloud_commit"):
+                    await self._commit_cloud(
+                        session_id=session_id,
+                        eval_result=eval_result,
+                    )
+            else:
+                with trace.span("sqlite_commit"):
+                    await asyncio.to_thread(
+                        self._commit_sqlite,
+                        session_id=session_id,
+                        eval_result=eval_result,
+                    )
             log.info(
                 "EVAL REWARD commit complete: session=%s score=%.4f",
                 session_id,
@@ -59,6 +83,49 @@ class RewardCommitter:
         except Exception as exc:
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
+
+    async def _commit_cloud(
+        self,
+        *,
+        session_id: str,
+        eval_result: EvalResult,
+    ) -> None:
+        rows = await self.data_manager.list_session_steps(session_id)
+        terminal = next(
+            (row for row in reversed(rows) if _is_trainable_step(row)),
+            None,
+        )
+        log.info(
+            "EVAL REWARD cloud rows: session=%s total_rows=%d terminal_found=%s",
+            session_id,
+            len(rows),
+            terminal is not None,
+        )
+        if terminal is None:
+            raise RuntimeError(
+                f"Cannot commit cloud evaluation reward: no trainable row for session {session_id}"
+            )
+
+        metadata = self._build_reward_metadata(
+            session_id=session_id,
+            eval_result=eval_result,
+        )
+        env_state = _merge_env_state(terminal.get("env_state"), metadata)
+        updated = await self.data_manager.update_session_step(
+            session_id,
+            int(terminal.get("step_id") or 0),
+            {
+                "step_reward": eval_result.normalized_score_10,
+                "reward": eval_result.normalized_score_10,
+                "env_state": env_state,
+                "is_terminal": True,
+                "is_session_completed": True,
+            },
+        )
+        if updated <= 0:
+            raise RuntimeError(
+                f"Cannot commit cloud evaluation reward: session row was not updated for {session_id}"
+            )
 
     def _commit_sqlite(
         self,
@@ -151,10 +218,13 @@ class RewardCommitter:
 
 
 def _merge_env_state(existing: Any, new_metadata: str) -> str:
-    try:
-        existing_obj = json.loads(existing) if existing else {}
-    except Exception:
-        existing_obj = {"previous_env_state": existing}
+    if isinstance(existing, dict):
+        existing_obj = dict(existing)
+    else:
+        try:
+            existing_obj = json.loads(existing) if existing else {}
+        except Exception:
+            existing_obj = {"previous_env_state": existing}
     try:
         new_obj = json.loads(new_metadata)
     except Exception:
