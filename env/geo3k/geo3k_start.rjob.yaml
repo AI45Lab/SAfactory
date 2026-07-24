@@ -1,0 +1,48 @@
+agent_name: geo3k
+
+container:
+  workdir: /workspace
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-geo3k/runner.py
+    command: "python /tmp/safactory-geo3k/runner.py"
+
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    HTTP_PROXY: ""
+    HTTPS_PROXY: ""
+    ALL_PROXY: ""
+    http_proxy: ""
+    https_proxy: ""
+    all_proxy: ""
+    NO_PROXY: ""
+    no_proxy: ""
+
+rjob:
+  name_prefix: geo3k
+  private_machine: Group
+  image_pull_policy: IfNotPresent
+  no_packaging: true
+  cleanup_on_finish: true
+  keep_failed_jobs: true
+
+  resources:
+    cpu: 1
+    gpu: 0
+    memory_in_mb: 1024
+
+  # Usually configured globally in the YAML passed by --rjob-config.
+  # It must be reachable from the RJob cluster; do not use 127.0.0.1 or localhost.
+  # gateway_base_url: "http://<gateway-host>:8000/v1/sessions"
+
+  # runner.py is embedded automatically from container.runner_entrypoint.source.
+  # math_utils.py must be embedded as an extra file because runner.py imports it.
+  embedded_files:
+    - source: ./math_utils.py
+      target: /tmp/safactory-geo3k/math_utils.py
+
+  # Add mount_config only for paths the RJob container must read or write at runtime.
+  # The left side must be cluster-accessible storage, not a local Docker bind path.
+  # Example:
+  mount_config:
+    - "gpfs://gpfs1/evobox-share/chenxinquan/SAfactory/results:/app/results"

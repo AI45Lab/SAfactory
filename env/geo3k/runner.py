@@ -25,10 +25,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
-# math_utils.py is mounted / baked next to this file.
+# math_utils.py is embedded next to this file in RJob mode.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from math_utils import extract_answer as extract_boxed_answer  # noqa: E402
-from math_utils import grade_answer_verl  # noqa: E402
+extract_boxed_answer: Any = None
+grade_answer_verl: Any = None
 
 
 TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
@@ -37,14 +37,17 @@ SUPPORTED_TOOL_NAMES = {"calc_score", "calc_geo3k_reward"}
 DEFAULT_MAX_TURNS = 3
 DEFAULT_MAX_IMAGES = 1
 DEFAULT_TEMPERATURE = 0.3
+RESULT_JSON_PREFIX = "SAFACTORY_RESULT_JSON "
+RESULT_PATH_ENV = "SAFACTORY_RESULT_PATH"
 
 
 def main() -> int:
     started_at = time.perf_counter()
-    request = _read_request()
-    session_id = _required_text(request.get("session_id"), "session_id")
+    session_id = os.environ.get("SAFACTORY_SESSION_ID", "")
 
     try:
+        request = _read_request()
+        session_id = _required_text(request.get("session_id"), "session_id")
         env_params = request.get("env_params") if isinstance(request.get("env_params"), dict) else {}
         dataset = env_params.get("dataset") if isinstance(env_params.get("dataset"), dict) else {}
 
@@ -67,6 +70,7 @@ def main() -> int:
         temperature = _float(request.get("temperature"), DEFAULT_TEMPERATURE)
         timeout_s = _float(request.get("agent_start_timeout_s"), 300.0)
 
+        _load_math_utils()
         state = _RunState(
             base_url=base_url,
             model=model,
@@ -436,6 +440,17 @@ def _read_request() -> dict[str, Any]:
     return data
 
 
+def _load_math_utils() -> None:
+    global extract_boxed_answer, grade_answer_verl
+    if extract_boxed_answer is not None and grade_answer_verl is not None:
+        return
+    from math_utils import extract_answer as _extract_answer  # noqa: PLC0415
+    from math_utils import grade_answer_verl as _grade_answer_verl  # noqa: PLC0415
+
+    extract_boxed_answer = _extract_answer
+    grade_answer_verl = _grade_answer_verl
+
+
 def _required_text(value: Any, name: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -482,7 +497,22 @@ def _failure_result(session_id: str, error_text: str, started_at: float) -> dict
 
 
 def _write_result(result: dict[str, Any]) -> None:
-    print(json.dumps(result, ensure_ascii=False), flush=True)
+    _persist_result_artifact(result)
+    print(RESULT_JSON_PREFIX + json.dumps(result, ensure_ascii=False), flush=True)
+
+
+def _persist_result_artifact(result: dict[str, Any]) -> None:
+    raw_path = str(os.environ.get(RESULT_PATH_ENV) or "").strip()
+    if not raw_path:
+        return
+    try:
+        path = Path(raw_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(path.name + ".tmp")
+        tmp_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp_path.replace(path)
+    except Exception as exc:
+        print(f"SAFACTORY_RUNNER_DIAGNOSTIC result_artifact_write_failed: {exc}", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

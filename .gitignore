@@ -21,3 +21,6 @@ tmp/
 
 # External SDK checkouts should be installed as dependencies instead.
 /wt-data-gateway/
+
+# config.local.yaml
+config.local.yaml
