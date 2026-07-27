@@ -1,0 +1,23 @@
+agent_name: livecvebench
+
+container:
+  workdir: /benchmark
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-livecvebench-runner.py
+    command: "python3 /tmp/safactory-livecvebench-runner.py"
+
+  mounts:
+    # Cache the nested Docker images used by Terminal-Bench tasks.
+    - livecvebench-runner-docker:/var/lib/docker
+
+    # Keep native Terminal-Bench artifacts on the host.
+    - source: /home/qiupanjia/code/LiveCVEBench-Preview-master/container-runs
+      target: /benchmark/runs
+      mode: rw
+
+  # Docker-in-Docker is required by the LiveCVEBench runner image.
+  extra_args:
+    - --privileged
+
+  idle_command: "tail -f /dev/null"
