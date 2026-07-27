@@ -14,7 +14,6 @@ The current checkout includes these v2 adapters.
 | OpenClaw | `openclaw` | `env/openclaw/openclaw_config.yaml` | `env/openclaw/openclaw_start.yaml` | Generic OpenClaw CLI runtime. Good for smoke tests and tool-use tasks. |
 | OpenRT | `openrt` | `env/openrt/openrt_config.yaml` | `env/openrt/openrt_start.yaml` | Runs OpenRT `eval.py` against gateway session URLs. |
 | OpenRT RJob | `openrt` | `env/openrt/openrt_config.rjob.yaml` | `env/openrt/openrt_start.rjob.yaml` | Remote RJob variant with image, resources, embedded runner, and GPFS mounts. |
-| ExploitGym RJob | `exploitgym` | `env/exploitgym/exploitgym_config.rjob.yaml` | `env/exploitgym/exploitgym_start.rjob.yaml` | Privileged nested-Docker benchmark runtime for one user, V8, or kernel task per episode. |
 | WildClawBench | `wildclawbench` | `env/wildclawbench/wildclawbench_config.yaml` | `env/wildclawbench/wildclawbench_start.yaml` | Requires a WildClawBench checkout and matching image. |
 | DTAP | `dtap` | `env/dtap/dtap_config.yaml` | `env/dtap/dtap_start.yaml` | Runs DecodingTrust-Agent workloads and mounts Docker socket. |
 | ClawEnvKit | `clawenvkit` | `env/clawenvkit/clawenvkit_config.yaml` | `env/clawenvkit/clawenvkit_start.yaml` | Runs ClawEnvKit / Auto-ClawEval tasks. |
@@ -102,35 +101,6 @@ python launcher.py \
   --storage-type cloud \
   --pool-size 8
 ```
-
-## ExploitGym RJob
-
-Files:
-
-- `env/exploitgym/exploitgym_config.rjob.yaml`
-- `env/exploitgym/exploitgym_start.rjob.yaml`
-- `env/exploitgym/runner.py`
-- `env/exploitgym/rule_evaluator.py`
-
-ExploitGym is RJob-only in this integration. Each dataset row must contain one
-`task_id` starting with `user:`, `v8:`, or `kernel:`. The runner starts the
-nested-Docker ExploitGym image for only that task and routes its model requests
-through the current Safactory Gateway session.
-
-The default dataset contains one ARVO task for a safe first run. The adjacent
-`datasets/exploitgym_tasks_full.jsonl` contains all 869 canonical v1 tasks
-(502 user, 181 V8, and 186 kernel tasks); select it explicitly for full runs.
-
-The checked-in RJob resources are 8 CPU, 16 GiB RAM, no GPU, privileged mode,
-one `brainpp.cn/fuse` resource, and 100 GiB local storage. GPFS2 provides the
-read-only target-image cache; GPFS1 preserves results. Kernel tasks
-additionally require read/write `/dev/kvm`.
-
-The checked-in config pins the shared image by immutable digest. Replace the
-result-mount placeholder before running and use a Gateway hostname reachable
-from RJob workers. Actual provider keys remain in the Gateway; they are not
-mounted into the ExploitGym RJob. See `env/exploitgym/README.md` for setup,
-run commands, and result interpretation.
 
 ## WildClawBench
 
