@@ -13,6 +13,7 @@ from typing import Any
 
 RESULT_JSON_PREFIX = "SAFACTORY_RESULT_JSON "
 RESULT_PATH_ENV = "SAFACTORY_RESULT_PATH"
+SUMMARY_FILENAME = "safactory-result.json"
 DEFAULT_DATASET_PATH = "/benchmark/tasks/LiveCVEBench-verified"
 DEFAULT_DATASET_PATHS = {
     "livecvebench": DEFAULT_DATASET_PATH,
@@ -27,6 +28,9 @@ def main() -> int:
     session_id = _required_text(request.get("session_id"), "session_id")
     env_params = request.get("env_params") if isinstance(request.get("env_params"), dict) else {}
     dataset = env_params.get("dataset") if isinstance(env_params.get("dataset"), dict) else {}
+    task_id = ""
+    suite = ""
+    output_dir: Path | None = None
 
     try:
         task_id = _required_text(
@@ -35,15 +39,14 @@ def main() -> int:
         )
         suite = _first_text(dataset.get("suite"), env_params.get("suite"), "livecvebench").lower()
         dataset_path = _resolve_dataset_path(dataset, env_params, suite)
-        if not (dataset_path / task_id).is_dir():
-            raise RuntimeError(f"{suite} task does not exist: {dataset_path / task_id}")
-
         output_root = Path(
             _first_text(dataset.get("output_root"), env_params.get("output_root"), DEFAULT_OUTPUT_ROOT)
         )
         job_id = _safe_name(str(request.get("job_id") or "job"))
         output_dir = output_root / "safactory" / job_id / _safe_name(session_id)
         output_dir.mkdir(parents=True, exist_ok=True)
+        if not (dataset_path / task_id).is_dir():
+            raise RuntimeError(f"{suite} task does not exist: {dataset_path / task_id}")
 
         agent = _first_text(dataset.get("agent"), env_params.get("agent"), "oracle")
         n_concurrent = _positive_int(
@@ -112,49 +115,60 @@ def main() -> int:
             status = "failed"
             error_text = f"tb run produced no results.json for {task_id}"
 
-        _write_result(
-            {
-                "session_id": session_id,
-                "status": status,
-                "total_reward": score if status == "succeeded" else 0.0,
-                "step_count": max(1, len(trial_results)),
-                "terminated": True,
-                "truncated": False,
-                "error_text": error_text,
-                "metrics": {
-                    "bench": "livecvebench",
-                    "suite": suite,
-                    "task_id": task_id,
-                    "agent": agent,
-                    "score": score,
-                    "is_resolved": resolved[0] if len(resolved) == 1 else None,
-                    "resolved_trials": sum(1 for value in resolved if value),
-                    "trial_count": len(trial_results),
-                    "failure_modes": [item.get("failure_mode") for item in trial_results],
-                    "dataset_path": str(dataset_path),
-                    "output_root": str(output_root),
-                    "output_dir": str(output_dir),
-                    "run_metadata_path": str(metadata_path) if metadata_path else None,
-                    "result_paths": [str(path) for path in result_paths],
-                    "log_path": str(log_path),
-                    "returncode": proc.returncode,
-                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 3),
-                },
-            }
-        )
+        result = {
+            "session_id": session_id,
+            "status": status,
+            "total_reward": score if status == "succeeded" else 0.0,
+            "step_count": max(1, len(trial_results)),
+            "terminated": True,
+            "truncated": False,
+            "error_text": error_text,
+            "metrics": {
+                "bench": "livecvebench",
+                "suite": suite,
+                "task_id": task_id,
+                "agent": agent,
+                "score": score,
+                "is_resolved": resolved[0] if len(resolved) == 1 else None,
+                "resolved_trials": sum(1 for value in resolved if value),
+                "trial_count": len(trial_results),
+                "failure_modes": [item.get("failure_mode") for item in trial_results],
+                "dataset_path": str(dataset_path),
+                "output_root": str(output_root),
+                "output_dir": str(output_dir),
+                "safactory_result_path": str(output_dir / SUMMARY_FILENAME),
+                "run_metadata_path": str(metadata_path) if metadata_path else None,
+                "result_paths": [str(path) for path in result_paths],
+                "log_path": str(log_path),
+                "returncode": proc.returncode,
+                "duration_ms": round((time.perf_counter() - started_at) * 1000, 3),
+            },
+        }
+        _write_summary(output_dir, result)
+        _write_result(result)
         return 0
     except subprocess.TimeoutExpired as exc:
-        _write_result(
-            _failure_result(
-                session_id,
-                f"tb run timed out after {float(exc.timeout or 0):.1f}s",
-                started_at,
-                truncated=True,
-            )
+        result = _failure_result(
+            session_id,
+            f"tb run timed out after {float(exc.timeout or 0):.1f}s",
+            started_at,
+            suite=suite,
+            task_id=task_id,
+            truncated=True,
         )
+        _write_summary(output_dir, result)
+        _write_result(result)
         return 0
     except Exception as exc:
-        _write_result(_failure_result(session_id, str(exc), started_at))
+        result = _failure_result(
+            session_id,
+            str(exc),
+            started_at,
+            suite=suite,
+            task_id=task_id,
+        )
+        _write_summary(output_dir, result)
+        _write_result(result)
         return 0
 
 
@@ -266,6 +280,8 @@ def _failure_result(
     error_text: str,
     started_at: float,
     *,
+    suite: str = "",
+    task_id: str = "",
     truncated: bool = False,
 ) -> dict[str, Any]:
     return {
@@ -278,9 +294,24 @@ def _failure_result(
         "error_text": error_text,
         "metrics": {
             "bench": "livecvebench",
+            "suite": suite or None,
+            "task_id": task_id or None,
             "duration_ms": round((time.perf_counter() - started_at) * 1000, 3),
         },
     }
+
+
+def _write_summary(output_dir: Path | None, result: dict[str, Any]) -> None:
+    if output_dir is None:
+        return
+    path = output_dir / SUMMARY_FILENAME
+    metrics = result.get("metrics")
+    if isinstance(metrics, dict):
+        metrics.setdefault("safactory_result_path", str(path))
+    path.write_text(
+        json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _write_result(result: dict[str, Any]) -> None:
