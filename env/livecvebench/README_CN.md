@@ -43,6 +43,22 @@ python launcher.py \
   safactory/<job_id>/<session_id>/
 ```
 
+每个 session 根目录还会写入 `safactory-result.json`，其中直接包含
+`metrics.suite`（`livecvebench` 或 `patcheval`）、`metrics.task_id`、
+`metrics.is_resolved`、分数以及 Terminal-Bench 原生结果路径。例如：
+
+```json
+{
+  "status": "succeeded",
+  "metrics": {
+    "suite": "patcheval",
+    "task_id": "cve-2021-4315",
+    "score": 1.0,
+    "is_resolved": true
+  }
+}
+```
+
 若只想运行一个任务，可复制数据集 JSONL，仅保留：
 
 ```json
