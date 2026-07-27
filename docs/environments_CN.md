@@ -14,6 +14,7 @@ Safactory 将每个环境视为外部 agent runtime。一个 runtime 由两份�
 | OpenClaw | `openclaw` | `env/openclaw/openclaw_config.yaml` | `env/openclaw/openclaw_start.yaml` | 通用 OpenClaw CLI runtime，适合 smoke test 和工具使用任务。 |
 | OpenRT | `openrt` | `env/openrt/openrt_config.yaml` | `env/openrt/openrt_start.yaml` | 通过 gateway session URL 运行 OpenRT `eval.py`。 |
 | OpenRT RJob | `openrt` | `env/openrt/openrt_config.rjob.yaml` | `env/openrt/openrt_start.rjob.yaml` | 远程 RJob 版本，包含镜像、资源、嵌入 runner 和 GPFS 挂载。 |
+| ExploitGym RJob | `exploitgym` | `env/exploitgym/exploitgym_config.rjob.yaml` | `env/exploitgym/exploitgym_start.rjob.yaml` | 每个 episode 运行一个 user、V8 或 kernel 任务的 privileged 嵌套 Docker benchmark。 |
 | WildClawBench | `wildclawbench` | `env/wildclawbench/wildclawbench_config.yaml` | `env/wildclawbench/wildclawbench_start.yaml` | 需要 WildClawBench checkout 和匹配镜像。 |
 | DTAP | `dtap` | `env/dtap/dtap_config.yaml` | `env/dtap/dtap_start.yaml` | 运行 DecodingTrust-Agent workload，并挂载 Docker socket。 |
 | ClawEnvKit | `clawenvkit` | `env/clawenvkit/clawenvkit_config.yaml` | `env/clawenvkit/clawenvkit_start.yaml` | 运行 ClawEnvKit / Auto-ClawEval 任务。 |
@@ -101,6 +102,32 @@ python launcher.py \
   --storage-type cloud \
   --pool-size 8
 ```
+
+## ExploitGym RJob
+
+相关文件：
+
+- `env/exploitgym/exploitgym_config.rjob.yaml`
+- `env/exploitgym/exploitgym_start.rjob.yaml`
+- `env/exploitgym/runner.py`
+- `env/exploitgym/rule_evaluator.py`
+
+本次接入仅支持 RJob。每条 dataset row 必须包含一个以 `user:`、`v8:` 或
+`kernel:` 开头的 `task_id`。runner 只为该任务启动一次嵌套 Docker
+ExploitGym，并将模型请求转发到当前 SAfactory Gateway session。
+
+默认数据集只包含一个 ARVO 任务，适合首次运行。相邻的
+`datasets/exploitgym_tasks_full.jsonl` 包含全部 869 个 v1 标准任务
+（502 个 user、181 个 V8、186 个 kernel）；全量运行时需显式选用该文件。
+
+默认 RJob 资源为 8 CPU、16 GiB 内存、0 GPU、privileged、1 个
+`brainpp.cn/fuse` 资源和 100 GiB 本地存储。GPFS2 只读提供目标镜像
+cache，GPFS1 持久化结果；kernel 任务还要求 `/dev/kvm` 可读写。
+
+仓库配置已用不可变 digest 固定共享镜像。运行前只需替换结果挂载占位符，
+并确保 Gateway 地址能从 RJob Worker 访问。真实 provider key 只保存在
+Gateway，不会挂载进 ExploitGym RJob。完整配置、运行命令和结果解释见
+`env/exploitgym/README.md`。
 
 ## WildClawBench
 
