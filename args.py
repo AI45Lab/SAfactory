@@ -47,6 +47,18 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
     parser.add_argument("--max-workers", type=int, default=0, help="0 means use warm-pool size")
     parser.add_argument("--docker-bin", type=str, default="docker", help="Docker executable")
     parser.add_argument("--docker-pull-policy", type=str, default="never", choices=["never", "always"])
+    parser.add_argument(
+        "--docker-image-archive-dir",
+        type=str,
+        default="",
+        help="Directory containing Docker image archives named <repository>-<tag>.tar[.gz]",
+    )
+    parser.add_argument(
+        "--cleanup-docker-image",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Remove images loaded from --docker-image-archive-dir after their containers finish",
+    )
     parser.add_argument("--docker-startup-concurrency", type=int, default=8)
     parser.add_argument(
         "--cleanup-docker-container",
