@@ -8,15 +8,14 @@ container:
     command: "python3 /tmp/safactory-livecvebench-runner.py"
 
   mounts:
-    # Cache the nested Docker images used by Terminal-Bench tasks.
-    - livecvebench-runner-docker:/var/lib/docker
-
-    # Keep native Terminal-Bench artifacts on the host.
-    - source: /home/qiupanjia/code/LiveCVEBench-Preview-master/container-runs
+    # Keep native Terminal-Bench artifacts in a project-relative host directory.
+    - source: ./container-runs
       target: /benchmark/runs
       mode: rw
 
-  # Docker-in-Docker is required by the LiveCVEBench runner image.
+  # Docker-in-Docker is required by the LiveCVEBench runner image. Do not mount
+  # a shared /var/lib/docker volume here: Safactory may prewarm multiple runner
+  # containers, and their Docker daemons must use independent data directories.
   extra_args:
     - --privileged
 

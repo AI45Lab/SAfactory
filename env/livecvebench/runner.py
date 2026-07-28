@@ -78,13 +78,14 @@ def main() -> int:
         ]
 
         log_path = output_dir / "tb-run.log"
+        run_env = _docker_client_env(output_dir)
         with log_path.open("w", encoding="utf-8") as log_file:
             log_file.write("command: " + shlex.join(cmd) + "\n")
             log_file.flush()
             proc = subprocess.run(
                 cmd,
                 cwd="/benchmark",
-                env=dict(os.environ),
+                env=run_env,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -238,6 +239,33 @@ def _runner_timeout(
         float(test_timeout + 60),
     )
     return max(1.0, min(outer, configured))
+
+
+def _docker_client_env(output_dir: Path) -> dict[str, str]:
+    env = dict(os.environ)
+    http_proxy = _first_text(env.get("HTTP_PROXY"), env.get("http_proxy"))
+    https_proxy = _first_text(env.get("HTTPS_PROXY"), env.get("https_proxy"), http_proxy)
+    if not http_proxy and not https_proxy:
+        return env
+
+    no_proxy = _first_text(env.get("NO_PROXY"), env.get("no_proxy"))
+    docker_config_dir = output_dir / ".docker"
+    docker_config_dir.mkdir(parents=True, exist_ok=True)
+    config = {
+        "proxies": {
+            "default": {
+                "httpProxy": http_proxy,
+                "httpsProxy": https_proxy,
+                "noProxy": no_proxy,
+            }
+        }
+    }
+    (docker_config_dir / "config.json").write_text(
+        json.dumps(config, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    env["DOCKER_CONFIG"] = str(docker_config_dir)
+    return env
 
 
 def _find_metadata(output_dir: Path) -> Path | None:
