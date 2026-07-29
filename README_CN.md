@@ -185,9 +185,9 @@ python launcher.py \
 
 评测只使用按约定动态发现的 `<agent-root>/<env_name>/rule_evaluator.py`。RJob 和 Sandbox 模式使用相同的 `--enable-evaluation` 参数。见[评测](docs/evaluation_CN.md)。
 
-## 可选：风洞数据平台（LanceDB）
+## 可选：S3 + LanceDB 存储
 
-Safactory 可以通过 `wt-data-platform-sdk` 将轨迹和环境数据持久化到基于 LanceDB 的风洞数据平台。SQLite 仍是默认的本地存储策略；云存储相关依赖单独维护在 `requirements-cloud.txt` 中。
+Safactory 可以通过 `wt-data-platform-sdk` 将轨迹和环境数据持久化到以 S3 为对象存储、LanceDB 为数据引擎的存储平台。SQLite 仍是默认的本地存储策略；云存储相关依赖单独维护在 `requirements-cloud.txt` 中。
 
 安装可选依赖：
 

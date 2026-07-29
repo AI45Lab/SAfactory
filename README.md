@@ -193,9 +193,9 @@ python launcher.py \
 
 Evaluation dynamically discovers `<agent-root>/<env_name>/rule_evaluator.py` by convention. RJob and Sandbox modes use the same `--enable-evaluation` flag. See [Evaluation](docs/evaluation.md).
 
-## Optional: Wind Tunnel Data Platform (LanceDB)
+## Optional: S3 + LanceDB Storage
 
-Safactory can optionally persist trajectory and environment data to the LanceDB-based Wind Tunnel Data Platform through `wt-data-platform-sdk`. SQLite remains the default local strategy; cloud dependencies are kept separately in `requirements-cloud.txt`.
+Safactory can optionally persist trajectory and environment data to an S3-backed LanceDB data platform through `wt-data-platform-sdk`. SQLite remains the default local strategy; cloud dependencies are kept separately in `requirements-cloud.txt`.
 
 Install the optional dependencies:
 
