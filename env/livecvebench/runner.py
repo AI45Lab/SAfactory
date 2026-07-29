@@ -24,6 +24,7 @@ DEFAULT_OUTPUT_ROOT = "/benchmark/runs"
 
 def main() -> int:
     started_at = time.perf_counter()
+    dockerd_proc: subprocess.Popen[str] | None = None
     request = _read_request()
     session_id = _required_text(request.get("session_id"), "session_id")
     env_params = request.get("env_params") if isinstance(request.get("env_params"), dict) else {}
@@ -79,6 +80,7 @@ def main() -> int:
 
         log_path = output_dir / "tb-run.log"
         run_env = _docker_client_env(output_dir)
+        dockerd_proc = _ensure_docker_daemon(output_dir, run_env)
         with log_path.open("w", encoding="utf-8") as log_file:
             log_file.write("command: " + shlex.join(cmd) + "\n")
             log_file.flush()
@@ -111,10 +113,13 @@ def main() -> int:
             error_text = f"tb run exited with code {proc.returncode}"
         elif not metadata_path:
             status = "failed"
-            error_text = "tb run produced no new run_metadata.json"
+            error_text = _with_log_tail("tb run produced no new run_metadata.json", log_path)
         elif not result_paths:
             status = "failed"
-            error_text = f"tb run produced no results.json for {task_id}"
+            error_text = _with_log_tail(
+                f"tb run produced no results.json for {task_id}",
+                log_path,
+            )
 
         result = {
             "session_id": session_id,
@@ -171,6 +176,8 @@ def main() -> int:
         _write_summary(output_dir, result)
         _write_result(result)
         return 0
+    finally:
+        _stop_docker_daemon(dockerd_proc)
 
 
 def _read_request() -> dict[str, Any]:
@@ -268,6 +275,76 @@ def _docker_client_env(output_dir: Path) -> dict[str, str]:
     return env
 
 
+def _ensure_docker_daemon(
+    output_dir: Path,
+    env: dict[str, str],
+) -> subprocess.Popen[str] | None:
+    if subprocess.run(
+        ["docker", "info"],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0:
+        return None
+
+    for legacy_binary, generic_binary in (
+        ("/usr/sbin/iptables-legacy", "iptables"),
+        ("/usr/sbin/ip6tables-legacy", "ip6tables"),
+    ):
+        if Path(legacy_binary).is_file():
+            subprocess.run(
+                ["update-alternatives", "--set", generic_binary, legacy_binary],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+
+    log_path = output_dir / "dockerd.log"
+    log_file = log_path.open("w", encoding="utf-8")
+    try:
+        proc = subprocess.Popen(
+            ["dockerd", "--host=unix:///var/run/docker.sock"],
+            env=env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    finally:
+        log_file.close()
+
+    for _ in range(60):
+        if proc.poll() is not None:
+            raise RuntimeError(
+                _with_log_tail("the inner Docker daemon failed to start", log_path)
+            )
+        if subprocess.run(
+            ["docker", "info"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode == 0:
+            return proc
+        time.sleep(1)
+
+    proc.terminate()
+    raise RuntimeError(
+        _with_log_tail("timed out waiting for the inner Docker daemon", log_path)
+    )
+
+
+def _stop_docker_daemon(proc: subprocess.Popen[str] | None) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
 def _find_metadata(output_dir: Path) -> Path | None:
     candidates = []
     for path in output_dir.glob("*/run_metadata.json"):
@@ -297,6 +374,16 @@ def _float_or_default(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _with_log_tail(message: str, log_path: Path, *, max_chars: int = 6000) -> str:
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return message
+    if not text:
+        return message
+    return f"{message}\n\nLast tb output:\n{text[-max_chars:]}"
 
 
 def _safe_name(value: str) -> str:

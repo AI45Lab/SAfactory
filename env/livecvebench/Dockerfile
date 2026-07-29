@@ -40,7 +40,8 @@ WORKDIR /benchmark
 
 COPY . /benchmark
 
-RUN chmod +x /benchmark/docker/single-task-entrypoint.sh \
+RUN ln -sf /usr/bin/python3 /usr/local/bin/python \
+    && chmod +x /benchmark/docker/single-task-entrypoint.sh \
     && mkdir -p /benchmark/runs /var/lib/docker
 
 VOLUME ["/benchmark/runs", "/var/lib/docker"]
