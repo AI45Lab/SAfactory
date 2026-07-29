@@ -185,6 +185,40 @@ python launcher.py \
 
 评测只使用按约定动态发现的 `<agent-root>/<env_name>/rule_evaluator.py`。RJob 和 Sandbox 模式使用相同的 `--enable-evaluation` 参数。见[评测](docs/evaluation_CN.md)。
 
+## 可选：风洞数据平台（LanceDB）
+
+Safactory 可以通过 `wt-data-platform-sdk` 将轨迹和环境数据持久化到基于 LanceDB 的风洞数据平台。SQLite 仍是默认的本地存储策略；云存储相关依赖单独维护在 `requirements-cloud.txt` 中。
+
+安装可选依赖：
+
+```bash
+pip install -r requirements-cloud.txt
+```
+
+创建本地 `.env` 文件并填写数据平台连接参数（请勿提交包含凭证的文件）：
+
+```bash
+# 可选值：production 或 test
+WT_SDK_PROFILE=test
+WT_SDK_DB_URI=s3://YOUR_DATA_DATABASE
+WT_SDK_ENV_CONFIG_DB_URI=s3://YOUR_ENV_CONFIG_DATABASE
+WT_SDK_S3_ENDPOINT=https://YOUR_S3_ENDPOINT
+WT_SDK_S3_ALLOW_HTTP=true
+AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY
+AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY
+AWS_EC2_METADATA_DISABLED=true
+```
+
+启动 Safactory 前，将配置加载到进程环境：
+
+```bash
+set -a
+source .env
+set +a
+```
+
+然后将 gateway 的 `storage_type` 设置为 `cloud`，并使用 `--storage-type cloud` 启动 Safactory。`production` profile 会选择生产 landing/serving 表，`test` profile 会选择对应的测试表。完整配置和表说明请参阅 [AI45Lab/wt-data-platform-sdk](https://github.com/AI45Lab/wt-data-platform-sdk)。
+
 ## 运行数据
 
 本地运行默认将任务行和轨迹写入 `env_trajs.db`。建议启动时显式传入 `--job-id my-openrt-smoke`，便于后续查询、复现和训练过滤。
