@@ -1,6 +1,6 @@
 <div align="center">
 
-# Safactory
+# SAfactory
 
 <p align="center">
     中文 &nbsp ｜ &nbsp <a href="README.md">English</a>
@@ -13,6 +13,8 @@
 [快速开始](#quick-start) |
 [演示](#demo) |
 [RL 训练](docs/rl-training_CN.md) |
+[RJob 模式](docs/rjob-mode_CN.md) |
+[Sandbox 模式](docs/sandbox-mode_CN.md) |
 [自定义环境](docs/custom-environment_CN.md) |
 [配置](docs/configuration_CN.md) |
 [数据](docs/data-manager_CN.md) |
@@ -27,13 +29,11 @@
 
 ---
 
-## <a id="why-safactory"></a>✨ 为什么使用 Safactory
+## <a id="why-SAfactory"></a>✨ 为什么使用 SAfactory
 
-![tax](fig/tax.png)
+SAfactory 是面向需要统一完成评测、数据生成和 RL 训练的团队的智能体沙箱。它帮助团队快速接入新的 Agent 和社区 Benchmark，通过可扩展的 rollout 池并发运行，经由 Gateway 统一路由 OpenAI 兼容模型流量，持久化轨迹数据，并将完成的数据桥接到 Slime / GRPO 训练。
 
-Safactory 是面向需要统一完成评测、数据生成和 RL 训练的团队的智能体沙箱。它帮助团队快速接入新的 Agent 和社区 Benchmark，通过可扩展的 rollout 池并发运行，经由 Gateway 统一路由 OpenAI 兼容模型流量，持久化轨迹数据，并将完成的数据桥接到 Slime / GRPO 训练。
-
-| 需求 | Safactory 提供                                   |
+| 需求 | SAfactory 提供                                   |
 |------|------------------------------------------------|
 | 评测 Agent 与 Benchmark | 在真实交互任务和社区 Benchmark 中运行 LLM 或 VLM Agent 并收集奖励。 |
 | 构建轨迹数据 | 将消息、动作、观察、奖励和环境状态持久化到数据平台。                     |
@@ -45,7 +45,7 @@ Safactory 是面向需要统一完成评测、数据生成和 RL 训练的团队
 - 多领域 Agent 与 Benchmark adapter：OS、Android、Minecraft、RoboTrustBench、Embodied ALFRED、QA、DABStep、DiscoveryWorld、DeepEyes、Geo3K-VL 和 Math500。
 - 通过池化管理和异步worker调度支持高并发运行。
 - 支持 vLLM、SGLang、托管 API 和本地代理等 OpenAI 兼容模型服务。
-- 支持本地单机模式和基于 RayJob 的远程集群模式。
+- 支持本地 Docker 模式、远程 RJob 模式和 Brainbox Sandbox 模式。
 
 ## <a id="demo"></a>🎬 演示
 
@@ -62,10 +62,12 @@ https://github.com/user-attachments/assets/4c551b27-ce4d-4fc8-8df6-d6dc8100cc88
 ### 1. 安装
 
 ```bash
-git clone https://github.com/AI45Lab/Safactory.git
-cd Safactory
+git clone https://github.com/AI45Lab/SAfactory.git
+cd SAfactory
 pip install -r requirements.txt
 ```
+
+Docker 模式需要安装 Docker，并准备与环境适配的镜像。
 
 
 ### 2. 配置 Gateway
@@ -75,8 +77,6 @@ pip install -r requirements.txt
 ```bash
 cp gateway/config.example.yaml gateway/config.local.yaml
 ```
-
-在 `gateway/config.local.yaml` 中，确保 gateway 和 launcher 使用同一个 SQLite DB：
 
 ```yaml
 listen_port: 8000
@@ -104,24 +104,20 @@ python -m gateway --config gateway/config.local.yaml
 curl http://127.0.0.1:8000/readyz
 ```
 
-### 3. 启动运行
-
-
-#### 本地 Docker 运行任务
-
-对于并发数要求不高的任务，可以采用docker mode 启动；下面示例用 Docker 模式运行仓库内置OpenRT 环境：
+### 3. Docker 模式运行评测
 
 ```bash
 python launcher.py \
   --mode docker \
-  --agent-config env/openrt/openrt_config.yaml \
-  --agent-start-config env/openrt/openrt_start.yaml \
+  --agent-config env/geo3k/geo3k_config.yaml \
+  --agent-start-config env/geo3k/geo3k_start.yaml \
   --gateway-base-url http://127.0.0.1:8000/v1/sessions \
   --llm-model YOUR_ROUTE_KEY \
-  --db-path sqlite://env_trajs.db \
+  --enable-evaluation \
+  --job-id geo3k-docker-smoke \
   --pool-size 1 \
   --max-workers 1 \
-  --max-steps 20
+  --max-steps 10
 ```
 
 关键点：
@@ -131,59 +127,38 @@ python launcher.py \
 - `--agent-start-config` 定义智能体运行时如何启动。
 - `--gateway-base-url` 指向 gateway 的 session root。
 - 使用 `sqlite` 时，`--db-path` 必须与 `gateway.storage_config.db_url` 一致。
+- `--enable-evaluation` 会按约定发现 `rule_evaluator.py` 并提交 score。
 
-#### 使用 RJob 扩展并发
+### 4. Docker 模式运行 RL 训练
 
-如果本地 Docker 已跑通，并且需要更高并发或集群资源，可以切换到 RJob 模式。RJob 模式仍使用同一个 launcher，但运行时资源由 RJob 提交：
-
-```bash
-python launcher.py \
-  --mode rjob \
-  --rjob-config config.yaml \
-  --agent-config env/openrt/openrt_config.rjob.yaml \
-  --agent-start-config env/openrt/openrt_start.rjob.yaml \
-  --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
-  --llm-model YOUR_ROUTE_KEY \
-  --db-path sqlite://env_trajs.db\
-  --pool-size 8
-```
-
-全局 RJob 鉴权放在 `config.yaml` 或 `--rjob-config`。每个 agent 的镜像、资源、挂载、嵌入文件和运行命令放在 `--agent-start-config`。`--pool-size` 控制并发规模，具体上限取决于集群资源和 agent start config。
-
-#### 使用 Brainbox Sandbox
-
-`--mode sandbox` 会从预先创建的 Brainbox Sandbox Environment 分配 rollout 实例。连接配置和 Environment ID 放在 `--sandbox-config`，runner 仍由 `--agent-start-config` 定义。
+RL 训练复用同一套 Docker runtime，但 Gateway 通常由 Buffer Server 自动启动，并路由到 Slime generator 内置的 LLM proxy。先修改 `rl/examples/geo3k_vl/env.sh`：
 
 ```bash
-export OPEN_SANDBOX_API_KEY='<ak>:<sk>'
-python launcher.py \
-  --mode sandbox \
-  --sandbox-config config.sandbox.example.yaml \
-  --agent-config env/openrt/openrt_config.yaml \
-  --agent-start-config env/openrt/openrt_start.yaml \
-  --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
-  --llm-model YOUR_ROUTE_KEY \
-  --pool-size 8
+export AIEVOBOX_MODE=docker
+export AIEVOBOX_AGENT_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_config.yaml
+export AIEVOBOX_AGENT_START_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_start.yaml
+export AIEVOBOX_GATEWAY_HOST=127.0.0.1
+export AIEVOBOX_GATEWAY_PORT=8000
+export HF_CKPT_DIR=/path/to/qwen3-vl-checkpoint
+export SLIME_HOME=/path/to/slime
+export MEGATRON_HOME=/path/to/Megatron-LM
 ```
 
-Environment、volume、生命周期和评测要求见 [Sandbox 模式](docs/sandbox-mode_CN.md)。
+如果评测 smoke test 中手动启动的 Gateway 仍然占用同一个端口，先停止它再启动 Buffer Server。只有当外部 Gateway 已经把 `RL_MODEL` 路由到 Slime LLM proxy，并且使用同一个 `AIEVOBOX_DB_URL` 时，才设置 `AIEVOBOX_GATEWAY_AUTOSTART=0`。
 
-#### 启用评测
-
-在 Docker、RJob 或 Sandbox 启动命令跑通后，如果需要执行评测任务，再追加 evaluator 相关参数：
+然后在仓库根目录打开两个终端。
 
 ```bash
-python launcher.py \
-  --agent-config env/openrt/openrt_config.yaml \
-  --agent-start-config env/openrt/openrt_start.yaml \
-  --gateway-base-url http://127.0.0.1:8000/v1/sessions \
-  --llm-model YOUR_ROUTE_LLM_MODEL \
-  --enable-evaluation \
-  --db-path sqlite://env_trajs.db \
-  --pool-size 1
+RL_ENV_SH=rl/examples/geo3k_vl/env.sh bash rl/run_slime_generator.sh
 ```
 
-评测只使用按约定动态发现的 `<agent-root>/<env_name>/rule_evaluator.py`。RJob 和 Sandbox 模式使用相同的 `--enable-evaluation` 参数。见[评测](docs/evaluation_CN.md)。
+```bash
+RL_ENV_SH=rl/examples/geo3k_vl/env.sh bash rl/run_buffer_server.sh
+```
+
+Slime generator 会托管 `rl/llm_proxy.py`；Buffer Server 会生成 `logs/gateway.rl.generated.yaml`，启动 Gateway，拉起 Docker rollout 采集，并通过 `/get_rollout_data` 提供完成的训练 group。完整 RL 参数见 [RL 训练](docs/rl-training_CN.md)。
+
+远程 runtime 使用相同的配置概念，但资源分配后端不同。见 [RJob 模式](docs/rjob-mode_CN.md) 和 [Sandbox 模式](docs/sandbox-mode_CN.md)。
 
 ## 可选：S3 + LanceDB 存储
 
@@ -223,7 +198,7 @@ set +a
 
 ## 运行数据
 
-本地运行默认将任务行和轨迹写入 `env_trajs.db`。建议启动时显式传入 `--job-id my-openrt-smoke`，便于后续查询、复现和训练过滤。
+本地运行默认将任务行和轨迹写入 `env_trajs.db`。建议启动时显式传入 `--job-id geo3k-docker-smoke`，便于后续查询、复现和训练过滤。
 
 - `job_id`：一次 `launcher.py` 运行。
 - `session_id`：一个环境实例/任务实例，对应 `job_environments.env_id` 和 `session_steps.session_id`。
@@ -261,17 +236,6 @@ sqlite3 env_trajs.db "
 
 完整表结构、行类型和更多查询见[数据管理器](docs/data-manager_CN.md)。
 
-## RL 训练
-
-Safactory 可以通过 `rl/buffer_server.py` 对接 Slime。当前 RL 脚本位于 `rl/examples/<task>/`，并读取各自目录下的 `env.sh`：
-
-```bash
-cd rl/examples/math500
-./run_buffer_server.sh
-```
-
-Buffer Server 会启动 `launcher.py`，读取已完成的可训练行，按 `group_id` 聚合样本，并通过 `/get_rollout_data` 输出 batch。见 [RL 训练](docs/rl-training_CN.md)。
-
 
 ## 文档
 
@@ -279,6 +243,8 @@ Buffer Server 会启动 `launcher.py`，读取已完成的可训练行，按 `gr
 |----------------------------------------|---------------------------------------------------------------------------|
 | [Gateway](docs/gateway_CN.md)          | Gateway 端点、路由、Admission Control、telemetry、请求日志和存储一致性。                     |
 | [配置](docs/configuration_CN.md)         | 当前 `launcher.py`、gateway、agent config、agent start config 和 RJob 字段。       |
+| [RJob 模式](docs/rjob-mode_CN.md)       | 远程 RJob runtime 配置、鉴权、挂载、Gateway 可达性和 Geo3K 示例。                         |
+| [Sandbox 模式](docs/sandbox-mode_CN.md) | Brainbox Sandbox Environment 配置、volume、生命周期和启动流程。                         |
 | [支持的环境](docs/environments_CN.md)       | 当前仓库内置 adapter 及运行时依赖。                                                    |
 | [评测](docs/evaluation_CN.md)            | Rule evaluator 配置和 reward commit 行为。 |
 | [数据管理器](docs/data-manager_CN.md)       | SQLite/cloud 存储行为、表、事件类型和查询示例。                                            |
@@ -287,15 +253,21 @@ Buffer Server 会启动 `launcher.py`，读取已完成的可训练行，按 `gr
 
 ## <a id="architecture"></a>🏗️ 架构
 
-![Safactory architecture](fig/overview.png)
+![SAfactory architecture](fig/overview.png)
 
 整体上，`launcher.py` 会加载环境 YAML 文件，启动或连接环境服务，将观察发送到 OpenAI 兼容模型端点，通过数据管理器记录每次交互，并可选择将完成的 rollout 转发给 RL 训练。
 
 ## 数据集
 
-Safactory 可以生成可复用的轨迹数据集。公开 OS 轨迹发布在 Hugging Face：
+![tax](fig/tax.png)
 
-- [AI45Research/SATraj-OS](https://huggingface.co/datasets/AI45Research/SATraj-OS)，由 Safactory 生成、用于智能体训练和分析的 OS 轨迹数据集。
+SAfactory 可以生成可复用的轨迹数据集。公开 OS 轨迹发布在 Hugging Face：
+
+- [AI45Research/SATraj-OS](https://huggingface.co/datasets/AI45Research/SATraj-OS)，由 SAfactory 生成、用于智能体训练和分析的 OS 轨迹数据集。
+
+SATraj-OS 可用于 SFT。利用该数据集训练出的 SCOPE 模型，在 OSWorld 和 OS-BLIND 任务上实现了能力与安全性之间更好的平衡：
+
+![SCOPE capability-safety joint scaling](fig/scope_capability_safety_aaai_trend.png)
 
 ## 贡献
 
@@ -313,11 +285,11 @@ Safactory 可以生成可复用的轨迹数据集。公开 OS 轨迹发布在 Hu
 
 ## 引用
 
-如果 Safactory 或 Safactory 生成的数据集对你的工作有帮助，请引用本仓库以及你使用的具体数据集或报告。
+如果 SAfactory 或 SAfactory 生成的数据集对你的工作有帮助，请引用本仓库以及你使用的具体数据集或报告。
 
 ```bibtex
 @misc{chen2026safactoryscalableagenticinfrastructure,
-      title={Safactory: A Scalable Agentic Infrastructure for Training Trustworthy Autonomous Intelligence},
+      title={SAfactory: A Scalable Agentic Infrastructure for Training Trustworthy Autonomous Intelligence},
       author={Shanghai AI Lab},
       year={2026},
       eprint={2605.06230},

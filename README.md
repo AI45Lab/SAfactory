@@ -1,6 +1,6 @@
 <div align="center">
 
-# Safactory
+# SAfactory
 
 <p align="center">
     <a href="README_CN.md">中文</a> &nbsp ｜ &nbsp English
@@ -14,6 +14,8 @@
 [Demo](#demo) |
 [Environments](docs/environments.md) |
 [RL Training](docs/rl-training.md) |
+[RJob Mode](docs/rjob-mode.md) |
+[Sandbox Mode](docs/sandbox-mode.md) |
 [Custom Environments](docs/custom-environment.md) |
 [Configuration](docs/configuration.md) |
 [Data](docs/data-manager.md) |
@@ -28,13 +30,11 @@
 
 ---
 
-## <a id="why-safactory"></a>✨ Why Safactory
+## <a id="why-SAfactory"></a>✨ Why SAfactory
 
-![tax](fig/tax.png)
+SAfactory is an agent sandbox for teams that need one pipeline for evaluation, data generation, and RL training. It helps teams plug in new agents and community benchmarks quickly, run them concurrently through scalable rollout pools, route OpenAI-compatible model traffic through the Gateway, persist trajectories, and bridge completed data into Slime / GRPO training.
 
-Safactory is an agent sandbox for teams that need one pipeline for evaluation, data generation, and RL training. It helps teams plug in new agents and community benchmarks quickly, run them concurrently through scalable rollout pools, route OpenAI-compatible model traffic through the Gateway, persist trajectories, and bridge completed data into Slime / GRPO training.
-
-| Need | Safactory provides |
+| Need | SAfactory provides |
 |------|--------------------|
 | Evaluate agents and benchmarks | Run LLM or VLM agents against realistic interactive tasks and community benchmarks, then collect rewards. |
 | Build trajectory data | Persist messages, actions, observations, rewards, and environment state to SQLite. |
@@ -46,7 +46,7 @@ Core features:
 - Multi-domain agent and benchmark adapters: OS, Android, Minecraft, RoboTrustBench, Embodied ALFRED, QA, DABStep, DiscoveryWorld, DeepEyes, Geo3K-VL, and Math500.
 - High-concurrency rollouts through runtime pools and async workers.
 - OpenAI-compatible model integration for vLLM, SGLang, hosted APIs, and local proxies.
-- Local single-machine mode and remote RayJob-backed cluster mode.
+- Local Docker mode, remote RJob mode, and Brainbox Sandbox mode.
 
 ## <a id="demo"></a>🎬 Demo
 
@@ -63,18 +63,12 @@ https://github.com/user-attachments/assets/4c551b27-ce4d-4fc8-8df6-d6dc8100cc88
 ### 1. Install
 
 ```bash
-git clone https://github.com/AI45Lab/Safactory.git
-cd Safactory
+git clone https://github.com/AI45Lab/SAfactory.git
+cd SAfactory
 pip install -r requirements.txt
 ```
 
-If you want to use LanceDB/cloud storage features, install the optional cloud dependencies as well:
-
-```bash
-pip install -r requirements-cloud.txt
-```
-
-Docker mode requires Docker and an agent image that matches the selected adapter. RJob mode additionally requires a valid RJob client configuration.
+Docker mode requires Docker and an agent image that matches the selected adapter.
 
 ### 2. Configure the Gateway
 
@@ -83,8 +77,6 @@ Copy the example and replace route placeholders with your own OpenAI-compatible 
 ```bash
 cp gateway/config.example.yaml gateway/config.local.yaml
 ```
-
-In `gateway/config.local.yaml`, make sure the gateway and launcher share the same SQLite DB:
 
 ```yaml
 listen_port: 8000
@@ -112,86 +104,63 @@ Check readiness in another terminal:
 curl http://127.0.0.1:8000/readyz
 ```
 
-### 3. Start Runs
+### 3. Run Evaluation In Docker
 
-The remaining quick-start commands follow the recommended path: start with a minimal local Docker run, switch to RJob when you need more concurrency, then add evaluation parameters when you need scoring.
-
-#### Module One: Run a Local Docker Task
-
-This example runs the checked-in OpenClaw adapter in Docker mode:
+Run a small Docker evaluation:
 
 ```bash
 python launcher.py \
-  --agent-config env/openclaw/openclaw_config.yaml \
-  --agent-start-config env/openclaw/openclaw_start.yaml \
+  --mode docker \
+  --agent-config env/geo3k/geo3k_config.yaml \
+  --agent-start-config env/geo3k/geo3k_start.yaml \
   --gateway-base-url http://127.0.0.1:8000/v1/sessions \
   --llm-model YOUR_ROUTE_KEY \
-  --db-path sqlite://env_trajs.db \
+  --enable-evaluation \
+  --job-id geo3k-docker-smoke \
   --pool-size 1 \
   --max-workers 1 \
-  --max-steps 20
+  --max-steps 10
 ```
 
 Important details:
 
 - `--llm-model` is a gateway `llm_routes` key, not an arbitrary upstream model name.
 - `--agent-config` defines tasks and datasets.
-- `--agent-start-config` defines how the agent runtime is started.
+- `--agent-start-config` defines how the agent runtime starts.
 - `--gateway-base-url` should point at the gateway session root.
 - `--db-path` must match `gateway.storage_config.db_url` when `storage_type` is `sqlite`.
+- `--enable-evaluation` discovers `rule_evaluator.py` by convention and commits scores.
 
-#### Module Two: Scale With RJob
+### 4. Run RL Training In Docker
 
-After the local Docker path works, switch to RJob when you need higher concurrency or cluster resources. RJob mode uses the same launcher but replaces Docker allocation with RJob submission:
-
-```bash
-python launcher.py \
-  --mode rjob \
-  --rjob-config config.yaml \
-  --agent-config env/openrt/openrt_config.rjob.yaml \
-  --agent-start-config env/openrt/openrt_start.rjob.yaml \
-  --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
-  --llm-model YOUR_ROUTE_KEY \
-  --storage-type cloud \
-  --pool-size 8
-```
-
-Global RJob auth belongs in `config.yaml` or `--rjob-config`. Per-agent image, resources, mounts, embedded files, and run command belong in `--agent-start-config`. `--pool-size` controls the concurrency target, bounded by cluster resources and the agent start config.
-
-#### Run With Brainbox Sandbox
-
-Use `--mode sandbox` to allocate rollout instances from a pre-created Brainbox Sandbox Environment. Connection settings and the Environment ID belong in `--sandbox-config`; the agent runner is still defined by `--agent-start-config`.
+RL training reuses the same Docker runtime, but the Gateway is usually auto-started by Buffer Server and routed to the Slime generator's built-in LLM proxy. Edit `rl/examples/geo3k_vl/env.sh` first:
 
 ```bash
-export OPEN_SANDBOX_API_KEY='<ak>:<sk>'
-python launcher.py \
-  --mode sandbox \
-  --sandbox-config config.sandbox.example.yaml \
-  --agent-config env/openrt/openrt_config.yaml \
-  --agent-start-config env/openrt/openrt_start.yaml \
-  --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
-  --llm-model YOUR_ROUTE_KEY \
-  --pool-size 8
+export AIEVOBOX_MODE=docker
+export AIEVOBOX_AGENT_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_config.yaml
+export AIEVOBOX_AGENT_START_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_start.yaml
+export AIEVOBOX_GATEWAY_HOST=127.0.0.1
+export AIEVOBOX_GATEWAY_PORT=8000
+export HF_CKPT_DIR=/path/to/qwen3-vl-checkpoint
+export SLIME_HOME=/path/to/slime
+export MEGATRON_HOME=/path/to/Megatron-LM
 ```
 
-See [Sandbox mode](docs/sandbox-mode.md) for Environment, volume, lifecycle, and evaluation requirements.
+If the standalone Gateway from the evaluation smoke test is still running on the same port, stop it before starting Buffer Server. Keep `AIEVOBOX_GATEWAY_AUTOSTART=0` only when your external Gateway already routes `RL_MODEL` to the Slime LLM proxy and uses the same `AIEVOBOX_DB_URL`.
 
-#### Module Three: Run With Evaluation
-
-After Docker, RJob, or Sandbox startup works, add evaluator parameters when you need scoring:
+Start two terminals from the repository root:
 
 ```bash
-python launcher.py \
-  --agent-config env/openrt/openrt_config.yaml \
-  --agent-start-config env/openrt/openrt_start.yaml \
-  --gateway-base-url http://127.0.0.1:8000/v1/sessions \
-  --llm-model YOUR_ROUTE_KEY \
-  --enable-evaluation \
-  --db-path sqlite://env_trajs.db \
-  --pool-size 1
+RL_ENV_SH=rl/examples/geo3k_vl/env.sh bash rl/run_slime_generator.sh
 ```
 
-Evaluation dynamically discovers `<agent-root>/<env_name>/rule_evaluator.py` by convention. RJob and Sandbox modes use the same `--enable-evaluation` flag. See [Evaluation](docs/evaluation.md).
+```bash
+RL_ENV_SH=rl/examples/geo3k_vl/env.sh bash rl/run_buffer_server.sh
+```
+
+The Slime generator hosts `rl/llm_proxy.py`; Buffer Server auto-generates `logs/gateway.rl.generated.yaml`, starts Gateway, launches Docker rollout collection, and serves completed groups through `/get_rollout_data`. For the full set of RL variables, see [RL Training](docs/rl-training.md).
+
+Remote runtimes use the same config concepts but different allocation backends. See [RJob mode](docs/rjob-mode.md) and [Sandbox mode](docs/sandbox-mode.md).
 
 ## Optional: S3 + LanceDB Storage
 
@@ -231,7 +200,7 @@ Then set the gateway `storage_type` to `cloud` and launch Safactory with `--stor
 
 ## Run Data
 
-Local runs write task rows and trajectories to `env_trajs.db` by default. Pass an explicit `--job-id my-openrt-smoke` when launching to make later querying, reproduction, and training filters clearer.
+Local runs write task rows and trajectories to `env_trajs.db` by default. Pass an explicit `--job-id geo3k-docker-smoke` when launching to make later querying, reproduction, and training filters clearer.
 
 - `job_id`: one `launcher.py` run.
 - `session_id`: one environment/task instance, matching `job_environments.env_id` and `session_steps.session_id`.
@@ -269,23 +238,14 @@ Default local artifacts:
 
 See [Data Manager](docs/data-manager.md) for the full schema, row types, and more queries.
 
-## RL Training
-
-Safactory can feed Slime through `rl/buffer_server.py`. The current RL scripts live under `rl/examples/<task>/` and source task-specific `env.sh` files:
-
-```bash
-cd rl/examples/math500
-./run_buffer_server.sh
-```
-
-The Buffer Server starts `launcher.py`, reads completed trainable rows, groups samples by `group_id`, and exposes batches through `/get_rollout_data`. See [RL Training](docs/rl-training.md).
-
 ## Documentation
 
 | Guide | What it covers |
 |-------|----------------|
 | [Gateway](docs/gateway.md) | Gateway endpoints, routing, telemetry, request logs, and storage matching. |
 | [Configuration](docs/configuration.md) | Current `launcher.py`, gateway, agent config, agent start config, and RJob fields. |
+| [RJob Mode](docs/rjob-mode.md) | Remote RJob runtime setup, credentials, mounts, Gateway reachability, and Geo3K examples. |
+| [Sandbox Mode](docs/sandbox-mode.md) | Brainbox Sandbox Environment setup, volumes, lifecycle, and launch flow. |
 | [Supported Environments](docs/environments.md) | Checked-in v2 adapters and their runtime requirements. |
 | [Evaluation](docs/evaluation.md) | Rule evaluator configuration and reward commit behavior. |
 | [Data Manager](docs/data-manager.md) | SQLite/cloud storage behavior, tables, event types, and useful queries. |
@@ -294,35 +254,45 @@ The Buffer Server starts `launcher.py`, reads completed trainable rows, groups s
 
 ## <a id="architecture"></a>🏗️ Architecture
 
-![Safactory architecture](fig/overview.png)
+![SAfactory architecture](fig/overview.png)
 
 At a high level, `launcher.py` loads environment YAML files, starts or connects to environment services, sends observations to an OpenAI-compatible model endpoint, records every interaction through the data manager, and optionally forwards completed rollouts to RL training.
 
 ## Datasets
 
-Safactory can generate reusable trajectory datasets. The public OS trajectory release is available on Hugging Face:
+![tax](fig/tax.png)
 
-- [AI45Research/SATraj-OS](https://huggingface.co/datasets/AI45Research/SATraj-OS), a Safactory-generated OS trajectory dataset for agent training and analysis.
+SAfactory can generate reusable trajectory datasets. The public OS trajectory release is available on Hugging Face:
+
+- [AI45Research/SATraj-OS](https://huggingface.co/datasets/AI45Research/SATraj-OS), a SAfactory-generated OS trajectory dataset for agent training and analysis.
+
+SATraj-OS can be used for SFT. The SCOPE models trained with this pipeline improve the balance between capability and safety on OSWorld and OS-BLIND:
+
+![SCOPE capability-safety joint scaling](fig/scope_capability_safety_aaai_trend.png)
+
 
 ## Contributing
 
 Contributions are welcome for new custom environments, bug fixes, and reproducible examples.
 
-When adding an environment, Safactory usually treats a new agent or benchmark as an external runtime: add a runner such as `runner.py` or `runner.mjs`, dataset files, and an optional `rule_evaluator.py` under `env/<name>/`, then provide `<name>_config.yaml` and `<name>_start.yaml`. The config describes task data, image, and evaluation parameters; the start config describes the Docker/RJob launch method, entrypoint command, environment variables, and mounts. Each dataset row should represent one independent task/case. Run a small `launcher.py` smoke test before opening a PR. See [Custom Environments](docs/custom-environment.md) for the full guide.
+Each environment lives in its own subdirectory under `env/`. To add one:
 
-1. Add or update the runner, dataset, and optional evaluator under `env/<name>/`.
-2. Provide both `<name>_config.yaml` and `<name>_start.yaml`, including all required fields.
-3. Keep secrets and private endpoints out of committed configs.
-4. Run a local smoke test with `launcher.py`.
-5. Include setup notes, expected outputs, and storage requirements in the pull request.
+1. Create a new `env/<name>/` directory.
+2. Provide `dataset/`; JSONL datasets should contain one independently scheduled task per line.
+3. Provide both `<name>_config.yaml` and `<name>_start.yaml`, including the required Docker image.
+4. Add the runtime entry script required by the environment, usually named `runner` such as `runner.py` or `runner.mjs`.
+5. Implement `rule_evaluator.py` when evaluation needs one.
+6. Run a local smoke test with `launcher.py`.
+
+See [Custom Environments](docs/custom-environment.md) for the full guide.
 
 ## Citation
 
-If Safactory or Safactory-generated datasets are useful in your work, cite the repository and the specific dataset or report you used.
+If SAfactory or SAfactory-generated datasets are useful in your work, cite the repository and the specific dataset or report you used.
 
 ```bibtex
 @misc{chen2026safactoryscalableagenticinfrastructure,
-      title={Safactory: A Scalable Agentic Infrastructure for Training Trustworthy Autonomous Intelligence},
+      title={SAfactory: A Scalable Agentic Infrastructure for Training Trustworthy Autonomous Intelligence},
       author={Shanghai AI Lab},
       year={2026},
       eprint={2605.06230},
