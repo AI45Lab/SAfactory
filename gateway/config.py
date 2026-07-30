@@ -18,6 +18,7 @@ class LLMRouteConfig:
     anthropic_compatibility: str = "native"
     anthropic_thinking_budget_tokens: int = 1024
     anthropic_max_tokens: int | None = None
+    anthropic_interleaved_thinking: bool = False
 
 
 @dataclass(frozen=True)
@@ -225,6 +226,11 @@ def _route_from_mapping(data: dict[str, Any]) -> LLMRouteConfig:
         raise ValueError(
             "anthropic_max_tokens must be greater than anthropic_thinking_budget_tokens"
         )
+    anthropic_interleaved_thinking = data.get(
+        "anthropic_interleaved_thinking", False
+    )
+    if not isinstance(anthropic_interleaved_thinking, bool):
+        raise ValueError("anthropic_interleaved_thinking must be a boolean")
     return LLMRouteConfig(
         base_url=str(data["base_url"]).rstrip("/"),
         api_key=data.get("api_key"),
@@ -237,6 +243,7 @@ def _route_from_mapping(data: dict[str, Any]) -> LLMRouteConfig:
         anthropic_max_tokens=None
         if anthropic_max_tokens is None
         else int(anthropic_max_tokens),
+        anthropic_interleaved_thinking=anthropic_interleaved_thinking,
     )
 
 

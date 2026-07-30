@@ -15,6 +15,7 @@ from env.patcheval.claude_adapter import conversion
 from env.patcheval.claude_adapter.app import create_app as create_adapter_app
 from evaluator.rule_evaluator import discover_rule_eval_spec
 from gateway import app as gateway_app
+from gateway.anthropic_thinking_history import AnthropicThinkingHistory
 from gateway.app import _anthropic_response_from_sse
 from gateway.config import GatewayConfig, LLMRouteConfig
 from gateway.inference_forwarder import (
@@ -234,6 +235,7 @@ def test_fixed_thinking_compatibility_normalizes_anthropic_payload() -> None:
         anthropic_compatibility="fixed_thinking",
         anthropic_thinking_budget_tokens=1024,
         anthropic_max_tokens=8192,
+        anthropic_interleaved_thinking=True,
     )
     original = {
         "model": "claude",
@@ -251,6 +253,71 @@ def test_fixed_thinking_compatibility_normalizes_anthropic_payload() -> None:
     assert "context_management" not in prepared
     assert "output_config" not in prepared
     assert original["thinking"] == {"type": "adaptive"}
+    headers = object.__new__(InferenceForwarder).build_anthropic_headers(
+        target,
+        {"anthropic-beta": "unsupported-fixed-mode-beta"},
+    )
+    assert headers["anthropic-beta"] == "interleaved-thinking-2025-05-14"
+
+
+def test_anthropic_thinking_history_restores_matching_signed_block() -> None:
+    history = AnthropicThinkingHistory()
+    response = {
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {
+                "type": "thinking",
+                "thinking": "private reasoning",
+                "signature": "signed-blob",
+            },
+            {"type": "text", "text": "Inspecting."},
+            {
+                "type": "tool_use",
+                "id": "tool-1",
+                "name": "Read",
+                "input": {"path": "/workspace/file"},
+            },
+        ],
+    }
+    request = {
+        "messages": [
+            {"role": "user", "content": "Fix it."},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Inspecting."},
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "Read",
+                        "input": {"path": "/workspace/file"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": "contents",
+                    }
+                ],
+            },
+        ]
+    }
+
+    assert history.record_response("session-1", response) is True
+    restored, count = history.restore_request("session-1", request)
+
+    assert count == 1
+    assert "signature" not in json.dumps(request)
+    assert restored["messages"][1]["content"][0] == response["content"][0]
+    assert restored["messages"][1]["content"][1:] == request["messages"][1]["content"]
+    unchanged, unchanged_count = history.restore_request("other-session", request)
+    assert unchanged is request
+    assert unchanged_count == 0
 
 
 def test_provider_trace_writes_signature_artifact(tmp_path) -> None:
@@ -324,6 +391,7 @@ def test_provider_trace_keeps_database_artifact_when_external_write_fails(tmp_pa
 
 
 def test_gateway_streams_native_anthropic_and_records_trace(tmp_path, monkeypatch) -> None:
+    forwarded_payloads = []
     stream = "\n\n".join(
         [
             'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}',
@@ -363,7 +431,8 @@ def test_gateway_streams_native_anthropic_and_records_trace(tmp_path, monkeypatc
             return payload
 
         async def open_anthropic_messages_stream(self, target, payload, headers):
-            del target, payload, headers
+            del target, headers
+            forwarded_payloads.append(json.loads(json.dumps(payload)))
             return StreamForwardContext(
                 response=FakeResponse(),
                 status_code=200,
@@ -373,7 +442,8 @@ def test_gateway_streams_native_anthropic_and_records_trace(tmp_path, monkeypatc
             )
 
         async def forward_anthropic_messages(self, target, payload, headers):
-            del target, payload, headers
+            del target, headers
+            forwarded_payloads.append(json.loads(json.dumps(payload)))
             return ForwardResult(
                 body={
                     "id": "msg_2",
@@ -439,6 +509,7 @@ def test_gateway_streams_native_anthropic_and_records_trace(tmp_path, monkeypatc
             "claude": LLMRouteConfig(
                 base_url="https://provider.example/v1",
                 api_key="upstream-key",
+                anthropic_interleaved_thinking=True,
             )
         },
     )
@@ -467,7 +538,11 @@ def test_gateway_streams_native_anthropic_and_records_trace(tmp_path, monkeypatc
                 "model": "claude",
                 "max_tokens": 128,
                 "stream": False,
-                "messages": [{"role": "user", "content": "fix it"}],
+                "messages": [
+                    {"role": "user", "content": "fix it"},
+                    {"role": "assistant", "content": []},
+                    {"role": "user", "content": "continue"},
+                ],
             },
         )
 
@@ -475,6 +550,13 @@ def test_gateway_streams_native_anthropic_and_records_trace(tmp_path, monkeypatc
     assert "signature_delta" in response.text
     assert count_response.json() == {"input_tokens": 17}
     assert nonstream_response.json()["content"][0]["signature"] == "nonstream-signature"
+    assert forwarded_payloads[1]["messages"][1]["content"] == [
+        {
+            "type": "thinking",
+            "thinking": "inspect",
+            "signature": "signed-blob",
+        }
+    ]
     assert len(storage.records) == 2
     record = storage.records[0][1]
     metadata = GatewayStorage._metadata(record)

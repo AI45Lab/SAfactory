@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from core.perf_trace import PerfTrace
 from gateway.admission_control import AdmissionController, AdmissionRejected
+from gateway.anthropic_thinking_history import AnthropicThinkingHistory
 from gateway.config import GatewayConfig, load_gateway_config
 from gateway.inference_forwarder import (
     InferenceForwarder,
@@ -59,6 +60,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             cfg.provider_trace_dir,
             cfg.provider_trace_capture,
         )
+        app.state.gateway_anthropic_thinking_history = AnthropicThinkingHistory()
         app.state.gateway_telemetry = TelemetryRecorder(cfg, app.state.gateway_storage)
         log.info("Gateway telemetry start begin")
         await app.state.gateway_telemetry.start()
@@ -117,6 +119,9 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         storage: GatewayStorage = request.app.state.gateway_storage
         request_logger: GatewayRequestLogger = request.app.state.gateway_request_logger
         provider_trace: ProviderTraceWriter = request.app.state.gateway_provider_trace
+        thinking_history: AnthropicThinkingHistory = (
+            request.app.state.gateway_anthropic_thinking_history
+        )
 
         try:
             with trace.span("parse_request_json"):
@@ -271,6 +276,19 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 ctx.is_stream,
             )
             if endpoint == "messages":
+                if target.anthropic_interleaved_thinking:
+                    payload, restored_count = thinking_history.restore_request(
+                        ctx.session_id,
+                        payload,
+                    )
+                    if restored_count:
+                        log.info(
+                            "Gateway restored signed thinking history: "
+                            "request_id=%s session_id=%s blocks=%d",
+                            ctx.request_id,
+                            ctx.session_id,
+                            restored_count,
+                        )
                 payload = forwarder.prepare_anthropic_payload(target, payload)
 
             headers = (
@@ -321,6 +339,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                         request_logger=request_logger,
                         admission=admission,
                         provider_trace=provider_trace,
+                        thinking_history=thinking_history,
                         trace=trace,
                     ),
                     status_code=opened.status_code,
@@ -367,6 +386,12 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     result.status_code,
                 )
             with trace.span("telemetry_enqueue_success"):
+                if (
+                    endpoint == "messages"
+                    and result.status_code < 400
+                    and target.anthropic_interleaved_thinking
+                ):
+                    thinking_history.record_response(ctx.session_id, result.body)
                 provider_trace_metadata = await provider_trace.write(
                     session_id=ctx.session_id,
                     request_id=ctx.request_id,
@@ -728,6 +753,9 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
     async def close_session(session_id: str, request: Request) -> dict[str, Any]:
         resolver: SessionResolver = app.state.gateway_resolver
         telemetry: TelemetryRecorder = app.state.gateway_telemetry
+        thinking_history: AnthropicThinkingHistory = (
+            app.state.gateway_anthropic_thinking_history
+        )
         reason = "gateway_close"
         try:
             body = await request.json()
@@ -736,6 +764,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         except Exception:
             pass
         binding = await resolver.close_session(session_id, reason=reason)
+        thinking_history.discard(session_id)
         log.info("Gateway session close requested: session_id=%s reason=%s", session_id, reason)
         drained = True
         if cfg.close_mode == "soft_close":
@@ -1132,6 +1161,7 @@ async def _stream_and_finalize(
     request_logger: GatewayRequestLogger,
     admission: AdmissionController,
     provider_trace: ProviderTraceWriter,
+    thinking_history: AnthropicThinkingHistory,
     trace: PerfTrace,
 ) -> AsyncIterator[bytes]:
     first_chunk_at: float | None = None
@@ -1251,6 +1281,15 @@ async def _stream_and_finalize(
                     stream_truncated=False,
                 )
             )
+            if (
+                ok
+                and ctx.endpoint == "messages"
+                and target.anthropic_interleaved_thinking
+            ):
+                thinking_history.record_response(
+                    ctx.session_id,
+                    telemetry_response_body,
+                )
             provider_trace_metadata = await provider_trace.write(
                 session_id=ctx.session_id,
                 request_id=ctx.request_id,

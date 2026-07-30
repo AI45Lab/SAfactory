@@ -25,6 +25,7 @@ class LLMRouteTarget:
     anthropic_compatibility: str = "native"
     anthropic_thinking_budget_tokens: int = 1024
     anthropic_max_tokens: int | None = None
+    anthropic_interleaved_thinking: bool = False
 
 
 @dataclass
@@ -88,6 +89,7 @@ class LLMRouter:
             anthropic_compatibility=route.anthropic_compatibility,
             anthropic_thinking_budget_tokens=route.anthropic_thinking_budget_tokens,
             anthropic_max_tokens=route.anthropic_max_tokens,
+            anthropic_interleaved_thinking=route.anthropic_interleaved_thinking,
         )
 
     async def on_acquire(self, route_model: str, *, is_stream: bool) -> None:

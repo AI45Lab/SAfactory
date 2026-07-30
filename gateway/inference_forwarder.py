@@ -19,6 +19,7 @@ from gateway.llm_router import LLMRouteTarget, LLMRouteUnavailableError, ModelNo
 from gateway.session_resolver import SessionResolutionError
 
 log = logging.getLogger("gateway.inference_forwarder")
+_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
 
 
 class SessionClosedError(Exception):
@@ -360,6 +361,15 @@ class InferenceForwarder:
             value = inbound_headers.get(name) if inbound_headers is not None else None
             if value:
                 headers[name] = str(value)
+        if target.anthropic_interleaved_thinking:
+            beta_values = [
+                value.strip()
+                for value in headers.get("anthropic-beta", "").split(",")
+                if value.strip()
+            ]
+            if _INTERLEAVED_THINKING_BETA not in beta_values:
+                beta_values.append(_INTERLEAVED_THINKING_BETA)
+            headers["anthropic-beta"] = ",".join(beta_values)
         headers.setdefault("anthropic-version", "2023-06-01")
         if target.api_key:
             headers["x-api-key"] = target.api_key
