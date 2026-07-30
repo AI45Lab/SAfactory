@@ -189,6 +189,8 @@ python launcher.py \
 
 Safactory 可以通过 `wt-data-platform-sdk` 将轨迹和环境数据持久化到以 S3 为对象存储、LanceDB 为数据引擎的存储平台。SQLite 仍是默认的本地存储策略；云存储相关依赖单独维护在 `requirements-cloud.txt` 中。
 
+可选的 LanceDB/cloud 依赖栈要求使用 Python 3.10-3.12，当前已验证的环境为 Python 3.12。
+
 安装可选依赖：
 
 ```bash

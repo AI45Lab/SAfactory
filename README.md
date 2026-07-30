@@ -197,6 +197,8 @@ Evaluation dynamically discovers `<agent-root>/<env_name>/rule_evaluator.py` by 
 
 Safactory can optionally persist trajectory and environment data to an S3-backed LanceDB data platform through `wt-data-platform-sdk`. SQLite remains the default local strategy; cloud dependencies are kept separately in `requirements-cloud.txt`.
 
+The optional LanceDB/cloud dependency stack requires Python 3.10-3.12. Python 3.12 is the currently verified environment.
+
 Install the optional dependencies:
 
 ```bash
