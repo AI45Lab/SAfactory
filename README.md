@@ -225,7 +225,7 @@ source .env
 set +a
 ```
 
-Then set the gateway `storage_type` to `cloud` and launch Safactory with `--storage-type cloud`. The `production` profile selects the production landing/serving tables, while `test` selects the test tables. See [AI45Lab/wt-data-platform-sdk](https://github.com/AI45Lab/wt-data-platform-sdk) for the complete configuration and table documentation.
+Then set the gateway `storage_type` to `cloud` and launch Safactory with `--storage-type cloud`. The `production` profile selects the production landing/serving tables, while `test` selects the test tables. For complete configuration, table documentation, and instructions for querying and retrieving data, see [AI45Lab/wt-data-platform-sdk](https://github.com/AI45Lab/wt-data-platform-sdk).
 
 ## Run Data
 
