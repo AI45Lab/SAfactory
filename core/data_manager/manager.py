@@ -113,7 +113,8 @@ class DataManager:
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
-        is_trainable: bool = True
+        is_trainable: bool = True,
+        dataset: Optional[Any] = None,
     ) -> None:
         """
         Record a single interaction step with full conversation history.
@@ -128,6 +129,7 @@ class DataManager:
             response=response,
             step_reward=step_reward,
             env_state=env_state,
+            dataset=dataset,
             terminated=terminated,
             truncated=truncated,
             is_trainable=is_trainable,

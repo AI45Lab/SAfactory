@@ -520,7 +520,8 @@ class CloudStrategy(StorageStrategy):
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
-        is_trainable: bool = True
+        is_trainable: bool = True,
+        dataset: Optional[Any] = None,
     ):
         """
         Record step to cloud LandingTable.
@@ -535,6 +536,7 @@ class CloudStrategy(StorageStrategy):
             response=response,
             step_reward=step_reward,
             env_state=env_state,
+            dataset=dataset,
             terminated=terminated,
             truncated=truncated,
             is_trainable=is_trainable,
@@ -622,6 +624,7 @@ class CloudStrategy(StorageStrategy):
         terminated: bool = False,
         truncated: bool = False,
         is_trainable: bool = True,
+        dataset: Optional[Any] = None,
     ) -> tuple[Any, str]:
         session.total_reward += step_reward
 
@@ -662,6 +665,14 @@ class CloudStrategy(StorageStrategy):
             "env_name": session.env_name
         })
         
+        meta_json = {
+            "source": "AIEvoBox",
+            "group_id": session.group_id,
+            "env_state": env_state,
+        }
+        if dataset is not None:
+            meta_json["dataset"] = dataset
+
         # Create LandingRecord
         record = LandingRecord(
             dataset_type=CLOUD_DATASET_TYPE,
@@ -684,11 +695,7 @@ class CloudStrategy(StorageStrategy):
             is_truncated=truncated,
             is_session_completed=terminated or truncated,
             is_trainable=is_trainable,
-            meta_json=json.dumps({
-                "source": "AIEvoBox",
-                "group_id": session.group_id,
-                "env_state": env_state
-            })
+            meta_json=json.dumps(meta_json, ensure_ascii=False, default=str)
         )
         
         return record, record_id
