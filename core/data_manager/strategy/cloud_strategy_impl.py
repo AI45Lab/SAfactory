@@ -171,7 +171,7 @@ NON_TRAJECTORY_EVENT_TYPES = {
     "episode_summary",
     "evaluation_summary",
 }
-CLOUD_DEV_DATASET_TYPE = "TEST"
+CLOUD_DATASET_TYPE = "RL"
 
 
 def _json_object(value: Any) -> Dict[str, Any]:
@@ -662,7 +662,7 @@ class CloudStrategy(StorageStrategy):
         
         # Create LandingRecord
         record = LandingRecord(
-            dataset_type=CLOUD_DEV_DATASET_TYPE,
+            dataset_type=CLOUD_DATASET_TYPE,
             dt=date.today().isoformat(),
             id=record_id,
             session_id=session.session_id,
@@ -1226,7 +1226,7 @@ class CloudStrategy(StorageStrategy):
         await self.init()
         
         results = self.client.pull_data(
-            dataset_type=CLOUD_DEV_DATASET_TYPE,
+            dataset_type=CLOUD_DATASET_TYPE,
             cursor=after_id,
             checkout_latest=True,
             where_sql="job_id = '{}' AND is_terminal = True".format(_escape_sql_literal(job_id)),
@@ -1269,7 +1269,7 @@ class CloudStrategy(StorageStrategy):
         last_cursor = self.client.get_max_created_at(
             where_sql=(
                 "dataset_type = '{}' AND job_id = '{}' AND is_terminal = True"
-                .format(CLOUD_DEV_DATASET_TYPE, _escape_sql_literal(job_id))
+                .format(CLOUD_DATASET_TYPE, _escape_sql_literal(job_id))
             ),
         )
         
