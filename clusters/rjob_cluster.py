@@ -479,9 +479,13 @@ class RJobClusterBackend(ClusterBackend):
         if not cfg:
             return None
         kwargs: Dict[str, Any] = {}
-        for key in ("cpu", "gpu", "memory_in_mb", "ephemeral_storage_in_mb", "custom_resources"):
+        for key in ("cpu", "gpu", "memory_in_mb", "ephemeral_storage_in_mb"):
             if key in cfg and cfg.get(key) is not None:
                 kwargs[key] = cfg.get(key)
+        if "custom_resources" in cfg and cfg.get("custom_resources") is not None:
+            custom_resources = _normalize_custom_resources(cfg.get("custom_resources"))
+            if custom_resources:
+                kwargs["custom_resources"] = custom_resources
         return _make(symbols["Resources"], **kwargs) if kwargs else None
 
     @staticmethod
@@ -567,6 +571,36 @@ def merge_env_dicts(*values: Any) -> Dict[str, str]:
         if isinstance(value, dict):
             merged.update({str(key): str(val) for key, val in value.items()})
     return merged
+
+
+def _normalize_custom_resources(value: Any) -> List[str]:
+    """Convert YAML-friendly custom resources to the RJob SDK list[str] form."""
+    if isinstance(value, dict):
+        items = [f"{str(name).strip()}={str(quantity).strip()}" for name, quantity in value.items()]
+    elif isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple)):
+        if not all(isinstance(item, str) for item in value):
+            raise ValueError(
+                "RJob resources.custom_resources list entries must be strings "
+                "in resource-name=value format"
+            )
+        items = list(value)
+    else:
+        raise ValueError(
+            "RJob resources.custom_resources must be a mapping, string, or list of strings"
+        )
+
+    normalized: List[str] = []
+    for item in items:
+        text = item.strip()
+        name, separator, quantity = text.partition("=")
+        if not separator or not name.strip() or not quantity.strip():
+            raise ValueError(
+                "RJob resources.custom_resources entries must use resource-name=value format"
+            )
+        normalized.append(f"{name.strip()}={quantity.strip()}")
+    return normalized
 
 
 def extract_logs_text(raw: Any) -> str:

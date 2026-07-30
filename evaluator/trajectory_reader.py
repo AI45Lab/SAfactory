@@ -11,12 +11,28 @@ from evaluator.eval_types import Trajectory
 
 
 class TrajectoryReader:
-    def __init__(self, *, db_url: str, storage_type: str = "sqlite") -> None:
-        if storage_type != "sqlite":
-            raise ValueError("TrajectoryReader MVP only supports sqlite")
-        self.db_path = _sqlite_path(db_url)
+    def __init__(
+        self,
+        *,
+        db_url: str,
+        storage_type: str = "sqlite",
+        data_manager: Any | None = None,
+    ) -> None:
+        self.storage_type = str(storage_type or "sqlite").strip().lower()
+        self.data_manager = data_manager
+        if self.storage_type == "sqlite":
+            self.db_path = _sqlite_path(db_url)
+        elif self.storage_type == "cloud":
+            if data_manager is None:
+                raise ValueError("TrajectoryReader cloud mode requires a data manager")
+            self.db_path = ""
+        else:
+            raise ValueError(f"TrajectoryReader does not support storage type {storage_type!r}")
 
     async def read_by_session(self, session_id: str) -> Trajectory:
+        if self.storage_type == "cloud":
+            rows = await self.data_manager.list_session_steps(session_id)
+            return self._trajectory_from_rows(session_id, rows)
         return await asyncio.to_thread(self._read_by_session_sync, session_id)
 
     async def wait_until_sealed(
@@ -51,7 +67,14 @@ class TrajectoryReader:
                 (session_id,),
             ).fetchall()
 
-        all_steps = [self.parse_gateway_row(dict(row)) for row in rows]
+        return self._trajectory_from_rows(session_id, [dict(row) for row in rows])
+
+    def _trajectory_from_rows(
+        self,
+        session_id: str,
+        rows: list[dict[str, Any]],
+    ) -> Trajectory:
+        all_steps = [self.parse_gateway_row(row) for row in rows]
         token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         sealed = False
         final_response = None
@@ -105,11 +128,13 @@ def _json_loads(value: Any, *, default: Any) -> Any:
 def _extract_response_text(value: Any) -> str:
     if value is None:
         return ""
-    if not isinstance(value, str):
+    if isinstance(value, dict):
+        parsed = value
+    elif not isinstance(value, str):
         return str(value)
-
-    text = value.strip()
-    parsed = _json_loads(text, default=None)
+    else:
+        text = value.strip()
+        parsed = _json_loads(text, default=None)
     if not isinstance(parsed, dict):
         return value
 
@@ -121,6 +146,15 @@ def _extract_response_text(value: Any) -> str:
         item = parsed.get(key)
         if isinstance(item, str) and item.strip():
             return item
+        if isinstance(item, list):
+            chunks = [
+                str(part.get("text") or part.get("content") or "")
+                for part in item
+                if isinstance(part, dict)
+            ]
+            combined = "".join(chunks)
+            if combined:
+                return combined
 
     stream_text = parsed.get("stream_text")
     if isinstance(stream_text, str):
@@ -128,7 +162,7 @@ def _extract_response_text(value: Any) -> str:
         if extracted:
             return extracted
 
-    return value
+    return str(value)
 
 
 def _extract_choice_text(payload: dict[str, Any]) -> str:
