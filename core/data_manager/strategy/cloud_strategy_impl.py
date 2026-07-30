@@ -126,8 +126,8 @@ def _install_mock_wt_sdk_fallbacks() -> None:
         def __init__(
             self,
             db_uri: str = "",
-            landing_table: str = CLOUD_DEV_LANDING_TABLE,
-            serving_table: str = CLOUD_DEV_SERVING_TABLE,
+            landing_table: str = "",
+            serving_table: str = "",
         ):
             self.db_uri = db_uri
             self.landing_table = landing_table
@@ -171,8 +171,6 @@ NON_TRAJECTORY_EVENT_TYPES = {
     "episode_summary",
     "evaluation_summary",
 }
-CLOUD_DEV_LANDING_TABLE = "landing_test"
-CLOUD_DEV_SERVING_TABLE = "serving_test"
 CLOUD_DATASET_TYPE = "RL"
 
 
@@ -247,8 +245,8 @@ class CloudStrategy(StorageStrategy):
         self.db_url = str(db_url or "").strip()
         self.job_id = job_id
         self.initialized = False
-        self.landing_table = landing_table or CLOUD_DEV_LANDING_TABLE
-        self.serving_table = serving_table or CLOUD_DEV_SERVING_TABLE
+        self.landing_table = str(landing_table or "").strip() or None
+        self.serving_table = str(serving_table or "").strip() or None
         self.env_config_table = env_config_table
         self.dldb_model = dldb_model
         self.enable_dldb_timing_logs = enable_dldb_timing_logs
@@ -296,8 +294,12 @@ class CloudStrategy(StorageStrategy):
         )
         if self.db_url:
             config.tables.db_uri = self.db_url
-        config.tables.landing_table = self.landing_table
-        config.tables.serving_table = self.serving_table
+        if self.landing_table:
+            config.tables.landing_table = self.landing_table
+        if self.serving_table:
+            config.tables.serving_table = self.serving_table
+        self.landing_table = config.tables.landing_table
+        self.serving_table = config.tables.serving_table
 
         try:
             self.client = WTGatewayClient(config)
