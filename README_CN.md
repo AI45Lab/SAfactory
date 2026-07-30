@@ -11,8 +11,8 @@
 <p align="center">
   <a href="#why-safactory">为什么使用 SAfactory</a> •
   <a href="#demo">演示</a> •
-  <a href="#quick-start">快速开始</a> •
   <a href="#agent-skill">Agent Skill</a> •
+  <a href="#quick-start">快速开始</a> •
   <a href="#documentation">详细文档</a> •
   <a href="#citation">引用</a>
 </p>
@@ -48,6 +48,36 @@ https://github.com/user-attachments/assets/4c551b27-ce4d-4fc8-8df6-d6dc8100cc88
 *点击播放查看完整演示*
 
 </div>
+
+## <a id="agent-skill"></a>🧩 Agent Skill 快速上手
+
+仓库内置了一个轻量 Agent skill，用于帮助 Agent 按标准 workflow 使用 SAfactory：
+
+```text
+skills/safactory-workflows/SKILL.md
+```
+
+它覆盖三类高频请求：
+
+- 接入新的 benchmark 或自定义环境到 SAfactory；
+- 用 Docker 模式运行指定环境的测评；
+- 启动指定环境的 GRPO / RL 训练。
+
+使用 Agent 时，可以直接这样提问：
+
+```text
+请使用 skills/safactory-workflows，帮我把这个 benchmark 接入 SAfactory。
+```
+
+```text
+请使用 safactory-workflows skill，用 Docker 模式跑 geo3k 测评。
+```
+
+```text
+请使用 safactory-workflows skill，启动 my_env 环境的 GRPO 训练。
+```
+
+该 skill 不替代文档，而是引导 Agent 按需读取 `docs/guides/`、`docs/reference/` 和根 README，并优先参考标准环境 `env/geo3k/`。如果你的 Agent 支持本地 skill 搜索，可以把 `skills/safactory-workflows/` 加入其 skill 搜索路径；否则在请求中显式写出该路径即可。
 
 ## <a id="quick-start"></a>🚀 快速开始
 
@@ -156,37 +186,9 @@ RL_ENV_SH=rl/examples/geo3k_vl/env.sh bash rl/run_slime_generator.sh
 RL_ENV_SH=rl/examples/geo3k_vl/env.sh bash rl/run_buffer_server.sh
 ```
 
+RL 训练侧的 reward 来自数据库中的已完成轨迹：`rule_evaluator.py` 会在评测完成后写入 reward，Buffer Server 再从与 Launcher / Gateway 一致的数据库中抓取带有 reward 的轨迹数据，并提供给训练进程消费。
+
 Buffer Server 可以自动启动一个 Gateway，并把 `RL_MODEL` 路由到 Slime 托管的 LLM proxy。如果同一端口上已有手动启动的 Gateway，请先停止它；只有当外部 Gateway 已经具备正确 route 和存储配置时，才设置 `AIEVOBOX_GATEWAY_AUTOSTART=0`。
-
-## <a id="agent-skill"></a>🧩 Agent Skill 快速上手
-
-仓库内置了一个轻量 Agent skill，用于帮助 Agent 按标准 workflow 使用 SAfactory：
-
-```text
-skills/safactory-workflows/SKILL.md
-```
-
-它覆盖三类高频请求：
-
-- 接入新的 benchmark 或自定义环境到 SAfactory；
-- 用 Docker 模式运行指定环境的测评；
-- 启动指定环境的 GRPO / RL 训练。
-
-使用 Agent 时，可以直接这样提问：
-
-```text
-请使用 skills/safactory-workflows，帮我把这个 benchmark 接入 SAfactory。
-```
-
-```text
-请使用 safactory-workflows skill，用 Docker 模式跑 geo3k 测评。
-```
-
-```text
-请使用 safactory-workflows skill，启动 my_env 环境的 GRPO 训练。
-```
-
-该 skill 不替代文档，而是引导 Agent 按需读取 `docs/guides/`、`docs/reference/` 和根 README，并优先参考标准环境 `env/geo3k/`。如果你的 Agent 支持本地 skill 搜索，可以把 `skills/safactory-workflows/` 加入其 skill 搜索路径；否则在请求中显式写出该路径即可。
 
 ## <a id="documentation"></a>📚 文档索引
 
