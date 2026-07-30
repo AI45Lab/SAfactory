@@ -1,25 +1,16 @@
 # 强化学习训练
 
-本文是 Safactory RL 训练的唯一入口文档。通用启动脚本放在 `rl/`目录下；每个环境只保留自己的 `env.sh` 配置。切换环境或运行后端时，修改 `env.sh` 中的变量即可，不需要复制启动脚本。
+SAfactory 的 RL bridge 面向 Slime 风格训练，把环境 rollout、Gateway 轨迹记录、rule evaluator reward 和训练侧数据消费连接起来：
 
-## 组件
-
-| 组件 | 作用 |
-| --- | --- |
-| `rl/examples/<env>/env.sh` | 环境、运行后端、服务和 Slime 训练配置。 |
-| `rl/run_buffer_server.sh` | 启动 Buffer Server，按需自动启动 Gateway，并启动 Safactory rollout 采集。 |
-| `rl/run_slime_generator.sh` | 启动 Ray、Slime 训练、SGLang rollout engine 和 Safactory rollout 函数。 |
-| `rl/buffer_server.py` | 启动 `launcher.py`，读取存储中的 trainable 行，按 `group_id` 聚合样本，并通过 `/get_rollout_data` 提供给 Slime。 |
-| `rl/slime_generator.py` | Slime rollout 函数。负责启动 LLM proxy、拉取轨迹组、构造 mask 和 reward，并返回训练样本。 |
-| `rl/llm_proxy.py` | 由 Slime generator 托管的 OpenAI 兼容接口，Gateway 在线 rollout 时会转发到这里。 |
-
-`PYTHON_BIN` 和 `RAY_BIN` 对应的运行环境需要提前安装 Slime、
-Megatron-LM、SGLang、Ray 以及模型运行依赖。
+- `rl/buffer_server.py` 启动 `launcher.py`，读取已完成的 trainable 行，按 `group_id` 聚合样本，并通过 `/get_rollout_data` 输出 batch。
+- `rl/llm_proxy.py` 由 `slime_generator` 托管，提供类 OpenAI 接口用于在线 rollout generation。
+- `rl/run_slime_generator.sh` 启动 Slime generator、训练进程和 rollout engine。
+- `rl/run_buffer_server.sh` 启动 Buffer Server，并由 Buffer Server 拉起 SAfactory rollout。
 
 ## 架构
 
 ```text
-Safactory runtime  <--- 由 launcher.py / rl/buffer_server.py 启动
+SAfactory runtime  <--- 由 launcher.py / rl/buffer_server.py 启动
   |
   | 带 session 的 rollout 模型请求
   v
@@ -44,259 +35,180 @@ Buffer Server /get_rollout_data
 Slime trainer
 ```
 
-对于 v2 adapter，launcher 仍需要有效的 Gateway 兼容模型 route 和 runtime start config。扩容前请先在 `logs/buffer_server.log` 中确认生成的 launcher 命令。
+## 前置检查
 
-## 最小 Geo3K 训练路径
-
-先在 RL 外部用 `launcher.py`、Gateway 和 `--enable-evaluation` 跑通 Geo3K 评测。这一步会验证 Docker 镜像、dataset、route key、存储和 `rule_evaluator.py`。
-
-然后编辑或覆盖 `rl/examples/geo3k_vl/env.sh`：
+先在 RL 外部跑通 `my_env` 的最小评测。这一步用于确认环境镜像、dataset、Gateway route、存储和 `rule_evaluator.py` 都能正常工作：
 
 ```bash
-export AIEVOBOX_ROOT=$(pwd)
-export AIEVOBOX_MODE=docker
-export AIEVOBOX_AGENT_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_config.yaml
-export AIEVOBOX_AGENT_START_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_start.yaml
-export AIEVOBOX_GATEWAY_HOST=127.0.0.1
-export AIEVOBOX_GATEWAY_PORT=8000
-export AIEVOBOX_GATEWAY_BASE_URL=http://${AIEVOBOX_GATEWAY_HOST}:${AIEVOBOX_GATEWAY_PORT}/v1/sessions
-export RL_MODEL=geo3k_model
-
-export AIEVOBOX_ENABLE_EVALUATION=1
-export AIEVOBOX_POOL_SIZE=2
-export AIEVOBOX_MAX_STEPS=10
-export RL_GROUP_SIZE=2
-export RL_EPOCH=1
-
-export HF_CKPT_DIR=/path/to/hf-checkpoint
-export LOAD_DIR=${HF_CKPT_DIR}
-export SAVE_DIR=/path/to/save/checkpoints
-export SLIME_HOME=/path/to/slime
-export MEGATRON_HOME=/path/to/Megatron-LM
+python launcher.py \
+  --mode docker \
+  --agent-config env/my_env/my_env_config.yaml \
+  --agent-start-config env/my_env/my_env_start.yaml \
+  --gateway-base-url http://127.0.0.1:8000/v1/sessions \
+  --llm-model my_env_model \
+  --enable-evaluation \
+  --db-path sqlite://env_trajs.db \
+  --job-id my-env-docker-smoke \
+  --pool-size 1 \
+  --max-workers 1 \
+  --max-steps 10
 ```
 
-如果默认 Geo3K 配置指向完整本地 parquet 数据集，smoke test 阶段请改用仓库自带样例数据。
+如果你的环境不需要 evaluator，可以去掉 `--enable-evaluation`；但用于 RL 的轨迹通常需要最终 reward 和 `is_trainable` 行，因此建议明确实现 evaluator 并先验证 reward 写入。
 
-在仓库根目录启动两个服务：
+## 创建 `env.sh`
+
+为环境创建一个独立的 RL 配置文件。推荐路径：
 
 ```bash
-RL_ENV_SH=rl/examples/geo3k_vl/env.sh bash rl/run_slime_generator.sh
+mkdir -p rl/examples/my_env
+touch rl/examples/my_env/env.sh
 ```
 
+最小配置如下：
+
 ```bash
-RL_ENV_SH=rl/examples/geo3k_vl/env.sh bash rl/run_buffer_server.sh
+#!/usr/bin/env bash
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." &>/dev/null && pwd)"
+
+export AIEVOBOX_EXAMPLE_NAME="${AIEVOBOX_EXAMPLE_NAME:-my_env}"
+export AIEVOBOX_ROOT="${AIEVOBOX_ROOT:-${REPO_ROOT}}"
+export AIEVOBOX_MODE="${AIEVOBOX_MODE:-docker}"
+export STORAGE_TYPE="${STORAGE_TYPE:-sqlite}"
+export AIEVOBOX_DB_URL="${AIEVOBOX_DB_URL:-sqlite:///${AIEVOBOX_ROOT}/rl/examples/my_env/my_env.db}"
+
+export AIEVOBOX_AGENT_CONFIG="${AIEVOBOX_AGENT_CONFIG:-${AIEVOBOX_ROOT}/env/my_env/my_env_config.yaml}"
+export AIEVOBOX_AGENT_START_CONFIG="${AIEVOBOX_AGENT_START_CONFIG:-${AIEVOBOX_ROOT}/env/my_env/my_env_start.yaml}"
+export AIEVOBOX_ENABLE_EVALUATION="${AIEVOBOX_ENABLE_EVALUATION:-1}"
+export AIEVOBOX_MAX_STEPS="${AIEVOBOX_MAX_STEPS:-10}"
+export AIEVOBOX_POOL_SIZE="${AIEVOBOX_POOL_SIZE:-2}"
+
+export RL_MODEL="${RL_MODEL:-my_env_model}"
+export RL_GROUP_SIZE="${RL_GROUP_SIZE:-2}"
+export RL_GLOBAL_BATCH_SIZE="${RL_GLOBAL_BATCH_SIZE:-64}"
+export RL_ROLLOUT_GROUP_BATCH_SIZE="${RL_ROLLOUT_GROUP_BATCH_SIZE:-32}"
+export RL_EPOCH="${RL_EPOCH:-1}"
+export RL_OFF_BY_N="${RL_OFF_BY_N:-0}"
+
+export BUFFER_SERVER_HOST="${BUFFER_SERVER_HOST:-127.0.0.1}"
+export BUFFER_SERVER_PORT="${BUFFER_SERVER_PORT:-18889}"
+export LLM_PROXY_HOST="${LLM_PROXY_HOST:-127.0.0.1}"
+export LLM_PROXY_PORT="${LLM_PROXY_PORT:-18890}"
+export AIEVOBOX_GATEWAY_HOST="${AIEVOBOX_GATEWAY_HOST:-127.0.0.1}"
+export AIEVOBOX_GATEWAY_PORT="${AIEVOBOX_GATEWAY_PORT:-8000}"
+export AIEVOBOX_GATEWAY_BASE_URL="${AIEVOBOX_GATEWAY_BASE_URL:-http://${AIEVOBOX_GATEWAY_HOST}:${AIEVOBOX_GATEWAY_PORT}/v1/sessions}"
+
+export LOG_ROOT="${LOG_ROOT:-${AIEVOBOX_ROOT}/logs}"
+export PYTHON_BIN="${PYTHON_BIN:-python3}"
+export RAY_BIN="${RAY_BIN:-ray}"
+
+export SLIME_HOME="${SLIME_HOME:-/path/to/slime}"
+export MEGATRON_HOME="${MEGATRON_HOME:-/path/to/Megatron-LM}"
+export HF_CKPT_DIR="${HF_CKPT_DIR:-/path/to/hf-checkpoint}"
+export LOAD_DIR="${LOAD_DIR:-${HF_CKPT_DIR}}"
+export SAVE_DIR="${SAVE_DIR:-/path/to/save/checkpoints}"
+
+export NUM_GPUS="${NUM_GPUS:-4}"
+export ACTOR_NUM_NODES="${ACTOR_NUM_NODES:-1}"
+export ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-1}"
+export ROLLOUT_NUM_GPUS="${ROLLOUT_NUM_GPUS:-3}"
+export ROLLOUT_NUM_GPUS_PER_ENGINE="${ROLLOUT_NUM_GPUS_PER_ENGINE:-1}"
+
+export TRAIN_ENTRYPOINT="${TRAIN_ENTRYPOINT:-${SLIME_HOME}/train.py}"
+export MODEL_SCRIPT="${MODEL_SCRIPT:-${SLIME_HOME}/scripts/models/qwen3-1.7B.sh}"
+export ROLLOUT_FUNCTION_PATH="${ROLLOUT_FUNCTION_PATH:-rl.slime_generator.generate_rollout}"
+export NUM_ROLLOUT="${NUM_ROLLOUT:-300}"
+```
+
+`RL_MODEL` 是 Gateway route key，也是 Buffer Server 自动生成 Gateway 配置时使用的 route 名。使用自动 Gateway 时，它会被路由到 Slime generator 托管的 LLM proxy；使用外部 Gateway 时，外部配置也必须提供同名 route。
+
+## 启动训练
+
+按根目录 README 的方式，在仓库根目录启动两个进程。
+
+终端 1 启动 Slime generator：
+
+```bash
+RL_ENV_SH=rl/examples/my_env/env.sh bash rl/run_slime_generator.sh
+```
+
+终端 2 启动 Buffer Server：
+
+```bash
+RL_ENV_SH=rl/examples/my_env/env.sh bash rl/run_buffer_server.sh
+```
+
+也可以使用 `--env` 参数：
+
+```bash
+bash rl/run_slime_generator.sh --env rl/examples/my_env/env.sh
+bash rl/run_buffer_server.sh --env rl/examples/my_env/env.sh
 ```
 
 Buffer Server 默认会自动启动 Gateway，生成 `logs/gateway.rl.generated.yaml`，把 `RL_MODEL` 路由到 Slime 托管的 LLM proxy，启动 Docker rollout 采集，并通过 `/get_rollout_data` 提供已完成的 group。使用自动启动时，请先停止同一端口上手动启动的 Gateway。
 
-- `AIEVOBOX_DB_URL` 作为存储 DB，与 `launcher.py --db-path` 保持一致。
-- `RL_MODEL` 作为 Gateway route key。
-- `http://${LLM_PROXY_HOST}:${LLM_PROXY_PORT}/v1` 作为 route 上游。
-- `AIEVOBOX_GATEWAY_PORT` 作为监听端口。
+只有当你已经手动启动了外部 Gateway，且它同时满足以下条件时，才设置 `AIEVOBOX_GATEWAY_AUTOSTART=0`：
+
+- `AIEVOBOX_GATEWAY_BASE_URL` 指向该 Gateway 的 session root。
+- Gateway 的 `llm_routes` 中存在 `RL_MODEL` 对应 route。
+- Gateway 的存储配置与 `AIEVOBOX_DB_URL` 一致。
+
+## 当前集成状态
 
 只有在你已经手动启动了外部 Gateway，并且它使用相同存储后端和 route key 时，才设置 `AIEVOBOX_GATEWAY_AUTOSTART=0`。
 
-## 启动 RL 训练
+- `buffer_server.py` 会将 `AIEVOBOX_AGENT_CONFIG` 映射为 `launcher.py --agent-config`。
+- 如果未设置 `AIEVOBOX_AGENT_CONFIG`，则将 `AIEVOBOX_AGENT_ROOT` 映射为 `--agent-root`。
+- 将 `AIEVOBOX_AGENT_START_CONFIG` 映射为 `--agent-start-config`；未设置时会尽量推导同目录的 `_start.yaml`。
+- 将 `AIEVOBOX_DB_URL` 映射为 `launcher.py --db-path`。
+- 将 `AIEVOBOX_GATEWAY_BASE_URL` 映射为 `launcher.py --gateway-base-url`。
+- 将 `RL_MODEL` 映射为 `launcher.py --llm-model`。
+- `AIEVOBOX_ENABLE_EVALUATION=1` 会启用 evaluator flow。
 
-因此，仓库中的 RL examples 是围绕共享 v2 launcher 的配置模板。Geo3K 是当前维护的标准模板。
-
-终端 1 启动 Slime 训练和 rollout generator：
-
-```bash
-source rl/examples/geo3k_vl/env.sh
-bash rl/run_slime_generator.sh
-```
-
-终端 2 启动 Buffer Server 和 rollout 采集：
-
-```bash
-source rl/examples/geo3k_vl/env.sh
-bash rl/run_buffer_server.sh
-```
-
-也可以不把配置 source 到当前 shell，直接传入配置文件：
-
-```bash
-RL_ENV_SH=rl/examples/geo3k_vl/env.sh bash rl/run_slime_generator.sh
-RL_ENV_SH=rl/examples/geo3k_vl/env.sh bash rl/run_buffer_server.sh
-```
-
-或使用 `--env`：
-
-```bash
-bash rl/run_slime_generator.sh --env rl/examples/geo3k_vl/env.sh
-bash rl/run_buffer_server.sh --env rl/examples/geo3k_vl/env.sh
-```
-
-训练由 trainer 或客户端调用 Buffer Server 的 `POST /start_rollout` 后开始。随后 Slime generator 通过 `POST /get_rollout_data` 拉取完成的 grouped samples。
-
-## 通用 `env.sh` 配置 —— Geo3K 为例
-
-`rl/examples/geo3k_vl/env.sh` 是 Geo3K RL 通常唯一需要用户编辑的文件。训练参数、服务地址和运行后端都集中放在这里。
-
-```bash
-export AIEVOBOX_ROOT=/path/to/SAfactory
-export STORAGE_TYPE=sqlite
-export AIEVOBOX_DB_URL=sqlite:///${AIEVOBOX_ROOT}/rl/examples/geo3k_vl/geo3k_vl.db
-
-export BUFFER_SERVER_HOST=127.0.0.1
-export BUFFER_SERVER_PORT=18889
-export LLM_PROXY_HOST=127.0.0.1
-export LLM_PROXY_PORT=18890
-
-# Docker 本地运行可用 127.0.0.1；RJob 需要换成集群可访问地址。
-export AIEVOBOX_GATEWAY_HOST=127.0.0.1
-export AIEVOBOX_GATEWAY_PORT=8000
-export AIEVOBOX_GATEWAY_BASE_URL=http://${AIEVOBOX_GATEWAY_HOST}:${AIEVOBOX_GATEWAY_PORT}/v1/sessions
-
-export RL_MODEL=model
-export RL_GROUP_SIZE=8
-export RL_GLOBAL_BATCH_SIZE=512
-export RL_ROLLOUT_GROUP_BATCH_SIZE=64
-export RL_EPOCH=1000
-export RL_OFF_BY_N=0
-export DAPO_filter=true
-
-export AIEVOBOX_POOL_SIZE=16
-export AIEVOBOX_MAX_STEPS=10
-export AIEVOBOX_ENABLE_EVALUATION=1
-
-export SLIME_HOME=/path/to/slime
-export MEGATRON_HOME=/path/to/Megatron-LM
-export HF_CKPT_DIR=/path/to/hf/checkpoint
-export LOAD_DIR=${HF_CKPT_DIR}
-export SAVE_DIR=/path/to/save/checkpoints
-```
-
-Geo3K 建议开启 evaluation，因为 `env/geo3k/rule_evaluator.py` 会把 runner 产出的 `metrics.score` 转成 Safactory reward。如果关闭 evaluation，rollout 可以运行，但 reward 可能不会按可训练样本提交。
-
-## Geo3K Docker 模式
-
-当 launcher 所在机器可以直接运行本地 Docker 容器时，使用 Docker 模式。
-
-在 `rl/examples/geo3k_vl/env.sh` 中配置：
-
-```bash
-export AIEVOBOX_MODE=docker
-export AIEVOBOX_AGENT_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_config.yaml
-export AIEVOBOX_AGENT_START_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_start.yaml
-
-export AIEVOBOX_GATEWAY_HOST=127.0.0.1
-export AIEVOBOX_GATEWAY_PORT=8000
-export AIEVOBOX_GATEWAY_BASE_URL=http://${AIEVOBOX_GATEWAY_HOST}:${AIEVOBOX_GATEWAY_PORT}/v1/sessions
-```
-
-Docker 相关文件：
-
-| 文件 | 作用 |
-| --- | --- |
-| `env/geo3k/geo3k_config.yaml` | 指定本地 Docker image、Geo3K parquet 路径、需要读取的数据列，以及 `max_turns`、`max_images` 等 `env_params`。 |
-| `env/geo3k/geo3k_start.yaml` | 定义本地 Docker runner 挂载、结果目录挂载、环境变量和 `host.docker.internal` 网络配置。 |
-
-Docker 模式注意事项：
-
-- launcher 环境必须有 `docker` CLI，并且当前用户有启动容器的权限。
-- `geo3k_config.yaml` 中的 `env_image` 必须已经在本机存在，或能够按 Docker pull 策略拉取。
-- `container.runner_entrypoint.source: ./` 会把整个 `env/geo3k` 目录挂到容器内，所以 `runner.py` 和 `math_utils.py` 不需要提前烘进镜像。
-- 镜像仍然必须包含 Geo3K 运行依赖，例如 `requests`、`sympy` 和 `pylatexenc`。
-- `geo3k_start.yaml` 会挂载 `./results` 用于 artifact。Docker 相对挂载路径按 launcher 工作目录解析。
-- 访问本地 Gateway 时，Docker adapter 会注入容器可用的 session URL，`geo3k_start.yaml` 也配置了 `host.docker.internal`。
-
-## Geo3K RJob 模式
-
-当 rollout 环境需要运行在远端 RJob 集群上时，使用 RJob 模式。除非你另行部署，
-Slime trainer、SGLang rollout engines、Buffer Server、Gateway 和 launcher
-仍然运行在 RL launcher 环境中。
-
-在 `rl/examples/geo3k_vl/env.sh` 中配置：
-
-```bash
-export AIEVOBOX_MODE=rjob
-export AIEVOBOX_AGENT_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_config.rjob.yaml
-export AIEVOBOX_AGENT_START_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_start.rjob.yaml
-
-# 必须是 RJob 容器可访问的地址；不要使用 127.0.0.1 或 localhost。
-export AIEVOBOX_GATEWAY_HOST=<launcher-or-gateway-ip-visible-to-rjob>
-export AIEVOBOX_GATEWAY_PORT=8000
-export AIEVOBOX_GATEWAY_BASE_URL=http://${AIEVOBOX_GATEWAY_HOST}:${AIEVOBOX_GATEWAY_PORT}/v1/sessions
-```
-
-RJob 相关文件：
-
-| 文件 | 作用 |
-| --- | --- |
-| `env/geo3k/geo3k_config.rjob.yaml` | 指定 RJob 集群可拉取的 registry image，以及 launcher 物化 parquet row 时可访问的数据集路径。 |
-| `env/geo3k/geo3k_start.rjob.yaml` | 定义 RJob 资源、runner 嵌入文件、清理策略、结果 artifact 挂载和代理相关环境变量。 |
-| `config.yaml` | `launcher.py` 默认读取的全局 RJob 连接和鉴权配置。当前 RL Buffer Server 调用 `launcher.py` 时没有透传 `--rjob-config`，因此 RL RJob 会使用默认 `config.yaml`。 |
-
-launcher 的 Python 环境必须能导入 RJob SDK：
-
-```bash
-python -c "from brainpp.rjob import RJobClient; print(RJobClient)"
-```
-
-全局 RJob 配置放在 `config.yaml`：
-
-```yaml
-rjob:
-  cluster_entry: "https://your-rjob-platform.example"
-  namespace: "your-namespace"
-  access_key: "replace-me"
-  secret_key: "replace-me"
-  charged_group: "your-quota-or-project"
-  gateway_base_url: "http://<gateway-host-visible-to-rjob>:8000/v1/sessions"
-  submit_concurrency: 1
-  cleanup_on_finish: true
-  no_packaging: true
-```
-
-RJob 配置要点：
-
-- `access_key` 和 `secret_key` 用于 `RJobClient` 创建、轮询、读取日志和删除 RJob。它们也决定你是否有权限使用 namespace、charged group、镜像和挂载目录。尽量不要把真实 AK/SK 提交到仓库。
-- `charged_group` 用于选择 RJob 消耗的配额或计费组。
-- 全局或 per-agent RJob 配置里的 `gateway_base_url` 会覆盖 launcher request 中的 URL。如果设置了它，必须保证它是 RJob 容器可访问的 Gateway 地址。如果希望完全由 `env.sh` 控制，清理掉过期的 `rjob.gateway_base_url`。
-- `mount_config` 会把集群可访问存储挂到 RJob 容器内。左侧必须是 RJob 集群能挂载的存储，而不是本机 Docker bind path。Geo3K 用它保存 result artifact，例如 `gpfs://gpfs1/evobox-share/chenxinquan/SAfactory/results:/app/results`。
-- `container.runner_entrypoint.source: ./runner.py` 会由 RJob runtime 自动嵌入或分发到 `target`，RJob 不使用 Docker 那种本地 bind mount。
-- runner 额外 import 的本地文件需要写到 `rjob.embedded_files`。Geo3K 中包含 `math_utils.py`。
-- RJob 镜像必须包含环境依赖。嵌入 runner 文件只提供 adapter 代码，不会安装 Python 包。
-
-- RJob 网络最常见的问题是 Gateway URL 写成本地地址。`AIEVOBOX_GATEWAY_BASE_URL=http://127.0.0.1:8000/v1/sessions` 只对 launcher 机器上的进程有效；RJob 容器需要能从集群路由到 Gateway 主机的地址。
+这意味着 RL 训练不需要为每个环境复制启动脚本；通常只需要准备自己的 `rl/examples/my_env/env.sh`。
 
 ## 关键变量
 
+Launcher 和数据：
+
+| 变量 | 用作 | 说明 |
+|------|------|------|
+| `AIEVOBOX_ROOT` | launcher 路径和 Python path | SAfactory 仓库根目录。 |
+| `AIEVOBOX_MODE` | `--mode` | `docker`、`rjob` 或 `sandbox`。 |
+| `STORAGE_TYPE` | `--storage-type` | `sqlite` 或 `cloud`。 |
+| `AIEVOBOX_DB_URL` | `--db-path` | Launcher、Gateway 和 Buffer Server 使用的 SQLite URI。 |
+| `AIEVOBOX_AGENT_CONFIG` | `--agent-config` | 单个 v2 agent config YAML。 |
+| `AIEVOBOX_AGENT_ROOT` | `--agent-root` | 未设置 `AIEVOBOX_AGENT_CONFIG` 时的 agent config 根目录。 |
+| `AIEVOBOX_AGENT_START_CONFIG` | `--agent-start-config` | runtime 启动 YAML。 |
+| `AIEVOBOX_GATEWAY_BASE_URL` | `--gateway-base-url` | Gateway session root；不会回退到 LLM proxy。 |
+| `AIEVOBOX_ENABLE_EVALUATION` | `--enable-evaluation` | 设为 `1`、`true`、`yes` 或 `on` 时运行 evaluator 并提交可训练 reward。 |
+| `RL_MODEL` | `--llm-model` | Gateway route key 或 rollout model 标识。 |
+| `LLM_TEMPERATURE` | `--llm-temperature` | 采样温度。 |
+| `AIEVOBOX_MAX_STEPS` | `--max-steps` | Episode 步数限制。 |
+| `AIEVOBOX_POOL_SIZE` | `--pool-size` | Launcher pool size。 |
+
+RL grouping：
+
 | 变量 | 说明 |
-| --- | --- |
-| `AIEVOBOX_ROOT` | Safactory 仓库路径。 |
-| `AIEVOBOX_MODE` | 运行后端：`docker`、`rjob` 或 `sandbox`。 |
-| `AIEVOBOX_AGENT_CONFIG` | Geo3K 单环境 YAML 配置。 |
-| `AIEVOBOX_AGENT_START_CONFIG` | Geo3K Docker 或 RJob 启动配置。 |
-| `STORAGE_TYPE` | `sqlite` 或 `cloud`；Geo3K RL 示例通常使用 `sqlite`。 |
-| `AIEVOBOX_DB_URL` | Gateway、launcher、Buffer Server 和 evaluator 共享的 rollout 轨迹 DB URL。 |
-| `AIEVOBOX_GATEWAY_HOST` / `AIEVOBOX_GATEWAY_PORT` | Buffer Server ready 检查和 `AIEVOBOX_GATEWAY_BASE_URL` 使用的 host/port。 |
-| `AIEVOBOX_GATEWAY_BASE_URL` | 传给 launcher 和 runtime request 的 Gateway session root。必填。 |
-| `AIEVOBOX_GATEWAY_AUTOSTART` | 默认启用。设为 `0` 表示使用手动管理的外部 Gateway。 |
-| `AIEVOBOX_ENABLE_EVALUATION` | 设为 `1`、`true`、`yes` 或 `on` 时运行 evaluator 并提交可训练 reward。 |
-| `AIEVOBOX_POOL_SIZE` | 并发 rollout 环境实例数。RJob 模式下表示目标并发 RJob 数。 |
-| `AIEVOBOX_MAX_STEPS` | 每个 episode 的最大环境步数。 |
-| `RL_MODEL` | Gateway route key。必须匹配 RL LLM proxy 生成的 route。 |
-| `RL_GROUP_SIZE` | 每个 prompt 的采样数，对应 Slime `n_samples_per_prompt` 和 launcher `--rl-group-size`。 |
-| `RL_ROLLOUT_GROUP_BATCH_SIZE` | 每个 rollout batch 拉取的完成样本组数量。为空时默认 `RL_GLOBAL_BATCH_SIZE / RL_GROUP_SIZE`。 |
-| `RL_GLOBAL_BATCH_SIZE` | Slime 训练 global batch size。 |
-| `RL_EPOCH` | 重复调度 RL 数据集行的 rollout epoch 数。 |
-| `RL_OFF_BY_N` | 训练侧过滤使用的最大策略版本滞后。 |
-| `DAPO_filter` | 是否丢弃 reward 全部相同的 group。 |
-| `BUFFER_SERVER_HOST` / `BUFFER_SERVER_PORT` | generator 连接 Buffer Server 使用的地址。 |
-| `LLM_PROXY_HOST` / `LLM_PROXY_PORT` | Gateway 连接 Slime generator 内置 LLM proxy 使用的地址。 |
-| `SLIME_HOME` | Slime 仓库路径。 |
-| `MEGATRON_HOME` | Megatron-LM 仓库路径。 |
-| `HF_CKPT_DIR` | 初始化训练和 rollout engine 的 HuggingFace checkpoint。 |
-| `LOAD_DIR` | 传给 Slime `--load` 的 checkpoint 路径。首次运行通常等于 HF checkpoint。 |
-| `SAVE_DIR` | Megatron checkpoint 保存目录。 |
-| `NUM_GPUS` | 注册给本地 Ray head 的 GPU 数。 |
-| `ACTOR_NUM_GPUS_PER_NODE` | 训练 actor 使用的 GPU 数。 |
-| `ROLLOUT_NUM_GPUS` | SGLang rollout engine 使用的 GPU 总数。 |
-| `ROLLOUT_NUM_GPUS_PER_ENGINE` | 每个 SGLang rollout engine 使用的 GPU 数。 |
-| `SGLANG_MEM_FRACTION_STATIC` | SGLang 预留静态显存比例。在线权重更新 OOM 时可适当调低。 |
+|------|------|
+| `RL_GROUP_SIZE` | 每个 prompt 的采样数，会作为 `--rl-group-size` 并用于 Buffer Server grouping。 |
+| `RL_EPOCH` | Rollout epoch 扩展，会作为 `--rl-epoch`。 |
+| `RL_OFF_BY_N` | 允许的最大权重版本滞后，由训练侧脚本使用。 |
+| `RL_GLOBAL_BATCH_SIZE` | 训练全局 batch size。 |
+| `RL_ROLLOUT_GROUP_BATCH_SIZE` | 单次 rollout batch 拉取的 group 数量。 |
+| `SLIME_N_SAMPLES_PER_PROMPT` | 通常设置为 `RL_GROUP_SIZE`。 |
+
+服务：
+
+| 变量 | 说明 |
+|------|------|
+| `BUFFER_SERVER_HOST` | Slime 访问 Buffer Server 使用的 host。 |
+| `BUFFER_SERVER_PORT` | Buffer Server 端口，常用 `18889`。 |
+| `LLM_PROXY_HOST` | Gateway 访问 Slime-hosted LLM proxy 使用的 host。 |
+| `LLM_PROXY_PORT` | LLM proxy 端口，常用 `18890`。 |
+| `AIEVOBOX_GATEWAY_AUTOSTART` | 默认为启用；设为 `0` 时 Buffer Server 不自动启动 Gateway。 |
 
 ## Buffer Server API
 
@@ -324,27 +236,24 @@ RJob 配置要点：
 }
 ```
 
-## 运行前检查
+## 建议流程
 
-扩容前建议检查：
-
-1. 先在 RL 外部使用同一套 Docker 或 RJob 配置跑通一个 Geo3K case。
-2. 确认 launcher 能访问 Gateway `/readyz`。
-3. RJob 模式下，确认 RJob 容器内也能访问 Gateway URL。
-4. 确认 `session_steps` 中出现期望 `job_id` 和 `group_id` 的 trainable 行。
-5. 确认每个 group 能产出 `RL_GROUP_SIZE` 条完成样本，否则 Buffer Server 会一直等待不完整 group。
-6. 观察 `logs/<run>/main.log`、`logs/<run>/slime.log`、`logs/gateway.log`、`logs/gateway_requests.jsonl` 和 `logs/buffer_server.log`。
+1. 先在 RL 外部用 `launcher.py`、Gateway 和 evaluator 跑通 `my_env`。
+2. 确认 `session_steps` 中出现带 reward 的 trainable 行。
+3. 创建 `rl/examples/my_env/env.sh`，设置环境配置、模型 route、DB URL、训练路径和并发参数。
+4. 在仓库根目录启动 `rl/run_slime_generator.sh`。
+5. 在另一个终端启动 `rl/run_buffer_server.sh`。
+6. 观察 `logs/buffer_server.log`、`logs/main.log`、Gateway 日志和 Slime 日志。
+7. 小规模稳定后，再扩大 `AIEVOBOX_POOL_SIZE`、`RL_GROUP_SIZE` 和训练 batch。
 
 ## 排错
 
 | 现象 | 检查项 |
-| --- | --- |
-| `FileNotFoundError: docker` | Docker 模式要求 launcher 环境有 Docker CLI。没有 Docker 时切换到 RJob。 |
-| `RJob mode requires brainpp.rjob / RJobClient` | 在 launcher 使用的 Python 环境中安装或激活 RJob SDK。 |
-| 创建 RJob 返回 `403 Forbidden` | 检查 RJob AK/SK、namespace、charged group、镜像权限和挂载目录权限。 |
-| RJob succeeded 但没有解析到 result JSON | runner 需要向 stdout 输出一条 `SimulationStartResult` JSON；artifact fallback 需要确保 `SAFACTORY_RESULT_PATH` 指向可写挂载路径，例如 `/app/results`。 |
-| RJob runner 连接 Gateway 失败 | RJob 不要使用 `127.0.0.1` 或 `localhost`。改用 RJob 集群可访问的 Gateway 地址。 |
-| Gateway 对 Geo3K 图片请求返回 `400` | `max_images > 0` 时，`RL_MODEL` 必须路由到支持多模态的 rollout model。 |
-| evaluator 日志中 `total_rows=0 trainable_rows=0` | runtime 在记录模型调用前已经失败，或 Gateway 和 launcher 没有使用同一个 DB。先看 evaluator 之前的 worker 错误。 |
-| group 一直不 ready | `RL_GROUP_SIZE` 大于同一 `group_id` 下已经完成的样本数。 |
-| 在线权重更新 OOM | 调低 `SGLANG_MEM_FRACTION_STATIC`，降低 rollout engine 并发，或降低模型并行压力。 |
+|------|--------|
+| Buffer Server 启动 launcher 时仍像旧 `--env-config` 流程 | 使用 `AIEVOBOX_AGENT_CONFIG` 或 `AIEVOBOX_AGENT_ROOT`，不要使用旧变量。 |
+| Launcher 因缺少 start config 失败 | 设置 `AIEVOBOX_AGENT_START_CONFIG`，或采用同目录 `<name>_start.yaml` 命名供 Buffer Server 自动推导。 |
+| Launcher 提示缺少 gateway URL | 将 `AIEVOBOX_GATEWAY_BASE_URL` 设置为 Gateway session root；不要指向 LLM proxy。 |
+| Gateway route 找不到模型 | 确认 `RL_MODEL` 与 Gateway `llm_routes` key 一致；自动 Gateway 会使用 `RL_MODEL` 生成 route。 |
+| `/get_rollout_data` 没有样本 | 检查 `session_steps` 是否有 `is_trainable = 1`、reward 是否写入、`group_id` 数量是否匹配。 |
+| Group 一直不 ready | `RL_GROUP_SIZE` 大于该 `group_id` 下已完成样本数。 |
+| Gateway storage 与 launcher 不一致 | 确认自动 Gateway 生成配置中的 `storage_config.db_url` 与 `AIEVOBOX_DB_URL` 一致；外部 Gateway 也必须使用同一个 DB/backend。 |

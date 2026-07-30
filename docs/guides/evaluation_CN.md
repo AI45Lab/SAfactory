@@ -19,49 +19,18 @@ Safactory 只保留环境内的 Python 规则评测。开启评测后，系统�
 
 Docker、RJob 和 Sandbox 使用相同流程。
 
-Geo3K 启动示例：
+启动示例：
 
 ```bash
 python launcher.py \
-  --mode docker \
-  --agent-config env/geo3k/geo3k_config.yaml \
-  --agent-start-config env/geo3k/geo3k_start.yaml \
+  --agent-config env/mybench/mybench_config.yaml \
+  --agent-start-config env/mybench/mybench_start.yaml \
   --gateway-base-url http://127.0.0.1:8000/v1/sessions \
-  --llm-model geo3k_model \
+  --llm-model YOUR_ROUTE_KEY \
   --enable-evaluation \
   --db-path sqlite://env_trajs.db \
-  --job-id geo3k-eval-smoke \
-  --pool-size 1 \
-  --max-workers 1 \
-  --max-steps 10
+  --pool-size 1
 ```
-
-首次本地运行时，如果默认 Geo3K 配置指向本机没有的完整 parquet 数据集，请使用一份指向 `env/geo3k/datasets/geo3k_sample.jsonl` 的 Geo3K smoke-test 配置。
-
-## Geo3K Rule Evaluator
-
-Geo3K 是标准评测环境。它的 runner 会用 `env/geo3k/math_utils.py` 判断模型 boxed final answer，并写入：
-
-```json
-{
-  "metrics": {
-    "bench": "geo3k",
-    "score": 1.0,
-    "passed": true,
-    "ground_truth": "5",
-    "final_answer": "5",
-    "reward_source": "latest_boxed_answer"
-  }
-}
-```
-
-`env/geo3k/rule_evaluator.py` 会把 `metrics.score` 归一化到 SAfactory 的 0 到 10 分：
-
-```text
-reward = metrics.score * 10
-```
-
-Geo3K 答对得 `10` 分，答错得 `0` 分。
 
 ## Runtime 输出
 
