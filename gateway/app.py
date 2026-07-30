@@ -56,10 +56,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         app.state.gateway_resolver = SessionResolver(cfg)
         app.state.gateway_request_logger = GatewayRequestLogger(cfg)
         app.state.gateway_request_logger.start()
-        app.state.gateway_provider_trace = ProviderTraceWriter(
-            cfg.provider_trace_dir,
-            cfg.provider_trace_capture,
-        )
+        app.state.gateway_provider_trace = ProviderTraceWriter(cfg.provider_trace_capture)
         app.state.gateway_anthropic_thinking_history = AnthropicThinkingHistory()
         app.state.gateway_telemetry = TelemetryRecorder(cfg, app.state.gateway_storage)
         log.info("Gateway telemetry start begin")

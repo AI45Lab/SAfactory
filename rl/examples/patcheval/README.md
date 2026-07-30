@@ -135,8 +135,8 @@ Claude Code Exp1 使用官方 `exp_agent/claudecode/dataset.jsonl` 和
 Claude Code 直接请求
 `/v1/sessions/<session_id>/v1/messages`，不再启动 Claude Adapter，也不再经过
 Anthropic → OpenAI → Anthropic 转换。Gateway 转发原生流式事件，并把 Provider
-Raw Trace 写入脚本打印的 `Provider traces` 目录；`session_steps.env_state` 只
-保存 artifact 路径、hash、Signature 数量和完整性状态，不需要数据库迁移。
+Raw Artifact 直接写入 `session_steps.response`。不生成外部审计文件，也不在
+`session_steps.env_state` 保存 Provider Trace 元数据，因此不需要数据库迁移。
 
 先运行一个样本：
 

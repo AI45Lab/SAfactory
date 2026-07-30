@@ -5,7 +5,6 @@ import json
 import os
 import sys
 import time
-from pathlib import Path
 
 import yaml
 from fastapi.testclient import TestClient
@@ -320,10 +319,11 @@ def test_anthropic_thinking_history_restores_matching_signed_block() -> None:
     assert unchanged_count == 0
 
 
-def test_provider_trace_writes_signature_artifact(tmp_path) -> None:
-    writer = ProviderTraceWriter(str(tmp_path), "full")
-    metadata = asyncio.run(
-        writer.write(
+def test_provider_trace_builds_signature_artifact() -> None:
+    writer = ProviderTraceWriter("full")
+
+    async def build_artifact():
+        return await writer.write(
             session_id="session-1",
             request_id="request-1",
             llm_step_index=2,
@@ -343,54 +343,16 @@ def test_provider_trace_writes_signature_artifact(tmp_path) -> None:
             status_code=200,
             capture_complete=True,
         )
-    )
 
+    metadata = asyncio.run(build_artifact())
     assert metadata is not None
-    assert metadata["signature_count"] == 1
     assert metadata["artifact"]["response"]["content"][0]["signature"] == "signed-blob"
-    artifact = json.loads(
-        open(metadata["artifact_path"], encoding="utf-8").read()
-    )
+    artifact = metadata["artifact"]
     assert artifact["signatures"][0]["signature"] == "signed-blob"
     assert artifact["capture"]["complete"] is True
 
 
-def test_provider_trace_keeps_database_artifact_when_external_write_fails(tmp_path) -> None:
-    invalid_root = tmp_path / "not-a-directory"
-    invalid_root.write_text("occupied", encoding="utf-8")
-    writer = ProviderTraceWriter(str(invalid_root), "full")
-
-    metadata = asyncio.run(
-        writer.write(
-            session_id="session-1",
-            request_id="request-1",
-            llm_step_index=1,
-            model="claude",
-            endpoint="messages",
-            request_body={"model": "claude", "messages": []},
-            response_body={
-                "type": "message",
-                "content": [
-                    {
-                        "type": "thinking",
-                        "thinking": "private",
-                        "signature": "signed-blob",
-                    }
-                ],
-            },
-            status_code=200,
-            capture_complete=True,
-        )
-    )
-
-    assert metadata is not None
-    assert metadata["artifact_path"] is None
-    assert metadata["capture_complete"] is False
-    assert metadata["capture_error"] == "external_artifact_write_failed"
-    assert metadata["artifact"]["signatures"][0]["signature"] == "signed-blob"
-
-
-def test_gateway_streams_native_anthropic_and_records_trace(tmp_path, monkeypatch) -> None:
+def test_gateway_streams_native_anthropic_and_records_trace(monkeypatch) -> None:
     forwarded_payloads = []
     stream = "\n\n".join(
         [
@@ -504,7 +466,6 @@ def test_gateway_streams_native_anthropic_and_records_trace(tmp_path, monkeypatc
         storage_config={"db_url": "sqlite://unused.db"},
         request_log_enabled=False,
         provider_trace_capture="full",
-        provider_trace_dir=str(tmp_path),
         llm_routes={
             "claude": LLMRouteConfig(
                 base_url="https://provider.example/v1",
@@ -560,13 +521,8 @@ def test_gateway_streams_native_anthropic_and_records_trace(tmp_path, monkeypatc
     assert len(storage.records) == 2
     record = storage.records[0][1]
     metadata = GatewayStorage._metadata(record)
-    assert metadata["provider_trace"]["signature_count"] == 1
-    assert "artifact" not in metadata["provider_trace"]
+    assert "provider_trace" not in metadata
     stored_response = json.loads(GatewayStorage._provider_response(record))
     assert stored_response["response"]["content"][0]["signature"] == "signed-blob"
     assert stored_response["stream_text"].startswith("event: message_start")
-    artifact_path = Path(metadata["provider_trace"]["artifact_path"])
-    assert artifact_path.is_file()
-    assert GatewayStorage._provider_response(record) == artifact_path.read_text(encoding="utf-8")
-    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
-    assert artifact["signatures"][0]["signature"] == "signed-blob"
+    assert stored_response["signatures"][0]["signature"] == "signed-blob"

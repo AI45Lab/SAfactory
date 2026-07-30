@@ -78,16 +78,14 @@ PATCH_EVAL_DB=${PATCH_EVAL_DB:-${SCRIPT_DIR}/patcheval_${model_slug}_${run_label
 GENERATED_DIR=${PATCH_EVAL_GENERATED_DIR:-${PATCH_EVAL_SHARED_TMP}/safactory-patcheval-${run_label}-${run_id}}
 GATEWAY_CONFIG="${PATCH_EVAL_SHARED_TMP}/safactory-patcheval-gateway-${run_id}.yaml"
 GATEWAY_LOG="${SCRIPT_DIR}/logs/gateway-${run_id}.log"
-PATCH_EVAL_PROVIDER_TRACE_DIR=${PATCH_EVAL_PROVIDER_TRACE_DIR:-${PATCH_EVAL_SHARED_TMP}/provider-traces-${run_id}}
 
-mkdir -p "${GENERATED_DIR}" "$(dirname -- "${PATCH_EVAL_DB}")" "${PATCH_EVAL_PROVIDER_TRACE_DIR}"
+mkdir -p "${GENERATED_DIR}" "$(dirname -- "${PATCH_EVAL_DB}")"
 
 PATCH_EVAL_DB="${PATCH_EVAL_DB}" \
 PATCH_EVAL_API_BASE="${PATCH_EVAL_API_BASE}" \
 PATCH_EVAL_API_KEY="${PATCH_EVAL_API_KEY}" \
 PATCH_EVAL_MODEL="${PATCH_EVAL_MODEL}" \
 PATCH_EVAL_GATEWAY_PORT="${PATCH_EVAL_GATEWAY_PORT}" \
-PATCH_EVAL_PROVIDER_TRACE_DIR="${PATCH_EVAL_PROVIDER_TRACE_DIR}" \
 PATCH_EVAL_ANTHROPIC_COMPATIBILITY="${PATCH_EVAL_ANTHROPIC_COMPATIBILITY}" \
 PATCH_EVAL_ANTHROPIC_THINKING_BUDGET_TOKENS="${PATCH_EVAL_ANTHROPIC_THINKING_BUDGET_TOKENS}" \
 PATCH_EVAL_ANTHROPIC_MAX_TOKENS="${PATCH_EVAL_ANTHROPIC_MAX_TOKENS}" \
@@ -106,10 +104,7 @@ config = {
     "max_steps": -1,
     "storage_type": "sqlite",
     "storage_config": {"db_url": f"sqlite:///{db}"},
-    "provider_trace": {
-        "capture": "full",
-        "directory": os.environ["PATCH_EVAL_PROVIDER_TRACE_DIR"],
-    },
+    "provider_trace": {"capture": "full"},
     "llm_routes": {
         os.environ["PATCH_EVAL_MODEL"]: {
             "base_url": os.environ["PATCH_EVAL_API_BASE"].rstrip("/") + "/",
@@ -186,7 +181,6 @@ echo "PatchEval baseline: ${PATCH_EVAL_BASELINE}"
 echo "PatchEval setting: ${run_label}"
 echo "Model: ${PATCH_EVAL_MODEL}"
 echo "Results DB: ${PATCH_EVAL_DB}"
-echo "Provider traces: ${PATCH_EVAL_PROVIDER_TRACE_DIR}"
 echo "Generated config: ${GENERATED_DIR}"
 
 "${PYTHON_BIN}" launcher.py \

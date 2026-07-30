@@ -54,7 +54,6 @@ class GatewayConfig:
     request_log_backup_count: int = 5
     request_log_body_limit_bytes: int = 0
     provider_trace_capture: str = "off"
-    provider_trace_dir: str | None = None
     micro_batch_window_ms: int = 0
     session_cache_ttl_s: int = 1800
     close_mode: str = "soft_close"
@@ -102,8 +101,6 @@ class GatewayConfig:
             raise ValueError("request_log_body_limit_bytes must be non-negative")
         if self.provider_trace_capture not in {"off", "metadata", "full"}:
             raise ValueError("provider_trace_capture must be one of: off, metadata, full")
-        if self.provider_trace_capture != "off" and not self.provider_trace_dir:
-            raise ValueError("provider_trace_dir is required when provider trace capture is enabled")
 
 
 def load_gateway_config(path: str | None = None) -> GatewayConfig:
@@ -156,7 +153,6 @@ def _dict_to_config(data: dict[str, Any]) -> GatewayConfig:
     provider_trace = normalized.pop("provider_trace", None)
     if isinstance(provider_trace, dict):
         normalized.setdefault("provider_trace_capture", provider_trace.get("capture"))
-        normalized.setdefault("provider_trace_dir", provider_trace.get("directory"))
 
     known = {field.name for field in fields(GatewayConfig)}
     kwargs = {key: value for key, value in normalized.items() if key in known and value is not None}

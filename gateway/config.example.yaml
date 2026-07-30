@@ -47,7 +47,6 @@ request_log:
 # controlled research runs because Anthropic thinking signatures are sensitive.
 provider_trace:
   capture: off # off | metadata | full
-  directory: null
 
 llm_routes:
   minimax2.5:

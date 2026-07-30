@@ -581,7 +581,6 @@ class GatewayStorage:
             "is_session_completed": record.is_session_completed,
             "truncate_reason": record.truncate_reason if record.is_truncated else None,
             "synthetic_stop": record.synthetic_stop,
-            "provider_trace": _provider_trace_metadata(record.provider_trace),
             "weight_version": _response_weight_version(record.response),
             "created_at": record.created_at.isoformat(),
             "completed_at": record.completed_at.isoformat(),
@@ -589,12 +588,6 @@ class GatewayStorage:
 
 
 THINK_TAG_RE = re.compile(r"<think>(.*?)</think>", re.IGNORECASE | re.DOTALL)
-
-
-def _provider_trace_metadata(provider_trace: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not isinstance(provider_trace, dict):
-        return None
-    return {key: value for key, value in provider_trace.items() if key != "artifact"}
 
 
 def _trajectory_messages(record: GatewayTelemetryRecord) -> list[dict[str, Any]]:
