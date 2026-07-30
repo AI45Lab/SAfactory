@@ -12,6 +12,7 @@
   <a href="#why-safactory">Why SAfactory</a> •
   <a href="#demo">Demo</a> •
   <a href="#quick-start">Quick Start</a> •
+  <a href="#agent-skill">Agent Skill</a> •
   <a href="#documentation">Documentation</a> •
   <a href="#citation">Citation</a>
 </p>
@@ -156,6 +157,36 @@ RL_ENV_SH=rl/examples/geo3k_vl/env.sh bash rl/run_buffer_server.sh
 ```
 
 Buffer Server can automatically start a Gateway and route `RL_MODEL` to the Slime-hosted LLM proxy. If a manually started Gateway is already using the same port, stop it first. Set `AIEVOBOX_GATEWAY_AUTOSTART=0` only when the external Gateway already has the correct route and storage configuration.
+
+## <a id="agent-skill"></a>🧩 Agent Skill Quick Start
+
+This repository includes a lightweight Agent skill that helps agents use SAfactory through the standard workflows:
+
+```text
+skills/safactory-workflows/SKILL.md
+```
+
+It covers three common requests:
+
+- onboard a new benchmark or custom environment into SAfactory;
+- run Docker-mode evaluation for a selected environment;
+- start GRPO / RL training for a selected environment.
+
+When working with an Agent, use prompts such as:
+
+```text
+Use skills/safactory-workflows to help me onboard this benchmark into SAfactory.
+```
+
+```text
+Use the safactory-workflows skill to run geo3k evaluation in Docker mode.
+```
+
+```text
+Use the safactory-workflows skill to start GRPO training for my_env.
+```
+
+The skill does not replace the docs. It guides the Agent to read `docs/guides/`, `docs/reference/`, and the root README as needed, while using the standard `env/geo3k/` environment as the reference implementation. If your Agent supports local skill discovery, add `skills/safactory-workflows/` to its skill search path; otherwise mention this path explicitly in the request.
 
 ## <a id="documentation"></a>📚 Documentation
 
