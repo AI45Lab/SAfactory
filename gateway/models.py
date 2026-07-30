@@ -119,3 +119,4 @@ class GatewayTelemetryRecord:
     is_session_completed: bool = False
     truncate_reason: str | None = None
     synthetic_stop: bool = False
+    provider_trace: dict[str, Any] | None = None

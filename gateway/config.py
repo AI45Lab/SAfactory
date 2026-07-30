@@ -15,6 +15,9 @@ class LLMRouteConfig:
     api_key: str | None = None
     supports_stream: bool = True
     max_concurrency: int | None = None
+    anthropic_compatibility: str = "native"
+    anthropic_thinking_budget_tokens: int = 1024
+    anthropic_max_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,8 @@ class GatewayConfig:
     request_log_max_bytes: int = 100 * 1024 * 1024
     request_log_backup_count: int = 5
     request_log_body_limit_bytes: int = 0
+    provider_trace_capture: str = "off"
+    provider_trace_dir: str | None = None
     micro_batch_window_ms: int = 0
     session_cache_ttl_s: int = 1800
     close_mode: str = "soft_close"
@@ -94,6 +99,10 @@ class GatewayConfig:
             raise ValueError("request_log_backup_count must be non-negative")
         if self.request_log_body_limit_bytes < 0:
             raise ValueError("request_log_body_limit_bytes must be non-negative")
+        if self.provider_trace_capture not in {"off", "metadata", "full"}:
+            raise ValueError("provider_trace_capture must be one of: off, metadata, full")
+        if self.provider_trace_capture != "off" and not self.provider_trace_dir:
+            raise ValueError("provider_trace_dir is required when provider trace capture is enabled")
 
 
 def load_gateway_config(path: str | None = None) -> GatewayConfig:
@@ -142,6 +151,11 @@ def _dict_to_config(data: dict[str, Any]) -> GatewayConfig:
         normalized.setdefault("request_log_max_bytes", request_log.get("max_bytes"))
         normalized.setdefault("request_log_backup_count", request_log.get("backup_count"))
         normalized.setdefault("request_log_body_limit_bytes", request_log.get("body_limit_bytes"))
+
+    provider_trace = normalized.pop("provider_trace", None)
+    if isinstance(provider_trace, dict):
+        normalized.setdefault("provider_trace_capture", provider_trace.get("capture"))
+        normalized.setdefault("provider_trace_dir", provider_trace.get("directory"))
 
     known = {field.name for field in fields(GatewayConfig)}
     kwargs = {key: value for key, value in normalized.items() if key in known and value is not None}
@@ -196,6 +210,21 @@ def _routes_from_mapping(raw: Any) -> dict[str, LLMRouteConfig]:
 def _route_from_mapping(data: dict[str, Any]) -> LLMRouteConfig:
     if "base_url" not in data:
         raise ValueError("LLM route config requires base_url")
+    anthropic_compatibility = str(
+        data.get("anthropic_compatibility", "native")
+    ).strip().lower()
+    if anthropic_compatibility not in {"native", "fixed_thinking"}:
+        raise ValueError(
+            "anthropic_compatibility must be one of: native, fixed_thinking"
+        )
+    thinking_budget = int(data.get("anthropic_thinking_budget_tokens", 1024))
+    if thinking_budget < 1024:
+        raise ValueError("anthropic_thinking_budget_tokens must be at least 1024")
+    anthropic_max_tokens = data.get("anthropic_max_tokens")
+    if anthropic_max_tokens is not None and int(anthropic_max_tokens) <= thinking_budget:
+        raise ValueError(
+            "anthropic_max_tokens must be greater than anthropic_thinking_budget_tokens"
+        )
     return LLMRouteConfig(
         base_url=str(data["base_url"]).rstrip("/"),
         api_key=data.get("api_key"),
@@ -203,6 +232,11 @@ def _route_from_mapping(data: dict[str, Any]) -> LLMRouteConfig:
         max_concurrency=None
         if data.get("max_concurrency") is None
         else int(data["max_concurrency"]),
+        anthropic_compatibility=anthropic_compatibility,
+        anthropic_thinking_budget_tokens=thinking_budget,
+        anthropic_max_tokens=None
+        if anthropic_max_tokens is None
+        else int(anthropic_max_tokens),
     )
 
 

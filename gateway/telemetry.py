@@ -19,7 +19,15 @@ from gateway.storage import GatewayStorage
 
 log = logging.getLogger("gateway.telemetry")
 
-SENSITIVE_KEY_PARTS = ("authorization", "api_key", "token", "password", "secret")
+SENSITIVE_KEY_PARTS = (
+    "authorization",
+    "api_key",
+    "token",
+    "password",
+    "secret",
+    "signature",
+    "encrypted_content",
+)
 
 
 @dataclass(frozen=True)
@@ -117,6 +125,7 @@ class TelemetryRecorder:
         latency_ms: float,
         upstream_latency_ms: float | None = None,
         stream_stats: StreamTelemetryStats | None = None,
+        provider_trace: dict[str, Any] | None = None,
     ) -> None:
         await self._record_binding(binding, target, error=False)
         record = await self._build_record(
@@ -129,6 +138,7 @@ class TelemetryRecorder:
             latency_ms=latency_ms,
             upstream_latency_ms=upstream_latency_ms,
             stream_stats=stream_stats,
+            provider_trace=provider_trace,
         )
         await self._enqueue(binding, record)
 
@@ -144,6 +154,7 @@ class TelemetryRecorder:
         upstream_latency_ms: float | None = None,
         stream_stats: StreamTelemetryStats | None = None,
         response_body: dict[str, Any] | None = None,
+        provider_trace: dict[str, Any] | None = None,
     ) -> None:
         await self._record_binding(binding, target, error=True)
         record = await self._build_record(
@@ -158,6 +169,7 @@ class TelemetryRecorder:
             error_text=error_text,
             error_type=_status_error_type(status_code),
             stream_stats=stream_stats,
+            provider_trace=provider_trace,
         )
         await self._enqueue(binding, record)
 
@@ -516,6 +528,7 @@ class TelemetryRecorder:
         error_type: str | None = None,
         error_text: str | None = None,
         stream_stats: StreamTelemetryStats | None = None,
+        provider_trace: dict[str, Any] | None = None,
     ) -> GatewayTelemetryRecord:
         completed_at = datetime.now(timezone.utc)
         payload_sampled = self._should_capture_payload(status_code >= 400)
@@ -576,6 +589,7 @@ class TelemetryRecorder:
             is_session_completed=is_truncated,
             truncate_reason="max_steps_reached" if is_truncated else None,
             synthetic_stop=ctx.synthetic_stop,
+            provider_trace=provider_trace,
         )
 
     def _should_capture_payload(self, failed: bool) -> bool:
@@ -632,6 +646,8 @@ def _finish_reason(body: dict[str, Any] | None) -> str | None:
             return first.get("finish_reason")
     if body.get("status") in {"completed", "failed", "cancelled"}:
         return body.get("status")
+    if body.get("stop_reason"):
+        return str(body["stop_reason"])
     return None
 
 
@@ -648,6 +664,15 @@ def _messages_for_record(endpoint: str, body: dict[str, Any]) -> list[dict[str, 
             return [message for message in messages if isinstance(message, dict)]
     if endpoint == "responses" and "input" in body:
         return [{"role": "user", "content": body["input"]}]
+    if endpoint == "messages":
+        messages: list[dict[str, Any]] = []
+        system = body.get("system")
+        if system not in (None, ""):
+            messages.append({"role": "system", "content": system})
+        raw_messages = body.get("messages")
+        if isinstance(raw_messages, list):
+            messages.extend(message for message in raw_messages if isinstance(message, dict))
+        return messages
     return [{"role": "user", "content": json.dumps(body, ensure_ascii=False, default=str)}]
 
 

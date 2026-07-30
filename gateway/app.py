@@ -22,6 +22,7 @@ from gateway.inference_forwarder import (
 )
 from gateway.llm_router import LLMRouteTarget, LLMRouter
 from gateway.models import GatewayRequestContext, GatewaySessionBinding
+from gateway.provider_trace import ProviderTraceWriter
 from gateway.request_logger import GatewayRequestLogger
 from gateway.session_resolver import SessionResolver
 from gateway.storage import GatewayStorage
@@ -54,6 +55,10 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         app.state.gateway_resolver = SessionResolver(cfg)
         app.state.gateway_request_logger = GatewayRequestLogger(cfg)
         app.state.gateway_request_logger.start()
+        app.state.gateway_provider_trace = ProviderTraceWriter(
+            cfg.provider_trace_dir,
+            cfg.provider_trace_capture,
+        )
         app.state.gateway_telemetry = TelemetryRecorder(cfg, app.state.gateway_storage)
         log.info("Gateway telemetry start begin")
         await app.state.gateway_telemetry.start()
@@ -111,6 +116,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         telemetry: TelemetryRecorder = request.app.state.gateway_telemetry
         storage: GatewayStorage = request.app.state.gateway_storage
         request_logger: GatewayRequestLogger = request.app.state.gateway_request_logger
+        provider_trace: ProviderTraceWriter = request.app.state.gateway_provider_trace
 
         try:
             with trace.span("parse_request_json"):
@@ -264,8 +270,20 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 target.route_model,
                 ctx.is_stream,
             )
+            if endpoint == "messages":
+                payload = forwarder.prepare_anthropic_payload(target, payload)
 
-            headers = forwarder.build_upstream_headers(target, session_id=ctx.session_id)
+            headers = (
+                forwarder.build_anthropic_headers(
+                    target,
+                    request.headers,
+                    session_id=ctx.session_id,
+                    request_id=ctx.request_id,
+                    llm_step_index=ctx.llm_step_index,
+                )
+                if endpoint == "messages"
+                else forwarder.build_upstream_headers(target, session_id=ctx.session_id)
+            )
             with trace.span("request_log_write"):
                 await request_logger.log_request(ctx, binding, target, payload)
             if ctx.is_stream:
@@ -302,6 +320,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                         telemetry=telemetry,
                         request_logger=request_logger,
                         admission=admission,
+                        provider_trace=provider_trace,
                         trace=trace,
                     ),
                     status_code=opened.status_code,
@@ -348,6 +367,17 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     result.status_code,
                 )
             with trace.span("telemetry_enqueue_success"):
+                provider_trace_metadata = await provider_trace.write(
+                    session_id=ctx.session_id,
+                    request_id=ctx.request_id,
+                    llm_step_index=ctx.llm_step_index,
+                    model=ctx.requested_model,
+                    endpoint=ctx.endpoint,
+                    request_body=payload,
+                    response_body=result.body,
+                    status_code=result.status_code,
+                    capture_complete=True,
+                ) if endpoint == "messages" else None
                 await telemetry.enqueue_success(
                     ctx,
                     binding,
@@ -356,6 +386,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     result.body,
                     latency_ms,
                     upstream_latency_ms=result.upstream_latency_ms,
+                    provider_trace=provider_trace_metadata,
                 )
             log.info(
                 "Gateway request complete: request_id=%s session_id=%s model=%s status=%d total_latency_ms=%.2f",
@@ -406,6 +437,22 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     target=target,
                 )
             if ctx is not None and binding is not None:
+                provider_trace_metadata = (
+                    await provider_trace.write(
+                        session_id=ctx.session_id,
+                        request_id=ctx.request_id,
+                        llm_step_index=ctx.llm_step_index,
+                        model=ctx.requested_model,
+                        endpoint=ctx.endpoint,
+                        request_body=payload,
+                        response_body=error_body,
+                        status_code=status_code,
+                        capture_complete=False,
+                        capture_error=type(exc).__name__,
+                    )
+                    if endpoint == "messages"
+                    else None
+                )
                 with trace.span("telemetry_enqueue_failure"):
                     await telemetry.enqueue_failure(
                         ctx,
@@ -416,6 +463,8 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                         status_code,
                         latency_ms,
                         upstream_latency_ms=upstream_latency_ms,
+                        response_body=error_body,
+                        provider_trace=provider_trace_metadata,
                     )
             trace_status = "failed"
             trace_extra = {
@@ -455,6 +504,58 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             endpoint="responses",
             path_session_id=session_id,
         )
+
+    async def handle_session_anthropic_messages(session_id: str, request: Request) -> Response:
+        return await handle_inference_request(
+            request,
+            endpoint="messages",
+            path_session_id=session_id,
+        )
+
+    async def handle_session_anthropic_count_tokens(session_id: str, request: Request) -> Response:
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = None
+        if not isinstance(payload, dict):
+            return JSONResponse(
+                {"type": "error", "error": {"type": "invalid_request_error", "message": "request body must be an object"}},
+                status_code=400,
+            )
+        model = payload.get("model")
+        if not isinstance(model, str) or not model:
+            return JSONResponse(
+                {"type": "error", "error": {"type": "invalid_request_error", "message": "model is required"}},
+                status_code=400,
+            )
+
+        router: LLMRouter = request.app.state.gateway_router
+        forwarder: InferenceForwarder = request.app.state.gateway_forwarder
+        target: LLMRouteTarget | None = None
+        try:
+            target = await router.select_standard_target(requested_model=model, is_stream=False)
+            await router.on_acquire(target.route_model, is_stream=False)
+            headers = forwarder.build_anthropic_headers(
+                target,
+                request.headers,
+                session_id=session_id,
+            )
+            result = await forwarder.forward_anthropic_count_tokens(target, payload, headers)
+            await router.mark_route_result(
+                target.route_model,
+                True,
+                result.upstream_latency_ms,
+                result.status_code,
+            )
+            return JSONResponse(result.body, status_code=result.status_code)
+        except Exception as exc:
+            status_code, body = forwarder.normalize_error(exc)
+            if target is not None:
+                await router.mark_route_result(target.route_model, False, 0.0, status_code)
+            return JSONResponse(body, status_code=status_code)
+        finally:
+            if target is not None:
+                await router.on_release(target.route_model, is_stream=False)
 
     async def handle_standard_chat_completions(request: Request) -> Response:
         return await handle_standard_inference_request(
@@ -670,6 +771,16 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         methods=["POST"],
     )
     app.add_api_route(
+        f"{session_root}/{{session_id}}/v1/messages",
+        handle_session_anthropic_messages,
+        methods=["POST"],
+    )
+    app.add_api_route(
+        f"{session_root}/{{session_id}}/v1/messages/count_tokens",
+        handle_session_anthropic_count_tokens,
+        methods=["POST"],
+    )
+    app.add_api_route(
         f"{standard_openai_root}/chat/completions",
         handle_standard_chat_completions,
         methods=["POST"],
@@ -794,6 +905,8 @@ async def _forward_json(
         return await forwarder.forward_chat(target, payload, headers)
     if endpoint == "responses":
         return await forwarder.forward_responses(target, payload, headers)
+    if endpoint == "messages":
+        return await forwarder.forward_anthropic_messages(target, payload, headers)
     raise ValueError(f"unsupported endpoint {endpoint}")
 
 
@@ -808,6 +921,8 @@ async def _open_stream(
         return await forwarder.open_chat_stream(target, payload, headers)
     if endpoint == "responses":
         return await forwarder.open_responses_stream(target, payload, headers)
+    if endpoint == "messages":
+        return await forwarder.open_anthropic_messages_stream(target, payload, headers)
     raise ValueError(f"unsupported endpoint {endpoint}")
 
 
@@ -899,6 +1014,25 @@ def build_synthetic_stop_response(
             )
         return JSONResponse(body, status_code=200)
 
+    if endpoint == "messages":
+        body = {
+            "id": "msg_safactory_stop",
+            "type": "message",
+            "role": "assistant",
+            "model": model,
+            "content": [{"type": "text", "text": message}],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+        }
+        if is_stream:
+            return StreamingResponse(
+                _anthropic_stop_events(body, message),
+                status_code=200,
+                media_type="text/event-stream",
+            )
+        return JSONResponse(body, status_code=200)
+
     raise ValueError(f"unsupported endpoint {endpoint}")
 
 
@@ -931,8 +1065,48 @@ async def _responses_stop_events(body: dict[str, Any], message: str) -> AsyncIte
     yield b"data: [DONE]\n\n"
 
 
+async def _anthropic_stop_events(body: dict[str, Any], message: str) -> AsyncIterator[bytes]:
+    initial = dict(body)
+    initial["content"] = []
+    initial["stop_reason"] = None
+    initial["usage"] = {"input_tokens": 0, "output_tokens": 0}
+    yield _anthropic_sse("message_start", {"type": "message_start", "message": initial})
+    yield _anthropic_sse(
+        "content_block_start",
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""},
+        },
+    )
+    yield _anthropic_sse(
+        "content_block_delta",
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": message},
+        },
+    )
+    yield _anthropic_sse("content_block_stop", {"type": "content_block_stop", "index": 0})
+    yield _anthropic_sse(
+        "message_delta",
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"output_tokens": 0},
+        },
+    )
+    yield _anthropic_sse("message_stop", {"type": "message_stop"})
+
+
 def _sse_data(payload: dict[str, Any]) -> bytes:
     return f"data: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n".encode("utf-8")
+
+
+def _anthropic_sse(event: str, payload: dict[str, Any]) -> bytes:
+    return (
+        f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+    ).encode("utf-8")
 
 
 def _upstream_latency_ms_from_exception(exc: Exception) -> float | None:
@@ -957,6 +1131,7 @@ async def _stream_and_finalize(
     telemetry: TelemetryRecorder,
     request_logger: GatewayRequestLogger,
     admission: AdmissionController,
+    provider_trace: ProviderTraceWriter,
     trace: PerfTrace,
 ) -> AsyncIterator[bytes]:
     first_chunk_at: float | None = None
@@ -970,6 +1145,7 @@ async def _stream_and_finalize(
     stream_metadata_buffer = ""
     stream_choice_states: dict[int, dict[str, Any]] = {}
     stream_text_parts: list[str] = []
+    provider_stream_parts: list[bytes] = []
     stream_total_bytes = 0
     stream_capture = request_logger.new_stream_capture()
 
@@ -986,7 +1162,10 @@ async def _stream_and_finalize(
             if chunk:
                 stream_capture.append(chunk)
                 stream_total_bytes += len(chunk)
-                stream_text_parts.append(chunk.decode("utf-8", errors="replace"))
+                if ctx.endpoint == "messages":
+                    provider_stream_parts.append(bytes(chunk))
+                else:
+                    stream_text_parts.append(chunk.decode("utf-8", errors="replace"))
                 if first_chunk_at is None:
                     first_chunk_at = time.perf_counter()
                     log.info(
@@ -1056,31 +1235,64 @@ async def _stream_and_finalize(
                 ttft_ms=ttft_ms,
             )
             stream_body = stream_capture.snapshot()
-            telemetry_response_body = _stream_response_body_for_telemetry(
-                summary=stream_response_body,
-                choice_states=stream_choice_states,
-                stream_text="".join(stream_text_parts),
-                stream_total_bytes=stream_total_bytes,
-                stream_truncated=False,
+            stream_text = (
+                b"".join(provider_stream_parts).decode("utf-8", errors="replace")
+                if provider_stream_parts
+                else "".join(stream_text_parts)
             )
-            with trace.span("request_log_stream_response"):
-                await request_logger.log_stream_response(
-                    ctx,
-                    binding,
-                    target,
-                    status_code=status_code,
-                    stream_body=stream_body,
-                    stream_summary=stream_response_body,
-                    latency_ms=latency_ms,
-                    upstream_latency_ms=upstream_stream_total_ms,
-                    ttft_ms=ttft_ms,
-                    output_chunk_count=chunk_count,
-                    client_cancelled=client_cancelled,
-                    upstream_cancelled=upstream_cancelled,
-                    error_text=error_text,
-                    upstream_open_latency_ms=opened.upstream_latency_ms,
-                    upstream_stream_total_ms=upstream_stream_total_ms,
+            telemetry_response_body = (
+                _anthropic_response_from_sse(stream_text, ctx.requested_model)
+                if ctx.endpoint == "messages"
+                else _stream_response_body_for_telemetry(
+                    summary=stream_response_body,
+                    choice_states=stream_choice_states,
+                    stream_text=stream_text,
+                    stream_total_bytes=stream_total_bytes,
+                    stream_truncated=False,
                 )
+            )
+            provider_trace_metadata = await provider_trace.write(
+                session_id=ctx.session_id,
+                request_id=ctx.request_id,
+                llm_step_index=ctx.llm_step_index,
+                model=ctx.requested_model,
+                endpoint=ctx.endpoint,
+                request_body=payload,
+                response_body=telemetry_response_body,
+                stream_text=stream_text,
+                status_code=status_code,
+                capture_complete=ok and not client_cancelled and not upstream_cancelled,
+                capture_error=error_text,
+            ) if ctx.endpoint == "messages" else None
+            with trace.span("request_log_stream_response"):
+                if ctx.endpoint == "messages":
+                    await request_logger.log_response(
+                        ctx,
+                        binding,
+                        target,
+                        status_code=status_code,
+                        response_body=stream_response_body,
+                        latency_ms=latency_ms,
+                        upstream_latency_ms=upstream_stream_total_ms,
+                    )
+                else:
+                    await request_logger.log_stream_response(
+                        ctx,
+                        binding,
+                        target,
+                        status_code=status_code,
+                        stream_body=stream_body,
+                        stream_summary=stream_response_body,
+                        latency_ms=latency_ms,
+                        upstream_latency_ms=upstream_stream_total_ms,
+                        ttft_ms=ttft_ms,
+                        output_chunk_count=chunk_count,
+                        client_cancelled=client_cancelled,
+                        upstream_cancelled=upstream_cancelled,
+                        error_text=error_text,
+                        upstream_open_latency_ms=opened.upstream_latency_ms,
+                        upstream_stream_total_ms=upstream_stream_total_ms,
+                    )
             if ok:
                 with trace.span("telemetry_enqueue_stream_success"):
                     await telemetry.enqueue_success(
@@ -1092,6 +1304,7 @@ async def _stream_and_finalize(
                         latency_ms,
                         upstream_latency_ms=upstream_stream_total_ms,
                         stream_stats=stats,
+                        provider_trace=provider_trace_metadata,
                     )
             else:
                 with trace.span("telemetry_enqueue_stream_failure"):
@@ -1106,6 +1319,7 @@ async def _stream_and_finalize(
                         upstream_latency_ms=upstream_stream_total_ms,
                         stream_stats=stats,
                         response_body=telemetry_response_body,
+                        provider_trace=provider_trace_metadata,
                     )
             log.info(
                 "Gateway stream finalize complete: request_id=%s status=%d telemetry_recorded=true",
@@ -1472,6 +1686,95 @@ def _stream_response_body_for_telemetry(
     body["stream_total_bytes"] = stream_total_bytes
     body["stream_truncated"] = stream_truncated
     return body
+
+
+def _anthropic_response_from_sse(stream_text: str, requested_model: str) -> dict[str, Any]:
+    message: dict[str, Any] = {
+        "id": "msg_stream",
+        "type": "message",
+        "role": "assistant",
+        "model": requested_model,
+        "content": [],
+        "stop_reason": None,
+        "stop_sequence": None,
+        "usage": {},
+    }
+    blocks: dict[int, dict[str, Any]] = {}
+    for raw_line in stream_text.replace("\r\n", "\n").splitlines():
+        if not raw_line.startswith("data:"):
+            continue
+        raw_data = raw_line[5:].strip()
+        if not raw_data or raw_data == "[DONE]":
+            continue
+        try:
+            event = json.loads(raw_data)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("type")
+        if event_type == "message_start" and isinstance(event.get("message"), dict):
+            initial = event["message"]
+            for key in ("id", "type", "role", "model", "stop_reason", "stop_sequence"):
+                if initial.get(key) is not None:
+                    message[key] = initial[key]
+            if isinstance(initial.get("usage"), dict):
+                message["usage"].update(initial["usage"])
+        elif event_type == "content_block_start":
+            index = _stream_index(event)
+            content_block = event.get("content_block")
+            if index is not None and isinstance(content_block, dict):
+                blocks[index] = dict(content_block)
+        elif event_type == "content_block_delta":
+            index = _stream_index(event)
+            delta = event.get("delta")
+            if index is None or not isinstance(delta, dict):
+                continue
+            block = blocks.setdefault(index, {})
+            delta_type = delta.get("type")
+            if delta_type == "text_delta":
+                block["type"] = "text"
+                block["text"] = str(block.get("text") or "") + str(delta.get("text") or "")
+            elif delta_type == "thinking_delta":
+                block["type"] = "thinking"
+                block["thinking"] = str(block.get("thinking") or "") + str(delta.get("thinking") or "")
+            elif delta_type == "signature_delta":
+                block["type"] = block.get("type") or "thinking"
+                block["signature"] = str(block.get("signature") or "") + str(delta.get("signature") or "")
+            elif delta_type == "input_json_delta":
+                block["_partial_json"] = str(block.get("_partial_json") or "") + str(
+                    delta.get("partial_json") or ""
+                )
+        elif event_type == "message_delta":
+            delta = event.get("delta")
+            if isinstance(delta, dict):
+                for key in ("stop_reason", "stop_sequence"):
+                    if key in delta:
+                        message[key] = delta[key]
+            if isinstance(event.get("usage"), dict):
+                message["usage"].update(event["usage"])
+
+    content: list[dict[str, Any]] = []
+    for index in sorted(blocks):
+        block = blocks[index]
+        partial_json = block.pop("_partial_json", None)
+        if partial_json is not None:
+            try:
+                block["input"] = json.loads(partial_json)
+            except ValueError:
+                block["input"] = {"raw": partial_json}
+        content.append(block)
+    message["content"] = content
+    message["stream_total_bytes"] = len(stream_text.encode("utf-8"))
+    message["stream_truncated"] = False
+    return message
+
+
+def _stream_index(event: dict[str, Any]) -> int | None:
+    try:
+        return int(event.get("index"))
+    except (TypeError, ValueError):
+        return None
 
 
 def _finalize_choice_state(state: dict[str, Any]) -> dict[str, Any]:

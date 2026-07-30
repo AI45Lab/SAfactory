@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import ipaddress
 import json
 import logging
@@ -111,6 +112,22 @@ class InferenceForwarder:
     ) -> ForwardResult:
         return await self._forward_json(target, "responses", payload, headers)
 
+    async def forward_anthropic_messages(
+        self,
+        target: LLMRouteTarget,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> ForwardResult:
+        return await self._forward_json(target, "messages", payload, headers)
+
+    async def forward_anthropic_count_tokens(
+        self,
+        target: LLMRouteTarget,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> ForwardResult:
+        return await self._forward_json(target, "messages/count_tokens", payload, headers)
+
     async def open_chat_stream(
         self,
         target: LLMRouteTarget,
@@ -126,6 +143,14 @@ class InferenceForwarder:
         headers: dict[str, str],
     ) -> StreamForwardContext:
         return await self._open_stream(target, "responses", payload, headers)
+
+    async def open_anthropic_messages_stream(
+        self,
+        target: LLMRouteTarget,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> StreamForwardContext:
+        return await self._open_stream(target, "messages", payload, headers)
 
     async def _forward_json(
         self,
@@ -296,6 +321,55 @@ class InferenceForwarder:
         # Plain OpenAI-compatible upstreams ignore the unknown header.
         if session_id:
             headers["X-Safactory-Session-Id"] = session_id
+        return headers
+
+    @staticmethod
+    def prepare_anthropic_payload(
+        target: LLMRouteTarget,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if target.anthropic_compatibility == "native":
+            return payload
+
+        prepared = copy.deepcopy(payload)
+        prepared.pop("context_management", None)
+        prepared.pop("output_config", None)
+        prepared["thinking"] = {
+            "type": "enabled",
+            "budget_tokens": target.anthropic_thinking_budget_tokens,
+        }
+        if target.anthropic_max_tokens is not None:
+            requested = int(prepared.get("max_tokens") or target.anthropic_max_tokens)
+            prepared["max_tokens"] = min(requested, target.anthropic_max_tokens)
+        return prepared
+
+    def build_anthropic_headers(
+        self,
+        target: LLMRouteTarget,
+        inbound_headers: Any,
+        *,
+        session_id: str | None = None,
+        request_id: str | None = None,
+        llm_step_index: int | None = None,
+    ) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        forwarded_names = ["anthropic-version", "user-agent"]
+        if target.anthropic_compatibility == "native":
+            forwarded_names.append("anthropic-beta")
+        for name in forwarded_names:
+            value = inbound_headers.get(name) if inbound_headers is not None else None
+            if value:
+                headers[name] = str(value)
+        headers.setdefault("anthropic-version", "2023-06-01")
+        if target.api_key:
+            headers["x-api-key"] = target.api_key
+            headers["Authorization"] = f"Bearer {target.api_key}"
+        if session_id:
+            headers["X-Safactory-Session-Id"] = session_id
+        if request_id:
+            headers["X-Safactory-Request-Id"] = request_id
+        if llm_step_index is not None:
+            headers["X-Safactory-Step-Index"] = str(llm_step_index)
         return headers
 
     def normalize_error(self, exc: Exception) -> tuple[int, dict[str, Any]]:

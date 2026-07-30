@@ -345,7 +345,7 @@ class GatewayStorage:
                             "session": session,
                             "step_id": record.seq_id,
                             "messages": _trajectory_messages(record),
-                            "response": "",
+                            "response": self._provider_response(record),
                             "step_reward": 0.0,
                             "env_state": json.dumps(self._metadata(record), ensure_ascii=False, default=str),
                             "terminated": False,
@@ -373,6 +373,22 @@ class GatewayStorage:
         except Exception as exc:
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
+
+    @staticmethod
+    def _provider_response(record: GatewayTelemetryRecord) -> str:
+        provider_trace = record.provider_trace
+        if not isinstance(provider_trace, dict):
+            return ""
+        artifact = provider_trace.get("artifact")
+        if not isinstance(artifact, dict):
+            return ""
+        return json.dumps(
+            artifact,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
 
     async def record_session_close(
         self,
@@ -565,6 +581,7 @@ class GatewayStorage:
             "is_session_completed": record.is_session_completed,
             "truncate_reason": record.truncate_reason if record.is_truncated else None,
             "synthetic_stop": record.synthetic_stop,
+            "provider_trace": _provider_trace_metadata(record.provider_trace),
             "weight_version": _response_weight_version(record.response),
             "created_at": record.created_at.isoformat(),
             "completed_at": record.completed_at.isoformat(),
@@ -572,6 +589,12 @@ class GatewayStorage:
 
 
 THINK_TAG_RE = re.compile(r"<think>(.*?)</think>", re.IGNORECASE | re.DOTALL)
+
+
+def _provider_trace_metadata(provider_trace: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(provider_trace, dict):
+        return None
+    return {key: value for key, value in provider_trace.items() if key != "artifact"}
 
 
 def _trajectory_messages(record: GatewayTelemetryRecord) -> list[dict[str, Any]]:
@@ -605,6 +628,11 @@ def _assistant_messages_from_response(response: str) -> list[dict[str, Any]]:
 def _assistant_messages_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
 
+    if payload.get("type") == "message" and payload.get("role") == "assistant":
+        anthropic_message = _assistant_message_from_anthropic(payload)
+        if anthropic_message:
+            return [anthropic_message]
+
     choices = payload.get("choices")
     if isinstance(choices, list):
         for choice in choices:
@@ -630,6 +658,42 @@ def _assistant_messages_from_payload(payload: dict[str, Any]) -> list[dict[str, 
 
     stream_message = _assistant_message_from_stream(payload.get("stream_text"))
     return [stream_message] if stream_message else []
+
+
+def _assistant_message_from_anthropic(payload: dict[str, Any]) -> dict[str, Any] | None:
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return None
+
+    text_parts: list[str] = []
+    thinking_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text" and isinstance(block.get("text"), str):
+            text_parts.append(block["text"])
+        elif block_type == "thinking" and isinstance(block.get("thinking"), str):
+            thinking_parts.append(block["thinking"])
+        elif block_type == "tool_use":
+            tool_calls.append(
+                {
+                    "id": str(block.get("id") or ""),
+                    "type": "function",
+                    "function": {
+                        "name": str(block.get("name") or ""),
+                        "arguments": json.dumps(block.get("input") or {}, ensure_ascii=False),
+                    },
+                }
+            )
+
+    message = _assistant_message_from_parts("".join(text_parts), "\n\n".join(thinking_parts))
+    if message is None:
+        message = {"role": "assistant"}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    return message if len(message) > 1 else None
 
 
 def _assistant_message_from_chat_message(raw_message: dict[str, Any]) -> dict[str, Any] | None:
