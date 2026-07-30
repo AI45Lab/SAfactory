@@ -23,7 +23,7 @@ storage_config:
   db_url: sqlite://env_trajs.db
 
 llm_routes:
-  YOUR_ROUTE_KEY:
+  geo3k_model:
     base_url: http://YOUR_LLM_HOST/v1
     api_key: YOUR_API_KEY
     supports_stream: true
@@ -88,7 +88,7 @@ storage_config:
 python launcher.py \
   --db-path sqlite://env_trajs.db \
   --gateway-base-url http://127.0.0.1:8000/v1/sessions \
-  --llm-model YOUR_ROUTE_KEY \
+  --llm-model geo3k_model \
   ...
 ```
 

@@ -13,7 +13,7 @@ Safactory v2 uses several explicit configuration surfaces:
 
 For a local SQLite run, gateway and launcher must share the same DB URI.
 
-## Minimal Local Run
+## Minimal Local Geo3K Run
 
 Start gateway:
 
@@ -21,18 +21,24 @@ Start gateway:
 python -m gateway --config gateway/config.local.yaml
 ```
 
-Run one agent config:
+Run the standard Geo3K adapter:
 
 ```bash
 python launcher.py \
-  --agent-config env/openclaw/openclaw_config.yaml \
-  --agent-start-config env/openclaw/openclaw_start.yaml \
+  --mode docker \
+  --agent-config env/geo3k/geo3k_config.yaml \
+  --agent-start-config env/geo3k/geo3k_start.yaml \
   --gateway-base-url http://127.0.0.1:8000/v1/sessions \
-  --llm-model YOUR_ROUTE_KEY \
+  --llm-model geo3k_model \
   --db-path sqlite://env_trajs.db \
+  --enable-evaluation \
+  --job-id geo3k-docker-smoke \
   --pool-size 1 \
-  --max-workers 1
+  --max-workers 1 \
+  --max-steps 10
 ```
+
+For the first smoke test, use `env/geo3k/datasets/geo3k_sample.jsonl` in a local copy of `geo3k_config.yaml` if the default config points to a full parquet dataset that is not available on your machine.
 
 ## Essential CLI Flags
 
@@ -126,17 +132,17 @@ Agent config YAML defines task rows. Each row expands into one or more `job_envi
 
 ```yaml
 environments:
-  - env_name: openclaw
-    env_image: ghcr.io/openclaw/openclaw:latest
+  - env_name: geo3k
+    env_image: safactory-geo3k:py311
     env_num: 1
-    dataset: ./datasets/task_brief_text_writer.jsonl
+    dataset: ./datasets/geo3k_sample.jsonl
     dataset_load_mode: eager
 
     env_params:
-      task_family: openclaw_brief_text_writer
-      workload:
-        total_tasks: 1
-        expected_parallelism: 1
+      task_family: geo3k
+      max_turns: 3
+      max_images: 1
+      echo_images_on_feedback: false
 ```
 
 | Field | Required | Description |
@@ -162,20 +168,21 @@ Agent start config defines how to start the runtime for an `env_name`.
 Single-agent form:
 
 ```yaml
-agent_name: openclaw
+agent_name: geo3k
 
 container:
   workdir: /workspace
   runner_entrypoint:
-    source: ./runner.mjs
-    target: /tmp/safactory-openclaw-runner.mjs
-    command: "node /tmp/safactory-openclaw-runner.mjs"
+    source: ./
+    target: /tmp/safactory-geo3k
+    command: "python /tmp/safactory-geo3k/runner.py"
   mounts:
-    - source: ./env/openclaw/workspace
-      target: /workspace
+    - source: ./results
+      target: /workspace/Safactory/results
       mode: rw
   env:
-    NO_COLOR: "1"
+    PYTHONDONTWRITEBYTECODE: "1"
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
   extra_args:
     - --add-host=host.docker.internal:host-gateway
   idle_command: "tail -f /dev/null"

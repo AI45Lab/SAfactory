@@ -12,6 +12,8 @@ For every dataset row, the launcher creates a separate `job_environments` row, `
 
 You usually need five pieces:
 
+Before adding a new environment, run the standard Geo3K Docker smoke test from the root README. That confirms the Gateway, model route, storage, Docker permissions, and evaluator flow are working. When the baseline passes, use `env/geo3k` as the reference layout for a complete runtime with dataset loading, a runner, Docker startup config, and rule evaluation.
+
 | Piece | Where | Role | Example |
 |-------|-------|------|---------|
 | Runtime image | `env_image` in the agent config. RJob deployments can override it from the start config. | Contains the agent or benchmark dependencies, the harness, and the language runtimes needed by the runner. | `myagent-image:latest`, `mybench-image:latest` |
@@ -298,17 +300,20 @@ container:
 
 ## 6. Run A Smoke Test
 
-Start the gateway first, then run one worker and one task at a time:
+Start the gateway first, then run one worker and one task at a time. This should mirror the Geo3K smoke-test shape, with only the environment paths and route key changed:
 
 ```bash
 python launcher.py \
+  --mode docker \
   --agent-config env/myagent/myagent_config.yaml \
   --agent-start-config env/myagent/myagent_start.yaml \
   --gateway-base-url http://127.0.0.1:8000/v1/sessions \
   --llm-model YOUR_ROUTE_KEY \
   --db-path sqlite://env_trajs.db \
+  --job-id myagent-docker-smoke \
   --pool-size 1 \
-  --max-workers 1
+  --max-workers 1 \
+  --max-steps 10
 ```
 
 Check:

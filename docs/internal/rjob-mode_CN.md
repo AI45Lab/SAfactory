@@ -111,7 +111,7 @@ python launcher.py \
   --agent-config env/geo3k/geo3k_config.rjob.yaml \
   --agent-start-config env/geo3k/geo3k_start.rjob.yaml \
   --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
-  --llm-model YOUR_ROUTE_KEY \
+  --llm-model geo3k_model \
   --enable-evaluation \
   --db-path sqlite://env_trajs.db \
   --job-id geo3k-rjob-smoke \
@@ -133,6 +133,7 @@ export AIEVOBOX_AGENT_START_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_start.rjob.y
 export AIEVOBOX_GATEWAY_HOST=<gateway-host-visible-to-rjob>
 export AIEVOBOX_GATEWAY_PORT=8000
 export AIEVOBOX_GATEWAY_BASE_URL=http://${AIEVOBOX_GATEWAY_HOST}:${AIEVOBOX_GATEWAY_PORT}/v1/sessions
+export RL_MODEL=geo3k_model
 ```
 
 然后仍然在仓库根目录启动两个进程：

@@ -47,8 +47,50 @@ Buffer Server /get_rollout_data
 Slime trainer
 ```
 
-Buffer Server generates `logs/gateway.rl.generated.yaml` and starts
-`python -m gateway` by default. The generated Gateway uses:
+For v2 adapter runs, the launcher still needs a valid Gateway-compatible model route and runtime start config. Verify the generated launcher command in `logs/buffer_server.log` before scaling.
+
+## Minimal Geo3K Training Path
+
+First make Geo3K evaluation work outside RL with `launcher.py`, Gateway, and `--enable-evaluation`. That validates the Docker image, dataset, route key, storage, and `rule_evaluator.py`.
+
+Then edit or override `rl/examples/geo3k_vl/env.sh`:
+
+```bash
+export AIEVOBOX_ROOT=$(pwd)
+export AIEVOBOX_MODE=docker
+export AIEVOBOX_AGENT_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_config.yaml
+export AIEVOBOX_AGENT_START_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_start.yaml
+export AIEVOBOX_GATEWAY_HOST=127.0.0.1
+export AIEVOBOX_GATEWAY_PORT=8000
+export AIEVOBOX_GATEWAY_BASE_URL=http://${AIEVOBOX_GATEWAY_HOST}:${AIEVOBOX_GATEWAY_PORT}/v1/sessions
+export RL_MODEL=geo3k_model
+
+export AIEVOBOX_ENABLE_EVALUATION=1
+export AIEVOBOX_POOL_SIZE=2
+export AIEVOBOX_MAX_STEPS=10
+export RL_GROUP_SIZE=2
+export RL_EPOCH=1
+
+export HF_CKPT_DIR=/path/to/hf-checkpoint
+export LOAD_DIR=${HF_CKPT_DIR}
+export SAVE_DIR=/path/to/save/checkpoints
+export SLIME_HOME=/path/to/slime
+export MEGATRON_HOME=/path/to/Megatron-LM
+```
+
+Use the checked-in sample dataset for smoke tests if the default Geo3K config points to a full local parquet dataset.
+
+Start the two services from the repository root:
+
+```bash
+RL_ENV_SH=rl/examples/geo3k_vl/env.sh bash rl/run_slime_generator.sh
+```
+
+```bash
+RL_ENV_SH=rl/examples/geo3k_vl/env.sh bash rl/run_buffer_server.sh
+```
+
+Buffer Server autostarts Gateway by default, generates `logs/gateway.rl.generated.yaml`, routes `RL_MODEL` to the Slime-hosted LLM proxy, starts Docker rollout collection, and serves completed groups through `/get_rollout_data`. Stop any manually started Gateway on the same port before using autostart.
 
 - `AIEVOBOX_DB_URL` as its storage DB, matching `launcher.py --db-path`.
 - `RL_MODEL` as the Gateway route key.
@@ -60,7 +102,7 @@ Gateway yourself with the same storage backend and route key.
 
 ## Start Geo3K RL Training
 
-Open two terminals from the Safactory repository root.
+This means the checked-in RL examples are configuration templates around the shared v2 launcher. Geo3K is the maintained standard template.
 
 Terminal 1 starts Slime training and the rollout generator:
 

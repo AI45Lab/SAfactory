@@ -44,7 +44,50 @@ Buffer Server /get_rollout_data
 Slime trainer
 ```
 
-Buffer Server 默认会生成 `logs/gateway.rl.generated.yaml` 并启动 `python -m gateway`。生成的 Gateway 使用：
+对于 v2 adapter，launcher 仍需要有效的 Gateway 兼容模型 route 和 runtime start config。扩容前请先在 `logs/buffer_server.log` 中确认生成的 launcher 命令。
+
+## 最小 Geo3K 训练路径
+
+先在 RL 外部用 `launcher.py`、Gateway 和 `--enable-evaluation` 跑通 Geo3K 评测。这一步会验证 Docker 镜像、dataset、route key、存储和 `rule_evaluator.py`。
+
+然后编辑或覆盖 `rl/examples/geo3k_vl/env.sh`：
+
+```bash
+export AIEVOBOX_ROOT=$(pwd)
+export AIEVOBOX_MODE=docker
+export AIEVOBOX_AGENT_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_config.yaml
+export AIEVOBOX_AGENT_START_CONFIG=${AIEVOBOX_ROOT}/env/geo3k/geo3k_start.yaml
+export AIEVOBOX_GATEWAY_HOST=127.0.0.1
+export AIEVOBOX_GATEWAY_PORT=8000
+export AIEVOBOX_GATEWAY_BASE_URL=http://${AIEVOBOX_GATEWAY_HOST}:${AIEVOBOX_GATEWAY_PORT}/v1/sessions
+export RL_MODEL=geo3k_model
+
+export AIEVOBOX_ENABLE_EVALUATION=1
+export AIEVOBOX_POOL_SIZE=2
+export AIEVOBOX_MAX_STEPS=10
+export RL_GROUP_SIZE=2
+export RL_EPOCH=1
+
+export HF_CKPT_DIR=/path/to/hf-checkpoint
+export LOAD_DIR=${HF_CKPT_DIR}
+export SAVE_DIR=/path/to/save/checkpoints
+export SLIME_HOME=/path/to/slime
+export MEGATRON_HOME=/path/to/Megatron-LM
+```
+
+如果默认 Geo3K 配置指向完整本地 parquet 数据集，smoke test 阶段请改用仓库自带样例数据。
+
+在仓库根目录启动两个服务：
+
+```bash
+RL_ENV_SH=rl/examples/geo3k_vl/env.sh bash rl/run_slime_generator.sh
+```
+
+```bash
+RL_ENV_SH=rl/examples/geo3k_vl/env.sh bash rl/run_buffer_server.sh
+```
+
+Buffer Server 默认会自动启动 Gateway，生成 `logs/gateway.rl.generated.yaml`，把 `RL_MODEL` 路由到 Slime 托管的 LLM proxy，启动 Docker rollout 采集，并通过 `/get_rollout_data` 提供已完成的 group。使用自动启动时，请先停止同一端口上手动启动的 Gateway。
 
 - `AIEVOBOX_DB_URL` 作为存储 DB，与 `launcher.py --db-path` 保持一致。
 - `RL_MODEL` 作为 Gateway route key。
@@ -55,7 +98,7 @@ Buffer Server 默认会生成 `logs/gateway.rl.generated.yaml` 并启动 `python
 
 ## 启动 RL 训练
 
-在 Safactory 仓库根目录打开两个终端。
+因此，仓库中的 RL examples 是围绕共享 v2 launcher 的配置模板。Geo3K 是当前维护的标准模板。
 
 终端 1 启动 Slime 训练和 rollout generator：
 

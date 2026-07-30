@@ -13,7 +13,7 @@ Safactory 有几类明确的配置入口：
 
 本地 SQLite 运行时，gateway 和 launcher 必须共享同一个 DB URI。
 
-## 最小本地运行
+## 最小本地 Geo3K 运行
 
 启动 gateway：
 
@@ -21,18 +21,24 @@ Safactory 有几类明确的配置入口：
 python -m gateway --config gateway/config.local.yaml
 ```
 
-运行一个 agent config：
+运行标准 Geo3K adapter：
 
 ```bash
 python launcher.py \
-  --agent-config env/openclaw/openclaw_config.yaml \
-  --agent-start-config env/openclaw/openclaw_start.yaml \
+  --mode docker \
+  --agent-config env/geo3k/geo3k_config.yaml \
+  --agent-start-config env/geo3k/geo3k_start.yaml \
   --gateway-base-url http://127.0.0.1:8000/v1/sessions \
-  --llm-model YOUR_ROUTE_KEY \
+  --llm-model geo3k_model \
   --db-path sqlite://env_trajs.db \
+  --enable-evaluation \
+  --job-id geo3k-docker-smoke \
   --pool-size 1 \
-  --max-workers 1
+  --max-workers 1 \
+  --max-steps 10
 ```
+
+首次 smoke test 时，如果默认 `geo3k_config.yaml` 指向你本机没有的完整 parquet 数据集，请复制一份本地配置，并改用 `env/geo3k/datasets/geo3k_sample.jsonl`。
 
 ## 必要 CLI 参数
 
@@ -126,17 +132,17 @@ Agent config YAML 定义任务行。每一行会展开成一个或多个 `job_en
 
 ```yaml
 environments:
-  - env_name: openclaw
-    env_image: ghcr.io/openclaw/openclaw:latest
+  - env_name: geo3k
+    env_image: safactory-geo3k:py311
     env_num: 1
-    dataset: ./datasets/task_brief_text_writer.jsonl
+    dataset: ./datasets/geo3k_sample.jsonl
     dataset_load_mode: eager
 
     env_params:
-      task_family: openclaw_brief_text_writer
-      workload:
-        total_tasks: 1
-        expected_parallelism: 1
+      task_family: geo3k
+      max_turns: 3
+      max_images: 1
+      echo_images_on_feedback: false
 ```
 
 | 字段 | 必需 | 说明 |
@@ -162,20 +168,21 @@ Agent start config 定义某个 `env_name` 的运行时如何启动。
 单 agent 写法：
 
 ```yaml
-agent_name: openclaw
+agent_name: geo3k
 
 container:
   workdir: /workspace
   runner_entrypoint:
-    source: ./runner.mjs
-    target: /tmp/safactory-openclaw-runner.mjs
-    command: "node /tmp/safactory-openclaw-runner.mjs"
+    source: ./
+    target: /tmp/safactory-geo3k
+    command: "python /tmp/safactory-geo3k/runner.py"
   mounts:
-    - source: ./env/openclaw/workspace
-      target: /workspace
+    - source: ./results
+      target: /workspace/Safactory/results
       mode: rw
   env:
-    NO_COLOR: "1"
+    PYTHONDONTWRITEBYTECODE: "1"
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
   extra_args:
     - --add-host=host.docker.internal:host-gateway
   idle_command: "tail -f /dev/null"

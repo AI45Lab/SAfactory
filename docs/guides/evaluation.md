@@ -19,18 +19,49 @@ The default agent root is `env`. For an environment named `mybench`, the file mu
 
 Docker, RJob, and Sandbox use the same flow.
 
-Example:
+Geo3K example:
 
 ```bash
 python launcher.py \
-  --agent-config env/mybench/mybench_config.yaml \
-  --agent-start-config env/mybench/mybench_start.yaml \
+  --mode docker \
+  --agent-config env/geo3k/geo3k_config.yaml \
+  --agent-start-config env/geo3k/geo3k_start.yaml \
   --gateway-base-url http://127.0.0.1:8000/v1/sessions \
-  --llm-model YOUR_ROUTE_KEY \
+  --llm-model geo3k_model \
   --enable-evaluation \
   --db-path sqlite://env_trajs.db \
-  --pool-size 1
+  --job-id geo3k-eval-smoke \
+  --pool-size 1 \
+  --max-workers 1 \
+  --max-steps 10
 ```
+
+For a first local run, use a Geo3K smoke-test config that points to `env/geo3k/datasets/geo3k_sample.jsonl` if the default Geo3K config points to a full parquet dataset that is not available locally.
+
+## Geo3K Rule Evaluator
+
+Geo3K is the standard evaluation environment. Its runner grades the model's boxed final answer with `env/geo3k/math_utils.py` and writes:
+
+```json
+{
+  "metrics": {
+    "bench": "geo3k",
+    "score": 1.0,
+    "passed": true,
+    "ground_truth": "5",
+    "final_answer": "5",
+    "reward_source": "latest_boxed_answer"
+  }
+}
+```
+
+`env/geo3k/rule_evaluator.py` then normalizes `metrics.score` to the SAfactory 0 to 10 scale:
+
+```text
+reward = metrics.score * 10
+```
+
+A correct Geo3K answer receives `10`; an incorrect answer receives `0`.
 
 ## Runtime Output
 

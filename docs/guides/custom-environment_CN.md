@@ -12,6 +12,8 @@ Launcher 会为每一行 dataset 创建独立的 `job_environments` 记录、`se
 
 通常需要准备五个组件：
 
+接入新环境前，先运行根目录 README 中的标准 Geo3K Docker smoke test。它可以先验证 Gateway、模型 route、存储、Docker 权限和 evaluator 链路是否正常。基线跑通后，再以 `env/geo3k` 作为完整 runtime 参考：它包含 dataset 加载、runner、Docker 启动配置和 rule evaluation。
+
 | 组件 | 位置 | 作用 | 示例 |
 |------|------|------|------|
 | 运行时镜像 | agent config 中的 `env_image`。RJob 部署可以在 start config 中覆盖。 | 包含 agent 或 benchmark 依赖、harness，以及 runner 需要的语言运行时。 | `myagent-image:latest`、`mybench-image:latest` |
@@ -298,17 +300,20 @@ container:
 
 ## 6. 运行冒烟测试
 
-先启动 gateway，然后以单 worker、单并发运行最小测试：
+先启动 gateway，然后以单 worker、单并发运行最小测试。命令形态应与 Geo3K smoke test 一致，只替换环境路径和 route key：
 
 ```bash
 python launcher.py \
+  --mode docker \
   --agent-config env/myagent/myagent_config.yaml \
   --agent-start-config env/myagent/myagent_start.yaml \
   --gateway-base-url http://127.0.0.1:8000/v1/sessions \
   --llm-model YOUR_ROUTE_KEY \
   --db-path sqlite://env_trajs.db \
+  --job-id myagent-docker-smoke \
   --pool-size 1 \
-  --max-workers 1
+  --max-workers 1 \
+  --max-steps 10
 ```
 
 重点检查：

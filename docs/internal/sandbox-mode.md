@@ -17,21 +17,21 @@ pip install -r requirements.txt
 export OPEN_SANDBOX_API_KEY='<ak>:<sk>'
 ```
 
-Copy `config.sandbox.example.yaml` and set `project`, `environment_id`, and a cluster-reachable gateway URL. An agent can override the Environment in its start config:
+Copy `config.sandbox.example.yaml` and set `project`, `environment_id`, and a cluster-reachable gateway URL. An agent can override the Environment in its start config. Geo3K uses the same runtime contract:
 
 ```yaml
-agent_name: openrt
+agent_name: geo3k
 
 container:
-  workdir: /app
+  workdir: /workspace
   runner_entrypoint:
-    source: ./runner.py
-    target: /tmp/safactory-openrt-runner.py
-    command: "python /tmp/safactory-openrt-runner.py"
+    source: ./
+    target: /tmp/safactory-geo3k
+    command: "python /tmp/safactory-geo3k/runner.py"
 
 sandbox:
-  environment_id: env-openrt
-  required_mount_paths: [/app/data, /app/results]
+  environment_id: env-geo3k
+  required_mount_paths: [/workspace/Safactory/results]
 ```
 
 The local runner source is installed after instance allocation. `container.mounts` remain Docker-only.
@@ -42,11 +42,15 @@ Run the flow with:
 python launcher.py \
   --mode sandbox \
   --sandbox-config config.sandbox.yaml \
-  --agent-config env/openrt/openrt_config.yaml \
-  --agent-start-config env/openrt/openrt_start.yaml \
+  --agent-config env/geo3k/geo3k_config.yaml \
+  --agent-start-config env/geo3k/geo3k_start.yaml \
   --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
-  --llm-model YOUR_ROUTE_KEY \
-  --pool-size 8
+  --llm-model geo3k_model \
+  --enable-evaluation \
+  --job-id geo3k-sandbox-smoke \
+  --pool-size 1 \
+  --max-workers 1 \
+  --max-steps 10
 ```
 
 `--pool-size` controls the number of active instances. The manager fills those leases before workers start, and the Environment capacity must cover that concurrency.

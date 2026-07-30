@@ -19,23 +19,22 @@ export OPEN_SANDBOX_API_KEY='<ak>:<sk>'
 
 ## 配置
 
-复制 `config.sandbox.example.yaml`，至少填写 `project`、`environment_id` 和集群可访问的 `gateway_base_url`。多 agent 场景可以在 agent start config 中覆盖 Environment：
+复制 `config.sandbox.example.yaml`，至少填写 `project`、`environment_id` 和集群可访问的 `gateway_base_url`。多 agent 场景可以在 agent start config 中覆盖 Environment。Geo3K 使用同一套 runtime 契约：
 
 ```yaml
-agent_name: openrt
+agent_name: geo3k
 
 container:
-  workdir: /app
+  workdir: /workspace
   runner_entrypoint:
-    source: ./runner.py
-    target: /tmp/safactory-openrt-runner.py
-    command: "python /tmp/safactory-openrt-runner.py"
+    source: ./
+    target: /tmp/safactory-geo3k
+    command: "python /tmp/safactory-geo3k/runner.py"
 
 sandbox:
-  environment_id: env-openrt
+  environment_id: env-geo3k
   required_mount_paths:
-    - /app/data
-    - /app/results
+    - /workspace/Safactory/results
 ```
 
 `runner_entrypoint.source` 会在实例分配后写入目标路径。`container.mounts` 仍只属于 Docker；Sandbox 所需持久卷必须配置在 Environment 中。
@@ -46,11 +45,15 @@ sandbox:
 python launcher.py \
   --mode sandbox \
   --sandbox-config config.sandbox.yaml \
-  --agent-config env/openrt/openrt_config.yaml \
-  --agent-start-config env/openrt/openrt_start.yaml \
+  --agent-config env/geo3k/geo3k_config.yaml \
+  --agent-start-config env/geo3k/geo3k_start.yaml \
   --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
-  --llm-model YOUR_ROUTE_KEY \
-  --pool-size 8
+  --llm-model geo3k_model \
+  --enable-evaluation \
+  --job-id geo3k-sandbox-smoke \
+  --pool-size 1 \
+  --max-workers 1 \
+  --max-steps 10
 ```
 
 `--pool-size` 决定 Safactory 同时持有的 Sandbox Instance 数量。Manager 会在 worker 启动前填充这些 lease，Brainbox Environment 的 `instanceCapacity` 必须不小于该并发量。
