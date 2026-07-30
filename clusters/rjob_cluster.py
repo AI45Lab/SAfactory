@@ -225,7 +225,11 @@ class RJobClusterBackend(ClusterBackend):
         return _make(symbols["Job"], metadata=metadata, spec=spec)
 
     async def submit_job(self, client: Any, job: Any, submit_kwargs: Dict[str, Any]) -> str:
-        submitted = await asyncio.to_thread(client.submit, job, **submit_kwargs)
+        submit = client.submit
+        compatible_kwargs = dict(submit_kwargs)
+        if "top" not in inspect.signature(submit).parameters:
+            compatible_kwargs.pop("top", None)
+        submitted = await asyncio.to_thread(submit, job, **compatible_kwargs)
         return str(submitted or "").strip()
 
     async def wait_terminal(
