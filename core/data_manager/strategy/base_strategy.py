@@ -123,6 +123,7 @@ class StorageStrategy(ABC):
         terminated: bool = False,
         truncated: bool = False,
         is_trainable: bool = True,
+        dataset: Optional[Any] = None,
     ) -> None:
         """
         Record a single interaction step with full conversation history.
@@ -144,6 +145,7 @@ class StorageStrategy(ABC):
             terminated: Whether this is a terminal step
             truncated: Whether episode was truncated
             is_trainable: Whether this step is eligible for training
+            dataset: Optional task dataset stored on the first gateway step
         """
         pass
 

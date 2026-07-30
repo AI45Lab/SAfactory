@@ -31,6 +31,7 @@ class _SessionEnvironment:
     job_id: str
     env_name: str
     group_id: str | None = None
+    dataset: Any = None
 
 
 class GatewayStorage:
@@ -40,6 +41,8 @@ class GatewayStorage:
         self._sessions: dict[tuple[str, str], _CachedSession] = {}
         self._environments: dict[str, _SessionEnvironment] = {}
         self._patched_environment_sessions: set[str] = set()
+        self._dataset_pending_sessions: set[str] = set()
+        self._dataset_written_sessions: set[str] = set()
         self._latest_record_ids: dict[tuple[str, str], str] = {}
         self._lock = asyncio.Lock()
 
@@ -113,13 +116,9 @@ class GatewayStorage:
             return session
 
     async def bind_session_environment(self, binding: GatewaySessionBinding) -> None:
-        if binding.job_id and binding.env_name:
-            log.debug(
-                "Gateway storage bind environment skipped: session_id=%s job_id=%s env_name=%s",
-                binding.session_id,
-                binding.job_id,
-                binding.env_name,
-            )
+        async with self._lock:
+            cached_environment = self._environments.get(binding.session_id)
+        if cached_environment is not None and binding.job_id and binding.env_name:
             return
 
         log.info("Gateway storage resolve environment begin: session_id=%s", binding.session_id)
@@ -225,10 +224,17 @@ class GatewayStorage:
             return None
 
         group_id = environment.get("group_id")
+        env_params = environment.get("env_params")
+        if isinstance(env_params, str):
+            try:
+                env_params = json.loads(env_params)
+            except (TypeError, ValueError):
+                env_params = {}
         return _SessionEnvironment(
             job_id=job_id,
             env_name=env_name,
             group_id=str(group_id) if group_id not in (None, "") else None,
+            dataset=env_params.get("dataset") if isinstance(env_params, dict) else None,
         )
 
     async def _patch_session_steps_environment_once(
@@ -321,6 +327,7 @@ class GatewayStorage:
     ) -> None:
         if not batch:
             return
+        claimed_dataset_sessions: set[str] = set()
         started = time.perf_counter()
         trace = PerfTrace(
             "gateway.storage.record_inference_steps_batch",
@@ -340,23 +347,39 @@ class GatewayStorage:
             with trace.span("session_context.prepare", operation="in_memory"):
                 for binding, record in batch:
                     session = await self.get_or_create_session(binding, record.requested_model)
-                    steps.append(
-                        {
-                            "session": session,
-                            "step_id": record.seq_id,
-                            "messages": _trajectory_messages(record),
-                            "response": "",
-                            "step_reward": 0.0,
-                            "env_state": json.dumps(self._metadata(record), ensure_ascii=False, default=str),
-                            "terminated": False,
-                            "truncated": record.is_truncated,
-                            "is_trainable": False,
-                        }
-                    )
+                    environment = await self._resolve_session_environment(record.session_id)
+                    dataset = environment.dataset if environment is not None else None
+                    attach_dataset = False
+                    if dataset is not None and record.seq_id == 1:
+                        async with self._lock:
+                            if (
+                                record.session_id not in self._dataset_pending_sessions
+                                and record.session_id not in self._dataset_written_sessions
+                            ):
+                                self._dataset_pending_sessions.add(record.session_id)
+                                claimed_dataset_sessions.add(record.session_id)
+                                attach_dataset = True
+
+                    step = {
+                        "session": session,
+                        "step_id": record.seq_id,
+                        "messages": _trajectory_messages(record),
+                        "response": "",
+                        "step_reward": 0.0,
+                        "env_state": json.dumps(self._metadata(record), ensure_ascii=False, default=str),
+                        "terminated": False,
+                        "truncated": record.is_truncated,
+                        "is_trainable": False,
+                    }
+                    if attach_dataset:
+                        step["dataset"] = dataset
+                    steps.append(step)
             with trace.span("storage.record_steps_batch", table="session_steps"):
                 record_ids = await self.data_manager.record_steps_batch(steps)
 
             async with self._lock:
+                self._dataset_pending_sessions.difference_update(claimed_dataset_sessions)
+                self._dataset_written_sessions.update(claimed_dataset_sessions)
                 for (_, record), record_id in zip(batch, record_ids):
                     if record_id:
                         self._latest_record_ids[(record.session_id, record.requested_model)] = record_id
@@ -368,9 +391,13 @@ class GatewayStorage:
             )
             trace.emit_summary(status="success", elapsed_ms=elapsed_ms)
         except asyncio.CancelledError:
+            async with self._lock:
+                self._dataset_pending_sessions.difference_update(claimed_dataset_sessions)
             trace.emit_summary(status="cancelled", error_type="CancelledError")
             raise
         except Exception as exc:
+            async with self._lock:
+                self._dataset_pending_sessions.difference_update(claimed_dataset_sessions)
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
 
