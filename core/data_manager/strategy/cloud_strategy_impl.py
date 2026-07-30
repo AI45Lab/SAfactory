@@ -794,6 +794,8 @@ class CloudStrategy(StorageStrategy):
             row["llm_model"] = row.pop("agent_model", None)
             row["env_state"] = _json_object(meta.get("env_state"))
             row["group_id"] = meta.get("group_id")
+            if "dataset" in meta:
+                row["dataset"] = meta["dataset"]
             if row.get("is_trainable") is None:
                 row["is_trainable"] = meta.get("is_trainable", True)
             rows.append(row)
