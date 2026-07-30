@@ -1,0 +1,60 @@
+agent_name: cybergym
+
+container:
+  platform: linux/amd64
+
+  workdir: /workspace/cybergym
+  runner_entrypoint:
+    command: "/opt/safactory/cybergym/runner.sh"
+
+  mounts:
+    # Local task data for arvo:10400.
+    - source: ~/CodeX/cybergymdata/cybergym_data/data
+      target: /workspace/cybergym/cybergym_data/data
+      mode: ro
+
+    # Archives:
+    #   openhands.tar
+    #   n132__arvo__10400-vul.tar
+    #   n132__arvo__10400-fix.tar
+    - source: ~/CodeX/cybergymdata/images
+      target: /workspace/cybergym/images
+      mode: ro
+
+    # CyberGym creates sibling verifier containers through the host Docker
+    # daemon. Keep results on an identical host/container path so their bind
+    # mounts are valid on Docker Desktop.
+    - source: ./results
+      target: ./results
+      mode: rw
+
+    - source: /var/run/docker.sock
+      target: /var/run/docker.sock
+      mode: rw
+
+  env:
+    CYBERGYM_ROOT: /workspace/cybergym
+    CYBERGYM_DATA_DIR: /workspace/cybergym/cybergym_data/data
+    CYBERGYM_IMAGE_ARCHIVE_DIR: /workspace/cybergym/images
+    CYBERGYM_RESULTS_ROOT: ./results
+    CYBERGYM_OPENHANDS_RUNNER: /workspace/cybergym/examples/agents/openhands/run.py
+    CYBERGYM_OPENHANDS_REPO: /workspace/cybergym/examples/agents/openhands/openhands-repo
+    CYBERGYM_DOCKER_MODE: host
+    CYBERGYM_RUNNER_ROOT: /opt/safactory/cybergym
+    DOCKER_HOST: unix:///var/run/docker.sock
+    PYTHONDONTWRITEBYTECODE: "1"
+    HTTP_PROXY: ""
+    HTTPS_PROXY: ""
+    ALL_PROXY: ""
+    http_proxy: ""
+    https_proxy: ""
+    all_proxy: ""
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
+    no_proxy: host.docker.internal,localhost,127.0.0.1,::1
+
+  extra_args:
+    - --entrypoint=
+    - --user=0
+    - --add-host=host.docker.internal:host-gateway
+
+  idle_command: "sleep infinity"

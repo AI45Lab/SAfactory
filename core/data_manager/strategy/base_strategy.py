@@ -163,6 +163,16 @@ class StorageStrategy(ABC):
         """Mark known records completed without discovering them by a table scan."""
         return 0
 
+    async def list_session_steps(self, session_id: str) -> List[Dict[str, Any]]:
+        """
+        Return persisted rows for one session in trajectory order.
+
+        Storage backends may override this when callers such as evaluators need
+        storage-agnostic access to the completed trajectory.  The default keeps
+        older/custom strategies compatible.
+        """
+        return []
+
     @abstractmethod
     async def update_session_step(
         self,

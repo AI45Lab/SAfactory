@@ -141,6 +141,10 @@ class DataManager:
         """Mark known records completed without a latest-row lookup."""
         return await self.strategy.mark_records_completed(record_ids)
 
+    async def list_session_steps(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return persisted rows for one session in trajectory order."""
+        return await self.strategy.list_session_steps(session_id)
+
     async def update_session_step(
         self,
         session_id: str,

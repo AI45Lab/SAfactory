@@ -55,6 +55,8 @@ class SimulationRunConfig:
     agent_start_timeout_s: float
     docker_bin: str
     docker_pull_policy: str
+    docker_image_archive_dir: str
+    cleanup_docker_image: bool
     docker_startup_concurrency: int
     agent_start_timeout_grace_s: float = 120.0
     container_refill_timeout_s: float = 300.0
