@@ -227,6 +227,8 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         agent_start_timeout_s=float(args.agent_start_timeout_s),
         docker_bin=str(args.docker_bin or "docker"),
         docker_pull_policy=str(args.docker_pull_policy or "never").strip().lower(),
+        docker_image_archive_dir=str(getattr(args, "docker_image_archive_dir", "") or "").strip(),
+        cleanup_docker_image=bool(getattr(args, "cleanup_docker_image", False)),
         docker_startup_concurrency=max(1, int(args.docker_startup_concurrency or 1)),
         agent_start_timeout_grace_s=_float_at_least(
             getattr(args, "agent_start_timeout_grace_s", 120.0),
@@ -417,6 +419,8 @@ def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
             "docker": {
                 "bin": cfg.docker_bin,
                 "pull_policy": cfg.docker_pull_policy,
+                "image_archive_dir": cfg.docker_image_archive_dir,
+                "cleanup_image_on_finish": bool(cfg.cleanup_docker_image),
                 "startup_concurrency": int(cfg.docker_startup_concurrency),
                 "cleanup_container_on_finish": bool(cfg.cleanup_docker_container),
                 "remove_on_close": bool(cfg.cleanup_docker_container),
@@ -513,6 +517,7 @@ def _normalize_agent_start_docker(agent_name: Any, spec: Any, cfg_path: Path) ->
                 )
             docker["run_command"] = entrypoint_command
 
+    install_runner_script = bool(container.get("install_runner_script", False))
     mounts = container.get("mounts", container.get("volumes", [])) or []
     if isinstance(mounts, (str, dict)):
         mounts = [mounts]
@@ -520,7 +525,7 @@ def _normalize_agent_start_docker(agent_name: Any, spec: Any, cfg_path: Path) ->
         raise ValueError(f"container.mounts for {agent_name!r} must be a list in {cfg_path}")
     normalized_mounts = [_normalize_mount(mount, cfg_path) for mount in mounts]
     runner_mount = _mount_from_runner_entrypoint(runner_entrypoint)
-    if runner_mount:
+    if runner_mount and not install_runner_script:
         _append_mount_if_missing(normalized_mounts, runner_mount, agent_name=agent_name, cfg_path=cfg_path)
     docker["volumes"] = normalized_mounts
 
@@ -532,10 +537,22 @@ def _normalize_agent_start_docker(agent_name: Any, spec: Any, cfg_path: Path) ->
     else:
         raise ValueError(f"container.extra_args for {agent_name!r} must be a string or list in {cfg_path}")
 
-    if "install_runner_script" in container:
-        docker["install_runner_script"] = bool(container.get("install_runner_script"))
-    else:
-        docker["install_runner_script"] = False
+    docker["install_runner_script"] = install_runner_script
+    if install_runner_script and runner_entrypoint:
+        runner_source = str(runner_entrypoint.get("source") or "").strip()
+        runner_target = str(runner_entrypoint.get("target") or "").strip()
+        if not runner_source or not Path(runner_source).is_file():
+            raise ValueError(
+                f"container.install_runner_script requires runner_entrypoint.source to be a file "
+                f"for {agent_name!r} in {cfg_path}, got {runner_source!r}"
+            )
+        if not runner_target:
+            raise ValueError(
+                f"container.install_runner_script requires runner_entrypoint.target "
+                f"for {agent_name!r} in {cfg_path}"
+            )
+        docker["runner_script_host_path"] = runner_source
+        docker["runner_container_path"] = runner_target
     return docker
 
 

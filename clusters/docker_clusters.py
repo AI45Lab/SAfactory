@@ -115,6 +115,9 @@ class DockerContainerBackend(ClusterBackend):
         )
         self._cleanup_stale_on_start = bool(self._docker_cfg.get("cleanup_stale_on_start", False))
         self._pull_policy = str(self._docker_cfg.get("pull_policy", "never") or "never").strip().lower()
+        archive_dir = str(self._docker_cfg.get("image_archive_dir", "") or "").strip()
+        self._image_archive_dir = Path(archive_dir).expanduser().resolve() if archive_dir else None
+        self._cleanup_image_on_finish = bool(self._docker_cfg.get("cleanup_image_on_finish", False))
         self._reuse_policy = str(self._docker_cfg.get("reuse_policy", "explicit") or "explicit").strip().lower()
         self._default_reuse = bool(self._docker_cfg.get("default_reuse_container", False))
         self._default_workdir = str(self._docker_cfg.get("workdir", "") or "")
@@ -146,6 +149,8 @@ class DockerContainerBackend(ClusterBackend):
 
         self._containers: Dict[str, DockerContainerRecord] = {}
         self._idle: Dict[str, Deque[str]] = {}
+        self._archive_loaded_images: set[str] = set()
+        self._image_locks: Dict[str, asyncio.Lock] = {}
         self._lock = asyncio.Lock()
         self._startup_sem = asyncio.Semaphore(self._startup_concurrency)
 
@@ -153,6 +158,8 @@ class DockerContainerBackend(ClusterBackend):
         if not plan.env_to_image:
             log.warning("empty Docker binding plan")
             return
+        if self._image_archive_dir is not None and not self._image_archive_dir.is_dir():
+            raise RuntimeError(f"Docker image archive directory does not exist: {self._image_archive_dir}")
         if self._cleanup_stale_on_start:
             await self._cleanup_stale_containers_on_start()
         await self.validate_images(plan)
@@ -180,6 +187,8 @@ class DockerContainerBackend(ClusterBackend):
 
             result = await self._run_command([self.docker_bin, "image", "inspect", image], check=False)
             if result.returncode != 0:
+                if self._archive_path_for_image(image) is not None:
+                    continue
                 missing_local.append(
                     f"{image} (env={env_name or 'unknown'}, stderr={self._tail(result.stderr)})"
                 )
@@ -262,6 +271,7 @@ class DockerContainerBackend(ClusterBackend):
         removed = await self._remove_container_with_retries(record, ident)
         if removed:
             self._containers.pop(record.container_id, None)
+            await self._cleanup_archive_loaded_image(record.image)
 
     async def _remove_container_with_retries(self, record: DockerContainerRecord, ident: str) -> bool:
         for attempt in range(1, self._remove_retries + 1):
@@ -438,6 +448,11 @@ class DockerContainerBackend(ClusterBackend):
                 await self.remove(container_id)
             except Exception:
                 log.warning("Docker backend close failed to remove %s", container_id, exc_info=True)
+        for image in list(self._archive_loaded_images):
+            try:
+                await self._cleanup_archive_loaded_image(image)
+            except Exception:
+                log.warning("Docker backend close failed to remove image %s", image, exc_info=True)
 
     async def _cleanup_stale_containers_on_start(self) -> None:
         labels = _merge_dicts(self._docker_cfg.get("labels"))
@@ -527,25 +542,132 @@ class DockerContainerBackend(ClusterBackend):
         runner_host_path = self._resolve_runner_host_path(docker_cfg.get("runner_script_host_path"))
         if runner_host_path is None:
             runner_host_path = self._runner_host_path
+        runner_container_path = str(
+            docker_cfg.get("runner_container_path", self._runner_container_path) or self._runner_container_path
+        ).strip()
         if runner_host_path is None or not runner_host_path.is_file():
             raise RuntimeError(f"Safactory runner script not found: {runner_host_path}")
+        if not runner_container_path:
+            raise RuntimeError("Safactory runner container path is empty")
 
+        runner_parent = str(Path(runner_container_path).parent)
         await self._run_required(
-            [self.docker_bin, "cp", str(runner_host_path), f"{record.container_id}:{self._runner_container_path}"],
+            [self.docker_bin, "exec", record.container_id, "mkdir", "-p", runner_parent],
+            action=f"prepare runner directory in {record.container_name}",
+            timeout_s=self._start_timeout_s,
+        )
+        await self._run_required(
+            [self.docker_bin, "cp", str(runner_host_path), f"{record.container_id}:{runner_container_path}"],
             action=f"install Safactory runner in {record.container_name}",
             timeout_s=self._start_timeout_s,
         )
         log.debug(
             "installed Safactory runner into %s:%s",
             record.container_name,
-            self._runner_container_path,
+            runner_container_path,
         )
+
+    async def _ensure_image_available(self, image: str) -> None:
+        image_lock = self._image_locks.setdefault(image, asyncio.Lock())
+        async with image_lock:
+            inspect_result = await self._run_command(
+                [self.docker_bin, "image", "inspect", image],
+                check=False,
+                timeout_s=self._inspect_timeout_s,
+            )
+            if inspect_result.returncode == 0:
+                return
+
+            archive_path = self._archive_path_for_image(image)
+            if archive_path is None:
+                raise RuntimeError(
+                    f"Required Docker image {image!r} is unavailable and no matching archive was found"
+                )
+
+            log.info("loading Docker image %s from archive %s", image, archive_path)
+            await self._run_required(
+                [self.docker_bin, "load", "-i", str(archive_path)],
+                action=f"load image archive for {image}",
+                timeout_s=self._start_timeout_s,
+            )
+            verify_result = await self._run_command(
+                [self.docker_bin, "image", "inspect", image],
+                check=False,
+                timeout_s=self._inspect_timeout_s,
+            )
+            if verify_result.returncode != 0:
+                raise RuntimeError(
+                    f"Docker archive {archive_path} loaded but expected image tag {image!r} is unavailable"
+                )
+            self._archive_loaded_images.add(image)
+
+    async def _cleanup_archive_loaded_image(self, image: str) -> None:
+        if not self._cleanup_image_on_finish or image not in self._archive_loaded_images:
+            return
+
+        image_lock = self._image_locks.setdefault(image, asyncio.Lock())
+        async with image_lock:
+            try:
+                containers = await self._run_command(
+                    [self.docker_bin, "ps", "-aq", "--filter", f"ancestor={image}"],
+                    check=False,
+                    timeout_s=self._inspect_timeout_s,
+                )
+            except subprocess.TimeoutExpired:
+                log.warning(
+                    "timed out after %.1fs checking containers for archive-loaded image %s; defer image cleanup",
+                    self._inspect_timeout_s,
+                    image,
+                )
+                return
+            if containers.returncode != 0:
+                log.warning(
+                    "failed to check containers using archive-loaded image %s: %s",
+                    image,
+                    self._tail(containers.stderr),
+                )
+                return
+            if (containers.stdout or "").strip():
+                return
+
+            result = await self._run_command(
+                [self.docker_bin, "image", "rm", image],
+                check=False,
+                timeout_s=self._remove_timeout_s,
+            )
+            if result.returncode == 0 or self._is_missing_image_error(result.stderr):
+                self._archive_loaded_images.discard(image)
+                log.info("removed archive-loaded Docker image %s", image)
+                return
+            log.warning("failed to remove archive-loaded Docker image %s: %s", image, self._tail(result.stderr))
+
+    def _archive_path_for_image(self, image: str) -> Optional[Path]:
+        if self._image_archive_dir is None:
+            return None
+
+        image_name = str(image or "").strip().rsplit("/", 1)[-1]
+        if "@" in image_name:
+            repository, digest = image_name.split("@", 1)
+            archive_stem = f"{repository}-{digest.replace(':', '-')}"
+        elif ":" in image_name:
+            repository, tag = image_name.rsplit(":", 1)
+            archive_stem = f"{repository}-{tag}"
+        else:
+            archive_stem = f"{image_name}-latest"
+
+        for suffix in (".tar", ".tar.gz", ".tgz"):
+            candidate = self._image_archive_dir / f"{archive_stem}{suffix}"
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                return candidate
+        return None
 
     async def _start_container(self, *, env_name: str, image: str) -> DockerContainerRecord:
         docker_cfg = self._docker_cfg_for_env(env_name)
         pull_policy = self._resolve_pull_policy(docker_cfg)
         if pull_policy == "always":
             await self._run_required([self.docker_bin, "pull", image], action=f"pull image {image}")
+        else:
+            await self._ensure_image_available(image)
 
         container_name = f"{self._name_prefix}-{_safe_name(env_name)}-{_random_suffix(6)}"
         workdir = str(docker_cfg.get("workdir", self._default_workdir) or "").strip()
@@ -562,9 +684,12 @@ class DockerContainerBackend(ClusterBackend):
         )
         resolved_max_runs = int(docker_cfg.get("max_runs_per_container", self._default_max_runs) or 0)
         reuse_container = self._resolve_reuse(docker_cfg)
+        runner_container_path = str(
+            docker_cfg.get("runner_container_path", self._runner_container_path) or self._runner_container_path
+        ).strip()
         install_runner = docker_cfg.get("install_runner_script")
         if install_runner is None:
-            install_runner = self._runner_container_path in resolved_run_command
+            install_runner = runner_container_path in resolved_run_command
         run_cmd = self._build_run_command(
             image=image,
             name=container_name,
@@ -610,12 +735,8 @@ class DockerContainerBackend(ClusterBackend):
                     "remove_timeout_s": self._remove_timeout_s,
                     "remove_retries": self._remove_retries,
                     "remove_retry_delay_s": self._remove_retry_delay_s,
+                    "runner_container_path": runner_container_path,
                     "install_runner_script": bool(install_runner),
-                    **(
-                        {"runner_container_path": self._runner_container_path}
-                        if install_runner
-                        else {}
-                    ),
                 }
             ),
         )
@@ -799,6 +920,11 @@ class DockerContainerBackend(ClusterBackend):
     def _is_missing_container_error(value: str) -> bool:
         text = (value or "").lower()
         return "no such object" in text or "no such container" in text
+
+    @staticmethod
+    def _is_missing_image_error(value: str) -> bool:
+        text = (value or "").lower()
+        return "no such image" in text or "image not known" in text
 
     @staticmethod
     def _container_key(env_name: str, image: str) -> str:

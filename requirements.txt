@@ -1,6 +1,7 @@
 aiohttp==3.13.2
 aiosqlite==0.21.0
 boto3>=1.34.0
+docker==7.2.0
 fastapi==0.118.2
 gymnasium==0.29.1
 httpx==0.28.1
