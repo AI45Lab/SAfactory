@@ -806,7 +806,12 @@ class CloudStrategy(StorageStrategy):
         )
         return 1
 
-    async def list_session_steps(self, session_id: str) -> List[Dict[str, Any]]:
+    async def list_session_steps(
+        self,
+        session_id: str,
+        *,
+        checkout_latest: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Read one cloud-backed session in deterministic trajectory order."""
         await self.init()
 
@@ -850,7 +855,7 @@ class CloudStrategy(StorageStrategy):
             limit=10000,
             columns=columns,
             partition=job_id or None,
-            checkout_latest=False,
+            checkout_latest=checkout_latest,
             as_dataframe=True,
             trace_context={"session_id": session_id},
         )
@@ -881,6 +886,50 @@ class CloudStrategy(StorageStrategy):
             )
         )
         return rows
+
+    async def record_evaluation_summary(
+        self,
+        session_id: str,
+        step_id: int,
+        reward: float,
+        env_state: str,
+    ) -> int:
+        """Persist an evaluation-only row when a session has no trainable step."""
+        await self.init()
+        session = self._sessions.get(session_id)
+        if session is None:
+            job_id = str(self.job_id or "")
+            if not job_id:
+                raise ValueError(
+                    "job_id is required to persist a cloud evaluation summary"
+                )
+            log.warning(
+                "Session context unavailable while recording evaluation summary; "
+                "using configured job_id=%s session_id=%s",
+                job_id,
+                session_id,
+            )
+            session = SessionContext(
+                session_id=session_id,
+                env_id=session_id,
+                env_name="gateway",
+                llm_model="",
+                job_id=job_id,
+            )
+            self._sessions[session_id] = session
+
+        await self.record_step(
+            session=session,
+            step_id=step_id,
+            messages=[],
+            response="",
+            step_reward=reward,
+            env_state=env_state,
+            terminated=True,
+            truncated=False,
+            is_trainable=False,
+        )
+        return 1
 
     async def mark_latest_session_completed(
         self,
@@ -1109,7 +1158,7 @@ class CloudStrategy(StorageStrategy):
                 limit=1,
                 columns=["meta_json"],
                 partition=job_id or None,
-                checkout_latest=False,
+                checkout_latest=True,
                 as_dataframe=True,
             )
         except Exception as e:
