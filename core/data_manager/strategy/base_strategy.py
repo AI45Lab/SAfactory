@@ -124,6 +124,7 @@ class StorageStrategy(ABC):
         terminated: bool = False,
         truncated: bool = False,
         is_trainable: bool = True,
+        dataset: Optional[Any] = None,
     ) -> None:
         """
         Record a single interaction step with full conversation history.
@@ -146,6 +147,7 @@ class StorageStrategy(ABC):
             terminated: Whether this is a terminal step
             truncated: Whether episode was truncated
             is_trainable: Whether this step is eligible for training
+            dataset: Optional task dataset stored on the first gateway step
         """
         pass
 
@@ -164,6 +166,16 @@ class StorageStrategy(ABC):
     async def mark_records_completed(self, record_ids: List[str]) -> int:
         """Mark known records completed without discovering them by a table scan."""
         return 0
+
+    async def list_session_steps(self, session_id: str) -> List[Dict[str, Any]]:
+        """
+        Return persisted rows for one session in trajectory order.
+
+        Storage backends may override this when callers such as evaluators need
+        storage-agnostic access to the completed trajectory.  The default keeps
+        older/custom strategies compatible.
+        """
+        return []
 
     @abstractmethod
     async def update_session_step(

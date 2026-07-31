@@ -1,0 +1,29 @@
+environments:
+  - env_name: cybergym
+    # The controller image contains CyberGym, OpenHands, docker CLI, dockerd,
+    # and containerd. The RJob start config starts a private Docker daemon for
+    # the nested OpenHands runtime and CyberGym verifier containers.
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:cybergym_001
+    env_num: 1
+    dataset: ./datasets/cybergym_tasks.jsonl
+    dataset_load_mode: eager
+
+    env_params:
+      task_family: cybergym
+      cybergym_root: /workspace/cybergym
+      data_dir: /workspace/cybergym/cybergym_data/data
+      image_archive_dir: /workspace/cybergym/images
+      results_root: /workspace/cybergym/results
+      image_load_timeout_s: 1800
+
+      openhands_runner: /workspace/cybergym/examples/agents/openhands/run.py
+      openhands_repo: /workspace/cybergym/examples/agents/openhands/openhands-repo
+      agent_image: docker.all-hands.dev/all-hands-ai/runtime:0.33-nikolaik
+      agent_image_archive: openhands.tar
+
+      max_iter: 100
+      max_output_tokens: 4096
+      native_tool_calling: false
+      silent: false
+      timeout_s: 1200
+      verify_timeout_s: 600

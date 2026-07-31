@@ -126,8 +126,8 @@ def _install_mock_wt_sdk_fallbacks() -> None:
         def __init__(
             self,
             db_uri: str = "",
-            landing_table: str = CLOUD_DEV_LANDING_TABLE,
-            serving_table: str = CLOUD_DEV_SERVING_TABLE,
+            landing_table: str = "",
+            serving_table: str = "",
         ):
             self.db_uri = db_uri
             self.landing_table = landing_table
@@ -171,9 +171,7 @@ NON_TRAJECTORY_EVENT_TYPES = {
     "episode_summary",
     "evaluation_summary",
 }
-CLOUD_DEV_LANDING_TABLE = "landing_test"
-CLOUD_DEV_SERVING_TABLE = "serving_test"
-CLOUD_DEV_DATASET_TYPE = "TEST"
+CLOUD_DATASET_TYPE = "RL"
 
 
 def _json_object(value: Any) -> Dict[str, Any]:
@@ -217,6 +215,8 @@ def _truthy_bool(value: Any) -> bool:
     return bool(value)
 
 
+
+
 class CloudStrategy(StorageStrategy):
     """
     Cloud storage strategy:
@@ -247,8 +247,8 @@ class CloudStrategy(StorageStrategy):
         self.db_url = str(db_url or "").strip()
         self.job_id = job_id
         self.initialized = False
-        self.landing_table = landing_table or CLOUD_DEV_LANDING_TABLE
-        self.serving_table = serving_table or CLOUD_DEV_SERVING_TABLE
+        self.landing_table = str(landing_table or "").strip() or None
+        self.serving_table = str(serving_table or "").strip() or None
         self.env_config_table = env_config_table
         self.dldb_model = dldb_model
         self.enable_dldb_timing_logs = enable_dldb_timing_logs
@@ -296,8 +296,12 @@ class CloudStrategy(StorageStrategy):
         )
         if self.db_url:
             config.tables.db_uri = self.db_url
-        config.tables.landing_table = self.landing_table
-        config.tables.serving_table = self.serving_table
+        if self.landing_table:
+            config.tables.landing_table = self.landing_table
+        if self.serving_table:
+            config.tables.serving_table = self.serving_table
+        self.landing_table = config.tables.landing_table
+        self.serving_table = config.tables.serving_table
 
         try:
             self.client = WTGatewayClient(config)
@@ -517,7 +521,8 @@ class CloudStrategy(StorageStrategy):
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
-        is_trainable: bool = True
+        is_trainable: bool = True,
+        dataset: Optional[Any] = None,
     ):
         """
         Record step to cloud LandingTable.
@@ -533,6 +538,7 @@ class CloudStrategy(StorageStrategy):
             step_reward=step_reward,
             request=request,
             env_state=env_state,
+            dataset=dataset,
             terminated=terminated,
             truncated=truncated,
             is_trainable=is_trainable,
@@ -621,6 +627,7 @@ class CloudStrategy(StorageStrategy):
         terminated: bool = False,
         truncated: bool = False,
         is_trainable: bool = True,
+        dataset: Optional[Any] = None,
     ) -> tuple[Any, str]:
         session.total_reward += step_reward
 
@@ -661,9 +668,18 @@ class CloudStrategy(StorageStrategy):
             "env_name": session.env_name
         })
         
+        meta_json = {
+            "source": "AIEvoBox",
+            "group_id": session.group_id,
+            "request": request,
+            "env_state": env_state,
+        }
+        if dataset is not None:
+            meta_json["dataset"] = dataset
+
         # Create LandingRecord
         record = LandingRecord(
-            dataset_type=CLOUD_DEV_DATASET_TYPE,
+            dataset_type=CLOUD_DATASET_TYPE,
             dt=date.today().isoformat(),
             id=record_id,
             session_id=session.session_id,
@@ -683,12 +699,7 @@ class CloudStrategy(StorageStrategy):
             is_truncated=truncated,
             is_session_completed=terminated or truncated,
             is_trainable=is_trainable,
-            meta_json=json.dumps({
-                "source": "AIEvoBox",
-                "group_id": session.group_id,
-                "request": request,
-                "env_state": env_state
-            })
+            meta_json=json.dumps(meta_json, ensure_ascii=False, default=str)
         )
         
         return record, record_id
@@ -731,6 +742,76 @@ class CloudStrategy(StorageStrategy):
             result,
         )
         return 1
+
+    async def list_session_steps(self, session_id: str) -> List[Dict[str, Any]]:
+        """Read one cloud-backed session in deterministic trajectory order."""
+        await self.init()
+
+        if self._enable_buffer:
+            await self._flush_records()
+
+        session = self._sessions.get(session_id)
+        job_id = session.job_id if session is not None else self.job_id
+        clauses = []
+        if job_id:
+            clauses.append(f"job_id = '{_escape_sql_literal(job_id)}'")
+        clauses.append(f"session_id = '{_escape_sql_literal(session_id)}'")
+        query = " AND ".join(clauses)
+        columns = [
+            "id",
+            "session_id",
+            "step_id",
+            "env_name",
+            "agent_model",
+            "job_id",
+            "messages",
+            "response",
+            "step_reward",
+            "reward",
+            "meta_json",
+            "is_terminal",
+            "is_truncated",
+            "is_session_completed",
+            "is_trainable",
+            "created_at",
+        ]
+        frame = await self._timed_db_call(
+            "filter_landing",
+            self.client.session.filter,
+            self.client.config.tables.landing_table,
+            query=query,
+            limit=10000,
+            columns=columns,
+            partition_cond=None,
+            trace_context={"session_id": session_id},
+        )
+        if frame is None or len(frame) == 0:
+            return []
+
+        rows: List[Dict[str, Any]] = []
+        for _, cloud_row in frame.iterrows():
+            row = {
+                key: self.ndarray_to_native(cloud_row.get(key))
+                for key in columns
+            }
+            meta = _json_object(row.pop("meta_json", None))
+            row["llm_model"] = row.pop("agent_model", None)
+            row["env_state"] = _json_object(meta.get("env_state"))
+            row["group_id"] = meta.get("group_id")
+            if "dataset" in meta:
+                row["dataset"] = meta["dataset"]
+            if row.get("is_trainable") is None:
+                row["is_trainable"] = meta.get("is_trainable", True)
+            rows.append(row)
+
+        rows.sort(
+            key=lambda row: (
+                int(row.get("step_id") or 0),
+                str(row.get("created_at") or ""),
+                str(row.get("id") or ""),
+            )
+        )
+        return rows
 
     async def mark_latest_session_completed(
         self,
@@ -1228,7 +1309,7 @@ class CloudStrategy(StorageStrategy):
         await self.init()
         
         results = self.client.pull_data(
-            dataset_type=CLOUD_DEV_DATASET_TYPE,
+            dataset_type=CLOUD_DATASET_TYPE,
             cursor=after_id,
             checkout_latest=True,
             where_sql="job_id = '{}' AND is_terminal = True".format(_escape_sql_literal(job_id)),
@@ -1272,7 +1353,7 @@ class CloudStrategy(StorageStrategy):
         last_cursor = self.client.get_max_created_at(
             where_sql=(
                 "dataset_type = '{}' AND job_id = '{}' AND is_terminal = True"
-                .format(CLOUD_DEV_DATASET_TYPE, _escape_sql_literal(job_id))
+                .format(CLOUD_DATASET_TYPE, _escape_sql_literal(job_id))
             ),
         )
         

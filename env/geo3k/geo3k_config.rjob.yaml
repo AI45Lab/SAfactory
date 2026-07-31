@@ -1,0 +1,18 @@
+environments:
+  - env_name: geo3k
+    # RJob runs on the cluster, so use a registry image that the RJob cluster can pull.
+    # The image must contain geo3k runtime dependencies such as requests, sympy and pylatexenc.
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_gpu/safactory-v2:geo3k-env
+    env_num: 1
+    # This path is read by the launcher when materializing parquet rows.
+    # Keep it on storage visible from the machine that starts launcher.py.
+    dataset: /mnt/shared-storage-user/evobox-share/chenxinquan/geo3k_imgurl/train.parquet
+    dataset_load_mode: parquet_row_ref
+    dataset_columns: [problem, answer, images]
+
+    env_params:
+      task_family: geo3k
+      # Runtime options (were geo3k_vl_test_env_runtime.yaml in v1).
+      max_turns: 3
+      max_images: 1
+      echo_images_on_feedback: false

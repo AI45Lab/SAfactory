@@ -1,0 +1,32 @@
+agent_name: livecvebench
+
+container:
+  workdir: /benchmark
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-livecvebench-runner.py
+    command: "python3 /tmp/safactory-livecvebench-runner.py"
+
+  env:
+    HTTP_PROXY: "http://httpproxy-headless.kubebrain.svc.pjlab.local:3128"
+    HTTPS_PROXY: "http://httpproxy-headless.kubebrain.svc.pjlab.local:3128"
+    NO_PROXY: "localhost,127.0.0.1,::1,10.0.0.0/8,100.96.0.0/12,.svc,.cluster.local,.pjlab.org.cn"
+
+rjob:
+  name_prefix: livecvebench
+  charged_group: evobox_cpu_task
+  image_pull_policy: IfNotPresent
+  privileged: true
+  no_packaging: true
+  cleanup_on_finish: false
+  keep_failed_jobs: true
+  poll_interval_s: 5
+  termination_grace_period_seconds: 60
+
+  mount_config:
+    - "gpfs://gpfs1/evobox-share/qiupanjia/SAfactory/livecvebench-results:/benchmark/runs"
+
+  resources:
+    cpu: 8
+    gpu: 0
+    memory_in_mb: 32768

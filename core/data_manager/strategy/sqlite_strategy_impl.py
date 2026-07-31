@@ -314,7 +314,8 @@ class SqliteStrategy(StorageStrategy):
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
-        is_trainable: bool = True
+        is_trainable: bool = True,
+        dataset: Optional[Any] = None,
     ) -> None:
         """
         Record a single interaction step.
@@ -345,6 +346,11 @@ class SqliteStrategy(StorageStrategy):
 
             # Update session's message history
             session.message_history = full_messages
+
+            if dataset is not None:
+                state = _json_object(env_state)
+                state["dataset"] = dataset
+                env_state = json.dumps(state, ensure_ascii=False, default=str)
 
             # Create step record
             step_record = SessionStep(

@@ -1,0 +1,17 @@
+environments:
+  - env_name: livecvebench
+    env_image: livecvebench-runner:latest
+    env_num: 1
+    dataset: ./datasets/livecvebench_and_patcheval_verified.jsonl
+    dataset_load_mode: eager
+
+    env_params:
+      task_family: cve_patch
+      dataset_paths:
+        livecvebench: /benchmark/tasks/LiveCVEBench-verified
+        patcheval: /benchmark/tasks/PatchEval-verified
+      output_root: /benchmark/runs
+      agent: oracle
+      n_concurrent: 1
+      global_test_timeout_sec: 900
+      timeout_s: 960

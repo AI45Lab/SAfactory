@@ -215,11 +215,19 @@ class SimulationFlow:
         if self.cfg.evaluation_enabled:
             log.info("EVAL FLOW enabled: rule evaluator only")
             self.evaluation_service = build_evaluation_service(
-                trajectory_reader=TrajectoryReader(db_url=self.cfg.db_url, storage_type=self.cfg.storage_type),
+                trajectory_reader=TrajectoryReader(
+                    db_url=self.cfg.db_url,
+                    storage_type=self.cfg.storage_type,
+                    data_manager=self.data_manager,
+                ),
                 max_concurrency=self.cfg.max_workers or self.cfg.warm_pool_size,
             )
             evaluation_service = self.evaluation_service
-            self.reward_committer = RewardCommitter(db_url=self.cfg.db_url)
+            self.reward_committer = RewardCommitter(
+                db_url=self.cfg.db_url,
+                storage_type=self.cfg.storage_type,
+                data_manager=self.data_manager,
+            )
         else:
             log.debug("EVAL FLOW disabled: launcher was not started with --enable-evaluation")
         self.worker_group = SimulationWorkerGroup(

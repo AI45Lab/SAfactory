@@ -8,13 +8,13 @@ export AIEVOBOX_EXAMPLE_NAME="${AIEVOBOX_EXAMPLE_NAME:-geo3k_vl}"
 # Safactory / rollout environment
 # -------------------------------------------
 export AIEVOBOX_ROOT="${AIEVOBOX_ROOT:-${REPO_ROOT}}"
-export AIEVOBOX_MODE="${AIEVOBOX_MODE:-docker}"
+export AIEVOBOX_MODE="${AIEVOBOX_MODE:-rjob}"
 export STORAGE_TYPE="${STORAGE_TYPE:-sqlite}"
 export AIEVOBOX_DB_URL="${AIEVOBOX_DB_URL:-sqlite:///${AIEVOBOX_ROOT}/rl/examples/geo3k_vl/geo3k_vl.db}"
 
-export AIEVOBOX_ENV_CONFIG="${AIEVOBOX_ENV_CONFIG:-${AIEVOBOX_ROOT}/env/geo3k/geo3k_config.yaml}"
+export AIEVOBOX_ENV_CONFIG="${AIEVOBOX_ENV_CONFIG:-${AIEVOBOX_ROOT}/env/geo3k/geo3k_config.rjob.yaml}"
 export AIEVOBOX_AGENT_CONFIG="${AIEVOBOX_AGENT_CONFIG:-${AIEVOBOX_ENV_CONFIG}}"
-export AIEVOBOX_AGENT_START_CONFIG="${AIEVOBOX_AGENT_START_CONFIG:-${AIEVOBOX_ROOT}/env/geo3k/geo3k_start.yaml}"
+export AIEVOBOX_AGENT_START_CONFIG="${AIEVOBOX_AGENT_START_CONFIG:-${AIEVOBOX_ROOT}/env/geo3k/geo3k_start.rjob.yaml}"
 
 export AIEVOBOX_MAX_STEPS="${AIEVOBOX_MAX_STEPS:-10}"
 export AIEVOBOX_MESSAGE_CUT="${AIEVOBOX_MESSAGE_CUT:-0}"
@@ -68,7 +68,7 @@ export LLM_TEMPERATURE="${LLM_TEMPERATURE:-1.0}"
 export LLM_TOP_P="${LLM_TOP_P:-1.0}"
 export LLM_PROXY_ENABLE_CONSOLE_LOG="${LLM_PROXY_ENABLE_CONSOLE_LOG:-0}"
 
-export AIEVOBOX_GATEWAY_HOST="${AIEVOBOX_GATEWAY_HOST:-127.0.0.1}"
+export AIEVOBOX_GATEWAY_HOST="${AIEVOBOX_GATEWAY_HOST:-100.99.121.224}"
 export AIEVOBOX_GATEWAY_PORT="${AIEVOBOX_GATEWAY_PORT:-8000}"
 export AIEVOBOX_GATEWAY_BASE_URL="${AIEVOBOX_GATEWAY_BASE_URL:-http://${AIEVOBOX_GATEWAY_HOST}:${AIEVOBOX_GATEWAY_PORT}/v1/sessions}"
 # Set AIEVOBOX_GATEWAY_AUTOSTART=0 when an external gateway is already running.
@@ -79,10 +79,10 @@ export AIEVOBOX_GATEWAY_BASE_URL="${AIEVOBOX_GATEWAY_BASE_URL:-http://${AIEVOBOX
 export LOG_ROOT="${LOG_ROOT:-${AIEVOBOX_ROOT}/logs}"
 export SLIME_HOME="${SLIME_HOME:-/root/slime}"
 export MEGATRON_HOME="${MEGATRON_HOME:-/root/Megatron-LM}"
-export HF_CKPT_DIR="${HF_CKPT_DIR:-/mnt/shared-storage-gpfs2/gpfs2-shared-public/huggingface/hub/models--Qwen--Qwen3-VL-2B-Instruct/snapshots/89644892e4d85e24eaac8bacfd4f463576704203}"
+export HF_CKPT_DIR="${HF_CKPT_DIR:-/mnt/shared-storage-user/evobox-share/chenxinquan/qwen3-vl-2b-instruct}"
 export LOAD_DIR="${LOAD_DIR:-${HF_CKPT_DIR}}"
 export REF_LOAD_DIR="${REF_LOAD_DIR:-}"
-export SAVE_DIR="${SAVE_DIR:-/mnt/shared-storage-user/evobox-share/yinzhenyun/slime/checkpoints/Qwen3-VL-2B-Instruct_megatron}"
+export SAVE_DIR="${SAVE_DIR:-/mnt/shared-storage-user/evobox-share/chenxinquan/SAfactory/rl/examples/geo3k_vl/checkpoints/Qwen3-VL-2B-Instruct_megatron}"
 export WANDB_DIR="${WANDB_DIR:-${AIEVOBOX_ROOT}/rl/examples/geo3k_vl/wandb_logs}"
 export SGLANG_LOGGING_CONFIG_PATH="${SGLANG_LOGGING_CONFIG_PATH:-}"
 
