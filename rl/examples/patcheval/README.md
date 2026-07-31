@@ -134,9 +134,10 @@ Claude Code Exp1 使用官方 `exp_agent/claudecode/dataset.jsonl` 和
 `run_eval.sh` 使用 Gateway 原生 Anthropic Messages/SSE 接口。任务容器中的
 Claude Code 直接请求
 `/v1/sessions/<session_id>/v1/messages`，不再启动 Claude Adapter，也不再经过
-Anthropic → OpenAI → Anthropic 转换。Gateway 转发原生流式事件，把实际发往
-Provider 的 JSON body 写入 `session_steps.request`，并把聚合后的 Anthropic
-响应写入 `session_steps.response`。不再构造或保存 Provider Artifact。
+Anthropic → OpenAI → Anthropic 转换。Gateway 透明转发原生流式事件，把实际发往
+Provider 的 JSON body 写入 `session_steps.request`，并把 Provider 返回的原始
+Anthropic SSE 文本写入 `session_steps.response`。SSE 聚合由导出脚本完成；
+Gateway 不再改写请求或构造 Provider Artifact。
 
 先运行一个样本：
 

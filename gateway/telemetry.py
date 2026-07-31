@@ -126,6 +126,7 @@ class TelemetryRecorder:
         upstream_latency_ms: float | None = None,
         stream_stats: StreamTelemetryStats | None = None,
         request_headers: dict[str, str] | None = None,
+        response_text: str | None = None,
     ) -> None:
         await self._record_binding(binding, target, error=False)
         record = await self._build_record(
@@ -139,6 +140,7 @@ class TelemetryRecorder:
             upstream_latency_ms=upstream_latency_ms,
             stream_stats=stream_stats,
             request_headers=request_headers,
+            response_text=response_text,
         )
         await self._enqueue(binding, record)
 
@@ -155,6 +157,7 @@ class TelemetryRecorder:
         stream_stats: StreamTelemetryStats | None = None,
         response_body: dict[str, Any] | None = None,
         request_headers: dict[str, str] | None = None,
+        response_text: str | None = None,
     ) -> None:
         await self._record_binding(binding, target, error=True)
         record = await self._build_record(
@@ -170,6 +173,7 @@ class TelemetryRecorder:
             error_type=_status_error_type(status_code),
             stream_stats=stream_stats,
             request_headers=request_headers,
+            response_text=response_text,
         )
         await self._enqueue(binding, record)
 
@@ -533,6 +537,7 @@ class TelemetryRecorder:
         error_text: str | None = None,
         stream_stats: StreamTelemetryStats | None = None,
         request_headers: dict[str, str] | None = None,
+        response_text: str | None = None,
     ) -> GatewayTelemetryRecord:
         completed_at = datetime.now(timezone.utc)
         payload_sampled = self._should_capture_payload(status_code >= 400)
@@ -594,7 +599,12 @@ class TelemetryRecorder:
                 request_headers,
                 is_stream=ctx.is_stream,
             ),
-            response=_response_for_record(response_body, error_text, payload_sampled),
+            response=_response_for_record(
+                response_body,
+                error_text,
+                payload_sampled,
+                response_text=response_text,
+            ),
             created_at=ctx.created_at,
             completed_at=completed_at,
             llm_step_index=ctx.llm_step_index,
@@ -726,7 +736,11 @@ def _response_for_record(
     body: dict[str, Any] | None,
     error_text: str | None,
     payload_sampled: bool,
+    *,
+    response_text: str | None = None,
 ) -> str:
+    if response_text is not None and payload_sampled:
+        return response_text
     if body and payload_sampled:
         return json.dumps(body, ensure_ascii=False, default=str)
     if error_text:

@@ -16,7 +16,6 @@ from env.patcheval.claude_adapter.app import create_app as create_adapter_app
 from evaluator.rule_evaluator import discover_rule_eval_spec
 from core.data_manager.strategy.sqlite_strategy_impl import SqliteStrategy
 from gateway import app as gateway_app
-from gateway.app import _anthropic_response_from_sse
 from gateway.config import GatewayConfig, LLMRouteConfig
 from gateway.inference_forwarder import (
     ForwardResult,
@@ -223,31 +222,6 @@ def test_generate_claudecode_exp1_config(tmp_path, monkeypatch) -> None:
     assert eval_spec.rule_evaluator.endswith(f"/{env_name}/rule_evaluator.py")
 
 
-def test_anthropic_sse_aggregates_thinking_signature_and_text() -> None:
-    stream = "\n\n".join(
-        [
-            'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude","content":[],"usage":{"input_tokens":7,"output_tokens":0}}}',
-            'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}',
-            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"inspect"}}',
-            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"signed-blob"}}',
-            'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}',
-            'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"done"}}',
-            'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":4}}',
-            'event: message_stop\ndata: {"type":"message_stop"}',
-        ]
-    )
-
-    response = _anthropic_response_from_sse(stream, "claude")
-
-    assert response["content"][0] == {
-        "type": "thinking",
-        "thinking": "inspect",
-        "signature": "signed-blob",
-    }
-    assert response["content"][1] == {"type": "text", "text": "done"}
-    assert response["stop_reason"] == "end_turn"
-
-
 def test_fixed_thinking_compatibility_normalizes_anthropic_payload() -> None:
     target = LLMRouteTarget(
         route_model="claude",
@@ -357,10 +331,6 @@ def test_gateway_streams_native_anthropic_and_records_request_response(monkeypat
                 "Authorization": "Bearer upstream-key",
             }
 
-        def prepare_anthropic_payload(self, target, payload):
-            del target
-            return payload
-
         async def open_anthropic_messages_stream(self, target, payload, headers):
             del target, headers
             forwarded_payloads.append(json.loads(json.dumps(payload)))
@@ -392,15 +362,6 @@ def test_gateway_streams_native_anthropic_and_records_request_response(monkeypat
                     "stop_reason": "end_turn",
                     "usage": {"input_tokens": 3, "output_tokens": 2},
                 },
-                status_code=200,
-                headers={},
-                upstream_latency_ms=1.0,
-            )
-
-        async def forward_anthropic_count_tokens(self, target, payload, headers):
-            del target, payload, headers
-            return ForwardResult(
-                body={"input_tokens": 17},
                 status_code=200,
                 headers={},
                 upstream_latency_ms=1.0,
@@ -454,13 +415,6 @@ def test_gateway_streams_native_anthropic_and_records_request_response(monkeypat
                 "messages": [{"role": "user", "content": "fix it"}],
             },
         )
-        count_response = client.post(
-            "/v1/sessions/session-1/v1/messages/count_tokens",
-            json={
-                "model": "claude",
-                "messages": [{"role": "user", "content": "fix it"}],
-            },
-        )
         nonstream_response = client.post(
             "/v1/sessions/session-1/v1/messages",
             json={
@@ -477,16 +431,15 @@ def test_gateway_streams_native_anthropic_and_records_request_response(monkeypat
 
     assert response.status_code == 200
     assert "signature_delta" in response.text
-    assert count_response.json() == {"input_tokens": 17}
     assert nonstream_response.json()["content"][0]["signature"] == "nonstream-signature"
     assert forwarded_payloads[1]["messages"][1]["content"] == []
     assert len(storage.records) == 2
     record = storage.records[0][1]
     stored_request = json.loads(record.request)
-    stored_response = json.loads(record.response)
     metadata = GatewayStorage._metadata(record)
     assert stored_request == forwarded_payloads[0]
-    assert stored_response["content"][0]["signature"] == "signed-blob"
+    assert record.response == stream.decode()
+    assert '"signature":"signed-blob"' in record.response
     assert metadata["request_method"] == "POST"
     assert metadata["request_url"] == "https://provider.example/v1/messages"
     assert metadata["request_headers"]["anthropic-version"] == "2023-06-01"
