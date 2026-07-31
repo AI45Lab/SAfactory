@@ -1,0 +1,31 @@
+environments:
+  - env_name: cybergym
+    # Local CyberGym/OpenHands controller. Target/runtime images are loaded
+    # separately from the archives mounted by cybergym_start.yaml.
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:cybergym_001
+    env_num: 1
+    dataset: ./datasets/cybergym_tasks.jsonl
+    dataset_load_mode: eager
+
+    env_params:
+      task_family: cybergym
+      cybergym_root: /workspace/cybergym
+      data_dir: /workspace/cybergym/cybergym_data/data
+      image_archive_dir: /workspace/cybergym/images
+      results_root: /workspace/cybergym/results
+
+      openhands_runner: /workspace/cybergym/examples/agents/openhands/run.py
+      openhands_repo: /workspace/cybergym/examples/agents/openhands/openhands-repo
+      agent_image: docker.all-hands.dev/all-hands-ai/runtime:0.33-nikolaik
+      agent_image_archive: openhands.tar
+
+      # The launcher --llm-model value is used as the Safactory route/model.
+      # These values mirror the verified README run and remain dataset-overridable.
+      max_iter: 100
+      max_output_tokens: 4096
+      native_tool_calling: false
+      silent: false
+      # Set launcher --agent-start-timeout-s to at least 2400 so the agent,
+      # verification, and cleanup phases all fit around this 1200-second limit.
+      timeout_s: 1200
+      verify_timeout_s: 600

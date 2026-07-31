@@ -113,7 +113,8 @@ class DataManager:
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
-        is_trainable: bool = True
+        is_trainable: bool = True,
+        dataset: Optional[Any] = None,
     ) -> None:
         """
         Record a single interaction step with full conversation history.
@@ -128,6 +129,7 @@ class DataManager:
             response=response,
             step_reward=step_reward,
             env_state=env_state,
+            dataset=dataset,
             terminated=terminated,
             truncated=truncated,
             is_trainable=is_trainable,
@@ -140,6 +142,10 @@ class DataManager:
     async def mark_records_completed(self, record_ids: List[str]) -> int:
         """Mark known records completed without a latest-row lookup."""
         return await self.strategy.mark_records_completed(record_ids)
+
+    async def list_session_steps(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return persisted rows for one session in trajectory order."""
+        return await self.strategy.list_session_steps(session_id)
 
     async def update_session_step(
         self,

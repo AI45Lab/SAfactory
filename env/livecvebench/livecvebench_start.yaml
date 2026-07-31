@@ -1,0 +1,22 @@
+agent_name: livecvebench
+
+container:
+  workdir: /benchmark
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-livecvebench-runner.py
+    command: "python3 /tmp/safactory-livecvebench-runner.py"
+
+  mounts:
+    # Keep native Terminal-Bench artifacts in a project-relative host directory.
+    - source: ./container-runs
+      target: /benchmark/runs
+      mode: rw
+
+  # Docker-in-Docker is required by the LiveCVEBench runner image. Do not mount
+  # a shared /var/lib/docker volume here: Safactory may prewarm multiple runner
+  # containers, and their Docker daemons must use independent data directories.
+  extra_args:
+    - --privileged
+
+  idle_command: "tail -f /dev/null"
