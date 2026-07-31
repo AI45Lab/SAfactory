@@ -334,11 +334,19 @@ class InferenceForwarder:
 
         prepared = copy.deepcopy(payload)
         prepared.pop("context_management", None)
-        prepared.pop("output_config", None)
-        prepared["thinking"] = {
-            "type": "enabled",
-            "budget_tokens": target.anthropic_thinking_budget_tokens,
-        }
+        if target.anthropic_compatibility == "adaptive_thinking":
+            prepared["thinking"] = {"type": "adaptive"}
+            output_config = prepared.get("output_config")
+            if not isinstance(output_config, dict):
+                output_config = {}
+            prepared["output_config"] = {**output_config, "effort": "max"}
+            prepared["display"] = "summarized"
+        else:
+            prepared.pop("output_config", None)
+            prepared["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": target.anthropic_thinking_budget_tokens,
+            }
         if target.anthropic_max_tokens is not None:
             requested = int(prepared.get("max_tokens") or target.anthropic_max_tokens)
             prepared["max_tokens"] = min(requested, target.anthropic_max_tokens)

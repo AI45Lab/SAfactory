@@ -134,9 +134,9 @@ Claude Code Exp1 使用官方 `exp_agent/claudecode/dataset.jsonl` 和
 `run_eval.sh` 使用 Gateway 原生 Anthropic Messages/SSE 接口。任务容器中的
 Claude Code 直接请求
 `/v1/sessions/<session_id>/v1/messages`，不再启动 Claude Adapter，也不再经过
-Anthropic → OpenAI → Anthropic 转换。Gateway 转发原生流式事件，并把 Provider
-Raw Artifact 直接写入 `session_steps.response`。不生成外部审计文件，也不在
-`session_steps.env_state` 保存 Provider Trace 元数据，因此不需要数据库迁移。
+Anthropic → OpenAI → Anthropic 转换。Gateway 转发原生流式事件，把实际发往
+Provider 的 JSON body 写入 `session_steps.request`，并把聚合后的 Anthropic
+响应写入 `session_steps.response`。不再构造或保存 Provider Artifact。
 
 先运行一个样本：
 
@@ -166,7 +166,21 @@ export PATCH_EVAL_ANTHROPIC_THINKING_BUDGET_TOKENS=1024
 export PATCH_EVAL_ANTHROPIC_MAX_TOKENS=8192
 ```
 
-该模式只在 Gateway 发往 Provider 的边界把 thinking 改为 `enabled`，删除
+若上游支持 adaptive thinking，但不接受 Claude Code 的 `context_management`
+字段，可使用 MetaBot 对齐模式：
+
+```bash
+export PATCH_EVAL_ANTHROPIC_COMPATIBILITY="adaptive_thinking"
+export PATCH_EVAL_ANTHROPIC_INTERLEAVED_THINKING=true
+export PATCH_EVAL_ANTHROPIC_MAX_TOKENS=64000
+```
+
+该模式将请求对齐为 `thinking.type=adaptive` 和
+`output_config.effort=max`，删除 `context_management`，并只向上游发送实验
+所需的 `interleaved-thinking` Beta Header，避免 Bedrock 拒绝 Claude Code
+的内部 Beta 标志。
+
+`fixed_thinking` 模式只在 Gateway 发往 Provider 的边界把 thinking 改为 `enabled`，删除
 `context_management`/`output_config`，并限制 `max_tokens`；Claude Code 与
 Gateway 之间仍使用原生 Anthropic Messages/SSE。
 

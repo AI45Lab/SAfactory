@@ -125,7 +125,7 @@ class TelemetryRecorder:
         latency_ms: float,
         upstream_latency_ms: float | None = None,
         stream_stats: StreamTelemetryStats | None = None,
-        provider_trace: dict[str, Any] | None = None,
+        request_headers: dict[str, str] | None = None,
     ) -> None:
         await self._record_binding(binding, target, error=False)
         record = await self._build_record(
@@ -138,7 +138,7 @@ class TelemetryRecorder:
             latency_ms=latency_ms,
             upstream_latency_ms=upstream_latency_ms,
             stream_stats=stream_stats,
-            provider_trace=provider_trace,
+            request_headers=request_headers,
         )
         await self._enqueue(binding, record)
 
@@ -154,7 +154,7 @@ class TelemetryRecorder:
         upstream_latency_ms: float | None = None,
         stream_stats: StreamTelemetryStats | None = None,
         response_body: dict[str, Any] | None = None,
-        provider_trace: dict[str, Any] | None = None,
+        request_headers: dict[str, str] | None = None,
     ) -> None:
         await self._record_binding(binding, target, error=True)
         record = await self._build_record(
@@ -169,7 +169,7 @@ class TelemetryRecorder:
             error_text=error_text,
             error_type=_status_error_type(status_code),
             stream_stats=stream_stats,
-            provider_trace=provider_trace,
+            request_headers=request_headers,
         )
         await self._enqueue(binding, record)
 
@@ -206,6 +206,10 @@ class TelemetryRecorder:
             redaction_policy="sensitive_keys" if self.cfg.redact_sensitive_fields else "none",
             payload_sampled=False,
             messages=[],
+            request="",
+            request_method=None,
+            request_url=None,
+            request_headers={},
             response=binding.close_reason or "gateway_close",
             created_at=now,
             completed_at=now,
@@ -528,12 +532,11 @@ class TelemetryRecorder:
         error_type: str | None = None,
         error_text: str | None = None,
         stream_stats: StreamTelemetryStats | None = None,
-        provider_trace: dict[str, Any] | None = None,
+        request_headers: dict[str, str] | None = None,
     ) -> GatewayTelemetryRecord:
         completed_at = datetime.now(timezone.utc)
         payload_sampled = self._should_capture_payload(status_code >= 400)
         safe_request_body = _redact(request_body) if self.cfg.redact_sensitive_fields else request_body
-        safe_response_body = _redact(response_body) if self.cfg.redact_sensitive_fields else response_body
         usage = response_body.get("usage", {}) if response_body else {}
 
         ttft_ms = stream_stats.ttft_ms if stream_stats else None
@@ -580,7 +583,18 @@ class TelemetryRecorder:
             redaction_policy="sensitive_keys" if self.cfg.redact_sensitive_fields else "none",
             payload_sampled=payload_sampled,
             messages=_messages_for_record(ctx.endpoint, safe_request_body) if payload_sampled else [],
-            response=_response_for_record(safe_response_body, error_text, payload_sampled),
+            request=_request_for_record(request_body, payload_sampled),
+            request_method="POST" if target else None,
+            request_url=(
+                f"{target.base_url.rstrip('/')}/{ctx.endpoint}"
+                if target
+                else None
+            ),
+            request_headers=_request_headers_for_record(
+                request_headers,
+                is_stream=ctx.is_stream,
+            ),
+            response=_response_for_record(response_body, error_text, payload_sampled),
             created_at=ctx.created_at,
             completed_at=completed_at,
             llm_step_index=ctx.llm_step_index,
@@ -589,7 +603,6 @@ class TelemetryRecorder:
             is_session_completed=is_truncated,
             truncate_reason="max_steps_reached" if is_truncated else None,
             synthetic_stop=ctx.synthetic_stop,
-            provider_trace=provider_trace,
         )
 
     def _should_capture_payload(self, failed: bool) -> bool:
@@ -676,17 +689,50 @@ def _messages_for_record(endpoint: str, body: dict[str, Any]) -> list[dict[str, 
     return [{"role": "user", "content": json.dumps(body, ensure_ascii=False, default=str)}]
 
 
+def _request_for_record(body: dict[str, Any], payload_sampled: bool) -> str:
+    if not payload_sampled:
+        return ""
+    return json.dumps(body, ensure_ascii=False, default=str)
+
+
+def _request_headers_for_record(
+    headers: dict[str, str] | None,
+    *,
+    is_stream: bool,
+) -> dict[str, str]:
+    captured = dict(headers or {})
+    if is_stream:
+        captured.update(
+            {
+                "Accept": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Accept-Encoding": "identity",
+            }
+        )
+    return {
+        str(key): (
+            "[REDACTED]"
+            if any(
+                part in str(key).lower().replace("-", "_")
+                for part in SENSITIVE_KEY_PARTS
+            )
+            else str(value)
+        )
+        for key, value in captured.items()
+    }
+
+
 def _response_for_record(
     body: dict[str, Any] | None,
     error_text: str | None,
     payload_sampled: bool,
 ) -> str:
+    if body and payload_sampled:
+        return json.dumps(body, ensure_ascii=False, default=str)
     if error_text:
         return error_text
     if not body:
         return ""
-    if payload_sampled:
-        return json.dumps(body, ensure_ascii=False, default=str)
     summary = {
         "id": body.get("id"),
         "object": body.get("object"),

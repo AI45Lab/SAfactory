@@ -53,7 +53,6 @@ class GatewayConfig:
     request_log_max_bytes: int = 100 * 1024 * 1024
     request_log_backup_count: int = 5
     request_log_body_limit_bytes: int = 0
-    provider_trace_capture: str = "off"
     micro_batch_window_ms: int = 0
     session_cache_ttl_s: int = 1800
     close_mode: str = "soft_close"
@@ -99,10 +98,6 @@ class GatewayConfig:
             raise ValueError("request_log_backup_count must be non-negative")
         if self.request_log_body_limit_bytes < 0:
             raise ValueError("request_log_body_limit_bytes must be non-negative")
-        if self.provider_trace_capture not in {"off", "metadata", "full"}:
-            raise ValueError("provider_trace_capture must be one of: off, metadata, full")
-
-
 def load_gateway_config(path: str | None = None) -> GatewayConfig:
     file_data = _load_file(path) if path else {}
     cfg = _dict_to_config(file_data)
@@ -149,10 +144,6 @@ def _dict_to_config(data: dict[str, Any]) -> GatewayConfig:
         normalized.setdefault("request_log_max_bytes", request_log.get("max_bytes"))
         normalized.setdefault("request_log_backup_count", request_log.get("backup_count"))
         normalized.setdefault("request_log_body_limit_bytes", request_log.get("body_limit_bytes"))
-
-    provider_trace = normalized.pop("provider_trace", None)
-    if isinstance(provider_trace, dict):
-        normalized.setdefault("provider_trace_capture", provider_trace.get("capture"))
 
     known = {field.name for field in fields(GatewayConfig)}
     kwargs = {key: value for key, value in normalized.items() if key in known and value is not None}
@@ -210,9 +201,14 @@ def _route_from_mapping(data: dict[str, Any]) -> LLMRouteConfig:
     anthropic_compatibility = str(
         data.get("anthropic_compatibility", "native")
     ).strip().lower()
-    if anthropic_compatibility not in {"native", "fixed_thinking"}:
+    if anthropic_compatibility not in {
+        "native",
+        "adaptive_thinking",
+        "fixed_thinking",
+    }:
         raise ValueError(
-            "anthropic_compatibility must be one of: native, fixed_thinking"
+            "anthropic_compatibility must be one of: "
+            "native, adaptive_thinking, fixed_thinking"
         )
     thinking_budget = int(data.get("anthropic_thinking_budget_tokens", 1024))
     if thinking_budget < 1024:

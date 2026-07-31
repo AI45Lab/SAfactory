@@ -88,6 +88,7 @@ class SqliteStrategy(StorageStrategy):
             modules={"models": ["core.data_manager.models"]}
         )
         await Tortoise.generate_schemas()
+        await self._ensure_runtime_schema()
         await self._ensure_runtime_indexes()
         self.initialized = True
 
@@ -101,6 +102,27 @@ class SqliteStrategy(StorageStrategy):
             )
 
         log.debug("SQLite strategy initialized: %s", self.db_url)
+
+    async def _ensure_runtime_schema(self) -> None:
+        if not self.db_url.startswith("sqlite://"):
+            raise ValueError("Only sqlite:// protocol is supported")
+
+        file_path = self.db_url[9:].split("?", 1)[0]
+
+        def add_missing_columns() -> None:
+            conn = sqlite3.connect(file_path)
+            try:
+                columns = {
+                    str(row[1])
+                    for row in conn.execute("PRAGMA table_info(session_steps)")
+                }
+                if "request" not in columns:
+                    conn.execute("ALTER TABLE session_steps ADD COLUMN request TEXT")
+                conn.commit()
+            finally:
+                conn.close()
+
+        await asyncio.to_thread(add_missing_columns)
 
     async def _ensure_runtime_indexes(self) -> None:
         if not self.db_url.startswith("sqlite://"):
@@ -288,6 +310,7 @@ class SqliteStrategy(StorageStrategy):
         messages: List[Dict],
         response: str,
         step_reward: float,
+        request: Optional[str] = None,
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
@@ -333,6 +356,7 @@ class SqliteStrategy(StorageStrategy):
                 group_id=session.group_id,
                 job_id=session.job_id,
                 messages=json.dumps(full_messages, ensure_ascii=False),
+                request=request,
                 response=response,
                 step_reward=step_reward,
                 reward=session.total_reward,
@@ -531,7 +555,7 @@ class SqliteStrategy(StorageStrategy):
             if field in blocked_fields:
                 raise ValueError(f"SessionStep field cannot be updated: {field}")
 
-            if field == "messages" and not isinstance(value, str):
+            if field in {"messages", "request"} and not isinstance(value, str):
                 value = json.dumps(value, ensure_ascii=False)
             elif field == "env_state" and isinstance(value, (dict, list)):
                 value = json.dumps(value, ensure_ascii=False)
@@ -607,6 +631,7 @@ class SqliteStrategy(StorageStrategy):
                     "env_id": s.session_id,
                     "env_state": s.env_state,
                     "prompt": s.messages,
+                    "request": s.request,
                     "response": s.response,
                     "reward": s.step_reward,
                     "step_reward": s.step_reward,

@@ -119,6 +119,7 @@ class StorageStrategy(ABC):
         messages: List[Dict],
         response: str,
         step_reward: float,
+        request: Optional[str] = None,
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
@@ -140,6 +141,7 @@ class StorageStrategy(ABC):
             messages: Full conversation history (list of {role, content} dicts)
             response: LLM response/action for this step
             step_reward: Reward for this step
+            request: Optional provider-bound request JSON for this step
             env_state: Optional JSON string of environment state
             terminated: Whether this is a terminal step
             truncated: Whether episode was truncated

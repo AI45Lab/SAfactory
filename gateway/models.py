@@ -110,6 +110,10 @@ class GatewayTelemetryRecord:
     redaction_policy: str
     payload_sampled: bool
     messages: list[dict[str, Any]]
+    request: str
+    request_method: str | None
+    request_url: str | None
+    request_headers: dict[str, str]
     response: str
     created_at: datetime
     completed_at: datetime
@@ -119,4 +123,3 @@ class GatewayTelemetryRecord:
     is_session_completed: bool = False
     truncate_reason: str | None = None
     synthetic_stop: bool = False
-    provider_trace: dict[str, Any] | None = None

@@ -104,7 +104,6 @@ config = {
     "max_steps": -1,
     "storage_type": "sqlite",
     "storage_config": {"db_url": f"sqlite:///{db}"},
-    "provider_trace": {"capture": "full"},
     "llm_routes": {
         os.environ["PATCH_EVAL_MODEL"]: {
             "base_url": os.environ["PATCH_EVAL_API_BASE"].rstrip("/") + "/",

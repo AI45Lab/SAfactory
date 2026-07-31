@@ -41,7 +41,8 @@ class SessionStep(Model):
     """
     Table 2: Session-Step Mapping
     Stores full conversation history per step
-    Includes: env_name, llm_model, group_id, job_id, messages (JSON), response, step_reward, total_reward, terminated, is_session_completed
+    Includes: env_name, llm_model, group_id, job_id, messages (JSON), request,
+    response, step_reward, total_reward, terminated, is_session_completed
     """
     id = fields.IntField(pk=True, autoincrement=True)
     session_id = fields.CharField(
@@ -66,6 +67,10 @@ class SessionStep(Model):
     )
 
     # Current step data
+    request = fields.TextField(
+        null=True,
+        description="Provider-bound request JSON for this step",
+    )
     response = fields.TextField(description="LLM action/response for this step")
 
     # Rewards

@@ -345,7 +345,8 @@ class GatewayStorage:
                             "session": session,
                             "step_id": record.seq_id,
                             "messages": _trajectory_messages(record),
-                            "response": self._provider_response(record),
+                            "request": record.request,
+                            "response": record.response,
                             "step_reward": 0.0,
                             "env_state": json.dumps(self._metadata(record), ensure_ascii=False, default=str),
                             "terminated": False,
@@ -373,22 +374,6 @@ class GatewayStorage:
         except Exception as exc:
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
-
-    @staticmethod
-    def _provider_response(record: GatewayTelemetryRecord) -> str:
-        provider_trace = record.provider_trace
-        if not isinstance(provider_trace, dict):
-            return ""
-        artifact = provider_trace.get("artifact")
-        if not isinstance(artifact, dict):
-            return ""
-        return json.dumps(
-            artifact,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        )
 
     async def record_session_close(
         self,
@@ -560,6 +545,9 @@ class GatewayStorage:
             "is_stream": record.is_stream,
             "retry_count": record.retry_count,
             "request_bytes": record.request_bytes,
+            "request_method": record.request_method,
+            "request_url": record.request_url,
+            "request_headers": record.request_headers,
             "response_bytes": record.response_bytes,
             "prompt_tokens": record.prompt_tokens,
             "completion_tokens": record.completion_tokens,

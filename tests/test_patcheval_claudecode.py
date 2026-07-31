@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 import sys
 import time
 
@@ -13,8 +14,8 @@ from env.patcheval import claudecode_runner, generate_full_config
 from env.patcheval.claude_adapter import conversion
 from env.patcheval.claude_adapter.app import create_app as create_adapter_app
 from evaluator.rule_evaluator import discover_rule_eval_spec
+from core.data_manager.strategy.sqlite_strategy_impl import SqliteStrategy
 from gateway import app as gateway_app
-from gateway.anthropic_thinking_history import AnthropicThinkingHistory
 from gateway.app import _anthropic_response_from_sse
 from gateway.config import GatewayConfig, LLMRouteConfig
 from gateway.inference_forwarder import (
@@ -23,7 +24,6 @@ from gateway.inference_forwarder import (
     StreamForwardContext,
 )
 from gateway.llm_router import LLMRouteTarget
-from gateway.provider_trace import ProviderTraceWriter
 from gateway.storage import GatewayStorage
 
 
@@ -35,6 +35,28 @@ def test_shared_adapter_health(monkeypatch) -> None:
     monkeypatch.setenv("CLAUDE_ADAPTER_ROUTE_MODEL", "route/model")
     with TestClient(create_adapter_app()) as client:
         assert client.get("/readyz").json() == {"status": "ready"}
+
+
+def test_sqlite_runtime_schema_adds_provider_request_column(tmp_path) -> None:
+    database = tmp_path / "legacy.db"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE session_steps (id INTEGER PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+
+    strategy = SqliteStrategy(
+        "job",
+        f"sqlite://{database}",
+        enable_buffer=False,
+    )
+    asyncio.run(strategy._ensure_runtime_schema())
+
+    connection = sqlite3.connect(database)
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(session_steps)")
+    }
+    connection.close()
+    assert "request" in columns
 
 
 def test_anthropic_tool_messages_convert_to_openai() -> None:
@@ -259,100 +281,41 @@ def test_fixed_thinking_compatibility_normalizes_anthropic_payload() -> None:
     assert headers["anthropic-beta"] == "interleaved-thinking-2025-05-14"
 
 
-def test_anthropic_thinking_history_restores_matching_signed_block() -> None:
-    history = AnthropicThinkingHistory()
-    response = {
-        "type": "message",
-        "role": "assistant",
-        "content": [
-            {
-                "type": "thinking",
-                "thinking": "private reasoning",
-                "signature": "signed-blob",
-            },
-            {"type": "text", "text": "Inspecting."},
-            {
-                "type": "tool_use",
-                "id": "tool-1",
-                "name": "Read",
-                "input": {"path": "/workspace/file"},
-            },
-        ],
-    }
-    request = {
-        "messages": [
-            {"role": "user", "content": "Fix it."},
-            {
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "Inspecting."},
-                    {
-                        "type": "tool_use",
-                        "id": "tool-1",
-                        "name": "Read",
-                        "input": {"path": "/workspace/file"},
-                    },
-                ],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "tool-1",
-                        "content": "contents",
-                    }
-                ],
-            },
-        ]
+def test_adaptive_thinking_compatibility_matches_metabot_payload() -> None:
+    target = LLMRouteTarget(
+        route_model="claude",
+        base_url="http://upstream/v1",
+        api_key=None,
+        anthropic_compatibility="adaptive_thinking",
+        anthropic_max_tokens=64000,
+        anthropic_interleaved_thinking=True,
+    )
+    original = {
+        "model": "claude",
+        "max_tokens": 64000,
+        "thinking": {"type": "adaptive"},
+        "context_management": {"edits": []},
+        "output_config": {"effort": "high"},
+        "messages": [{"role": "user", "content": "hello"}],
     }
 
-    assert history.record_response("session-1", response) is True
-    restored, count = history.restore_request("session-1", request)
+    prepared = InferenceForwarder.prepare_anthropic_payload(target, original)
 
-    assert count == 1
-    assert "signature" not in json.dumps(request)
-    assert restored["messages"][1]["content"][0] == response["content"][0]
-    assert restored["messages"][1]["content"][1:] == request["messages"][1]["content"]
-    unchanged, unchanged_count = history.restore_request("other-session", request)
-    assert unchanged is request
-    assert unchanged_count == 0
+    assert prepared["thinking"] == {"type": "adaptive"}
+    assert prepared["output_config"] == {"effort": "max"}
+    assert prepared["display"] == "summarized"
+    assert prepared["max_tokens"] == 64000
+    assert "context_management" not in prepared
+    assert original["context_management"] == {"edits": []}
 
-
-def test_provider_trace_builds_signature_artifact() -> None:
-    writer = ProviderTraceWriter("full")
-
-    async def build_artifact():
-        return await writer.write(
-            session_id="session-1",
-            request_id="request-1",
-            llm_step_index=2,
-            model="claude",
-            endpoint="messages",
-            request_body={"model": "claude", "messages": []},
-            response_body={
-                "type": "message",
-                "content": [
-                    {
-                        "type": "thinking",
-                        "thinking": "private",
-                        "signature": "signed-blob",
-                    }
-                ],
-            },
-            status_code=200,
-            capture_complete=True,
-        )
-
-    metadata = asyncio.run(build_artifact())
-    assert metadata is not None
-    assert metadata["artifact"]["response"]["content"][0]["signature"] == "signed-blob"
-    artifact = metadata["artifact"]
-    assert artifact["signatures"][0]["signature"] == "signed-blob"
-    assert artifact["capture"]["complete"] is True
+    headers = object.__new__(InferenceForwarder).build_anthropic_headers(
+        target,
+        {"anthropic-beta": "claude-code-20250219"},
+    )
+    assert headers["anthropic-beta"] == "interleaved-thinking-2025-05-14"
 
 
-def test_gateway_streams_native_anthropic_and_records_trace(monkeypatch) -> None:
+def test_gateway_streams_native_anthropic_and_records_request_response(monkeypatch) -> None:
     forwarded_payloads = []
     stream = "\n\n".join(
         [
@@ -386,7 +349,13 @@ def test_gateway_streams_native_anthropic_and_records_trace(monkeypatch) -> None
         def build_anthropic_headers(self, target, inbound_headers, **kwargs):
             del target, inbound_headers
             assert kwargs["session_id"] == "session-1"
-            return {"Content-Type": "application/json", "x-api-key": "upstream-key"}
+            return {
+                "Content-Type": "application/json",
+                "anthropic-version": "2023-06-01",
+                "anthropic-beta": "interleaved-thinking-2025-05-14",
+                "x-api-key": "upstream-key",
+                "Authorization": "Bearer upstream-key",
+            }
 
         def prepare_anthropic_payload(self, target, payload):
             del target
@@ -465,7 +434,6 @@ def test_gateway_streams_native_anthropic_and_records_trace(monkeypatch) -> None
         storage_type="sqlite",
         storage_config={"db_url": "sqlite://unused.db"},
         request_log_enabled=False,
-        provider_trace_capture="full",
         llm_routes={
             "claude": LLMRouteConfig(
                 base_url="https://provider.example/v1",
@@ -511,18 +479,17 @@ def test_gateway_streams_native_anthropic_and_records_trace(monkeypatch) -> None
     assert "signature_delta" in response.text
     assert count_response.json() == {"input_tokens": 17}
     assert nonstream_response.json()["content"][0]["signature"] == "nonstream-signature"
-    assert forwarded_payloads[1]["messages"][1]["content"] == [
-        {
-            "type": "thinking",
-            "thinking": "inspect",
-            "signature": "signed-blob",
-        }
-    ]
+    assert forwarded_payloads[1]["messages"][1]["content"] == []
     assert len(storage.records) == 2
     record = storage.records[0][1]
+    stored_request = json.loads(record.request)
+    stored_response = json.loads(record.response)
     metadata = GatewayStorage._metadata(record)
-    assert "provider_trace" not in metadata
-    stored_response = json.loads(GatewayStorage._provider_response(record))
-    assert stored_response["response"]["content"][0]["signature"] == "signed-blob"
-    assert stored_response["stream_text"].startswith("event: message_start")
-    assert stored_response["signatures"][0]["signature"] == "signed-blob"
+    assert stored_request == forwarded_payloads[0]
+    assert stored_response["content"][0]["signature"] == "signed-blob"
+    assert metadata["request_method"] == "POST"
+    assert metadata["request_url"] == "https://provider.example/v1/messages"
+    assert metadata["request_headers"]["anthropic-version"] == "2023-06-01"
+    assert metadata["request_headers"]["Accept"] == "text/event-stream"
+    assert metadata["request_headers"]["x-api-key"] == "[REDACTED]"
+    assert metadata["request_headers"]["Authorization"] == "[REDACTED]"

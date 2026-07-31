@@ -43,11 +43,6 @@ request_log:
   # 0 means unlimited body capture so agent prompts and streamed LLM output are not truncated.
   body_limit_bytes: 0
 
-# Provider-native evidence is stored outside session_steps. Use "full" only for
-# controlled research runs because Anthropic thinking signatures are sensitive.
-provider_trace:
-  capture: off # off | metadata | full
-
 llm_routes:
   minimax2.5:
     base_url: http://s-20260304115506-xsb7j.ailab-pj.pjh-service.org.cn/v1/
