@@ -364,7 +364,7 @@ class GatewayStorage:
                         "session": session,
                         "step_id": record.seq_id,
                         "messages": _trajectory_messages(record),
-                        "response": "",
+                        "response": record.response,
                         "step_reward": 0.0,
                         "env_state": json.dumps(self._metadata(record), ensure_ascii=False, default=str),
                         "terminated": False,
@@ -602,11 +602,10 @@ THINK_TAG_RE = re.compile(r"<think>(.*?)</think>", re.IGNORECASE | re.DOTALL)
 
 
 def _trajectory_messages(record: GatewayTelemetryRecord) -> list[dict[str, Any]]:
-    messages = [dict(message) for message in record.messages]
-    if record.error_text:
-        return messages
-    messages.extend(_assistant_messages_from_response(record.response))
-    return messages
+    # A step's messages are the request-side conversation history. The current
+    # assistant output belongs in step.response and will naturally appear in a
+    # later step's messages when the client includes it in the next request.
+    return [dict(message) for message in record.messages]
 
 
 def _assistant_messages_from_response(response: str) -> list[dict[str, Any]]:
