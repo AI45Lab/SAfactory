@@ -15,10 +15,7 @@ class LLMRouteConfig:
     api_key: str | None = None
     supports_stream: bool = True
     max_concurrency: int | None = None
-    anthropic_compatibility: str = "native"
-    anthropic_thinking_budget_tokens: int = 1024
-    anthropic_max_tokens: int | None = None
-    anthropic_interleaved_thinking: bool = False
+    anthropic_interleaved_thinking: bool = True
 
 
 @dataclass(frozen=True)
@@ -198,28 +195,8 @@ def _routes_from_mapping(raw: Any) -> dict[str, LLMRouteConfig]:
 def _route_from_mapping(data: dict[str, Any]) -> LLMRouteConfig:
     if "base_url" not in data:
         raise ValueError("LLM route config requires base_url")
-    anthropic_compatibility = str(
-        data.get("anthropic_compatibility", "native")
-    ).strip().lower()
-    if anthropic_compatibility not in {
-        "native",
-        "adaptive_thinking",
-        "fixed_thinking",
-    }:
-        raise ValueError(
-            "anthropic_compatibility must be one of: "
-            "native, adaptive_thinking, fixed_thinking"
-        )
-    thinking_budget = int(data.get("anthropic_thinking_budget_tokens", 1024))
-    if thinking_budget < 1024:
-        raise ValueError("anthropic_thinking_budget_tokens must be at least 1024")
-    anthropic_max_tokens = data.get("anthropic_max_tokens")
-    if anthropic_max_tokens is not None and int(anthropic_max_tokens) <= thinking_budget:
-        raise ValueError(
-            "anthropic_max_tokens must be greater than anthropic_thinking_budget_tokens"
-        )
     anthropic_interleaved_thinking = data.get(
-        "anthropic_interleaved_thinking", False
+        "anthropic_interleaved_thinking", True
     )
     if not isinstance(anthropic_interleaved_thinking, bool):
         raise ValueError("anthropic_interleaved_thinking must be a boolean")
@@ -230,11 +207,6 @@ def _route_from_mapping(data: dict[str, Any]) -> LLMRouteConfig:
         max_concurrency=None
         if data.get("max_concurrency") is None
         else int(data["max_concurrency"]),
-        anthropic_compatibility=anthropic_compatibility,
-        anthropic_thinking_budget_tokens=thinking_budget,
-        anthropic_max_tokens=None
-        if anthropic_max_tokens is None
-        else int(anthropic_max_tokens),
         anthropic_interleaved_thinking=anthropic_interleaved_thinking,
     )
 

@@ -222,14 +222,11 @@ def test_generate_claudecode_exp1_config(tmp_path, monkeypatch) -> None:
     assert eval_spec.rule_evaluator.endswith(f"/{env_name}/rule_evaluator.py")
 
 
-def test_fixed_thinking_compatibility_normalizes_anthropic_payload() -> None:
+def test_anthropic_payload_uses_single_adaptive_max_path() -> None:
     target = LLMRouteTarget(
         route_model="claude",
         base_url="http://upstream/v1",
         api_key=None,
-        anthropic_compatibility="fixed_thinking",
-        anthropic_thinking_budget_tokens=1024,
-        anthropic_max_tokens=8192,
         anthropic_interleaved_thinking=True,
     )
     original = {
@@ -241,39 +238,7 @@ def test_fixed_thinking_compatibility_normalizes_anthropic_payload() -> None:
         "messages": [{"role": "user", "content": "hello"}],
     }
 
-    prepared = InferenceForwarder.prepare_anthropic_payload(target, original)
-
-    assert prepared["thinking"] == {"type": "enabled", "budget_tokens": 1024}
-    assert prepared["max_tokens"] == 8192
-    assert "context_management" not in prepared
-    assert "output_config" not in prepared
-    assert original["thinking"] == {"type": "adaptive"}
-    headers = object.__new__(InferenceForwarder).build_anthropic_headers(
-        target,
-        {"anthropic-beta": "unsupported-fixed-mode-beta"},
-    )
-    assert headers["anthropic-beta"] == "interleaved-thinking-2025-05-14"
-
-
-def test_adaptive_thinking_compatibility_matches_metabot_payload() -> None:
-    target = LLMRouteTarget(
-        route_model="claude",
-        base_url="http://upstream/v1",
-        api_key=None,
-        anthropic_compatibility="adaptive_thinking",
-        anthropic_max_tokens=64000,
-        anthropic_interleaved_thinking=True,
-    )
-    original = {
-        "model": "claude",
-        "max_tokens": 64000,
-        "thinking": {"type": "adaptive"},
-        "context_management": {"edits": []},
-        "output_config": {"effort": "high"},
-        "messages": [{"role": "user", "content": "hello"}],
-    }
-
-    prepared = InferenceForwarder.prepare_anthropic_payload(target, original)
+    prepared = InferenceForwarder.prepare_anthropic_payload(original)
 
     assert prepared["thinking"] == {"type": "adaptive"}
     assert prepared["output_config"] == {"effort": "max"}
@@ -284,7 +249,7 @@ def test_adaptive_thinking_compatibility_matches_metabot_payload() -> None:
 
     headers = object.__new__(InferenceForwarder).build_anthropic_headers(
         target,
-        {"anthropic-beta": "claude-code-20250219"},
+        {"anthropic-beta": "claude-code-20250219,unsupported-beta"},
     )
     assert headers["anthropic-beta"] == "interleaved-thinking-2025-05-14"
 
@@ -319,6 +284,9 @@ def test_gateway_streams_native_anthropic_and_records_request_response(monkeypat
     class FakeForwarder:
         def __init__(self, cfg) -> None:
             del cfg
+
+        def prepare_anthropic_payload(self, payload):
+            return payload
 
         def build_anthropic_headers(self, target, inbound_headers, **kwargs):
             del target, inbound_headers

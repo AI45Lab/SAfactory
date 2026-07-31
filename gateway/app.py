@@ -265,6 +265,9 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 target.route_model,
                 ctx.is_stream,
             )
+            if endpoint == "messages":
+                payload = forwarder.prepare_anthropic_payload(payload)
+
             headers = (
                 forwarder.build_anthropic_headers(
                     target,

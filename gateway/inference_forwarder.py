@@ -326,30 +326,17 @@ class InferenceForwarder:
 
     @staticmethod
     def prepare_anthropic_payload(
-        target: LLMRouteTarget,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        if target.anthropic_compatibility == "native":
-            return payload
-
         prepared = copy.deepcopy(payload)
         prepared.pop("context_management", None)
-        if target.anthropic_compatibility == "adaptive_thinking":
-            prepared["thinking"] = {"type": "adaptive"}
-            output_config = prepared.get("output_config")
-            if not isinstance(output_config, dict):
-                output_config = {}
-            prepared["output_config"] = {**output_config, "effort": "max"}
-            prepared["display"] = "summarized"
-        else:
-            prepared.pop("output_config", None)
-            prepared["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": target.anthropic_thinking_budget_tokens,
-            }
-        if target.anthropic_max_tokens is not None:
-            requested = int(prepared.get("max_tokens") or target.anthropic_max_tokens)
-            prepared["max_tokens"] = min(requested, target.anthropic_max_tokens)
+        prepared["thinking"] = {"type": "adaptive"}
+        output_config = prepared.get("output_config")
+        if not isinstance(output_config, dict):
+            output_config = {}
+        prepared["output_config"] = {**output_config, "effort": "max"}
+        prepared["display"] = "summarized"
+        prepared["max_tokens"] = 64000
         return prepared
 
     def build_anthropic_headers(
@@ -362,10 +349,7 @@ class InferenceForwarder:
         llm_step_index: int | None = None,
     ) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        forwarded_names = ["anthropic-version", "user-agent"]
-        if target.anthropic_compatibility == "native":
-            forwarded_names.append("anthropic-beta")
-        for name in forwarded_names:
+        for name in ("anthropic-version", "user-agent"):
             value = inbound_headers.get(name) if inbound_headers is not None else None
             if value:
                 headers[name] = str(value)

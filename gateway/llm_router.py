@@ -22,10 +22,7 @@ class LLMRouteTarget:
     api_key: str | None
     supports_stream: bool = True
     max_concurrency: int = 256
-    anthropic_compatibility: str = "native"
-    anthropic_thinking_budget_tokens: int = 1024
-    anthropic_max_tokens: int | None = None
-    anthropic_interleaved_thinking: bool = False
+    anthropic_interleaved_thinking: bool = True
 
 
 @dataclass
@@ -86,9 +83,6 @@ class LLMRouter:
             api_key=route.api_key,
             supports_stream=route.supports_stream,
             max_concurrency=max_concurrency,
-            anthropic_compatibility=route.anthropic_compatibility,
-            anthropic_thinking_budget_tokens=route.anthropic_thinking_budget_tokens,
-            anthropic_max_tokens=route.anthropic_max_tokens,
             anthropic_interleaved_thinking=route.anthropic_interleaved_thinking,
         )
 

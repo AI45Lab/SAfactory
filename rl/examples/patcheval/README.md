@@ -156,34 +156,11 @@ export PATCH_EVAL_POOL_SIZE=1
 `PATCH_EVAL_MODEL` 是底层模型路由，不是 Agent 名称。Claude Code baseline
 要求显式设置它，避免误用 LLM baseline 默认的 DeepSeek 模型。
 
-原生 Anthropic 或完整兼容的上游保持默认
-`PATCH_EVAL_ANTHROPIC_COMPATIBILITY=native`。如果中转站只接受固定 thinking
-budget，不接受 Claude Code 新版发送的 adaptive thinking 和 context-management
-字段，可增加：
-
-```bash
-export PATCH_EVAL_ANTHROPIC_COMPATIBILITY="fixed_thinking"
-export PATCH_EVAL_ANTHROPIC_THINKING_BUDGET_TOKENS=1024
-export PATCH_EVAL_ANTHROPIC_MAX_TOKENS=8192
-```
-
-若上游支持 adaptive thinking，但不接受 Claude Code 的 `context_management`
-字段，可使用 MetaBot 对齐模式：
-
-```bash
-export PATCH_EVAL_ANTHROPIC_COMPATIBILITY="adaptive_thinking"
-export PATCH_EVAL_ANTHROPIC_INTERLEAVED_THINKING=true
-export PATCH_EVAL_ANTHROPIC_MAX_TOKENS=64000
-```
-
-该模式将请求对齐为 `thinking.type=adaptive` 和
+Claude Code 使用单一 Anthropic 兼容路径。Gateway 将请求对齐为
+`thinking.type=adaptive`、`max_tokens=64000` 和
 `output_config.effort=max`，删除 `context_management`，并只向上游发送实验
 所需的 `interleaved-thinking` Beta Header，避免 Bedrock 拒绝 Claude Code
 的内部 Beta 标志。
-
-`fixed_thinking` 模式只在 Gateway 发往 Provider 的边界把 thinking 改为 `enabled`，删除
-`context_management`/`output_config`，并限制 `max_tokens`；Claude Code 与
-Gateway 之间仍使用原生 Anthropic Messages/SSE。
 
 首次启动每个 CVE 容器时会安装 Node.js 和 `@anthropic-ai/claude-code`，因此
 Agent baseline 的启动时间和网络开销明显高于 LLM baseline。确认单样本运行
