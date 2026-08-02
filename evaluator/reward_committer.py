@@ -90,7 +90,10 @@ class RewardCommitter:
         session_id: str,
         eval_result: EvalResult,
     ) -> None:
-        rows = await self.data_manager.list_session_steps(session_id)
+        rows = await self.data_manager.list_session_steps(
+            session_id,
+            checkout_latest=True,
+        )
         terminal = next(
             (row for row in reversed(rows) if _is_trainable_step(row)),
             None,
@@ -102,9 +105,46 @@ class RewardCommitter:
             terminal is not None,
         )
         if terminal is None:
-            raise RuntimeError(
-                f"Cannot commit cloud evaluation reward: no trainable row for session {session_id}"
+            metadata = self._build_reward_metadata(
+                session_id=session_id,
+                eval_result=eval_result,
             )
+            summary_metadata = _as_eval_summary_metadata(metadata)
+            summary = _existing_eval_summary_row(rows, session_id)
+            if summary is None:
+                recorded = await self.data_manager.record_evaluation_summary(
+                    session_id=session_id,
+                    step_id=_next_step_id(rows),
+                    reward=eval_result.normalized_score_10,
+                    env_state=summary_metadata,
+                )
+            else:
+                recorded = await self.data_manager.update_session_step(
+                    session_id,
+                    int(summary.get("step_id") or 0),
+                    {
+                        "step_reward": eval_result.normalized_score_10,
+                        "reward": eval_result.normalized_score_10,
+                        "env_state": _merge_env_state(
+                            summary.get("env_state"),
+                            summary_metadata,
+                        ),
+                        "is_terminal": True,
+                        "is_session_completed": True,
+                        "is_trainable": False,
+                    },
+                )
+            if recorded <= 0:
+                raise RuntimeError(
+                    "Cannot commit cloud evaluation reward: evaluation summary "
+                    f"was not persisted for {session_id}"
+                )
+            log.info(
+                "EVAL REWARD cloud summary persisted: session=%s step_id=%d",
+                session_id,
+                _next_step_id(rows) if summary is None else int(summary.get("step_id") or 0),
+            )
+            return
 
         metadata = self._build_reward_metadata(
             session_id=session_id,
@@ -287,6 +327,8 @@ def _as_eval_summary_metadata(metadata: str) -> str:
 
 
 def _load_env_state(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
     try:
         parsed = json.loads(value) if value else {}
     except Exception:
