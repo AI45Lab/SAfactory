@@ -850,7 +850,7 @@ class CloudStrategy(StorageStrategy):
         ]
         frame = await self._timed_db_call(
             "filter_landing",
-            self.client.query_landing,
+            self.client.query_data,
             filter_query=query,
             limit=10000,
             columns=columns,
@@ -961,12 +961,12 @@ class CloudStrategy(StorageStrategy):
 
         rows = await self._timed_db_call(
             "filter_landing",
-            self.client.query_landing,
+            self.client.query_data,
             filter_query=query,
             limit=1000,
             columns=["step_id", "is_session_completed", "meta_json", "agent_model"],
             partition=job_id or None,
-            checkout_latest=False,
+            checkout_latest=True,
             as_dataframe=True,
             trace_context={"session_id": session_id, "model": llm_model},
         )
@@ -1153,7 +1153,7 @@ class CloudStrategy(StorageStrategy):
                 "falling back to an all-bucket HASH query"
             )
         try:
-            df = self.client.query_landing(
+            df = self.client.query_data(
                 filter_query=filter_query,
                 limit=1,
                 columns=["meta_json"],
