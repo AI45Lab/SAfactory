@@ -15,7 +15,15 @@ from gateway.models import GatewayRequestContext, GatewaySessionBinding
 
 log = logging.getLogger("gateway.request_logger")
 
-SENSITIVE_KEY_PARTS = ("authorization", "api_key", "token", "password", "secret")
+SENSITIVE_KEY_PARTS = (
+    "authorization",
+    "api_key",
+    "token",
+    "password",
+    "secret",
+    "signature",
+    "encrypted_content",
+)
 
 
 @dataclass

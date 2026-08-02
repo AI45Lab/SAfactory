@@ -39,7 +39,7 @@ def main() -> int:
         if not work_dir.is_dir():
             raise RuntimeError(f"PatchEval work directory does not exist: {work_dir}")
         problem_statement = _required_text(dataset.get("problem_statement"), "problem_statement")
-        adapter_url = _adapter_session_url(session_id)
+        gateway_url = _gateway_session_url(session_id)
         timeout_s = _positive_float(request.get("agent_start_timeout_s"), DEFAULT_TIMEOUT_S)
         install_timeout_s = _positive_float(
             os.environ.get("PATCHEVAL_CLAUDE_INSTALL_TIMEOUT_S"),
@@ -60,7 +60,7 @@ def main() -> int:
             command_name=command_name,
             claude_path=claude_path,
             work_dir=work_dir,
-            adapter_url=adapter_url,
+            gateway_url=gateway_url,
             timeout_s=timeout_s,
             tool_limit=tool_limit,
         )
@@ -289,27 +289,49 @@ def _run_claude(
     command_name: str,
     claude_path: str,
     work_dir: Path,
-    adapter_url: str,
+    gateway_url: str,
     timeout_s: float,
     tool_limit: int,
 ) -> dict[str, Any]:
     env = os.environ.copy()
     account = pwd.getpwnam("claude_user")
-    adapter_host = urlsplit(adapter_url).hostname or ""
+    gateway_host = urlsplit(gateway_url).hostname or ""
+    route_model = _required_text(
+        os.environ.get("PATCHEVAL_CLAUDE_MODEL"),
+        "PATCHEVAL_CLAUDE_MODEL",
+    )
     env.update(
         {
-            "ANTHROPIC_BASE_URL": adapter_url,
+            "ANTHROPIC_BASE_URL": gateway_url,
             "ANTHROPIC_API_KEY": "safactory",
             "ANTHROPIC_AUTH_TOKEN": "safactory",
+            "ANTHROPIC_MODEL": route_model,
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": route_model,
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": route_model,
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": route_model,
             "CLAUDE_CODE_AUTO_CONNECT_IDE": "false",
-            "DISABLE_INTERLEAVED_THINKING": "true",
             "HOME": account.pw_dir,
             "USER": account.pw_name,
             "LOGNAME": account.pw_name,
-            "NO_PROXY": _append_no_proxy(env.get("NO_PROXY", ""), adapter_host),
-            "no_proxy": _append_no_proxy(env.get("no_proxy", ""), adapter_host),
+            "NO_PROXY": _append_no_proxy(env.get("NO_PROXY", ""), gateway_host),
+            "no_proxy": _append_no_proxy(env.get("no_proxy", ""), gateway_host),
         }
     )
+    if str(os.environ.get("PATCHEVAL_CLAUDE_DISABLE_INTERLEAVED_THINKING") or "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        env["DISABLE_INTERLEAVED_THINKING"] = "true"
+    else:
+        env.pop("DISABLE_INTERLEAVED_THINKING", None)
+    max_thinking_tokens = str(
+        os.environ.get("PATCHEVAL_CLAUDE_MAX_THINKING_TOKENS") or ""
+    ).strip()
+    if max_thinking_tokens:
+        env["MAX_THINKING_TOKENS"] = max_thinking_tokens
+    else:
+        env.pop("MAX_THINKING_TOKENS", None)
     command = [
         claude_path,
         "--print",
@@ -461,10 +483,10 @@ def _positive_int(value: Any, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
-def _adapter_session_url(session_id: str) -> str:
+def _gateway_session_url(session_id: str) -> str:
     base_url = _required_text(
-        os.environ.get("PATCHEVAL_CLAUDE_ADAPTER_BASE_URL"),
-        "PATCHEVAL_CLAUDE_ADAPTER_BASE_URL",
+        os.environ.get("PATCHEVAL_CLAUDE_GATEWAY_BASE_URL"),
+        "PATCHEVAL_CLAUDE_GATEWAY_BASE_URL",
     )
     return f"{base_url.rstrip('/')}/{session_id}"
 

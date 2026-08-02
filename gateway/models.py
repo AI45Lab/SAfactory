@@ -110,6 +110,10 @@ class GatewayTelemetryRecord:
     redaction_policy: str
     payload_sampled: bool
     messages: list[dict[str, Any]]
+    request: str
+    request_method: str | None
+    request_url: str | None
+    request_headers: dict[str, str]
     response: str
     created_at: datetime
     completed_at: datetime

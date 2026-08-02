@@ -61,7 +61,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--agent-experiment", choices=AGENT_EXPERIMENTS, default="exp1")
     parser.add_argument("--agent-tool-limit", type=int, default=100)
     parser.add_argument("--claude-install-timeout-s", type=float, default=900.0)
-    parser.add_argument("--claude-adapter-base-url", default="")
+    parser.add_argument("--claude-gateway-base-url", default="")
+    parser.add_argument("--claude-model", default="")
+    parser.add_argument("--claude-max-thinking-tokens", type=int, default=0)
     parser.add_argument("--http-proxy", default="")
     parser.add_argument("--evaluation-timeout-s", type=float, default=3600.0)
     parser.add_argument("--shared-tmp", default="")
@@ -144,7 +146,9 @@ def write_configs(
     official_runtime_dir: Path,
     agent_tool_limit: int,
     claude_install_timeout_s: float,
-    claude_adapter_base_url: str,
+    claude_gateway_base_url: str,
+    claude_model: str,
+    claude_max_thinking_tokens: int,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     dataset_dir = output_dir / "datasets"
@@ -165,15 +169,22 @@ def write_configs(
         "no_proxy": no_proxy,
     }
     if baseline == "claudecode":
-        if not claude_adapter_base_url:
-            raise ValueError("--claude-adapter-base-url is required for the Claude Code baseline")
+        if not claude_gateway_base_url:
+            raise ValueError("--claude-gateway-base-url is required for the Claude Code baseline")
+        if not claude_model:
+            raise ValueError("--claude-model is required for the Claude Code baseline")
         container_env.update(
             {
                 "PATCHEVAL_CLAUDE_TOOL_LIMIT": str(agent_tool_limit),
                 "PATCHEVAL_CLAUDE_INSTALL_TIMEOUT_S": str(claude_install_timeout_s),
-                "PATCHEVAL_CLAUDE_ADAPTER_BASE_URL": claude_adapter_base_url,
+                "PATCHEVAL_CLAUDE_GATEWAY_BASE_URL": claude_gateway_base_url,
+                "PATCHEVAL_CLAUDE_MODEL": claude_model,
             }
         )
+        if claude_max_thinking_tokens > 0:
+            container_env["PATCHEVAL_CLAUDE_MAX_THINKING_TOKENS"] = str(
+                claude_max_thinking_tokens
+            )
     if http_proxy:
         container_env.update(
             {
@@ -282,6 +293,8 @@ def main() -> None:
         raise SystemExit("--agent-tool-limit must be positive")
     if args.claude_install_timeout_s <= 0:
         raise SystemExit("--claude-install-timeout-s must be positive")
+    if args.claude_max_thinking_tokens < 0:
+        raise SystemExit("--claude-max-thinking-tokens must be non-negative")
     default_dataset = DEFAULT_CLAUDECODE_DATASET if args.baseline == "claudecode" else DEFAULT_LLM_DATASET
     dataset = (args.dataset or default_dataset).expanduser().resolve()
     official_dataset = args.official_dataset.expanduser().resolve()
@@ -331,7 +344,9 @@ def main() -> None:
         official_runtime_dir,
         int(args.agent_tool_limit),
         float(args.claude_install_timeout_s),
-        str(args.claude_adapter_base_url).strip(),
+        str(args.claude_gateway_base_url).strip(),
+        str(args.claude_model).strip(),
+        int(args.claude_max_thinking_tokens),
     )
     print(
         f"Generated PatchEval {args.baseline} configuration "

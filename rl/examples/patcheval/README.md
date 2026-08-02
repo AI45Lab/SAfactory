@@ -131,11 +131,13 @@ Claude Code Exp1 使用官方 `exp_agent/claudecode/dataset.jsonl` 和
 `templates/default.md`，包含漏洞知识和位置，不向 Agent 提供 PoC 或单元测试
 反馈。Agent 最多执行 100 次工具调用，并在任务容器内浏览和修改完整仓库。
 
-`run_eval.sh` 会在 Gateway 旁启动一个共享 Claude Adapter（默认端口
-`18001`）。任务容器只把 Anthropic Messages 请求发送到该 Adapter；Adapter
-转换为 OpenAI-compatible 请求后转发到当前 SAfactory session Gateway。因此
-每轮 Agent 推理仍由 Gateway 记录，最终补丁仍由同一个官方 rule evaluator
-评分。Gateway 核心不需要增加 Anthropic 协议实现。
+`run_eval.sh` 使用 Gateway 原生 Anthropic Messages/SSE 接口。任务容器中的
+Claude Code 直接请求
+`/v1/sessions/<session_id>/v1/messages`，不再启动 Claude Adapter，也不再经过
+Anthropic → OpenAI → Anthropic 转换。Gateway 透明转发原生流式事件，把实际发往
+Provider 的 JSON body 写入 `session_steps.request`，并把 Provider 返回的原始
+Anthropic SSE 文本写入 `session_steps.response`。SSE 聚合由导出脚本完成；
+Gateway 不再改写请求或构造 Provider Artifact。
 
 先运行一个样本：
 
@@ -153,6 +155,12 @@ export PATCH_EVAL_POOL_SIZE=1
 
 `PATCH_EVAL_MODEL` 是底层模型路由，不是 Agent 名称。Claude Code baseline
 要求显式设置它，避免误用 LLM baseline 默认的 DeepSeek 模型。
+
+Claude Code 使用单一 Anthropic 兼容路径。Gateway 将请求对齐为
+`thinking.type=adaptive`、`max_tokens=64000` 和
+`output_config.effort=max`，删除 `context_management`，并只向上游发送实验
+所需的 `interleaved-thinking` Beta Header，避免 Bedrock 拒绝 Claude Code
+的内部 Beta 标志。
 
 首次启动每个 CVE 容器时会安装 Node.js 和 `@anthropic-ai/claude-code`，因此
 Agent baseline 的启动时间和网络开销明显高于 LLM baseline。确认单样本运行

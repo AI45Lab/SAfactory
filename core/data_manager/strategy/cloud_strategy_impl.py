@@ -517,6 +517,7 @@ class CloudStrategy(StorageStrategy):
         messages: List[Dict],
         response: str,
         step_reward: float,
+        request: Optional[str] = None,
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
@@ -535,6 +536,7 @@ class CloudStrategy(StorageStrategy):
             messages=messages,
             response=response,
             step_reward=step_reward,
+            request=request,
             env_state=env_state,
             dataset=dataset,
             terminated=terminated,
@@ -620,6 +622,7 @@ class CloudStrategy(StorageStrategy):
         messages: List[Dict],
         response: str,
         step_reward: float,
+        request: Optional[str] = None,
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
@@ -668,6 +671,7 @@ class CloudStrategy(StorageStrategy):
         meta_json = {
             "source": "AIEvoBox",
             "group_id": session.group_id,
+            "request": request,
             "env_state": env_state,
         }
         if dataset is not None:
@@ -963,7 +967,7 @@ class CloudStrategy(StorageStrategy):
             "truncated": "is_truncated",
             "is_session_completed": "is_session_completed",
         }
-        meta_fields = {"group_id", "env_state", "is_trainable"}
+        meta_fields = {"group_id", "env_state", "is_trainable", "request"}
         blocked_fields = {"id", "created_at"}
 
         normalized: Dict[str, Any] = {}
@@ -1328,6 +1332,7 @@ class CloudStrategy(StorageStrategy):
                     "env_id": row["session_id"],
                     "env_state": json.loads(row["meta_json"]).get("env_state") if row["meta_json"] else None,
                     "prompt": self.normalize_messages(row["messages"]),
+                    "request": json.loads(row["meta_json"]).get("request") if row["meta_json"] else None,
                     "response": row["response"]["content"].tolist()[0]["text"],
                     "reward": row["reward"],
                     "step_reward": row["step_reward"],

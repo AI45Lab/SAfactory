@@ -94,6 +94,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         ctx: GatewayRequestContext | None = None
         binding: GatewaySessionBinding | None = None
         target: LLMRouteTarget | None = None
+        headers: dict[str, str] = {}
         route_reserved = False
         release_in_finally = True
         trace_status: str | None = None
@@ -264,8 +265,20 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 target.route_model,
                 ctx.is_stream,
             )
+            if endpoint == "messages":
+                payload = forwarder.prepare_anthropic_payload(payload)
 
-            headers = forwarder.build_upstream_headers(target, session_id=ctx.session_id)
+            headers = (
+                forwarder.build_anthropic_headers(
+                    target,
+                    request.headers,
+                    session_id=ctx.session_id,
+                    request_id=ctx.request_id,
+                    llm_step_index=ctx.llm_step_index,
+                )
+                if endpoint == "messages"
+                else forwarder.build_upstream_headers(target, session_id=ctx.session_id)
+            )
             with trace.span("request_log_write"):
                 await request_logger.log_request(ctx, binding, target, payload)
             if ctx.is_stream:
@@ -302,6 +315,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                         telemetry=telemetry,
                         request_logger=request_logger,
                         admission=admission,
+                        request_headers=headers,
                         trace=trace,
                     ),
                     status_code=opened.status_code,
@@ -356,6 +370,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     result.body,
                     latency_ms,
                     upstream_latency_ms=result.upstream_latency_ms,
+                    request_headers=headers,
                 )
             log.info(
                 "Gateway request complete: request_id=%s session_id=%s model=%s status=%d total_latency_ms=%.2f",
@@ -416,6 +431,8 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                         status_code,
                         latency_ms,
                         upstream_latency_ms=upstream_latency_ms,
+                        response_body=error_body,
+                        request_headers=headers,
                     )
             trace_status = "failed"
             trace_extra = {
@@ -453,6 +470,13 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         return await handle_inference_request(
             request,
             endpoint="responses",
+            path_session_id=session_id,
+        )
+
+    async def handle_session_anthropic_messages(session_id: str, request: Request) -> Response:
+        return await handle_inference_request(
+            request,
+            endpoint="messages",
             path_session_id=session_id,
         )
 
@@ -670,6 +694,11 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         methods=["POST"],
     )
     app.add_api_route(
+        f"{session_root}/{{session_id}}/v1/messages",
+        handle_session_anthropic_messages,
+        methods=["POST"],
+    )
+    app.add_api_route(
         f"{standard_openai_root}/chat/completions",
         handle_standard_chat_completions,
         methods=["POST"],
@@ -794,6 +823,8 @@ async def _forward_json(
         return await forwarder.forward_chat(target, payload, headers)
     if endpoint == "responses":
         return await forwarder.forward_responses(target, payload, headers)
+    if endpoint == "messages":
+        return await forwarder.forward_anthropic_messages(target, payload, headers)
     raise ValueError(f"unsupported endpoint {endpoint}")
 
 
@@ -808,6 +839,8 @@ async def _open_stream(
         return await forwarder.open_chat_stream(target, payload, headers)
     if endpoint == "responses":
         return await forwarder.open_responses_stream(target, payload, headers)
+    if endpoint == "messages":
+        return await forwarder.open_anthropic_messages_stream(target, payload, headers)
     raise ValueError(f"unsupported endpoint {endpoint}")
 
 
@@ -957,6 +990,7 @@ async def _stream_and_finalize(
     telemetry: TelemetryRecorder,
     request_logger: GatewayRequestLogger,
     admission: AdmissionController,
+    request_headers: dict[str, str],
     trace: PerfTrace,
 ) -> AsyncIterator[bytes]:
     first_chunk_at: float | None = None
@@ -1056,12 +1090,17 @@ async def _stream_and_finalize(
                 ttft_ms=ttft_ms,
             )
             stream_body = stream_capture.snapshot()
-            telemetry_response_body = _stream_response_body_for_telemetry(
-                summary=stream_response_body,
-                choice_states=stream_choice_states,
-                stream_text="".join(stream_text_parts),
-                stream_total_bytes=stream_total_bytes,
-                stream_truncated=False,
+            stream_text = "".join(stream_text_parts)
+            telemetry_response_body = (
+                None
+                if ctx.endpoint == "messages"
+                else _stream_response_body_for_telemetry(
+                    summary=stream_response_body,
+                    choice_states=stream_choice_states,
+                    stream_text=stream_text,
+                    stream_total_bytes=stream_total_bytes,
+                    stream_truncated=False,
+                )
             )
             with trace.span("request_log_stream_response"):
                 await request_logger.log_stream_response(
@@ -1092,6 +1131,8 @@ async def _stream_and_finalize(
                         latency_ms,
                         upstream_latency_ms=upstream_stream_total_ms,
                         stream_stats=stats,
+                        request_headers=request_headers,
+                        response_text=stream_text if ctx.endpoint == "messages" else None,
                     )
             else:
                 with trace.span("telemetry_enqueue_stream_failure"):
@@ -1106,6 +1147,8 @@ async def _stream_and_finalize(
                         upstream_latency_ms=upstream_stream_total_ms,
                         stream_stats=stats,
                         response_body=telemetry_response_body,
+                        request_headers=request_headers,
+                        response_text=stream_text if ctx.endpoint == "messages" else None,
                     )
             log.info(
                 "Gateway stream finalize complete: request_id=%s status=%d telemetry_recorded=true",
