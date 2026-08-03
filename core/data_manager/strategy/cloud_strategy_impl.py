@@ -848,7 +848,7 @@ class CloudStrategy(StorageStrategy):
             "is_trainable",
             "created_at",
         ]
-        frame = await self._timed_db_call(
+        cloud_rows = await self._timed_db_call(
             "filter_landing",
             self.client.query_data,
             filter_query=query,
@@ -856,14 +856,13 @@ class CloudStrategy(StorageStrategy):
             columns=columns,
             partition=job_id or None,
             checkout_latest=checkout_latest,
-            as_dataframe=True,
             trace_context={"session_id": session_id},
         )
-        if frame is None or len(frame) == 0:
+        if not cloud_rows:
             return []
 
         rows: List[Dict[str, Any]] = []
-        for _, cloud_row in frame.iterrows():
+        for cloud_row in cloud_rows:
             row = {
                 key: self.ndarray_to_native(cloud_row.get(key))
                 for key in columns
@@ -967,14 +966,13 @@ class CloudStrategy(StorageStrategy):
             columns=["step_id", "is_session_completed", "meta_json", "agent_model"],
             partition=job_id or None,
             checkout_latest=True,
-            as_dataframe=True,
             trace_context={"session_id": session_id, "model": llm_model},
         )
-        if rows is None or len(rows) == 0:
+        if not rows:
             return 0
 
         candidates: List[tuple[int, bool, Any]] = []
-        for _, row in rows.iterrows():
+        for row in rows:
             try:
                 candidates.append(
                     (
@@ -1153,22 +1151,21 @@ class CloudStrategy(StorageStrategy):
                 "falling back to an all-bucket HASH query"
             )
         try:
-            df = self.client.query_data(
+            rows = self.client.query_data(
                 filter_query=filter_query,
                 limit=1,
                 columns=["meta_json"],
                 partition=job_id or None,
                 checkout_latest=True,
-                as_dataframe=True,
             )
         except Exception as e:
             log.warning("Failed to load existing meta_json before cloud update: %s", e)
             return meta_json
 
-        if df is None or len(df) == 0:
+        if not rows:
             return meta_json
 
-        raw_meta = df.iloc[0].get("meta_json")
+        raw_meta = rows[0].get("meta_json")
         if not raw_meta:
             return meta_json
 
