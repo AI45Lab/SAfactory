@@ -90,7 +90,7 @@ Install SAfactory:
 ```bash
 git clone https://github.com/AI45Lab/SAfactory.git
 cd SAfactory
-pip install -r requirements.txt
+pip install -U -r requirements.txt
 ```
 
 Docker must be available locally, and the current user must be able to run `docker build`, `docker run`, and `docker exec`.

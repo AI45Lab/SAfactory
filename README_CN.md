@@ -90,7 +90,7 @@ skills/safactory-workflows/SKILL.md
 ```bash
 git clone https://github.com/AI45Lab/SAfactory.git
 cd SAfactory
-pip install -r requirements.txt
+pip install -U -r requirements.txt
 ```
 
 本地可以运行Docker，并且当前用户可以执行 `docker build`、`docker run` 和 `docker exec`
