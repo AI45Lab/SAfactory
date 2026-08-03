@@ -6,6 +6,7 @@ max_steps: -1
 
 storage_type: sqlite
 storage_config:
+  db_url: sqlite://env_trajs.db
   # Cloud mode uses wt-data-gateway default database URIs.
   # Development writes trajectory rows to wt-data-gateway test tables by default.
   # landing_table: landing_test
@@ -44,23 +45,8 @@ request_log:
   body_limit_bytes: 0
 
 llm_routes:
-  minimax2.5:
-    base_url: http://s-20260304115506-xsb7j.ailab-pj.pjh-service.org.cn/v1/
-    api_key: null
-    supports_stream: true
-    max_concurrency: 256
-  dsv4pro:
-    base_url: http://10.140.158.149:8182/v1/
-    api_key: null
-    supports_stream: true
-    max_concurrency: 256
-  kimi-k26-w4a8:
-    base_url: http://10.140.158.149:8180/v1/
-    api_key: null
-    supports_stream: true
-    max_concurrency: 256
-  GLM-5.2-w8a8:
-    base_url: http://10.140.158.149:8200/v1
-    api_key: null
+  YOUR_ROUTE_KEY:
+    base_url: http://YOUR_LLM_HOST/v1
+    api_key: YOUR_API_KEY
     supports_stream: true
     max_concurrency: 256
