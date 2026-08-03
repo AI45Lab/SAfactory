@@ -276,6 +276,7 @@ class CloudStrategy(StorageStrategy):
         # In-memory caches
         self._env_configs: Dict[str, Dict] = {}
         self._sessions: Dict[str, SessionContext] = {}
+        self._record_job_ids: Dict[str, str] = {}
 
         # Local fallback directory for failed uploads
         self._local_fallback_dir = "saved_images"
@@ -517,6 +518,7 @@ class CloudStrategy(StorageStrategy):
         messages: List[Dict],
         response: str,
         step_reward: float,
+        request: Optional[str] = None,
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
@@ -535,6 +537,7 @@ class CloudStrategy(StorageStrategy):
             messages=messages,
             response=response,
             step_reward=step_reward,
+            request=request,
             env_state=env_state,
             dataset=dataset,
             terminated=terminated,
@@ -557,6 +560,8 @@ class CloudStrategy(StorageStrategy):
                 log.error("Failed to ingest step %d: %s", step_id, e)
                 raise
 
+        if record_id and session.job_id:
+            self._record_job_ids[record_id] = str(session.job_id)
         return record_id
 
     async def record_steps_batch(self, steps: List[Dict[str, Any]]) -> List[Optional[str]]:
@@ -587,10 +592,14 @@ class CloudStrategy(StorageStrategy):
                 log.error("Failed to ingest %d cloud steps as a batch: %s", len(records), e)
                 raise
 
+        for record, record_id in zip(records, record_ids):
+            job_id = getattr(record, "job_id", None)
+            if record_id and job_id:
+                self._record_job_ids[record_id] = str(job_id)
         return record_ids
 
     async def mark_records_completed(self, record_ids: List[str]) -> int:
-        """Mark known landing record IDs completed without scanning session rows."""
+        """Mark known landing record IDs completed in their associated HASH buckets."""
         await self.init()
         unique_ids = list(dict.fromkeys(str(record_id) for record_id in record_ids if record_id))
         if not unique_ids:
@@ -598,17 +607,63 @@ class CloudStrategy(StorageStrategy):
         if self._enable_buffer:
             await self._flush_records()
 
-        quoted_ids = ", ".join(f"'{_escape_sql_literal(record_id)}'" for record_id in unique_ids)
-        await self._timed_db_call(
-            "update_landing",
-            self.client.update_landing,
-            f"id IN ({quoted_ids})",
-            {
-                "is_session_completed": True,
-                "is_terminal": True,
-            },
-            trace_context={"record_count": len(unique_ids)},
-        )
+        ids_by_job: Dict[str, List[str]] = {}
+        inferred_ids: List[str] = []
+        missing_job_ids: List[str] = []
+        for record_id in unique_ids:
+            job_id = self._record_job_ids.get(record_id)
+            if not job_id and self.job_id:
+                job_id = str(self.job_id)
+                inferred_ids.append(record_id)
+            if not job_id:
+                missing_job_ids.append(record_id)
+                continue
+            ids_by_job.setdefault(job_id, []).append(record_id)
+
+        if inferred_ids:
+            log.warning(
+                "Record-to-job association unavailable for %d landing records; "
+                "falling back to configured job_id=%s",
+                len(inferred_ids),
+                self.job_id,
+            )
+        if missing_job_ids:
+            log.error(
+                "Cannot mark %d landing records completed without job_id; "
+                "refusing an all-bucket HASH update",
+                len(missing_job_ids),
+            )
+            raise ValueError(
+                "job_id is required to mark landing records completed without "
+                "scanning all HASH buckets"
+            )
+
+        for job_id, job_record_ids in ids_by_job.items():
+            quoted_ids = ", ".join(
+                f"'{_escape_sql_literal(record_id)}'"
+                for record_id in job_record_ids
+            )
+            filter_query = (
+                f"job_id = '{_escape_sql_literal(job_id)}' "
+                f"AND id IN ({quoted_ids})"
+            )
+            await self._timed_db_call(
+                "update_landing",
+                self.client.update_landing,
+                filter_query,
+                {
+                    "is_session_completed": True,
+                    "is_terminal": True,
+                },
+                partition=job_id,
+                trace_context={
+                    "job_id": job_id,
+                    "record_count": len(job_record_ids),
+                },
+            )
+            for record_id in job_record_ids:
+                self._record_job_ids.pop(record_id, None)
+
         log.debug("Marked %d known cloud records completed", len(unique_ids))
         return len(unique_ids)
 
@@ -620,6 +675,7 @@ class CloudStrategy(StorageStrategy):
         messages: List[Dict],
         response: str,
         step_reward: float,
+        request: Optional[str] = None,
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
@@ -668,6 +724,7 @@ class CloudStrategy(StorageStrategy):
         meta_json = {
             "source": "AIEvoBox",
             "group_id": session.group_id,
+            "request": request,
             "env_state": env_state,
         }
         if dataset is not None:
@@ -713,9 +770,18 @@ class CloudStrategy(StorageStrategy):
             await self._flush_records()
 
         filter_query = self._build_session_step_filter(session_id, step_id)
+        job_id = self._job_id_for_session(session_id)
+        if not job_id:
+            log.warning(
+                "Updating landing session step without job_id; "
+                "falling back to an all-bucket HASH update: session_id=%s step_id=%s",
+                session_id,
+                step_id,
+            )
         normalized_updates = self._normalize_session_step_updates_for_cloud(
             updates,
             filter_query=filter_query,
+            job_id=job_id,
         )
         if not normalized_updates:
             return 0
@@ -725,6 +791,7 @@ class CloudStrategy(StorageStrategy):
             self.client.update_landing,
             filter_query,
             normalized_updates,
+            partition=job_id or None,
             trace_context={
                 "session_id": session_id,
                 "step_id": step_id,
@@ -739,18 +806,28 @@ class CloudStrategy(StorageStrategy):
         )
         return 1
 
-    async def list_session_steps(self, session_id: str) -> List[Dict[str, Any]]:
+    async def list_session_steps(
+        self,
+        session_id: str,
+        *,
+        checkout_latest: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Read one cloud-backed session in deterministic trajectory order."""
         await self.init()
 
         if self._enable_buffer:
             await self._flush_records()
 
-        session = self._sessions.get(session_id)
-        job_id = session.job_id if session is not None else self.job_id
+        job_id = self._job_id_for_session(session_id)
         clauses = []
         if job_id:
             clauses.append(f"job_id = '{_escape_sql_literal(job_id)}'")
+        else:
+            log.warning(
+                "Reading landing session steps without job_id; "
+                "falling back to an all-bucket HASH query: session_id=%s",
+                session_id,
+            )
         clauses.append(f"session_id = '{_escape_sql_literal(session_id)}'")
         query = " AND ".join(clauses)
         columns = [
@@ -771,21 +848,21 @@ class CloudStrategy(StorageStrategy):
             "is_trainable",
             "created_at",
         ]
-        frame = await self._timed_db_call(
+        cloud_rows = await self._timed_db_call(
             "filter_landing",
-            self.client.session.filter,
-            self.client.config.tables.landing_table,
-            query=query,
+            self.client.query_data,
+            filter_query=query,
             limit=10000,
             columns=columns,
-            partition_cond=None,
+            partition=job_id or None,
+            checkout_latest=checkout_latest,
             trace_context={"session_id": session_id},
         )
-        if frame is None or len(frame) == 0:
+        if not cloud_rows:
             return []
 
         rows: List[Dict[str, Any]] = []
-        for _, cloud_row in frame.iterrows():
+        for cloud_row in cloud_rows:
             row = {
                 key: self.ndarray_to_native(cloud_row.get(key))
                 for key in columns
@@ -809,6 +886,50 @@ class CloudStrategy(StorageStrategy):
         )
         return rows
 
+    async def record_evaluation_summary(
+        self,
+        session_id: str,
+        step_id: int,
+        reward: float,
+        env_state: str,
+    ) -> int:
+        """Persist an evaluation-only row when a session has no trainable step."""
+        await self.init()
+        session = self._sessions.get(session_id)
+        if session is None:
+            job_id = str(self.job_id or "")
+            if not job_id:
+                raise ValueError(
+                    "job_id is required to persist a cloud evaluation summary"
+                )
+            log.warning(
+                "Session context unavailable while recording evaluation summary; "
+                "using configured job_id=%s session_id=%s",
+                job_id,
+                session_id,
+            )
+            session = SessionContext(
+                session_id=session_id,
+                env_id=session_id,
+                env_name="gateway",
+                llm_model="",
+                job_id=job_id,
+            )
+            self._sessions[session_id] = session
+
+        await self.record_step(
+            session=session,
+            step_id=step_id,
+            messages=[],
+            response="",
+            step_reward=reward,
+            env_state=env_state,
+            terminated=True,
+            truncated=False,
+            is_trainable=False,
+        )
+        return 1
+
     async def mark_latest_session_completed(
         self,
         session_id: str,
@@ -821,10 +942,15 @@ class CloudStrategy(StorageStrategy):
             await self._flush_records()
 
         clauses = []
-        session = self._sessions.get(session_id)
-        job_id = session.job_id if session is not None else self.job_id
+        job_id = self._job_id_for_session(session_id)
         if job_id:
             clauses.append(f"job_id = '{_escape_sql_literal(job_id)}'")
+        else:
+            log.warning(
+                "Reading/updating latest landing session row without job_id; "
+                "falling back to all HASH buckets: session_id=%s",
+                session_id,
+            )
         escaped_session_id = session_id.replace("'", "''")
         clauses.append(f"session_id = '{escaped_session_id}'")
         if llm_model:
@@ -834,19 +960,19 @@ class CloudStrategy(StorageStrategy):
 
         rows = await self._timed_db_call(
             "filter_landing",
-            self.client.session.filter,
-            self.client.config.tables.landing_table,
-            query=query,
+            self.client.query_data,
+            filter_query=query,
             limit=1000,
             columns=["step_id", "is_session_completed", "meta_json", "agent_model"],
-            partition_cond=None,
+            partition=job_id or None,
+            checkout_latest=True,
             trace_context={"session_id": session_id, "model": llm_model},
         )
-        if rows is None or len(rows) == 0:
+        if not rows:
             return 0
 
         candidates: List[tuple[int, bool, Any]] = []
-        for _, row in rows.iterrows():
+        for row in rows:
             try:
                 candidates.append(
                     (
@@ -883,6 +1009,7 @@ class CloudStrategy(StorageStrategy):
                 "is_session_completed": True,
                 "is_terminal": True,
             },
+            partition=job_id or None,
             trace_context={
                 "session_id": session_id,
                 "step_id": latest_step_id,
@@ -927,8 +1054,7 @@ class CloudStrategy(StorageStrategy):
         step_id: int,
         llm_model: Optional[str] = None,
     ) -> str:
-        session = self._sessions.get(session_id)
-        job_id = session.job_id if session is not None else self.job_id
+        job_id = self._job_id_for_session(session_id)
         clauses = []
         if job_id:
             clauses.append(f"job_id = '{_escape_sql_literal(job_id)}'")
@@ -939,11 +1065,17 @@ class CloudStrategy(StorageStrategy):
             clauses.append(f"agent_model = '{_escape_sql_literal(llm_model)}'")
         return " AND ".join(clauses)
 
+    def _job_id_for_session(self, session_id: str) -> str:
+        session = self._sessions.get(session_id)
+        job_id = session.job_id if session is not None else None
+        return str(job_id or self.job_id or "")
+
     def _normalize_session_step_updates_for_cloud(
         self,
         updates: Dict[str, Any],
         *,
         filter_query: str,
+        job_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not updates:
             return {}
@@ -963,7 +1095,7 @@ class CloudStrategy(StorageStrategy):
             "truncated": "is_truncated",
             "is_session_completed": "is_session_completed",
         }
-        meta_fields = {"group_id", "env_state", "is_trainable"}
+        meta_fields = {"group_id", "env_state", "is_trainable", "request"}
         blocked_fields = {"id", "created_at"}
 
         normalized: Dict[str, Any] = {}
@@ -997,30 +1129,43 @@ class CloudStrategy(StorageStrategy):
                 except Exception:
                     meta_json = {"source": "AIEvoBox"}
             else:
-                meta_json = self._load_existing_meta_json(filter_query)
+                meta_json = self._load_existing_meta_json(
+                    filter_query,
+                    job_id=job_id,
+                )
             meta_json.update(meta_updates)
             normalized["meta_json"] = json.dumps(meta_json, ensure_ascii=False)
 
         return normalized
 
-    def _load_existing_meta_json(self, filter_query: str) -> Dict[str, Any]:
+    def _load_existing_meta_json(
+        self,
+        filter_query: str,
+        *,
+        job_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         meta_json: Dict[str, Any] = {"source": "AIEvoBox"}
+        if not job_id:
+            log.warning(
+                "Loading landing meta_json without job_id; "
+                "falling back to an all-bucket HASH query"
+            )
         try:
-            df = self.client.session.filter(
-                self.client.config.tables.landing_table,
-                query=filter_query,
+            rows = self.client.query_data(
+                filter_query=filter_query,
                 limit=1,
                 columns=["meta_json"],
-                partition_cond=None,
+                partition=job_id or None,
+                checkout_latest=True,
             )
         except Exception as e:
             log.warning("Failed to load existing meta_json before cloud update: %s", e)
             return meta_json
 
-        if df is None or len(df) == 0:
+        if not rows:
             return meta_json
 
-        raw_meta = df.iloc[0].get("meta_json")
+        raw_meta = rows[0].get("meta_json")
         if not raw_meta:
             return meta_json
 
@@ -1328,6 +1473,7 @@ class CloudStrategy(StorageStrategy):
                     "env_id": row["session_id"],
                     "env_state": json.loads(row["meta_json"]).get("env_state") if row["meta_json"] else None,
                     "prompt": self.normalize_messages(row["messages"]),
+                    "request": json.loads(row["meta_json"]).get("request") if row["meta_json"] else None,
                     "response": row["response"]["content"].tolist()[0]["text"],
                     "reward": row["reward"],
                     "step_reward": row["step_reward"],

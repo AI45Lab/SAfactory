@@ -3,7 +3,7 @@ environments:
     env_image: safactory-geo3k:py311
     env_num: 1
     # chenhegu/geo3k_imgurl train split at the pinned Hugging Face snapshot.
-    dataset: /mnt/shared-storage-user/yinzhenyun/datasets--chenhegu--geo3k_imgurl/snapshots/a924f868cefdf3b8306196b04edaa88d930978e5/train.parquet
+    dataset: chenhegu/geo3k_imgurl/train.parquet
     dataset_load_mode: parquet_row_ref
     # Exclude preprocessed_images: it contains binary image bytes and the runner
     # only consumes the data URLs already stored in images.

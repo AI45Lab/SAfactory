@@ -15,6 +15,8 @@ PATCH_EVAL_SETTING=${PATCH_EVAL_SETTING:-s1.1}
 PATCH_EVAL_AGENT_EXPERIMENT=${PATCH_EVAL_AGENT_EXPERIMENT:-exp1}
 PATCH_EVAL_AGENT_TOOL_LIMIT=${PATCH_EVAL_AGENT_TOOL_LIMIT:-100}
 PATCH_EVAL_CLAUDE_INSTALL_TIMEOUT_S=${PATCH_EVAL_CLAUDE_INSTALL_TIMEOUT_S:-900}
+PATCH_EVAL_CLAUDE_MAX_THINKING_TOKENS=${PATCH_EVAL_CLAUDE_MAX_THINKING_TOKENS:-0}
+PATCH_EVAL_ANTHROPIC_INTERLEAVED_THINKING=${PATCH_EVAL_ANTHROPIC_INTERLEAVED_THINKING:-true}
 PATCH_EVAL_TASK_LIMIT=${PATCH_EVAL_TASK_LIMIT:-0}
 PATCH_EVAL_POOL_SIZE=${PATCH_EVAL_POOL_SIZE:-5}
 PATCH_EVAL_DOCKER_STARTUP_CONCURRENCY=${PATCH_EVAL_DOCKER_STARTUP_CONCURRENCY:-3}
@@ -24,7 +26,6 @@ PATCH_EVAL_SHARED_TMP=${PATCH_EVAL_SHARED_TMP:-/mnt/shared-storage-user/evobox-s
 PATCH_EVAL_HTTP_PROXY=${PATCH_EVAL_HTTP_PROXY:-http://httpproxy-headless.kubebrain.svc.pjlab.local:3128}
 PATCH_EVAL_EVALUATION_TIMEOUT_S=${PATCH_EVAL_EVALUATION_TIMEOUT_S:-3600}
 PATCH_EVAL_GATEWAY_PORT=${PATCH_EVAL_GATEWAY_PORT:-18000}
-PATCH_EVAL_CLAUDE_ADAPTER_PORT=${PATCH_EVAL_CLAUDE_ADAPTER_PORT:-18001}
 PATCH_EVAL_SHUTDOWN_TIMEOUT_S=${PATCH_EVAL_SHUTDOWN_TIMEOUT_S:-600}
 GATEWAY_HOST=${GATEWAY_HOST:-$(hostname -I | awk '{print $1}')}
 PATCH_EVAL_NO_PROXY=${PATCH_EVAL_NO_PROXY:-host.docker.internal,localhost,127.0.0.1,::1,${GATEWAY_HOST},10.0.0.0/8,100.96.0.0/12,.pjlab.org.cn}
@@ -74,7 +75,6 @@ PATCH_EVAL_DB=${PATCH_EVAL_DB:-${SCRIPT_DIR}/patcheval_${model_slug}_${run_label
 GENERATED_DIR=${PATCH_EVAL_GENERATED_DIR:-${PATCH_EVAL_SHARED_TMP}/safactory-patcheval-${run_label}-${run_id}}
 GATEWAY_CONFIG="${PATCH_EVAL_SHARED_TMP}/safactory-patcheval-gateway-${run_id}.yaml"
 GATEWAY_LOG="${SCRIPT_DIR}/logs/gateway-${run_id}.log"
-CLAUDE_ADAPTER_LOG="${SCRIPT_DIR}/logs/claude-adapter-${run_id}.log"
 
 mkdir -p "${GENERATED_DIR}" "$(dirname -- "${PATCH_EVAL_DB}")"
 
@@ -83,6 +83,7 @@ PATCH_EVAL_API_BASE="${PATCH_EVAL_API_BASE}" \
 PATCH_EVAL_API_KEY="${PATCH_EVAL_API_KEY}" \
 PATCH_EVAL_MODEL="${PATCH_EVAL_MODEL}" \
 PATCH_EVAL_GATEWAY_PORT="${PATCH_EVAL_GATEWAY_PORT}" \
+PATCH_EVAL_ANTHROPIC_INTERLEAVED_THINKING="${PATCH_EVAL_ANTHROPIC_INTERLEAVED_THINKING}" \
 GATEWAY_CONFIG="${GATEWAY_CONFIG}" \
 "${PYTHON_BIN}" - <<'PY'
 import os
@@ -106,16 +107,17 @@ config = {
         }
     },
 }
+route = config["llm_routes"][os.environ["PATCH_EVAL_MODEL"]]
+interleaved = os.environ["PATCH_EVAL_ANTHROPIC_INTERLEAVED_THINKING"].strip().lower()
+if interleaved not in {"true", "false"}:
+    raise ValueError("PATCH_EVAL_ANTHROPIC_INTERLEAVED_THINKING must be true or false")
+route["anthropic_interleaved_thinking"] = interleaved == "true"
 path = Path(os.environ["GATEWAY_CONFIG"])
 path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 path.chmod(0o600)
 PY
 
 cleanup() {
-  if [[ -n "${CLAUDE_ADAPTER_PID:-}" ]] && kill -0 "${CLAUDE_ADAPTER_PID}" 2>/dev/null; then
-    kill "${CLAUDE_ADAPTER_PID}" 2>/dev/null || true
-    wait "${CLAUDE_ADAPTER_PID}" 2>/dev/null || true
-  fi
   if [[ -n "${GATEWAY_PID:-}" ]] && kill -0 "${GATEWAY_PID}" 2>/dev/null; then
     kill "${GATEWAY_PID}" 2>/dev/null || true
     wait "${GATEWAY_PID}" 2>/dev/null || true
@@ -143,29 +145,6 @@ if ! curl -fsS --max-time 2 "http://127.0.0.1:${PATCH_EVAL_GATEWAY_PORT}/readyz"
   exit 1
 fi
 
-if [[ "${PATCH_EVAL_BASELINE}" == "claudecode" ]]; then
-  CLAUDE_ADAPTER_GATEWAY_SESSION_BASE_URL="http://127.0.0.1:${PATCH_EVAL_GATEWAY_PORT}/v1/sessions" \
-  CLAUDE_ADAPTER_ROUTE_MODEL="${PATCH_EVAL_MODEL}" \
-  CLAUDE_ADAPTER_PORT="${PATCH_EVAL_CLAUDE_ADAPTER_PORT}" \
-  CLAUDE_ADAPTER_REQUEST_TIMEOUT_S="${PATCH_EVAL_AGENT_TIMEOUT_S}" \
-    "${PYTHON_BIN}" -m env.patcheval.claude_adapter >"${CLAUDE_ADAPTER_LOG}" 2>&1 &
-  CLAUDE_ADAPTER_PID=$!
-  for _ in $(seq 1 60); do
-    if ! kill -0 "${CLAUDE_ADAPTER_PID}" 2>/dev/null; then
-      echo "Claude adapter exited early; inspect ${CLAUDE_ADAPTER_LOG}" >&2
-      exit 1
-    fi
-    if curl -fsS --max-time 2 "http://127.0.0.1:${PATCH_EVAL_CLAUDE_ADAPTER_PORT}/readyz" >/dev/null; then
-      break
-    fi
-    sleep 1
-  done
-  if ! curl -fsS --max-time 2 "http://127.0.0.1:${PATCH_EVAL_CLAUDE_ADAPTER_PORT}/readyz" >/dev/null; then
-    echo "Claude adapter did not become ready; inspect ${CLAUDE_ADAPTER_LOG}" >&2
-    exit 1
-  fi
-fi
-
 "${PYTHON_BIN}" env/patcheval/generate_full_config.py \
   --output-dir "${GENERATED_DIR}" \
   --archive-dir "${PATCH_EVAL_IMAGE_ARCHIVE_DIR}" \
@@ -175,7 +154,9 @@ fi
   --agent-experiment "${PATCH_EVAL_AGENT_EXPERIMENT}" \
   --agent-tool-limit "${PATCH_EVAL_AGENT_TOOL_LIMIT}" \
   --claude-install-timeout-s "${PATCH_EVAL_CLAUDE_INSTALL_TIMEOUT_S}" \
-  --claude-adapter-base-url "http://${GATEWAY_HOST}:${PATCH_EVAL_CLAUDE_ADAPTER_PORT}/v1/sessions" \
+  --claude-gateway-base-url "http://${GATEWAY_HOST}:${PATCH_EVAL_GATEWAY_PORT}/v1/sessions" \
+  --claude-model "${PATCH_EVAL_MODEL}" \
+  --claude-max-thinking-tokens "${PATCH_EVAL_CLAUDE_MAX_THINKING_TOKENS}" \
   --limit "${PATCH_EVAL_TASK_LIMIT}" \
   --evaluation-timeout-s "${PATCH_EVAL_EVALUATION_TIMEOUT_S}" \
   --shared-tmp "${PATCH_EVAL_SHARED_TMP}" \

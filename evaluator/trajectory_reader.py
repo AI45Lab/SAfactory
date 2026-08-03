@@ -31,7 +31,10 @@ class TrajectoryReader:
 
     async def read_by_session(self, session_id: str) -> Trajectory:
         if self.storage_type == "cloud":
-            rows = await self.data_manager.list_session_steps(session_id)
+            rows = await self.data_manager.list_session_steps(
+                session_id,
+                checkout_latest=True,
+            )
             return self._trajectory_from_rows(session_id, rows)
         return await asyncio.to_thread(self._read_by_session_sync, session_id)
 

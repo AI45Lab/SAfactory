@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import ipaddress
 import json
 import logging
@@ -18,6 +19,7 @@ from gateway.llm_router import LLMRouteTarget, LLMRouteUnavailableError, ModelNo
 from gateway.session_resolver import SessionResolutionError
 
 log = logging.getLogger("gateway.inference_forwarder")
+_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
 
 
 class SessionClosedError(Exception):
@@ -111,6 +113,22 @@ class InferenceForwarder:
     ) -> ForwardResult:
         return await self._forward_json(target, "responses", payload, headers)
 
+    async def forward_anthropic_messages(
+        self,
+        target: LLMRouteTarget,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> ForwardResult:
+        return await self._forward_json(target, "messages", payload, headers)
+
+    async def forward_anthropic_count_tokens(
+        self,
+        target: LLMRouteTarget,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> ForwardResult:
+        return await self._forward_json(target, "messages/count_tokens", payload, headers)
+
     async def open_chat_stream(
         self,
         target: LLMRouteTarget,
@@ -126,6 +144,14 @@ class InferenceForwarder:
         headers: dict[str, str],
     ) -> StreamForwardContext:
         return await self._open_stream(target, "responses", payload, headers)
+
+    async def open_anthropic_messages_stream(
+        self,
+        target: LLMRouteTarget,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> StreamForwardContext:
+        return await self._open_stream(target, "messages", payload, headers)
 
     async def _forward_json(
         self,
@@ -296,6 +322,56 @@ class InferenceForwarder:
         # Plain OpenAI-compatible upstreams ignore the unknown header.
         if session_id:
             headers["X-Safactory-Session-Id"] = session_id
+        return headers
+
+    @staticmethod
+    def prepare_anthropic_payload(
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        prepared = copy.deepcopy(payload)
+        prepared.pop("context_management", None)
+        prepared["thinking"] = {"type": "adaptive"}
+        output_config = prepared.get("output_config")
+        if not isinstance(output_config, dict):
+            output_config = {}
+        prepared["output_config"] = {**output_config, "effort": "max"}
+        prepared["display"] = "summarized"
+        prepared["max_tokens"] = 64000
+        return prepared
+
+    def build_anthropic_headers(
+        self,
+        target: LLMRouteTarget,
+        inbound_headers: Any,
+        *,
+        session_id: str | None = None,
+        request_id: str | None = None,
+        llm_step_index: int | None = None,
+    ) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        for name in ("anthropic-version", "user-agent"):
+            value = inbound_headers.get(name) if inbound_headers is not None else None
+            if value:
+                headers[name] = str(value)
+        if target.anthropic_interleaved_thinking:
+            beta_values = [
+                value.strip()
+                for value in headers.get("anthropic-beta", "").split(",")
+                if value.strip()
+            ]
+            if _INTERLEAVED_THINKING_BETA not in beta_values:
+                beta_values.append(_INTERLEAVED_THINKING_BETA)
+            headers["anthropic-beta"] = ",".join(beta_values)
+        headers.setdefault("anthropic-version", "2023-06-01")
+        if target.api_key:
+            headers["x-api-key"] = target.api_key
+            headers["Authorization"] = f"Bearer {target.api_key}"
+        if session_id:
+            headers["X-Safactory-Session-Id"] = session_id
+        if request_id:
+            headers["X-Safactory-Request-Id"] = request_id
+        if llm_step_index is not None:
+            headers["X-Safactory-Step-Index"] = str(llm_step_index)
         return headers
 
     def normalize_error(self, exc: Exception) -> tuple[int, dict[str, Any]]:

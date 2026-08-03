@@ -22,6 +22,9 @@ tmp/
 # External SDK checkouts should be installed as dependencies instead.
 /wt-data-gateway/
 
-# config.local.yaml
+# Private configuration
+*.local.yaml
+
+# Local ExploitGym integration notes/configuration
 config.local.yaml
 env/exploitgym/README.md

@@ -364,7 +364,8 @@ class GatewayStorage:
                         "session": session,
                         "step_id": record.seq_id,
                         "messages": _trajectory_messages(record),
-                        "response": "",
+                        "request": record.request,
+                        "response": record.response,
                         "step_reward": 0.0,
                         "env_state": json.dumps(self._metadata(record), ensure_ascii=False, default=str),
                         "terminated": False,
@@ -571,6 +572,9 @@ class GatewayStorage:
             "is_stream": record.is_stream,
             "retry_count": record.retry_count,
             "request_bytes": record.request_bytes,
+            "request_method": record.request_method,
+            "request_url": record.request_url,
+            "request_headers": record.request_headers,
             "response_bytes": record.response_bytes,
             "prompt_tokens": record.prompt_tokens,
             "completion_tokens": record.completion_tokens,
@@ -602,11 +606,10 @@ THINK_TAG_RE = re.compile(r"<think>(.*?)</think>", re.IGNORECASE | re.DOTALL)
 
 
 def _trajectory_messages(record: GatewayTelemetryRecord) -> list[dict[str, Any]]:
-    messages = [dict(message) for message in record.messages]
-    if record.error_text:
-        return messages
-    messages.extend(_assistant_messages_from_response(record.response))
-    return messages
+    # A step's messages are the request-side conversation history. The current
+    # assistant output belongs in step.response and will naturally appear in a
+    # later step's messages when the client includes it in the next request.
+    return [dict(message) for message in record.messages]
 
 
 def _assistant_messages_from_response(response: str) -> list[dict[str, Any]]:
@@ -631,6 +634,11 @@ def _assistant_messages_from_response(response: str) -> list[dict[str, Any]]:
 
 def _assistant_messages_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
+
+    if payload.get("type") == "message" and payload.get("role") == "assistant":
+        anthropic_message = _assistant_message_from_anthropic(payload)
+        if anthropic_message:
+            return [anthropic_message]
 
     choices = payload.get("choices")
     if isinstance(choices, list):
@@ -657,6 +665,42 @@ def _assistant_messages_from_payload(payload: dict[str, Any]) -> list[dict[str, 
 
     stream_message = _assistant_message_from_stream(payload.get("stream_text"))
     return [stream_message] if stream_message else []
+
+
+def _assistant_message_from_anthropic(payload: dict[str, Any]) -> dict[str, Any] | None:
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return None
+
+    text_parts: list[str] = []
+    thinking_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text" and isinstance(block.get("text"), str):
+            text_parts.append(block["text"])
+        elif block_type == "thinking" and isinstance(block.get("thinking"), str):
+            thinking_parts.append(block["thinking"])
+        elif block_type == "tool_use":
+            tool_calls.append(
+                {
+                    "id": str(block.get("id") or ""),
+                    "type": "function",
+                    "function": {
+                        "name": str(block.get("name") or ""),
+                        "arguments": json.dumps(block.get("input") or {}, ensure_ascii=False),
+                    },
+                }
+            )
+
+    message = _assistant_message_from_parts("".join(text_parts), "\n\n".join(thinking_parts))
+    if message is None:
+        message = {"role": "assistant"}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    return message if len(message) > 1 else None
 
 
 def _assistant_message_from_chat_message(raw_message: dict[str, Any]) -> dict[str, Any] | None:
