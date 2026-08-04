@@ -131,13 +131,39 @@ def _json_loads(value: Any, *, default: Any) -> Any:
 def _extract_response_text(value: Any) -> str:
     if value is None:
         return ""
-    if isinstance(value, dict):
+    if isinstance(value, (dict, list)):
         parsed = value
     elif not isinstance(value, str):
         return str(value)
     else:
         text = value.strip()
         parsed = _json_loads(text, default=None)
+    if isinstance(parsed, list):
+        text_chunks: list[str] = []
+        for item in parsed:
+            if isinstance(item, str):
+                text_chunks.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            for key in ("output_text", "text", "content"):
+                content = item.get(key)
+                if isinstance(content, str):
+                    text_chunks.append(content)
+                    break
+                if isinstance(content, list):
+                    chunks = [
+                        str(part.get("text") or part.get("content") or "")
+                        for part in content
+                        if isinstance(part, dict)
+                    ]
+                    combined = "".join(chunks)
+                    if combined:
+                        text_chunks.append(combined)
+                        break
+        if text_chunks:
+            return "".join(text_chunks)
+        return json.dumps(parsed, ensure_ascii=False, default=str)
     if not isinstance(parsed, dict):
         return value
 
@@ -165,7 +191,15 @@ def _extract_response_text(value: Any) -> str:
         if extracted:
             return extracted
 
-    return str(value)
+    if parsed.get("content") == "":
+        has_non_text_output = any(
+            item not in (None, "", [], {})
+            for key, item in parsed.items()
+            if key not in {"role", "content", "name"}
+        )
+        if not has_non_text_output:
+            return ""
+    return json.dumps(parsed, ensure_ascii=False, default=str)
 
 
 def _extract_choice_text(payload: dict[str, Any]) -> str:
