@@ -265,8 +265,14 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 target.route_model,
                 ctx.is_stream,
             )
-            if endpoint == "messages":
+            if endpoint == "messages" and not target.anthropic_passthrough:
                 payload = forwarder.prepare_anthropic_payload(payload)
+
+            anthropic_query_string = (
+                request.url.query
+                if endpoint == "messages" and target.anthropic_passthrough
+                else None
+            )
 
             headers = (
                 forwarder.build_anthropic_headers(
@@ -289,7 +295,14 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     endpoint,
                 )
                 with trace.span("upstream_stream_open"):
-                    opened = await _open_stream(forwarder, target, endpoint, payload, headers)
+                    opened = await _open_stream(
+                        forwarder,
+                        target,
+                        endpoint,
+                        payload,
+                        headers,
+                        anthropic_query_string=anthropic_query_string,
+                    )
                 trace.mark(
                     "upstream_stream_opened",
                     status_code=opened.status_code,
@@ -329,7 +342,14 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 endpoint,
             )
             with trace.span("upstream_json_forward"):
-                result = await _forward_json(forwarder, target, endpoint, payload, headers)
+                result = await _forward_json(
+                    forwarder,
+                    target,
+                    endpoint,
+                    payload,
+                    headers,
+                    anthropic_query_string=anthropic_query_string,
+                )
             latency_ms = (time.perf_counter() - started) * 1000
             trace.mark(
                 "upstream_json_complete",
@@ -818,13 +838,22 @@ async def _forward_json(
     endpoint: str,
     payload: dict[str, Any],
     headers: dict[str, str],
+    *,
+    anthropic_query_string: str | None = None,
 ):
     if endpoint == "chat/completions":
         return await forwarder.forward_chat(target, payload, headers)
     if endpoint == "responses":
         return await forwarder.forward_responses(target, payload, headers)
     if endpoint == "messages":
-        return await forwarder.forward_anthropic_messages(target, payload, headers)
+        if anthropic_query_string is None:
+            return await forwarder.forward_anthropic_messages(target, payload, headers)
+        return await forwarder.forward_anthropic_messages(
+            target,
+            payload,
+            headers,
+            query_string=anthropic_query_string,
+        )
     raise ValueError(f"unsupported endpoint {endpoint}")
 
 
@@ -834,13 +863,26 @@ async def _open_stream(
     endpoint: str,
     payload: dict[str, Any],
     headers: dict[str, str],
+    *,
+    anthropic_query_string: str | None = None,
 ) -> StreamForwardContext:
     if endpoint == "chat/completions":
         return await forwarder.open_chat_stream(target, payload, headers)
     if endpoint == "responses":
         return await forwarder.open_responses_stream(target, payload, headers)
     if endpoint == "messages":
-        return await forwarder.open_anthropic_messages_stream(target, payload, headers)
+        if anthropic_query_string is None:
+            return await forwarder.open_anthropic_messages_stream(
+                target,
+                payload,
+                headers,
+            )
+        return await forwarder.open_anthropic_messages_stream(
+            target,
+            payload,
+            headers,
+            query_string=anthropic_query_string,
+        )
     raise ValueError(f"unsupported endpoint {endpoint}")
 
 
