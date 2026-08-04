@@ -2,4 +2,4 @@
 
 # The optional cloud storage stack supports Python 3.10 through 3.12.
 # Pin wt-data-platform-sdk so LanceDB dependencies remain reproducible.
-wt-data-platform-sdk @ git+https://github.com/AI45Lab/wt-data-platform-sdk.git@v0.2.0
+wt-data-platform-sdk @ git+https://github.com/AI45Lab/wt-data-platform-sdk.git@v0.3.0
