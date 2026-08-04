@@ -4,7 +4,6 @@ import asyncio
 import inspect
 import json
 import logging
-import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -360,22 +359,45 @@ class GatewayStorage:
                                 claimed_dataset_sessions.add(record.session_id)
                                 attach_dataset = True
 
-                    stored_response = record.response
+                    stored_messages: Any = _trajectory_messages(record)
+                    stored_response: Any = record.response
+                    provider_meta: dict[str, Any] | None = None
                     if self.cfg.storage_type == "cloud":
-                        response_body = _json_loads(record.response)
-                        try:
-                            content = response_body["choices"][0]["message"]["content"]
-                        except (TypeError, KeyError, IndexError):
-                            pass
-                        else:
-                            if isinstance(content, str) or content is None:
-                                stored_response = content or ""
+                        request_payload = _json_loads(record.request)
+                        if record.endpoint == "messages":
+                            # Anthropic payloads remain provider-native and live only
+                            # in meta_json. Do not fabricate OpenAI messages from them.
+                            response_payload = _json_loads(record.response)
+                            stored_messages = None
+                            stored_response = None
+                            provider_meta = {
+                                "provider": "anthropic",
+                                "request": (
+                                    request_payload
+                                    if request_payload is not None
+                                    else record.request
+                                ),
+                                "response": (
+                                    response_payload
+                                    if response_payload is not None
+                                    else record.response
+                                ),
+                            }
+                        elif record.endpoint == "chat/completions":
+                            stored_messages = _openai_request_messages(
+                                request_payload,
+                                fallback=record.messages,
+                            )
+                            stored_response = _chat_completion_output(record.response)
+                        elif record.endpoint == "responses":
+                            stored_messages = _responses_request_input(request_payload)
+                            stored_response = _responses_output(record.response)
 
                     step = {
                         "session": session,
                         "step_id": record.seq_id,
-                        "messages": _trajectory_messages(record),
-                        "request": record.request,
+                        "messages": stored_messages,
+                        "request": None if provider_meta is not None else record.request,
                         "response": stored_response,
                         "step_reward": 0.0,
                         "env_state": json.dumps(self._metadata(record), ensure_ascii=False, default=str),
@@ -383,6 +405,8 @@ class GatewayStorage:
                         "truncated": record.is_truncated,
                         "is_trainable": False,
                     }
+                    if provider_meta is not None:
+                        step["provider_meta"] = provider_meta
                     if attach_dataset:
                         step["dataset"] = dataset
                     steps.append(step)
@@ -613,9 +637,6 @@ class GatewayStorage:
         }
 
 
-THINK_TAG_RE = re.compile(r"<think>(.*?)</think>", re.IGNORECASE | re.DOTALL)
-
-
 def _trajectory_messages(record: GatewayTelemetryRecord) -> list[dict[str, Any]]:
     # A step's messages are the request-side conversation history. The current
     # assistant output belongs in step.response and will naturally appear in a
@@ -623,252 +644,75 @@ def _trajectory_messages(record: GatewayTelemetryRecord) -> list[dict[str, Any]]
     return [dict(message) for message in record.messages]
 
 
-def _assistant_messages_from_response(response: str) -> list[dict[str, Any]]:
-    if not response:
-        return []
-
-    parsed = _json_loads(response)
-    if isinstance(parsed, dict):
-        return _assistant_messages_from_payload(parsed)
-    if isinstance(parsed, list):
-        message = _assistant_message_from_stream(parsed)
-        return [message] if message else []
-
-    if isinstance(response, str):
-        if response.lstrip().startswith("data:"):
-            message = _assistant_message_from_stream(response)
-            return [message] if message else []
-        message = _assistant_message_from_parts(response)
-        return [message] if message else []
-    return []
-
-
-def _assistant_messages_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    messages: list[dict[str, Any]] = []
-
-    if payload.get("type") == "message" and payload.get("role") == "assistant":
-        anthropic_message = _assistant_message_from_anthropic(payload)
-        if anthropic_message:
-            return [anthropic_message]
-
-    choices = payload.get("choices")
-    if isinstance(choices, list):
-        for choice in choices:
-            if not isinstance(choice, dict):
-                continue
-            raw_message = choice.get("message")
-            if isinstance(raw_message, dict):
-                message = _assistant_message_from_chat_message(raw_message)
-                if message:
-                    messages.append(message)
-                    continue
-            raw_delta = choice.get("delta")
-            if isinstance(raw_delta, dict):
-                message = _assistant_message_from_chat_message(raw_delta)
-                if message:
-                    messages.append(message)
-        if messages:
+def _openai_request_messages(
+    request_payload: Any,
+    *,
+    fallback: list[dict[str, Any]],
+) -> Any:
+    if isinstance(request_payload, dict):
+        messages = request_payload.get("messages")
+        if isinstance(messages, list):
             return messages
-
-    message = _assistant_message_from_response_payload(payload)
-    if message:
-        return [message]
-
-    stream_message = _assistant_message_from_stream(payload.get("stream_text"))
-    return [stream_message] if stream_message else []
+    return [dict(message) for message in fallback]
 
 
-def _assistant_message_from_anthropic(payload: dict[str, Any]) -> dict[str, Any] | None:
-    content = payload.get("content")
-    if not isinstance(content, list):
+def _responses_request_input(request_payload: Any) -> Any:
+    if not isinstance(request_payload, dict):
+        return []
+    input_value = request_payload.get("input")
+    if isinstance(input_value, list):
+        return input_value
+    if isinstance(input_value, dict):
+        return [input_value]
+    if input_value is None:
+        return []
+    return [{"role": "user", "content": input_value}]
+
+
+def _chat_completion_output(response: Any) -> Any:
+    payload = _json_loads(response)
+    if not isinstance(payload, dict):
         return None
-
-    text_parts: list[str] = []
-    thinking_parts: list[str] = []
-    tool_calls: list[dict[str, Any]] = []
-    for block in content:
-        if not isinstance(block, dict):
-            continue
-        block_type = block.get("type")
-        if block_type == "text" and isinstance(block.get("text"), str):
-            text_parts.append(block["text"])
-        elif block_type == "thinking" and isinstance(block.get("thinking"), str):
-            thinking_parts.append(block["thinking"])
-        elif block_type == "tool_use":
-            tool_calls.append(
-                {
-                    "id": str(block.get("id") or ""),
-                    "type": "function",
-                    "function": {
-                        "name": str(block.get("name") or ""),
-                        "arguments": json.dumps(block.get("input") or {}, ensure_ascii=False),
-                    },
-                }
-            )
-
-    message = _assistant_message_from_parts("".join(text_parts), "\n\n".join(thinking_parts))
-    if message is None:
-        message = {"role": "assistant"}
-    if tool_calls:
-        message["tool_calls"] = tool_calls
-    return message if len(message) > 1 else None
-
-
-def _assistant_message_from_chat_message(raw_message: dict[str, Any]) -> dict[str, Any] | None:
-    content = raw_message.get("content")
-    reasoning = _first_string(raw_message, ("think", "reasoning", "reasoning_content"))
-    message = _assistant_message_from_parts(content if isinstance(content, str) else None, reasoning)
-
-    if message is None:
-        message = {"role": "assistant"}
-    if content is not None and not isinstance(content, str):
-        message["content"] = content
-
-    tool_calls = raw_message.get("tool_calls")
-    if isinstance(tool_calls, list) and tool_calls:
-        message["tool_calls"] = tool_calls
-
-    function_call = raw_message.get("function_call")
-    if isinstance(function_call, dict) and function_call:
-        message["function_call"] = function_call
-
-    return message if len(message) > 1 else None
-
-
-def _assistant_message_from_response_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
-    content = _first_string(payload, ("output_text", "text", "content"))
-    reasoning = _first_string(payload, ("think", "reasoning_text", "reasoning", "reasoning_content"))
-    output_content, output_reasoning = _extract_responses_output(payload.get("output"))
-
-    if output_content:
-        content = (content or "") + output_content
-    if output_reasoning:
-        reasoning = "\n\n".join(part for part in (reasoning, output_reasoning) if part)
-
-    return _assistant_message_from_parts(content, reasoning)
-
-
-def _assistant_message_from_stream(stream_text: Any) -> dict[str, Any] | None:
-    if isinstance(stream_text, str):
-        events = _iter_sse_events(stream_text)
-    elif isinstance(stream_text, list):
-        events = (event for event in stream_text if isinstance(event, dict))
-    else:
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
         return None
-
-    content_parts: list[str] = []
-    reasoning_parts: list[str] = []
-    for event in events:
-        _collect_event_text(event, content_parts, reasoning_parts)
-    return _assistant_message_from_parts("".join(content_parts), "\n\n".join(reasoning_parts))
-
-
-def _collect_event_text(
-    event: dict[str, Any],
-    content_parts: list[str],
-    reasoning_parts: list[str],
-) -> None:
-    choices = event.get("choices")
-    if isinstance(choices, list):
-        for choice in choices:
-            if not isinstance(choice, dict):
-                continue
-            for key in ("message", "delta"):
-                payload = choice.get(key)
-                if isinstance(payload, dict):
-                    _collect_message_text(payload, content_parts, reasoning_parts)
-
-    event_type = event.get("type")
-    delta = event.get("delta")
-    if event_type == "response.output_text.delta" and isinstance(delta, str):
-        content_parts.append(delta)
-    elif event_type == "response.reasoning_text.delta" and isinstance(delta, str):
-        reasoning_parts.append(delta)
+    messages = [
+        dict(choice["message"])
+        for choice in choices
+        if isinstance(choice, dict) and isinstance(choice.get("message"), dict)
+    ]
+    if len(messages) == 1:
+        return messages[0]
+    return messages or None
 
 
-def _collect_message_text(
-    payload: dict[str, Any],
-    content_parts: list[str],
-    reasoning_parts: list[str],
-) -> None:
-    content = payload.get("content")
-    if isinstance(content, str):
-        content_parts.append(content)
-    reasoning = _first_string(payload, ("think", "reasoning", "reasoning_content"))
-    if reasoning:
-        reasoning_parts.append(reasoning)
+def _responses_output(response: Any) -> Any:
+    payload = _json_loads(response)
+    if not isinstance(payload, dict):
+        return None
+    output = payload.get("output")
+    if isinstance(output, (dict, list)):
+        return output
+    if payload.get("type") in {"message", "function_call", "reasoning"}:
+        return payload
+
+    # Streaming summaries may only contain the aggregated model text. Keep the
+    # derived message free of HTTP envelope fields.
+    output_text = payload.get("output_text")
+    reasoning_text = payload.get("reasoning_text")
+    if not isinstance(output_text, str) and not isinstance(reasoning_text, str):
+        return None
+    message: dict[str, Any] = {"role": "assistant", "content": []}
+    if isinstance(output_text, str):
+        message["content"].append({"type": "output_text", "text": output_text})
+    if isinstance(reasoning_text, str):
+        message["reasoning"] = reasoning_text
+    return message
 
 
-def _extract_responses_output(output: Any) -> tuple[str, str]:
-    if not isinstance(output, list):
-        return "", ""
-
-    content_parts: list[str] = []
-    reasoning_parts: list[str] = []
-    for item in output:
-        if not isinstance(item, dict):
-            continue
-        item_type = item.get("type")
-        if item_type == "reasoning":
-            reasoning = _first_string(item, ("text", "content", "summary"))
-            if reasoning:
-                reasoning_parts.append(reasoning)
-            continue
-        if item_type == "message":
-            content = item.get("content")
-            if isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict):
-                        text = _first_string(part, ("text", "content"))
-                        if text:
-                            content_parts.append(text)
-            else:
-                text = _first_string(item, ("text", "content"))
-                if text:
-                    content_parts.append(text)
-    return "".join(content_parts), "\n\n".join(reasoning_parts)
-
-
-def _assistant_message_from_parts(
-    content: str | None = None,
-    reasoning: str | None = None,
-) -> dict[str, Any] | None:
-    content = content or ""
-    tag_think, clean_content = _split_think_tags(content)
-    think = "\n\n".join(part.strip() for part in (reasoning, tag_think) if part and part.strip())
-
-    message: dict[str, Any] = {"role": "assistant"}
-    if clean_content.strip():
-        message["content"] = clean_content.strip()
-    elif content or think:
-        message["content"] = ""
-    if think:
-        message["think"] = think
-    return message if len(message) > 1 else None
-
-
-def _split_think_tags(content: str) -> tuple[str, str]:
-    matches = [match.group(1).strip() for match in THINK_TAG_RE.finditer(content)]
-    if not matches:
-        return "", content
-    clean_content = THINK_TAG_RE.sub("", content)
-    return "\n\n".join(match for match in matches if match), clean_content
-
-
-def _iter_sse_events(stream_text: str):
-    for raw_line in stream_text.splitlines():
-        line = raw_line.strip()
-        if not line.startswith("data:"):
-            continue
-        data = line[len("data:") :].strip()
-        if not data or data == "[DONE]":
-            continue
-        parsed = _json_loads(data)
-        if isinstance(parsed, dict):
-            yield parsed
-
-
-def _json_loads(value: str) -> Any:
+def _json_loads(value: Any) -> Any:
+    if isinstance(value, (dict, list)):
+        return value
     try:
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
@@ -886,11 +730,3 @@ def _response_weight_version(response: str) -> Any:
             if isinstance(metadata, dict) and metadata.get("weight_version") is not None:
                 return metadata["weight_version"]
     return None
-
-
-def _first_string(payload: dict[str, Any], keys: tuple[str, ...]) -> str:
-    for key in keys:
-        value = payload.get(key)
-        if isinstance(value, str):
-            return value
-    return ""
