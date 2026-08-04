@@ -360,12 +360,23 @@ class GatewayStorage:
                                 claimed_dataset_sessions.add(record.session_id)
                                 attach_dataset = True
 
+                    stored_response = record.response
+                    if self.cfg.storage_type == "cloud":
+                        response_body = _json_loads(record.response)
+                        try:
+                            content = response_body["choices"][0]["message"]["content"]
+                        except (TypeError, KeyError, IndexError):
+                            pass
+                        else:
+                            if isinstance(content, str) or content is None:
+                                stored_response = content or ""
+
                     step = {
                         "session": session,
                         "step_id": record.seq_id,
                         "messages": _trajectory_messages(record),
                         "request": record.request,
-                        "response": record.response,
+                        "response": stored_response,
                         "step_reward": 0.0,
                         "env_state": json.dumps(self._metadata(record), ensure_ascii=False, default=str),
                         "terminated": False,
