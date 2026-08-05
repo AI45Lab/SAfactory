@@ -580,14 +580,14 @@ def merge_env_dicts(*values: Any) -> Dict[str, str]:
 def _normalize_custom_resources(value: Any) -> List[str]:
     """Convert YAML-friendly custom resources to the RJob SDK list[str] form."""
     if isinstance(value, dict):
-        items = [f"{str(name).strip()}={str(quantity).strip()}" for name, quantity in value.items()]
+        items = [f"{str(name).strip()}:{str(quantity).strip()}" for name, quantity in value.items()]
     elif isinstance(value, str):
         items = [value]
     elif isinstance(value, (list, tuple)):
         if not all(isinstance(item, str) for item in value):
             raise ValueError(
                 "RJob resources.custom_resources list entries must be strings "
-                "in resource-name=value format"
+                "in resource-name:quantity format"
             )
         items = list(value)
     else:
@@ -598,12 +598,13 @@ def _normalize_custom_resources(value: Any) -> List[str]:
     normalized: List[str] = []
     for item in items:
         text = item.strip()
-        name, separator, quantity = text.partition("=")
+        separator = ":" if ":" in text else "="
+        name, separator, quantity = text.partition(separator)
         if not separator or not name.strip() or not quantity.strip():
             raise ValueError(
-                "RJob resources.custom_resources entries must use resource-name=value format"
+                "RJob resources.custom_resources entries must use resource-name:quantity format"
             )
-        normalized.append(f"{name.strip()}={quantity.strip()}")
+        normalized.append(f"{name.strip()}:{quantity.strip()}")
     return normalized
 
 

@@ -27,4 +27,11 @@ tmp/
 
 # Local ExploitGym integration notes/configuration
 config.local.yaml
+gateway/config.local*.yaml
 env/exploitgym/README.md
+env/exploitgym/MANUAL_RUN.md
+env/exploitgym/RUNTIME_V3_HANDOFF.md
+tests/env/exploitgym/test_exploitgym_runtime_v2.py
+tests/test_patcheval_claudecode.py
+tests/test_rjob_custom_resources.py
+.env
