@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import ipaddress
 import json
 import logging
@@ -19,7 +18,6 @@ from gateway.llm_router import LLMRouteTarget, LLMRouteUnavailableError, ModelNo
 from gateway.session_resolver import SessionResolutionError
 
 log = logging.getLogger("gateway.inference_forwarder")
-_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
 _ANTHROPIC_CLIENT_HEADERS = {
     "accept",
     "anthropic-dangerous-direct-browser-access",
@@ -351,21 +349,6 @@ class InferenceForwarder:
             headers["X-Safactory-Session-Id"] = session_id
         return headers
 
-    @staticmethod
-    def prepare_anthropic_payload(
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        prepared = copy.deepcopy(payload)
-        prepared.pop("context_management", None)
-        prepared["thinking"] = {"type": "adaptive"}
-        output_config = prepared.get("output_config")
-        if not isinstance(output_config, dict):
-            output_config = {}
-        prepared["output_config"] = {**output_config, "effort": "max"}
-        prepared["display"] = "summarized"
-        prepared["max_tokens"] = 64000
-        return prepared
-
     def build_anthropic_headers(
         self,
         target: LLMRouteTarget,
@@ -377,49 +360,23 @@ class InferenceForwarder:
     ) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         inbound_header_names: set[str] = set()
-        if target.anthropic_passthrough and inbound_headers is not None:
+        if inbound_headers is not None:
             for name, value in inbound_headers.items():
                 normalized_name = str(name).lower()
                 inbound_header_names.add(normalized_name)
                 if (
                     normalized_name in _ANTHROPIC_CLIENT_HEADERS
-                    or normalized_name == "anthropic-beta"
                     or normalized_name.startswith("x-stainless-")
                 ):
                     headers[normalized_name] = str(value)
-        else:
-            for name in ("anthropic-version", "user-agent"):
-                value = inbound_headers.get(name) if inbound_headers is not None else None
-                if value:
-                    headers[name] = str(value)
-        if target.anthropic_interleaved_thinking and not target.anthropic_passthrough:
-            beta_values = [
-                value.strip()
-                for value in headers.get("anthropic-beta", "").split(",")
-                if value.strip()
-            ]
-            if _INTERLEAVED_THINKING_BETA not in beta_values:
-                beta_values.append(_INTERLEAVED_THINKING_BETA)
-            headers["anthropic-beta"] = ",".join(beta_values)
         headers.setdefault("anthropic-version", "2023-06-01")
         if target.api_key:
-            if target.anthropic_passthrough:
-                if "x-api-key" in inbound_header_names:
-                    headers["x-api-key"] = target.api_key
-                if "authorization" in inbound_header_names:
-                    headers["Authorization"] = f"Bearer {target.api_key}"
-                if not {"x-api-key", "authorization"} & inbound_header_names:
-                    headers["x-api-key"] = target.api_key
-            else:
+            if "x-api-key" in inbound_header_names:
                 headers["x-api-key"] = target.api_key
+            if "authorization" in inbound_header_names:
                 headers["Authorization"] = f"Bearer {target.api_key}"
-        if not target.anthropic_passthrough:
-            if session_id:
-                headers["X-Safactory-Session-Id"] = session_id
-            if request_id:
-                headers["X-Safactory-Request-Id"] = request_id
-            if llm_step_index is not None:
-                headers["X-Safactory-Step-Index"] = str(llm_step_index)
+            if not {"x-api-key", "authorization"} & inbound_header_names:
+                headers["x-api-key"] = target.api_key
         return headers
 
     def normalize_error(self, exc: Exception) -> tuple[int, dict[str, Any]]:

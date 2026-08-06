@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -28,6 +29,15 @@ from gateway.storage import GatewayStorage
 from gateway.telemetry import StreamTelemetryStats, TelemetryRecorder
 
 log = logging.getLogger("gateway.app")
+
+
+def _without_beta_query(query: str) -> str | None:
+    filtered = [
+        (name, value)
+        for name, value in parse_qsl(query, keep_blank_values=True)
+        if name != "beta"
+    ]
+    return urlencode(filtered, doseq=True) or None
 
 
 def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None = None) -> FastAPI:
@@ -265,12 +275,11 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 target.route_model,
                 ctx.is_stream,
             )
-            if endpoint == "messages" and not target.anthropic_passthrough:
-                payload = forwarder.prepare_anthropic_payload(payload)
-
+            # The Shanhai/Bedrock route rejects Claude Code's beta query flag.
+            # Preserve any other native Anthropic query parameters.
             anthropic_query_string = (
-                request.url.query
-                if endpoint == "messages" and target.anthropic_passthrough
+                _without_beta_query(request.url.query)
+                if endpoint == "messages"
                 else None
             )
 
@@ -1430,7 +1439,7 @@ def _merge_stream_event(
 
     response = event.get("response")
     if isinstance(response, dict):
-        for key in ("id", "object", "status", "output"):
+        for key in ("id", "object", "status"):
             value = response.get(key)
             if value is not None:
                 summary[key] = value
@@ -1462,7 +1471,6 @@ def _merge_chat_completion_choice(choice_states: dict[int, dict[str, Any]], choi
             "reasoning_parts": [],
             "tool_calls": {},
             "function_call": {"name_parts": [], "arguments_parts": []},
-            "extra_message_fields": {},
             "finish_reason": None,
         },
     )
@@ -1484,18 +1492,17 @@ def _merge_message_payload(state: dict[str, Any], payload: dict[str, Any]) -> No
     if isinstance(role, str) and role:
         state["role"] = role
 
-    if "content" in payload:
-        content = payload.get("content")
-        if isinstance(content, str):
-            state.setdefault("content_parts", []).append(content)
-        else:
-            state["content"] = content
+    content = payload.get("content")
+    if isinstance(content, str):
+        state.setdefault("content_parts", []).append(content)
+    elif content is not None:
+        state["content"] = content
 
     for key in ("reasoning", "reasoning_content"):
         reasoning = payload.get(key)
         if isinstance(reasoning, str):
             state.setdefault("reasoning_parts", []).append(reasoning)
-        elif key in payload:
+        elif reasoning is not None:
             state[key] = reasoning
 
     tool_calls = payload.get("tool_calls")
@@ -1507,23 +1514,6 @@ def _merge_message_payload(state: dict[str, Any], payload: dict[str, Any]) -> No
     function_call = payload.get("function_call")
     if isinstance(function_call, dict):
         _merge_function_call_delta(state.setdefault("function_call", {}), function_call)
-
-    known_fields = {
-        "role",
-        "content",
-        "reasoning",
-        "reasoning_content",
-        "tool_calls",
-        "function_call",
-    }
-    extra_fields = state.setdefault("extra_message_fields", {})
-    for key, value in payload.items():
-        if key in known_fields:
-            continue
-        if isinstance(value, str) and isinstance(extra_fields.get(key), str):
-            extra_fields[key] += value
-        else:
-            extra_fields[key] = value
 
 
 def _merge_tool_call_delta(tool_calls: dict[int, dict[str, Any]], delta: dict[str, Any]) -> None:
@@ -1601,8 +1591,6 @@ def _finalize_choice_state(state: dict[str, Any]) -> dict[str, Any]:
     function_call = _finalize_function_call(state.get("function_call") or {})
     if function_call:
         message["function_call"] = function_call
-
-    message.update(state.get("extra_message_fields") or {})
 
     choice = {
         "index": _safe_int(state.get("index"), 0),
