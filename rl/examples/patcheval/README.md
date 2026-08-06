@@ -156,11 +156,8 @@ export PATCH_EVAL_POOL_SIZE=1
 `PATCH_EVAL_MODEL` 是底层模型路由，不是 Agent 名称。Claude Code baseline
 要求显式设置它，避免误用 LLM baseline 默认的 DeepSeek 模型。
 
-Claude Code 使用单一 Anthropic 兼容路径。Gateway 将请求对齐为
-`thinking.type=adaptive`、`max_tokens=64000` 和
-`output_config.effort=max`，删除 `context_management`，并只向上游发送实验
-所需的 `interleaved-thinking` Beta Header，避免 Bedrock 拒绝 Claude Code
-的内部 Beta 标志。
+Claude Code 使用单一原生 Anthropic 路径。Gateway 保留客户端请求 body、query
+string 和支持的 Anthropic headers，并以路由配置的上游凭据转发请求。
 
 首次启动每个 CVE 容器时会安装 Node.js 和 `@anthropic-ai/claude-code`，因此
 Agent baseline 的启动时间和网络开销明显高于 LLM baseline。确认单样本运行

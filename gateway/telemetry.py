@@ -25,8 +25,6 @@ SENSITIVE_KEY_PARTS = (
     "token",
     "password",
     "secret",
-    "signature",
-    "encrypted_content",
 )
 
 

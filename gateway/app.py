@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -28,6 +29,15 @@ from gateway.storage import GatewayStorage
 from gateway.telemetry import StreamTelemetryStats, TelemetryRecorder
 
 log = logging.getLogger("gateway.app")
+
+
+def _without_beta_query(query: str) -> str | None:
+    filtered = [
+        (name, value)
+        for name, value in parse_qsl(query, keep_blank_values=True)
+        if name != "beta"
+    ]
+    return urlencode(filtered, doseq=True) or None
 
 
 def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None = None) -> FastAPI:
@@ -265,12 +275,11 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 target.route_model,
                 ctx.is_stream,
             )
-            if endpoint == "messages" and not target.anthropic_passthrough:
-                payload = forwarder.prepare_anthropic_payload(payload)
-
+            # The Shanhai/Bedrock route rejects Claude Code's beta query flag.
+            # Preserve any other native Anthropic query parameters.
             anthropic_query_string = (
-                request.url.query
-                if endpoint == "messages" and target.anthropic_passthrough
+                _without_beta_query(request.url.query)
+                if endpoint == "messages"
                 else None
             )
 

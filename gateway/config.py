@@ -15,8 +15,6 @@ class LLMRouteConfig:
     api_key: str | None = None
     supports_stream: bool = True
     max_concurrency: int | None = None
-    anthropic_interleaved_thinking: bool = True
-    anthropic_passthrough: bool = False
 
 
 @dataclass(frozen=True)
@@ -196,14 +194,6 @@ def _routes_from_mapping(raw: Any) -> dict[str, LLMRouteConfig]:
 def _route_from_mapping(data: dict[str, Any]) -> LLMRouteConfig:
     if "base_url" not in data:
         raise ValueError("LLM route config requires base_url")
-    anthropic_interleaved_thinking = data.get(
-        "anthropic_interleaved_thinking", True
-    )
-    if not isinstance(anthropic_interleaved_thinking, bool):
-        raise ValueError("anthropic_interleaved_thinking must be a boolean")
-    anthropic_passthrough = data.get("anthropic_passthrough", False)
-    if not isinstance(anthropic_passthrough, bool):
-        raise ValueError("anthropic_passthrough must be a boolean")
     return LLMRouteConfig(
         base_url=str(data["base_url"]).rstrip("/"),
         api_key=data.get("api_key"),
@@ -211,8 +201,6 @@ def _route_from_mapping(data: dict[str, Any]) -> LLMRouteConfig:
         max_concurrency=None
         if data.get("max_concurrency") is None
         else int(data["max_concurrency"]),
-        anthropic_interleaved_thinking=anthropic_interleaved_thinking,
-        anthropic_passthrough=anthropic_passthrough,
     )
 
 

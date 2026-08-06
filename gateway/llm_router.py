@@ -22,8 +22,6 @@ class LLMRouteTarget:
     api_key: str | None
     supports_stream: bool = True
     max_concurrency: int = 256
-    anthropic_interleaved_thinking: bool = True
-    anthropic_passthrough: bool = False
 
 
 @dataclass
@@ -84,8 +82,6 @@ class LLMRouter:
             api_key=route.api_key,
             supports_stream=route.supports_stream,
             max_concurrency=max_concurrency,
-            anthropic_interleaved_thinking=route.anthropic_interleaved_thinking,
-            anthropic_passthrough=route.anthropic_passthrough,
         )
 
     async def on_acquire(self, route_model: str, *, is_stream: bool) -> None:

@@ -9,7 +9,7 @@ import re
 import base64
 import tempfile
 import numpy as np
-from typing import List, Dict, Optional, Any, Set
+from typing import List, Dict, Optional, Any, Set, get_origin
 from datetime import date
 
 from core.data_manager.strategy.base_strategy import StorageStrategy, SessionContext
@@ -653,11 +653,18 @@ class CloudStrategy(StorageStrategy):
         # full_messages.append({"role": "assistant", "content": response})
         session.message_history = full_messages
         
-        # Convert to SDK format
-        chat_messages = self._convert_to_chat_messages(full_messages)
-        response_msg = ChatMessage(
-            role="assistant",
-            content=[ContentItem(type="text", text=response)]
+        # The S3 landing schema stores opaque JSON payloads. Preserve the
+        # extended Chat Completions document instead of coercing it through
+        # legacy ChatMessage/ContentItem models.
+        landing_messages = json.dumps(
+            full_messages,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        landing_response = json.dumps(
+            {"role": "assistant", "content": response},
+            ensure_ascii=False,
+            separators=(",", ":"),
         )
         
         # Generate deterministic record ID
@@ -677,30 +684,40 @@ class CloudStrategy(StorageStrategy):
         if dataset is not None:
             meta_json["dataset"] = dataset
 
-        # Create LandingRecord
-        record = LandingRecord(
-            dataset_type=CLOUD_DATASET_TYPE,
-            dt=date.today().isoformat(),
-            id=record_id,
-            session_id=session.session_id,
-            step_id=step_id,
-            env_id=session.env_id,
-            job_id=session.job_id,
-            created_at=int(time.time()),
-            step_reward=step_reward,
-            reward=session.total_reward,
-            messages=chat_messages,
-            response=response_msg,
-            ground_truth_answer=None,
-            reference_answer=None,
-            agent_model=session.llm_model,
-            env_name=session.env_name,
-            is_terminal=terminated or truncated,
-            is_truncated=truncated,
-            is_session_completed=terminated or truncated,
-            is_trainable=is_trainable,
-            meta_json=json.dumps(meta_json, ensure_ascii=False, default=str)
-        )
+        record_kwargs = {
+            "dataset_type": CLOUD_DATASET_TYPE,
+            "dt": date.today().isoformat(),
+            "id": record_id,
+            "session_id": session.session_id,
+            "step_id": step_id,
+            "env_id": session.env_id,
+            "job_id": session.job_id,
+            "created_at": int(time.time()),
+            "step_reward": step_reward,
+            "reward": session.total_reward,
+            "messages": landing_messages,
+            "response": landing_response,
+            "ground_truth_answer": None,
+            "reference_answer": None,
+            "agent_model": session.llm_model,
+            "env_name": session.env_name,
+            "is_terminal": terminated or truncated,
+            "is_truncated": truncated,
+            "is_session_completed": terminated or truncated,
+            "is_trainable": is_trainable,
+            "meta_json": json.dumps(meta_json, ensure_ascii=False, default=str),
+        }
+        # Older installed SDKs still annotate messages as List[ChatMessage],
+        # even though the live landing table column is JSON/LargeBinary.
+        # model_construct bypasses only that stale in-memory validation; the
+        # table receives the same JSON payload used by current SDK releases.
+        messages_field = LandingRecord.model_fields.get("messages")
+        if messages_field and get_origin(messages_field.annotation) is list:
+            record = LandingRecord.model_construct(**record_kwargs)
+        else:
+            record = LandingRecord(
+                **record_kwargs
+            )
         
         return record, record_id
 
@@ -1037,30 +1054,24 @@ class CloudStrategy(StorageStrategy):
 
         return meta_json
 
-    def _messages_to_landing_value(self, value: Any) -> List[Dict[str, Any]]:
+    def _messages_to_landing_value(self, value: Any) -> str:
         if isinstance(value, str):
             value = json.loads(value)
         if not isinstance(value, list):
             raise ValueError("messages update must be a list or JSON string")
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
-        messages = value
-        if not all(isinstance(msg, ChatMessage) for msg in messages):
-            messages = self._convert_to_chat_messages(messages)
-
-        return [self._chat_message_to_landing_value(msg) for msg in messages]
-
-    def _response_to_landing_value(self, value: Any) -> Dict[str, Any]:
-        if isinstance(value, ChatMessage):
-            message = value
-        elif isinstance(value, dict):
-            message = ChatMessage(**value)
-        else:
-            message = ChatMessage(
-                role="assistant",
-                content=[ContentItem(type="text", text=str(value))]
-            )
-
-        return self._chat_message_to_landing_value(message)
+    def _response_to_landing_value(self, value: Any) -> str:
+        if isinstance(value, str):
+            try:
+                json.loads(value)
+            except json.JSONDecodeError:
+                value = {"role": "assistant", "content": value}
+        elif isinstance(value, ChatMessage):
+            value = self._chat_message_to_landing_value(value)
+        elif not isinstance(value, dict):
+            value = {"role": "assistant", "content": str(value)}
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
     def _chat_message_to_landing_value(self, message: Any) -> Dict[str, Any]:
         content = None
@@ -1470,15 +1481,20 @@ class CloudStrategy(StorageStrategy):
         return messages
 
     def _convert_to_chat_messages(self, messages: List[Dict]) -> List[Any]:
-        """Convert OpenAI format messages to SDK ChatMessage format"""
+        """Convert extended Chat Completions messages to legacy SDK models."""
         _load_wt_sdk()
         result = []
 
         for msg in messages:
             role = msg.get("role", "user")
-            content_raw = msg.get("content", "")
+            content_raw = msg.get("content")
 
             content_items = []
+            for field in ("reasoning_content", "encrypted_content"):
+                value = msg.get(field)
+                if isinstance(value, str) and value:
+                    content_items.append(ContentItem(type=field, text=value))
+
             if isinstance(content_raw, str):
                 content_items.append(ContentItem(type="text", text=content_raw))
             elif isinstance(content_raw, list):
@@ -1493,7 +1509,23 @@ class CloudStrategy(StorageStrategy):
                             content_items.append(
                                 ContentItem(type="image_url", image_url={"url": url})
                             )
+                        else:
+                            content_items.append(
+                                ContentItem(
+                                    type=str(item.get("type") or "provider_content"),
+                                    text=json.dumps(
+                                        item,
+                                        ensure_ascii=False,
+                                        separators=(",", ":"),
+                                        default=str,
+                                    ),
+                                )
+                            )
 
-            result.append(ChatMessage(role=role, content=content_items))
+            kwargs: Dict[str, Any] = {"role": role, "content": content_items}
+            for field in ("name", "refusal", "tool_calls", "tool_call_id", "function_call"):
+                if msg.get(field) is not None:
+                    kwargs[field] = msg[field]
+            result.append(ChatMessage(**kwargs))
 
         return result
