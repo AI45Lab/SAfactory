@@ -579,6 +579,10 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
                                     session_id,
                                     group_id,
                                 )
+                                # A stored trajectory that no longer matches what was
+                                # generated starves training while every row still looks
+                                # healthy in the database. Keep it on the dashboard.
+                                metrics.record("dropped/unmatched_trajectory", 1.0, AggType.SUM)
                                 drop_group = True
                                 break
                             if max_length is not None and len(tokens) > max_length:
