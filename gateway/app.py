@@ -10,7 +10,7 @@ from dataclasses import replace
 from typing import Any
 from urllib.parse import parse_qsl, urlencode
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from core.perf_trace import PerfTrace
@@ -681,21 +681,34 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         resolver: SessionResolver = app.state.gateway_resolver
         telemetry: TelemetryRecorder = app.state.gateway_telemetry
         reason = "gateway_close"
+        completion_mode = "complete"
         try:
             body = await request.json()
-            if isinstance(body, dict) and body.get("reason"):
-                reason = str(body["reason"])
+            if isinstance(body, dict):
+                if body.get("reason"):
+                    reason = str(body["reason"])
+                completion_mode = str(body.get("completion_mode") or completion_mode).strip().lower()
         except Exception:
             pass
+        if completion_mode not in {"complete", "abort"}:
+            raise HTTPException(status_code=400, detail="completion_mode must be 'complete' or 'abort'")
         binding = await resolver.close_session(session_id, reason=reason)
-        log.info("Gateway session close requested: session_id=%s reason=%s", session_id, reason)
+        log.info(
+            "Gateway session close requested: session_id=%s reason=%s completion_mode=%s",
+            session_id,
+            reason,
+            completion_mode,
+        )
         drained = True
         if cfg.close_mode == "soft_close":
             drained = await _wait_for_session_drain(binding, cfg.drain_timeout_s)
 
         telemetry_status = "queued" if telemetry.async_writes_enabled else "flushed"
         try:
-            await telemetry.enqueue_session_close(binding)
+            await telemetry.enqueue_session_close(
+                binding,
+                is_session_completed=completion_mode == "complete",
+            )
         except asyncio.TimeoutError:
             telemetry_status = "timeout"
             log.warning(
@@ -710,6 +723,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             "status": binding.status,
             "drained": drained,
             "telemetry_status": telemetry_status,
+            "completion_mode": completion_mode,
         }
 
     app.add_api_route(
@@ -1439,7 +1453,7 @@ def _merge_stream_event(
 
     response = event.get("response")
     if isinstance(response, dict):
-        for key in ("id", "object", "status"):
+        for key in ("id", "object", "status", "output"):
             value = response.get(key)
             if value is not None:
                 summary[key] = value
@@ -1471,6 +1485,7 @@ def _merge_chat_completion_choice(choice_states: dict[int, dict[str, Any]], choi
             "reasoning_parts": [],
             "tool_calls": {},
             "function_call": {"name_parts": [], "arguments_parts": []},
+            "extra_message_fields": {},
             "finish_reason": None,
         },
     )
@@ -1492,17 +1507,18 @@ def _merge_message_payload(state: dict[str, Any], payload: dict[str, Any]) -> No
     if isinstance(role, str) and role:
         state["role"] = role
 
-    content = payload.get("content")
-    if isinstance(content, str):
-        state.setdefault("content_parts", []).append(content)
-    elif content is not None:
-        state["content"] = content
+    if "content" in payload:
+        content = payload.get("content")
+        if isinstance(content, str):
+            state.setdefault("content_parts", []).append(content)
+        else:
+            state["content"] = content
 
     for key in ("reasoning", "reasoning_content"):
         reasoning = payload.get(key)
         if isinstance(reasoning, str):
             state.setdefault("reasoning_parts", []).append(reasoning)
-        elif reasoning is not None:
+        elif key in payload:
             state[key] = reasoning
 
     tool_calls = payload.get("tool_calls")
@@ -1514,6 +1530,23 @@ def _merge_message_payload(state: dict[str, Any], payload: dict[str, Any]) -> No
     function_call = payload.get("function_call")
     if isinstance(function_call, dict):
         _merge_function_call_delta(state.setdefault("function_call", {}), function_call)
+
+    known_fields = {
+        "role",
+        "content",
+        "reasoning",
+        "reasoning_content",
+        "tool_calls",
+        "function_call",
+    }
+    extra_fields = state.setdefault("extra_message_fields", {})
+    for key, value in payload.items():
+        if key in known_fields:
+            continue
+        if isinstance(value, str) and isinstance(extra_fields.get(key), str):
+            extra_fields[key] += value
+        else:
+            extra_fields[key] = value
 
 
 def _merge_tool_call_delta(tool_calls: dict[int, dict[str, Any]], delta: dict[str, Any]) -> None:
@@ -1591,6 +1624,8 @@ def _finalize_choice_state(state: dict[str, Any]) -> dict[str, Any]:
     function_call = _finalize_function_call(state.get("function_call") or {})
     if function_call:
         message["function_call"] = function_call
+
+    message.update(state.get("extra_message_fields") or {})
 
     choice = {
         "index": _safe_int(state.get("index"), 0),

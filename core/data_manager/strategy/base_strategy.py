@@ -229,9 +229,11 @@ class StorageStrategy(ABC):
         self,
         session_id: str,
         llm_model: Optional[str] = None,
+        *,
+        is_session_completed: bool = True,
     ) -> int:
         """
-        Mark the latest persisted trajectory row for a session as completed.
+        Set the completion state of the latest persisted trajectory row.
         When llm_model is provided, only rows for that model are considered.
 
         Returns:

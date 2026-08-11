@@ -26,14 +26,19 @@ class GatewayClient:
         self.retry_backoff_s = max(0.0, float(retry_backoff_s))
         self._client = httpx.AsyncClient(timeout=self.timeout_s)
 
-    async def close_session(self, session_id: str, reason: str) -> None:
+    async def close_session(
+        self,
+        session_id: str,
+        reason: str,
+        completion_mode: str = "complete",
+    ) -> None:
         timeout = httpx.Timeout(self.close_timeout_s, connect=min(self.timeout_s, self.close_timeout_s))
         attempts = self.close_retries + 1
         for attempt in range(1, attempts + 1):
             try:
                 response = await self._client.post(
                     f"{self.gateway_base_url}/{session_id}/close",
-                    json={"reason": reason},
+                    json={"reason": reason, "completion_mode": completion_mode},
                     timeout=timeout,
                 )
                 response.raise_for_status()
