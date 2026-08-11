@@ -70,11 +70,12 @@ class TrajectoryMaskBuilder:
         if eos_id is None:
             return []
 
-        test_tokens = self.tokenizer.apply_chat_template(
+        test_text = self.tokenizer.apply_chat_template(
             BASE_CHAT_HISTORY + [{"role": "assistant", "content": "response"}],
             add_generation_prompt=False,
-            tokenize=True,
+            tokenize=False,
         )
+        test_tokens = list(self.tokenizer.encode(test_text, add_special_tokens=False))
         for idx in range(len(test_tokens) - 1, -1, -1):
             if test_tokens[idx] == eos_id:
                 return list(test_tokens[idx + 1 :])
@@ -214,6 +215,13 @@ class TrajectoryMaskBuilder:
         return list(input_ids), mm_train_inputs
 
     def _render_message_delta_str(self, model_input_message: Dict[str, Any]) -> str:
+        if model_input_message.get("role") == "system":
+            return self.tokenizer.apply_chat_template(
+                [model_input_message],
+                add_generation_prompt=False,
+                tokenize=False,
+            )
+
         single_message_chat_template_str = self.tokenizer.apply_chat_template(
             BASE_CHAT_HISTORY + [model_input_message],
             add_generation_prompt=False,
@@ -509,3 +517,15 @@ class TrajectoryMaskBuilder:
 
     def clear_session(self, session_id: str) -> None:
         self.session_roots.pop(session_id, None)
+
+    def clear_sessions(self, session_ids: List[str]) -> int:
+        """Clear multiple session roots for rollout-group cleanup."""
+        cleared = 0
+        for session_id in session_ids:
+            if session_id in self.session_roots:
+                self.session_roots.pop(session_id)
+                cleared += 1
+        return cleared
+
+    def session_count(self) -> int:
+        return len(self.session_roots)
