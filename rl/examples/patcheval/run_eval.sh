@@ -20,6 +20,7 @@ PATCH_EVAL_ANTHROPIC_INTERLEAVED_THINKING=${PATCH_EVAL_ANTHROPIC_INTERLEAVED_THI
 PATCH_EVAL_TASK_LIMIT=${PATCH_EVAL_TASK_LIMIT:-0}
 PATCH_EVAL_POOL_SIZE=${PATCH_EVAL_POOL_SIZE:-5}
 PATCH_EVAL_DOCKER_STARTUP_CONCURRENCY=${PATCH_EVAL_DOCKER_STARTUP_CONCURRENCY:-3}
+PATCH_EVAL_STORAGE_TYPE=${PATCH_EVAL_STORAGE_TYPE:-sqlite}
 PATCH_EVAL_IMAGE_ARCHIVE_DIR=${PATCH_EVAL_IMAGE_ARCHIVE_DIR:-/mnt/shared-storage-user/evobox-share/leishanzhe/dataset/patcheval-images}
 PATCH_EVAL_OFFICIAL_RUNTIME_DIR=${PATCH_EVAL_OFFICIAL_RUNTIME_DIR:-/mnt/shared-storage-user/evobox-share/leishanzhe/dataset/patcheval-runtime}
 PATCH_EVAL_SHARED_TMP=${PATCH_EVAL_SHARED_TMP:-/mnt/shared-storage-user/evobox-share/leishanzhe/dataset/patcheval-tmp}
@@ -29,6 +30,11 @@ PATCH_EVAL_GATEWAY_PORT=${PATCH_EVAL_GATEWAY_PORT:-18000}
 PATCH_EVAL_SHUTDOWN_TIMEOUT_S=${PATCH_EVAL_SHUTDOWN_TIMEOUT_S:-600}
 GATEWAY_HOST=${GATEWAY_HOST:-$(hostname -I | awk '{print $1}')}
 PATCH_EVAL_NO_PROXY=${PATCH_EVAL_NO_PROXY:-host.docker.internal,localhost,127.0.0.1,::1,${GATEWAY_HOST},10.0.0.0/8,100.96.0.0/12,.pjlab.org.cn}
+
+case "${PATCH_EVAL_STORAGE_TYPE}" in
+  sqlite|cloud) ;;
+  *) echo "Unsupported PATCH_EVAL_STORAGE_TYPE: ${PATCH_EVAL_STORAGE_TYPE}" >&2; exit 2 ;;
+esac
 
 case "${PATCH_EVAL_BASELINE}" in
   llm)
@@ -83,6 +89,7 @@ PATCH_EVAL_API_BASE="${PATCH_EVAL_API_BASE}" \
 PATCH_EVAL_API_KEY="${PATCH_EVAL_API_KEY}" \
 PATCH_EVAL_MODEL="${PATCH_EVAL_MODEL}" \
 PATCH_EVAL_GATEWAY_PORT="${PATCH_EVAL_GATEWAY_PORT}" \
+PATCH_EVAL_STORAGE_TYPE="${PATCH_EVAL_STORAGE_TYPE}" \
 PATCH_EVAL_ANTHROPIC_INTERLEAVED_THINKING="${PATCH_EVAL_ANTHROPIC_INTERLEAVED_THINKING}" \
 GATEWAY_CONFIG="${GATEWAY_CONFIG}" \
 "${PYTHON_BIN}" - <<'PY'
@@ -91,13 +98,16 @@ from pathlib import Path
 import yaml
 
 db = Path(os.environ["PATCH_EVAL_DB"]).expanduser().resolve()
+storage_type = os.environ["PATCH_EVAL_STORAGE_TYPE"]
 config = {
     "listen_host": "0.0.0.0",
     "listen_port": int(os.environ["PATCH_EVAL_GATEWAY_PORT"]),
     "base_session_path": "/v1/sessions",
     "max_steps": -1,
-    "storage_type": "sqlite",
-    "storage_config": {"db_url": f"sqlite:///{db}"},
+    "storage_type": storage_type,
+    "storage_config": (
+        {"db_url": f"sqlite:///{db}"} if storage_type == "sqlite" else {}
+    ),
     "llm_routes": {
         os.environ["PATCH_EVAL_MODEL"]: {
             "base_url": os.environ["PATCH_EVAL_API_BASE"].rstrip("/") + "/",
@@ -166,8 +176,16 @@ fi
 echo "PatchEval baseline: ${PATCH_EVAL_BASELINE}"
 echo "PatchEval setting: ${run_label}"
 echo "Model: ${PATCH_EVAL_MODEL}"
-echo "Results DB: ${PATCH_EVAL_DB}"
+echo "Storage type: ${PATCH_EVAL_STORAGE_TYPE}"
+if [[ "${PATCH_EVAL_STORAGE_TYPE}" == "sqlite" ]]; then
+  echo "Results DB: ${PATCH_EVAL_DB}"
+fi
 echo "Generated config: ${GENERATED_DIR}"
+
+launcher_storage_args=(--storage-type "${PATCH_EVAL_STORAGE_TYPE}")
+if [[ "${PATCH_EVAL_STORAGE_TYPE}" == "sqlite" ]]; then
+  launcher_storage_args+=(--db-path "sqlite:///${PATCH_EVAL_DB}")
+fi
 
 "${PYTHON_BIN}" launcher.py \
   --mode docker \
@@ -186,8 +204,7 @@ echo "Generated config: ${GENERATED_DIR}"
   --gateway-base-url "http://${GATEWAY_HOST}:${PATCH_EVAL_GATEWAY_PORT}/v1/sessions" \
   --llm-model "${PATCH_EVAL_MODEL}" \
   --llm-temperature 0 \
-  --db-path "sqlite:///${PATCH_EVAL_DB}" \
-  --storage-type sqlite \
+  "${launcher_storage_args[@]}" \
   --pool-size "${PATCH_EVAL_POOL_SIZE}" \
   --max-workers "${PATCH_EVAL_POOL_SIZE}" \
   --max-steps 1 \

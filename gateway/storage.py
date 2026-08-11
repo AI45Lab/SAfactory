@@ -13,6 +13,10 @@ from core.data_manager.manager import DataManager
 from core.data_manager.strategy.base_strategy import SessionContext
 from core.perf_trace import PerfTrace
 
+from gateway.anthropic_messages import (
+    AnthropicMessageConversionError,
+    normalize_anthropic_request,
+)
 from gateway.config import GatewayConfig
 from gateway.models import GatewaySessionBinding, GatewayTelemetryRecord
 
@@ -609,6 +613,15 @@ def _trajectory_messages(record: GatewayTelemetryRecord) -> list[dict[str, Any]]
     # A step's messages are the request-side conversation history. The current
     # assistant output belongs in step.response and will naturally appear in a
     # later step's messages when the client includes it in the next request.
+    if record.endpoint == "messages":
+        try:
+            return normalize_anthropic_request(record.request)
+        except AnthropicMessageConversionError as exc:
+            log.warning(
+                "Anthropic message normalization skipped: request_id=%s error=%s",
+                record.request_id,
+                exc,
+            )
     return [dict(message) for message in record.messages]
 
 

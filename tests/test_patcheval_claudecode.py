@@ -11,8 +11,6 @@ import yaml
 from fastapi.testclient import TestClient
 
 from env.patcheval import claudecode_runner, generate_full_config
-from env.patcheval.claude_adapter import conversion
-from env.patcheval.claude_adapter.app import create_app as create_adapter_app
 from evaluator.rule_evaluator import discover_rule_eval_spec
 from core.data_manager.strategy.sqlite_strategy_impl import SqliteStrategy
 from gateway import app as gateway_app
@@ -24,16 +22,6 @@ from gateway.inference_forwarder import (
 )
 from gateway.llm_router import LLMRouteTarget
 from gateway.storage import GatewayStorage
-
-
-def test_shared_adapter_health(monkeypatch) -> None:
-    monkeypatch.setenv(
-        "CLAUDE_ADAPTER_GATEWAY_SESSION_BASE_URL",
-        "http://127.0.0.1:18000/v1/sessions",
-    )
-    monkeypatch.setenv("CLAUDE_ADAPTER_ROUTE_MODEL", "route/model")
-    with TestClient(create_adapter_app()) as client:
-        assert client.get("/readyz").json() == {"status": "ready"}
 
 
 def test_sqlite_runtime_schema_adds_provider_request_column(tmp_path) -> None:
@@ -56,91 +44,6 @@ def test_sqlite_runtime_schema_adds_provider_request_column(tmp_path) -> None:
     }
     connection.close()
     assert "request" in columns
-
-
-def test_anthropic_tool_messages_convert_to_openai() -> None:
-    payload = {
-        "model": "claude",
-        "max_tokens": 4096,
-        "system": [{"type": "text", "text": "system prompt"}],
-        "messages": [
-            {"role": "user", "content": [{"type": "text", "text": "inspect the repository"}]},
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": "toolu_1",
-                        "name": "Read",
-                        "input": {"path": "a.py"},
-                    }
-                ],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "toolu_1",
-                        "content": "file contents",
-                    }
-                ],
-            },
-        ],
-        "tools": [
-            {
-                "name": "Read",
-                "description": "read a file",
-                "input_schema": {
-                    "$schema": "http://json-schema.org/draft-07/schema#",
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                },
-            }
-        ],
-    }
-
-    converted = conversion.anthropic_to_openai(payload, "route/model")
-
-    assert converted["model"] == "route/model"
-    assert converted["stream"] is False
-    assert converted["messages"][0] == {"role": "system", "content": "system prompt"}
-    assert converted["messages"][2]["tool_calls"][0]["function"]["name"] == "Read"
-    assert converted["messages"][3]["role"] == "tool"
-    assert "$schema" not in converted["tools"][0]["function"]["parameters"]
-
-
-def test_openai_tool_response_converts_to_anthropic_stream() -> None:
-    response = {
-        "id": "chatcmpl_1",
-        "model": "route/model",
-        "choices": [
-            {
-                "finish_reason": "tool_calls",
-                "message": {
-                    "role": "assistant",
-                    "content": "I will inspect it.",
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {"name": "Read", "arguments": '{"path":"a.py"}'},
-                        }
-                    ],
-                },
-            }
-        ],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-    }
-
-    converted = conversion.openai_to_anthropic(response, {"model": "claude"})
-    stream = conversion.anthropic_sse(converted)
-
-    assert converted["stop_reason"] == "tool_use"
-    assert converted["content"][1]["input"] == {"path": "a.py"}
-    assert "event: message_start" in stream
-    assert "event: content_block_delta" in stream
-    assert "event: message_stop" in stream
 
 
 def test_tool_use_count_reads_claude_stream_event() -> None:
@@ -222,40 +125,30 @@ def test_generate_claudecode_exp1_config(tmp_path, monkeypatch) -> None:
     assert eval_spec.rule_evaluator.endswith(f"/{env_name}/rule_evaluator.py")
 
 
-def test_anthropic_payload_uses_single_adaptive_max_path() -> None:
+def test_anthropic_headers_preserve_native_headers_and_add_safe_beta() -> None:
     target = LLMRouteTarget(
         route_model="claude",
         base_url="http://upstream/v1",
-        api_key=None,
+        api_key="upstream-key",
         anthropic_interleaved_thinking=True,
     )
-    original = {
-        "model": "claude",
-        "max_tokens": 64000,
-        "thinking": {"type": "adaptive"},
-        "context_management": {"edits": []},
-        "output_config": {"effort": "high"},
-        "messages": [{"role": "user", "content": "hello"}],
-    }
-
-    prepared = InferenceForwarder.prepare_anthropic_payload(original)
-
-    assert prepared["thinking"] == {"type": "adaptive"}
-    assert prepared["output_config"] == {"effort": "max"}
-    assert prepared["display"] == "summarized"
-    assert prepared["max_tokens"] == 64000
-    assert "context_management" not in prepared
-    assert original["context_management"] == {"edits": []}
 
     headers = object.__new__(InferenceForwarder).build_anthropic_headers(
         target,
-        {"anthropic-beta": "claude-code-20250219,unsupported-beta"},
+        {
+            "anthropic-beta": "claude-code-20250219,unsupported-beta",
+            "anthropic-version": "2023-06-01",
+            "x-api-key": "client-key",
+        },
     )
     assert headers["anthropic-beta"] == "interleaved-thinking-2025-05-14"
+    assert headers["x-api-key"] == "upstream-key"
+    assert "X-Safactory-Session-Id" not in headers
 
 
 def test_gateway_streams_native_anthropic_and_records_request_response(monkeypatch) -> None:
     forwarded_payloads = []
+    forwarded_query_strings = []
     stream = "\n\n".join(
         [
             'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude","content":[],"usage":{"input_tokens":3,"output_tokens":0}}}',
@@ -285,9 +178,6 @@ def test_gateway_streams_native_anthropic_and_records_request_response(monkeypat
         def __init__(self, cfg) -> None:
             del cfg
 
-        def prepare_anthropic_payload(self, payload):
-            return payload
-
         def build_anthropic_headers(self, target, inbound_headers, **kwargs):
             del target, inbound_headers
             assert kwargs["session_id"] == "session-1"
@@ -299,9 +189,12 @@ def test_gateway_streams_native_anthropic_and_records_request_response(monkeypat
                 "Authorization": "Bearer upstream-key",
             }
 
-        async def open_anthropic_messages_stream(self, target, payload, headers):
+        async def open_anthropic_messages_stream(
+            self, target, payload, headers, *, query_string=None
+        ):
             del target, headers
             forwarded_payloads.append(json.loads(json.dumps(payload)))
+            forwarded_query_strings.append(query_string)
             return StreamForwardContext(
                 response=FakeResponse(),
                 status_code=200,
@@ -310,9 +203,12 @@ def test_gateway_streams_native_anthropic_and_records_request_response(monkeypat
                 upstream_started_perf=time.perf_counter(),
             )
 
-        async def forward_anthropic_messages(self, target, payload, headers):
+        async def forward_anthropic_messages(
+            self, target, payload, headers, *, query_string=None
+        ):
             del target, headers
             forwarded_payloads.append(json.loads(json.dumps(payload)))
+            forwarded_query_strings.append(query_string)
             return ForwardResult(
                 body={
                     "id": "msg_2",
@@ -375,11 +271,12 @@ def test_gateway_streams_native_anthropic_and_records_request_response(monkeypat
 
     with TestClient(app) as client:
         response = client.post(
-            "/v1/sessions/session-1/v1/messages",
+            "/v1/sessions/session-1/v1/messages?beta=true&preserve=value",
             json={
                 "model": "claude",
                 "max_tokens": 128,
                 "stream": True,
+                "context_management": {"edits": []},
                 "messages": [{"role": "user", "content": "fix it"}],
             },
         )
@@ -400,6 +297,9 @@ def test_gateway_streams_native_anthropic_and_records_request_response(monkeypat
     assert response.status_code == 200
     assert "signature_delta" in response.text
     assert nonstream_response.json()["content"][0]["signature"] == "nonstream-signature"
+    assert forwarded_payloads[0]["max_tokens"] == 128
+    assert forwarded_payloads[0]["context_management"] == {"edits": []}
+    assert forwarded_query_strings == ["preserve=value", None]
     assert forwarded_payloads[1]["messages"][1]["content"] == []
     assert len(storage.records) == 2
     record = storage.records[0][1]
