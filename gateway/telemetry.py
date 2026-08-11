@@ -177,7 +177,12 @@ class TelemetryRecorder:
         )
         await self._enqueue(binding, record)
 
-    async def enqueue_session_close(self, binding: GatewaySessionBinding) -> None:
+    async def enqueue_session_close(
+        self,
+        binding: GatewaySessionBinding,
+        *,
+        is_session_completed: bool,
+    ) -> None:
         now = datetime.now(timezone.utc)
         seq_id = await self._next_seq(binding.session_id, binding.model or "")
         record = GatewayTelemetryRecord(
@@ -219,7 +224,7 @@ class TelemetryRecorder:
             completed_at=now,
             max_steps=self.cfg.max_steps,
             is_truncated=binding.truncated,
-            is_session_completed=True,
+            is_session_completed=is_session_completed,
             truncate_reason=binding.truncate_reason,
         )
         await self._enqueue(binding, record)

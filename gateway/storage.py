@@ -446,10 +446,14 @@ class GatewayStorage:
         trace = PerfTrace(
             "gateway.storage.record_session_close",
             logger=log,
-            context={"session_id": binding.session_id, "reason": binding.close_reason},
+            context={
+                "session_id": binding.session_id,
+                "reason": binding.close_reason,
+                "is_session_completed": record.is_session_completed,
+            },
         )
         try:
-            if self.cfg.storage_type == "cloud":
+            if self.cfg.storage_type == "cloud" and record.is_session_completed:
                 async with self._lock:
                     record_ids = [
                         record_id
@@ -485,10 +489,11 @@ class GatewayStorage:
                 models = await self._models_for_session(binding)
             trace.update_context(model_count=len(models), models=models)
             log.info(
-                "Gateway storage session_close begin: session_id=%s models=%s reason=%s",
+                "Gateway storage session_close begin: session_id=%s models=%s reason=%s completed=%s",
                 binding.session_id,
                 models,
                 binding.close_reason,
+                record.is_session_completed,
             )
             if not models:
                 with trace.span(
@@ -496,7 +501,10 @@ class GatewayStorage:
                     operation="db_write",
                     table="session_steps",
                 ):
-                    await self.data_manager.mark_latest_session_completed(session_id=binding.session_id)
+                    await self.data_manager.mark_latest_session_completed(
+                        session_id=binding.session_id,
+                        is_session_completed=record.is_session_completed,
+                    )
                 elapsed_ms = (time.perf_counter() - started) * 1000
                 trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_without_model=True)
                 log.info(
@@ -519,6 +527,7 @@ class GatewayStorage:
                             self.data_manager.mark_latest_session_completed(
                                 session_id=binding.session_id,
                                 llm_model=model,
+                                is_session_completed=record.is_session_completed,
                             )
                             for model in models
                         )
@@ -535,6 +544,7 @@ class GatewayStorage:
                         updated_count += await self.data_manager.mark_latest_session_completed(
                             session_id=binding.session_id,
                             llm_model=model,
+                            is_session_completed=record.is_session_completed,
                         )
 
             if updated_count == 0:
@@ -543,7 +553,10 @@ class GatewayStorage:
                     operation="db_write",
                     table="session_steps",
                 ):
-                    await self.data_manager.mark_latest_session_completed(session_id=binding.session_id)
+                    await self.data_manager.mark_latest_session_completed(
+                        session_id=binding.session_id,
+                        is_session_completed=record.is_session_completed,
+                    )
             elapsed_ms = (time.perf_counter() - started) * 1000
             log.info(
                 "Gateway storage session_close complete: session_id=%s updated_count=%d elapsed_ms=%.2f",
