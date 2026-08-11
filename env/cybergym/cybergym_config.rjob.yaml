@@ -1,11 +1,8 @@
 environments:
   - env_name: cybergym
-    # The controller image contains CyberGym, OpenHands, docker CLI, dockerd,
-    # and containerd. The RJob start config starts a private Docker daemon for
-    # the nested OpenHands runtime and CyberGym verifier containers.
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:cybergym_001
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:cybergym_004
     env_num: 1
-    dataset: ./datasets/cybergym_tasks.jsonl
+    dataset:  ./dataset/cybergym_tasks_full.jsonl
     dataset_load_mode: eager
 
     env_params:
@@ -14,16 +11,23 @@ environments:
       data_dir: /workspace/cybergym/cybergym_data/data
       image_archive_dir: /workspace/cybergym/images
       results_root: /workspace/cybergym/results
+
+      route_model: kimi-k3
+      model_ref: local/kimi-k3
+
       image_load_timeout_s: 1800
 
-      openhands_runner: /workspace/cybergym/examples/agents/openhands/run.py
-      openhands_repo: /workspace/cybergym/examples/agents/openhands/openhands-repo
-      agent_image: docker.all-hands.dev/all-hands-ai/runtime:0.33-nikolaik
-      agent_image_archive: openhands.tar
+      agent_type: opencode
+      agent_runner: /workspace/cybergym/examples/agents/opencode/run.py
+      agent_image: opencode:001
+      agent_image_archive: opencode.tar
+      agent_options:
+        remove_tmp: true
 
       max_iter: 100
-      max_output_tokens: 4096
+      max_output_tokens: 20480
       native_tool_calling: false
       silent: false
-      timeout_s: 1200
-      verify_timeout_s: 600
+
+      timeout_s: 7200
+      verify_timeout_s: 1200

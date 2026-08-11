@@ -2,22 +2,26 @@ agent_name: cybergym
 
 container:
   workdir: /workspace/cybergym
+
   runner_entrypoint:
-    command: "/opt/safactory/cybergym/runner.sh"
+    source: ./runner.sh
+    target: /workspace/cybergym/runner.sh
+    command: "bash /workspace/cybergym/runner.sh"
 
   env:
     CYBERGYM_ROOT: /workspace/cybergym
     CYBERGYM_DATA_DIR: /workspace/cybergym/cybergym_data/data
     CYBERGYM_IMAGE_ARCHIVE_DIR: /workspace/cybergym/images
     CYBERGYM_RESULTS_ROOT: /workspace/cybergym/results
-    CYBERGYM_DOCKER_ROOT: /docker-data
-    CYBERGYM_OPENHANDS_RUNNER: /workspace/cybergym/examples/agents/openhands/run.py
-    CYBERGYM_OPENHANDS_REPO: /workspace/cybergym/examples/agents/openhands/openhands-repo
+
     CYBERGYM_DOCKER_MODE: dind
-    CYBERGYM_RUNNER_ROOT: /opt/safactory/cybergym
+    CYBERGYM_DOCKER_ROOT: /docker-data
+    CYBERGYM_RUNNER_ROOT: /workspace/cybergym
+
     DOCKER_HOST: unix:///var/run/docker.sock
     DOCKER_TLS_CERTDIR: ""
     PYTHONDONTWRITEBYTECODE: "1"
+
     HTTP_PROXY: ""
     HTTPS_PROXY: ""
     ALL_PROXY: ""
@@ -38,22 +42,20 @@ rjob:
   # DinD requires a privileged controller. Image loading and verifier builds
   # also need substantially more local disk than the OpenRT example.
   privileged: true
-  share_host_shm: true
-  local_storage_in_mb: 102400
-  termination_grace_period_seconds: 60
+  # share_host_shm: true
+  # local_storage_in_mb: 40960
+  # termination_grace_period_seconds: 60
 
   resources:
-    cpu: 8
+    cpu: 2
     gpu: 0
-    memory_in_mb: 32768
-    # RJobClient Resources.custom_resources is list[str], using
-    # resource-name=value entries.
+    memory_in_mb: 10240
     custom_resources:
       - "brainpp.cn/fuse=1"
 
   # These GPFS locations follow env/openrt/openrt_start.rjob.yaml. Change the
   # source side if CyberGym assets live elsewhere in the cluster.
   mount_config:
-    - "gpfs://gpfs1/huangbin/cybergymdata/cybergym_data/data:/workspace/cybergym/cybergym_data/data"
-    - "gpfs://gpfs1/huangbin/cybergymdata/images:/workspace/cybergym/images"
-    - "gpfs://gpfs1/huangbin/GitHub/Safactory/results:/workspace/cybergym/results"
+    - "gpfs://gpfs2/trustcyberdata/public/forEval/forMining/cybergym/cybergym-data:/workspace/cybergym/cybergym_data"
+    - "gpfs://gpfs2/trustcyberdata/public/forEval/forMining/cybergym/cybergym-registry-v2-image-cache:/workspace/cybergym/images"
+    - "gpfs://gpfs2/trustcyberdata/bindev/level2/Safactory/results:/workspace/cybergym/results"
