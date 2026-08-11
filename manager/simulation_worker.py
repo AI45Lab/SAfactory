@@ -264,16 +264,22 @@ class SimulationWorkerGroup:
                     rollout_reward=result.total_reward,
                     rollout_truncated=result.truncated,
                 )
+                completion_mode = self._gateway_completion_mode(result)
+                trace.update_context(gateway_completion_mode=completion_mode)
                 if self.gateway_client is not None:
                     with trace.span("gateway_finalize"):
                         await self._finalize_gateway_session(
                             result,
+                            completion_mode=completion_mode,
                             worker_id=worker_id,
                             agent_key=agent_key,
                             trace=trace,
                         )
 
-                if self.evaluation_service is None or self.reward_committer is None:
+                if completion_mode == "abort":
+                    result.total_reward = 0.0
+                    release_reusable = False
+                elif self.evaluation_service is None or self.reward_committer is None:
                     release_reusable = False
                 else:
                     with trace.span("eval_discover_rule"):
@@ -454,19 +460,29 @@ class SimulationWorkerGroup:
         self,
         result: SimulationStartResult,
         *,
+        completion_mode: str,
         worker_id: int,
         agent_key: str,
         trace: PerfTrace | None = None,
     ) -> None:
         if self.gateway_client is None:
             return
+        reason = "rollout_finished" if completion_mode == "complete" else "system_error"
         try:
             if trace is None:
-                await self.gateway_client.close_session(result.session_id, reason="rollout_finished")
+                await self.gateway_client.close_session(
+                    result.session_id,
+                    reason=reason,
+                    completion_mode=completion_mode,
+                )
                 await self.gateway_client.wait_telemetry_flush(result.session_id)
             else:
                 with trace.span("gateway_close_session"):
-                    await self.gateway_client.close_session(result.session_id, reason="rollout_finished")
+                    await self.gateway_client.close_session(
+                        result.session_id,
+                        reason=reason,
+                        completion_mode=completion_mode,
+                    )
                 with trace.span("gateway_wait_telemetry_flush"):
                     await self.gateway_client.wait_telemetry_flush(result.session_id)
         except httpx.HTTPError as exc:
@@ -479,6 +495,23 @@ class SimulationWorkerGroup:
                 result.session_id,
                 exc,
             )
+
+    @staticmethod
+    def _gateway_completion_mode(result: SimulationStartResult) -> str:
+        metrics = result.metrics if isinstance(result.metrics, dict) else {}
+        if str(metrics.get("rjob_status") or "") in {"Failed", "Stopped", "Killed"}:
+            return "abort"
+        if result.truncated:
+            return "complete"
+        if str(metrics.get("timeout_layer") or "") in {
+            "docker_exec",
+            "sandbox_command",
+            "rjob_wait_terminal",
+        }:
+            return "complete"
+        if result.status == "succeeded":
+            return "complete"
+        return "abort"
 
     def _build_start_request(
         self,

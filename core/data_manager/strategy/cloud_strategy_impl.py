@@ -1013,9 +1013,12 @@ class CloudStrategy(StorageStrategy):
         self,
         session_id: str,
         llm_model: Optional[str] = None,
+        *,
+        is_session_completed: bool = True,
     ) -> int:
-        """Mark the latest cloud-backed trajectory row for a session as completed."""
+        """Set the completion state of the latest cloud-backed trajectory row."""
         await self.init()
+        completed = bool(is_session_completed)
 
         if self._enable_buffer:
             await self._flush_records()
@@ -1073,7 +1076,7 @@ class CloudStrategy(StorageStrategy):
             trajectory_candidates or candidates,
             key=lambda item: item[0],
         )
-        if latest_completed:
+        if completed and latest_completed:
             return 0
 
         update_query = self._build_session_step_filter(
@@ -1086,8 +1089,9 @@ class CloudStrategy(StorageStrategy):
             self.client.update_landing,
             update_query,
             {
-                "is_session_completed": True,
-                "is_terminal": True,
+                "is_session_completed": completed,
+                "is_terminal": completed,
+                **({"step_reward": 0.0, "reward": 0.0} if not completed else {}),
             },
             partition=job_id or None,
             trace_context={

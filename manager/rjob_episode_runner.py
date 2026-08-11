@@ -224,6 +224,7 @@ class RJobEpisodeRunner:
                     "runtime": "rjob",
                     "rjob_name": submitted_name or rjob_name,
                     "rjob_status": terminal_status,
+                    "timeout_layer": "rjob_wait_terminal",
                     "logs_tail": tail(logs_text),
                 },
             )
