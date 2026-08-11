@@ -363,54 +363,18 @@ class GatewayStorage:
                                 claimed_dataset_sessions.add(record.session_id)
                                 attach_dataset = True
 
-                    stored_messages: Any = _trajectory_messages(record)
-                    stored_response: Any = record.response
-                    provider_meta: dict[str, Any] | None = None
-                    if self.cfg.storage_type == "cloud":
-                        request_payload = _json_loads(record.request)
-                        if record.endpoint == "messages":
-                            # Anthropic payloads remain provider-native and live only
-                            # in meta_json. Do not fabricate OpenAI messages from them.
-                            response_payload = _json_loads(record.response)
-                            stored_messages = None
-                            stored_response = None
-                            provider_meta = {
-                                "provider": "anthropic",
-                                "request": (
-                                    request_payload
-                                    if request_payload is not None
-                                    else record.request
-                                ),
-                                "response": (
-                                    response_payload
-                                    if response_payload is not None
-                                    else record.response
-                                ),
-                            }
-                        elif record.endpoint == "chat/completions":
-                            stored_messages = _openai_request_messages(
-                                request_payload,
-                                fallback=record.messages,
-                            )
-                            stored_response = _chat_completion_output(record.response)
-                        elif record.endpoint == "responses":
-                            stored_messages = _responses_request_input(request_payload)
-                            stored_response = _responses_output(record.response)
-
                     step = {
                         "session": session,
                         "step_id": record.seq_id,
-                        "messages": stored_messages,
-                        "request": None if provider_meta is not None else record.request,
-                        "response": stored_response,
+                        "messages": _trajectory_messages(record),
+                        "request": record.request,
+                        "response": record.response,
                         "step_reward": 0.0,
                         "env_state": json.dumps(self._metadata(record), ensure_ascii=False, default=str),
                         "terminated": False,
                         "truncated": record.is_truncated,
                         "is_trainable": False,
                     }
-                    if provider_meta is not None:
-                        step["provider_meta"] = provider_meta
                     if attach_dataset:
                         step["dataset"] = dataset
                     steps.append(step)
