@@ -152,7 +152,7 @@ class StorageStrategy(ABC):
             terminated: Whether this is a terminal step
             truncated: Whether episode was truncated
             is_trainable: Whether this step is eligible for training
-            dataset: Optional task dataset stored on the first gateway step
+            dataset: Optional task dataset stored with the current step
         """
         pass
 

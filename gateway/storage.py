@@ -44,8 +44,6 @@ class GatewayStorage:
         self._sessions: dict[tuple[str, str], _CachedSession] = {}
         self._environments: dict[str, _SessionEnvironment] = {}
         self._patched_environment_sessions: set[str] = set()
-        self._dataset_pending_sessions: set[str] = set()
-        self._dataset_written_sessions: set[str] = set()
         self._latest_record_ids: dict[tuple[str, str], str] = {}
         self._lock = asyncio.Lock()
 
@@ -330,7 +328,6 @@ class GatewayStorage:
     ) -> None:
         if not batch:
             return
-        claimed_dataset_sessions: set[str] = set()
         started = time.perf_counter()
         trace = PerfTrace(
             "gateway.storage.record_inference_steps_batch",
@@ -352,16 +349,6 @@ class GatewayStorage:
                     session = await self.get_or_create_session(binding, record.requested_model)
                     environment = await self._resolve_session_environment(record.session_id)
                     dataset = environment.dataset if environment is not None else None
-                    attach_dataset = False
-                    if dataset is not None and record.seq_id == 1:
-                        async with self._lock:
-                            if (
-                                record.session_id not in self._dataset_pending_sessions
-                                and record.session_id not in self._dataset_written_sessions
-                            ):
-                                self._dataset_pending_sessions.add(record.session_id)
-                                claimed_dataset_sessions.add(record.session_id)
-                                attach_dataset = True
 
                     stored_messages: Any = _trajectory_messages(record)
                     stored_response: Any = record.response
@@ -404,17 +391,15 @@ class GatewayStorage:
                         "truncated": record.is_truncated,
                         "is_trainable": False,
                     }
-                    if attach_dataset:
-                        step["dataset"] = dataset
                     if provider_meta is not None:
                         step["provider_meta"] = provider_meta
+                    if dataset is not None:
+                        step["dataset"] = dataset
                     steps.append(step)
             with trace.span("storage.record_steps_batch", table="session_steps"):
                 record_ids = await self.data_manager.record_steps_batch(steps)
 
             async with self._lock:
-                self._dataset_pending_sessions.difference_update(claimed_dataset_sessions)
-                self._dataset_written_sessions.update(claimed_dataset_sessions)
                 for (_, record), record_id in zip(batch, record_ids):
                     if record_id:
                         self._latest_record_ids[(record.session_id, record.requested_model)] = record_id
@@ -426,13 +411,9 @@ class GatewayStorage:
             )
             trace.emit_summary(status="success", elapsed_ms=elapsed_ms)
         except asyncio.CancelledError:
-            async with self._lock:
-                self._dataset_pending_sessions.difference_update(claimed_dataset_sessions)
             trace.emit_summary(status="cancelled", error_type="CancelledError")
             raise
         except Exception as exc:
-            async with self._lock:
-                self._dataset_pending_sessions.difference_update(claimed_dataset_sessions)
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
 
