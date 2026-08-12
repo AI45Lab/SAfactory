@@ -125,6 +125,39 @@ def test_generate_claudecode_exp1_config(tmp_path, monkeypatch) -> None:
     assert eval_spec.rule_evaluator.endswith(f"/{env_name}/rule_evaluator.py")
 
 
+def test_generate_openhands_config(tmp_path, monkeypatch) -> None:
+    output = tmp_path / "generated"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_full_config.py",
+            "--output-dir",
+            str(output),
+            "--baseline",
+            "openhands",
+            "--claude-gateway-base-url",
+            "http://gateway:18000/v1/sessions",
+            "--claude-model",
+            "gpt-5-2025-08-07",
+            "--limit",
+            "1",
+        ],
+    )
+
+    generate_full_config.main()
+
+    start = yaml.safe_load((output / "patcheval_start.yaml").read_text(encoding="utf-8"))
+    agent = next(iter(start["agents"].values()))["container"]
+    assert agent["runner_entrypoint"]["source"].endswith("openhands_runner.py")
+    assert agent["env"]["PATCHEVAL_OPENHANDS_GATEWAY_BASE_URL"] == "http://gateway:18000/v1/sessions"
+    assert agent["env"]["PATCHEVAL_OPENHANDS_MODEL"] == "gpt-5-2025-08-07"
+    task_file = next((output / "datasets").glob("*.jsonl"))
+    task = json.loads(task_file.read_text(encoding="utf-8"))
+    assert task["agent_framework"] == "openhands"
+    assert "problem_statement" in task
+
+
 def test_anthropic_headers_preserve_native_headers_and_add_safe_beta() -> None:
     target = LLMRouteTarget(
         route_model="claude",

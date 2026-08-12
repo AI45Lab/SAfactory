@@ -26,6 +26,7 @@ DEFAULT_CLAUDECODE_DATASET = (
     / "claudecode"
     / "dataset.jsonl"
 )
+DEFAULT_OPENHANDS_DATASET = DEFAULT_CLAUDECODE_DATASET
 OFFICIAL_DATASET = (
     Path(__file__).resolve().parent
     / "PatchEval"
@@ -34,7 +35,7 @@ OFFICIAL_DATASET = (
     / "input.json"
 )
 SETTINGS = ("s1.1", "s1.2", "s1.3", "s1.4")
-BASELINES = ("llm", "claudecode")
+BASELINES = ("llm", "claudecode", "openhands")
 AGENT_EXPERIMENTS = ("exp1",)
 TEMPLATE_DIR = OFFICIAL_DATASET.parent.parent / "exp_llm" / "prompt_templates"
 SETTING_TEMPLATES = {
@@ -64,6 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--claude-gateway-base-url", default="")
     parser.add_argument("--claude-model", default="")
     parser.add_argument("--claude-max-thinking-tokens", type=int, default=0)
+    parser.add_argument("--openhands-install-timeout-s", type=float, default=900.0)
     parser.add_argument("--http-proxy", default="")
     parser.add_argument("--evaluation-timeout-s", type=float, default=3600.0)
     parser.add_argument("--shared-tmp", default="")
@@ -149,6 +151,7 @@ def write_configs(
     claude_gateway_base_url: str,
     claude_model: str,
     claude_max_thinking_tokens: int,
+    openhands_install_timeout_s: float,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     dataset_dir = output_dir / "datasets"
@@ -159,9 +162,11 @@ def write_configs(
     rule_evaluator_path = Path(__file__).resolve().with_name("rule_evaluator.py")
     docker_adapter_path = Path(__file__).resolve().parent / "docker_archive_adapter" / "sitecustomize.py"
     official_root = OFFICIAL_DATASET.parent.parent
-    runner_path = Path(__file__).resolve().with_name(
-        "claudecode_runner.py" if baseline == "claudecode" else "strict_runner.py"
-    )
+    runner_name = {
+        "claudecode": "claudecode_runner.py",
+        "openhands": "openhands_runner.py",
+    }.get(baseline, "strict_runner.py")
+    runner_path = Path(__file__).resolve().with_name(runner_name)
     container_env = {
         "PYTHONDONTWRITEBYTECODE": "1",
         "PATCHEVAL_OFFICIAL_ROOT": "/opt/patcheval",
@@ -185,6 +190,19 @@ def write_configs(
             container_env["PATCHEVAL_CLAUDE_MAX_THINKING_TOKENS"] = str(
                 claude_max_thinking_tokens
             )
+    elif baseline == "openhands":
+        if not claude_gateway_base_url:
+            raise ValueError("--claude-gateway-base-url is required for the OpenHands baseline")
+        if not claude_model:
+            raise ValueError("--claude-model is required for the OpenHands baseline")
+        container_env.update(
+            {
+                "PATCHEVAL_OPENHANDS_TOOL_LIMIT": str(agent_tool_limit),
+                "PATCHEVAL_OPENHANDS_INSTALL_TIMEOUT_S": str(openhands_install_timeout_s),
+                "PATCHEVAL_OPENHANDS_MODEL": claude_model,
+                "PATCHEVAL_OPENHANDS_GATEWAY_BASE_URL": claude_gateway_base_url,
+            }
+        )
     if http_proxy:
         container_env.update(
             {
@@ -232,10 +250,10 @@ def write_configs(
             "work_dir": str(record["work_dir"]),
             "official_record": official_record,
         }
-        if baseline == "claudecode":
+        if baseline in {"claudecode", "openhands"}:
             task.update(
                 {
-                    "agent_framework": "claude-code",
+                    "agent_framework": "claude-code" if baseline == "claudecode" else "openhands",
                     "agent_experiment": agent_experiment,
                     "problem_statement": str(record["problem_statement"]),
                 }
@@ -295,7 +313,14 @@ def main() -> None:
         raise SystemExit("--claude-install-timeout-s must be positive")
     if args.claude_max_thinking_tokens < 0:
         raise SystemExit("--claude-max-thinking-tokens must be non-negative")
-    default_dataset = DEFAULT_CLAUDECODE_DATASET if args.baseline == "claudecode" else DEFAULT_LLM_DATASET
+    if args.openhands_install_timeout_s <= 0:
+        raise SystemExit("--openhands-install-timeout-s must be positive")
+    if args.baseline == "llm":
+        default_dataset = DEFAULT_LLM_DATASET
+    elif args.baseline == "claudecode":
+        default_dataset = DEFAULT_CLAUDECODE_DATASET
+    else:
+        default_dataset = DEFAULT_OPENHANDS_DATASET
     dataset = (args.dataset or default_dataset).expanduser().resolve()
     official_dataset = args.official_dataset.expanduser().resolve()
     official_runtime_dir = args.official_runtime_dir.expanduser().resolve()
@@ -308,7 +333,7 @@ def main() -> None:
         required_runtime_files.append(
             official_runtime_dir / "exp_agent" / "claudecode" / "templates" / "default.md"
         )
-    else:
+    elif args.baseline == "llm":
         required_runtime_files.extend(
             [
                 official_runtime_dir / "exp_llm" / "helper" / "llm_suite.py",
@@ -347,6 +372,7 @@ def main() -> None:
         str(args.claude_gateway_base_url).strip(),
         str(args.claude_model).strip(),
         int(args.claude_max_thinking_tokens),
+        float(args.openhands_install_timeout_s),
     )
     print(
         f"Generated PatchEval {args.baseline} configuration "
