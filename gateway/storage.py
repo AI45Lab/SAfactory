@@ -363,6 +363,23 @@ class GatewayStorage:
                                 claimed_dataset_sessions.add(record.session_id)
                                 attach_dataset = True
 
+                    provider_meta: dict[str, Any] | None = None
+                    if self.cfg.storage_type == "cloud" and record.endpoint == "messages":
+                        request_payload = _json_loads(record.request)
+                        response_payload = _json_loads(record.response)
+                        provider_meta = {
+                            "provider": "anthropic",
+                            "request": (
+                                request_payload
+                                if request_payload is not None
+                                else record.request
+                            ),
+                            "response": (
+                                response_payload
+                                if response_payload is not None
+                                else record.response
+                            ),
+                        }
                     step = {
                         "session": session,
                         "step_id": record.seq_id,
@@ -377,6 +394,8 @@ class GatewayStorage:
                     }
                     if attach_dataset:
                         step["dataset"] = dataset
+                    if provider_meta is not None:
+                        step["provider_meta"] = provider_meta
                     steps.append(step)
             with trace.span("storage.record_steps_batch", table="session_steps"):
                 record_ids = await self.data_manager.record_steps_batch(steps)
