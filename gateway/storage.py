@@ -12,6 +12,10 @@ from core.data_manager.manager import DataManager
 from core.data_manager.strategy.base_strategy import SessionContext
 from core.perf_trace import PerfTrace
 
+from gateway.anthropic_messages import (
+    AnthropicMessageConversionError,
+    normalize_anthropic_request,
+)
 from gateway.config import GatewayConfig
 from gateway.models import GatewaySessionBinding, GatewayTelemetryRecord
 
@@ -365,11 +369,7 @@ class GatewayStorage:
                     if self.cfg.storage_type == "cloud":
                         request_payload = _json_loads(record.request)
                         if record.endpoint == "messages":
-                            # Anthropic payloads remain provider-native and live only
-                            # in meta_json. Do not fabricate OpenAI messages from them.
                             response_payload = _json_loads(record.response)
-                            stored_messages = None
-                            stored_response = None
                             provider_meta = {
                                 "provider": "anthropic",
                                 "request": (
@@ -392,12 +392,11 @@ class GatewayStorage:
                         elif record.endpoint == "responses":
                             stored_messages = _responses_request_input(request_payload)
                             stored_response = _responses_output(record.response)
-
                     step = {
                         "session": session,
                         "step_id": record.seq_id,
                         "messages": stored_messages,
-                        "request": None if provider_meta is not None else record.request,
+                        "request": record.request,
                         "response": stored_response,
                         "step_reward": 0.0,
                         "env_state": json.dumps(self._metadata(record), ensure_ascii=False, default=str),
@@ -405,10 +404,10 @@ class GatewayStorage:
                         "truncated": record.is_truncated,
                         "is_trainable": False,
                     }
-                    if provider_meta is not None:
-                        step["provider_meta"] = provider_meta
                     if attach_dataset:
                         step["dataset"] = dataset
+                    if provider_meta is not None:
+                        step["provider_meta"] = provider_meta
                     steps.append(step)
             with trace.span("storage.record_steps_batch", table="session_steps"):
                 record_ids = await self.data_manager.record_steps_batch(steps)
@@ -654,6 +653,15 @@ def _trajectory_messages(record: GatewayTelemetryRecord) -> list[dict[str, Any]]
     # A step's messages are the request-side conversation history. The current
     # assistant output belongs in step.response and will naturally appear in a
     # later step's messages when the client includes it in the next request.
+    if record.endpoint == "messages":
+        try:
+            return normalize_anthropic_request(record.request)
+        except AnthropicMessageConversionError as exc:
+            log.warning(
+                "Anthropic message normalization skipped: request_id=%s error=%s",
+                record.request_id,
+                exc,
+            )
     return [dict(message) for message in record.messages]
 
 

@@ -20,6 +20,8 @@ WTGatewayClient = None
 GatewayConfig = None
 EnvConfigManager = None
 LandingRecord = None
+ChatMessage = None
+ContentItem = None
 generate_deterministic_id = None
 S3Uploader = None
 S3Downloader = None
@@ -38,6 +40,8 @@ def _load_wt_sdk() -> None:
     global GatewayConfig
     global EnvConfigManager
     global LandingRecord
+    global ChatMessage
+    global ContentItem
     global generate_deterministic_id
     global S3Uploader
     global S3Downloader
@@ -83,6 +87,8 @@ def _load_wt_sdk() -> None:
     GatewayConfig = GatewayConfig or wt_sdk.GatewayConfig
     EnvConfigManager = EnvConfigManager or wt_sdk.EnvConfigManager
     LandingRecord = LandingRecord or wt_sdk_models.LandingRecord
+    ChatMessage = ChatMessage or getattr(wt_sdk_models, "ChatMessage", None)
+    ContentItem = ContentItem or getattr(wt_sdk_models, "ContentItem", None)
     generate_deterministic_id = generate_deterministic_id or wt_sdk_utils.generate_deterministic_id
     S3Uploader = S3Uploader or wt_sdk_utils.S3Uploader
     S3Downloader = S3Downloader or wt_sdk_utils.S3Downloader
@@ -111,6 +117,8 @@ def _install_mock_wt_sdk_fallbacks() -> None:
     """Provide tiny SDK-like objects for tests that monkeypatch cloud clients."""
     global GatewayConfig
     global LandingRecord
+    global ChatMessage
+    global ContentItem
     global generate_deterministic_id
     global S3Uploader
     global S3Downloader
@@ -160,6 +168,8 @@ def _install_mock_wt_sdk_fallbacks() -> None:
 
     GatewayConfig = GatewayConfig or _GatewayConfig
     LandingRecord = LandingRecord or _Model
+    ChatMessage = ChatMessage or _Model
+    ContentItem = ContentItem or _Model
     generate_deterministic_id = generate_deterministic_id or _deterministic_id
     S3Uploader = S3Uploader or _S3Uploader
     S3Downloader = S3Downloader or _S3Downloader
@@ -1280,6 +1290,63 @@ class CloudStrategy(StorageStrategy):
         elif not isinstance(value, (dict, list)):
             value = {"role": "assistant", "content": str(value)}
         return json.dumps(value, ensure_ascii=False, default=str)
+
+    def _convert_to_chat_messages(self, messages: List[Dict]) -> List[Any]:
+        """Adapt extended messages only for legacy SDK consumers."""
+        _load_wt_sdk()
+        if ChatMessage is None or ContentItem is None:
+            raise RuntimeError(
+                "Installed wt_sdk does not expose legacy ChatMessage/ContentItem models"
+            )
+
+        result = []
+        for message in messages:
+            content_items = []
+            for field in ("reasoning_content", "encrypted_content"):
+                value = message.get(field)
+                if isinstance(value, str) and value:
+                    content_items.append(ContentItem(type=field, text=value))
+
+            content = message.get("content")
+            if isinstance(content, str):
+                content_items.append(ContentItem(type="text", text=content))
+            elif isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "image_url":
+                        content_items.append(
+                            ContentItem(
+                                type="image_url",
+                                image_url={"url": item.get("image_url", {}).get("url", "")},
+                            )
+                        )
+                    elif item.get("type") == "text":
+                        content_items.append(
+                            ContentItem(type="text", text=item.get("text", ""))
+                        )
+                    else:
+                        content_items.append(
+                            ContentItem(
+                                type=str(item.get("type") or "provider_content"),
+                                text=json.dumps(
+                                    item,
+                                    ensure_ascii=False,
+                                    separators=(",", ":"),
+                                    default=str,
+                                ),
+                            )
+                        )
+
+            kwargs: Dict[str, Any] = {
+                "role": message.get("role", "user"),
+                "content": content_items,
+            }
+            for field in ("name", "refusal", "tool_calls", "tool_call_id", "function_call"):
+                if message.get(field) is not None:
+                    kwargs[field] = message[field]
+            result.append(ChatMessage(**kwargs))
+        return result
     
     async def _process_images(
         self,
