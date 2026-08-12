@@ -30,7 +30,6 @@ from .simulation_config import (
     build_manager_runtime_config,
     expand_rl_epoch,
     expand_rl_group_size,
-    rebuild_sqlite_db,
 )
 from .simulation_lease_pool import SimulationLeasePool
 from .simulation_worker import SimulationWorkerGroup
@@ -93,9 +92,6 @@ class SimulationFlow:
             raise
 
     async def prepare_storage(self) -> None:
-        if self.cfg.rebuild_table and self.cfg.storage_type == "sqlite":
-            rebuild_sqlite_db(self.cfg.db_url)
-
         storage_config: Dict[str, Any] = {
             "enable_buffer": self.cfg.enable_buffer,
             "buffer_size": self.cfg.buffer_size,
@@ -120,6 +116,8 @@ class SimulationFlow:
             self.cfg.storage_type,
             self.cfg.startup_submit_count,
             self.cfg.followup_submit_batch,
+            rebuild_table=self.cfg.rebuild_table,
+            resume=self.cfg.resume,
         )
         self.manager_cfg = build_manager_runtime_config(self.cfg)
         log.info(

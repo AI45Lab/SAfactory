@@ -92,6 +92,11 @@ class StorageStrategy(ABC):
                     continue
                 return env
         return None
+
+    @abstractmethod
+    async def mark_environment_finished(self, env_id: str) -> int:
+        """Mark one environment completed after its full workflow succeeds."""
+        pass
     
     @abstractmethod
     async def create_session(

@@ -278,6 +278,21 @@ class SqliteStrategy(StorageStrategy):
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
 
+    async def mark_environment_finished(self, env_id: str) -> int:
+        """Mark one active environment for the current job as finished."""
+        await self.init()
+        updated = await JobEnvironment.filter(
+            job_id=self.job_id,
+            env_id=env_id,
+            is_deleted=False,
+        ).update(finished=True)
+        if updated != 1:
+            raise RuntimeError(
+                f"expected one env config for job_id={self.job_id!r} env_id={env_id!r}, "
+                f"updated={updated}"
+            )
+        return updated
+
     async def create_session(
         self,
         env_id: str,

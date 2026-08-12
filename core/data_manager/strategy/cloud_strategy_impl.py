@@ -532,6 +532,24 @@ class CloudStrategy(StorageStrategy):
         self._env_configs[str(config["env_id"])] = config
         return dict(config)
 
+    async def mark_environment_finished(self, env_id: str) -> int:
+        """Mark one cloud environment for the current job as finished."""
+        await self.init()
+        config = await self.get_environment_by_env_id(env_id)
+        if config is None or str(config.get("job_id") or "") != str(self.job_id):
+            raise RuntimeError(
+                f"env config does not belong to job_id={self.job_id!r}: env_id={env_id!r}"
+            )
+        updated = await asyncio.to_thread(
+            self.env_manager.update_config,
+            env_id,
+            {"finished": True},
+        )
+        if not updated:
+            raise RuntimeError(f"failed to mark cloud env config finished: env_id={env_id}")
+        self._env_configs[env_id]["finished"] = True
+        return 1
+
     def get_env_configs(
         self,
         limit: Optional[int] = None,
@@ -539,7 +557,10 @@ class CloudStrategy(StorageStrategy):
         job_id: Optional[str] = None,
     ) -> List[Dict]:
         """Synchronous scheduler reader for cached cloud environment configs."""
-        configs = self._list_env_configs(job_id=job_id)
+        configs = [
+            row for row in self._list_env_configs(job_id=job_id)
+            if not _truthy_bool(row.get("finished", False))
+        ]
         start = max(0, int(offset or 0))
         if limit is None:
             return configs[start:]

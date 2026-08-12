@@ -41,7 +41,9 @@ class AgentDataRepository:
         self._job_id = str(job_id or "").strip() or None
         self._db_processing_done_checker = db_processing_done_checker
 
-        self._cursor_reads_enabled = isinstance(conn, sqlite3.Connection)
+        self._cursor_reads_enabled = isinstance(conn, sqlite3.Connection) or callable(
+            getattr(conn, "get_env_configs", None)
+        )
         self._last_seen_id: int = 0
         self._fallback_offset: int = 0
         self._row_buffer: Deque[Dict[str, Any]] = deque()

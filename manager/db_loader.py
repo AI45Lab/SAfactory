@@ -148,6 +148,12 @@ def _normalize_rows(rows: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _is_finished(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def _rows_from_mapping_cache(env_configs: Mapping[str, Any], job_id: Optional[str] = None) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for index, value in enumerate(env_configs.values(), start=1):
@@ -158,6 +164,8 @@ def _rows_from_mapping_cache(env_configs: Mapping[str, Any], job_id: Optional[st
                 continue
         row = _normalize_remote_row(value, index)
         if job_id and str(row.get("job_id") or "") != job_id:
+            continue
+        if _is_finished(row.get("finished", False)):
             continue
         rows.append(row)
     return rows
@@ -272,7 +280,7 @@ def get_active_data(
 ) -> List[Dict[str, Any]]:
     """Return a paginated slice of active agent rows from the legacy table."""
     if isinstance(conn, sqlite3.Connection):
-        filters = ["is_deleted = 0"]
+        filters = ["is_deleted = 0", "finished = 0"]
         params: List[Any] = []
         if job_id:
             filters.append("job_id = ?")
@@ -303,7 +311,7 @@ def get_active_data_after_id(
 ) -> List[Dict[str, Any]]:
     """Return active agent rows whose primary key is greater than ``after_id``."""
     if isinstance(conn, sqlite3.Connection):
-        filters = ["is_deleted = 0", "id > ?"]
+        filters = ["is_deleted = 0", "finished = 0", "id > ?"]
         params: List[Any] = [after_id]
         if job_id:
             filters.append("job_id = ?")
@@ -340,7 +348,7 @@ def get_active_data_after_id(
 def get_env_image_map(conn: Any, job_id: Optional[str] = None) -> Dict[str, Any]:
     """Return a mapping of legacy env_name -> image for all active agents."""
     if isinstance(conn, sqlite3.Connection):
-        filters = ["is_deleted = 0"]
+        filters = ["is_deleted = 0", "finished = 0"]
         params: List[Any] = []
         if job_id:
             filters.append("job_id = ?")
@@ -377,6 +385,7 @@ def get_all_image(conn: Any, job_id: Optional[str] = None) -> Dict[str, str]:
     if isinstance(conn, sqlite3.Connection):
         filters = [
             "is_deleted = 0",
+            "finished = 0",
             "image IS NOT NULL AND TRIM(image) != ''",
             "env_name IS NOT NULL",
         ]

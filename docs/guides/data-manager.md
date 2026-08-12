@@ -185,4 +185,4 @@ SQLite strategy creates runtime indexes:
 - `idx_job_environments_job_deleted_id` on `(job_id, is_deleted, id)`.
 - `idx_session_steps_job_trainable_id` on `(job_id, is_trainable, id)`.
 
-Use `--rebuild-table` only for disposable local runs; it deletes the SQLite DB file before loading configs.
+An existing `job_id` requires either `--resume` or `--rebuild-table`. Resume skips completed environments; rebuild deletes only the current job's configs and trajectories. The options are mutually exclusive.

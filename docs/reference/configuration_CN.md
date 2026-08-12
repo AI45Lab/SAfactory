@@ -65,7 +65,8 @@ python launcher.py \
 
 | 类别 | 参数 | 默认值 | 说明 |
 |------|------|--------|------|
-| Storage | `--rebuild-table` / `--no-rebuild-table` | `false` | SQLite 下，加载配置前删除 DB 文件。 |
+| Storage | `--rebuild-table` / `--no-rebuild-table` | `false` | 删除当前 `job_id` 的配置和轨迹后重头运行。不能与 `--resume` 同时使用。 |
+| Storage | `--resume` | `false` | 续跑已有 `job_id`，跳过 `finished=true` 的环境。 |
 | Storage | `--disable-buffer` | buffer 启用 | 禁用缓冲写入。 |
 | Storage | `--buffer-size` | `100` | 写入缓冲区容量。 |
 | Storage | `--flush-interval` | `5.0` | 写入缓冲刷新间隔，单位秒。 |

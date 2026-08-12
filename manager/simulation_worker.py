@@ -237,6 +237,7 @@ class SimulationWorkerGroup:
             result: SimulationStartResult | None = None
             release_reusable: bool | None = None
             cancelled = False
+            gateway_finalized = self.gateway_client is None
             try:
                 log.debug(
                     "worker=%d acquired agent=%s runtime=%s resource=%s reuse=%s",
@@ -268,13 +269,21 @@ class SimulationWorkerGroup:
                 trace.update_context(gateway_completion_mode=completion_mode)
                 if self.gateway_client is not None:
                     with trace.span("gateway_finalize"):
-                        await self._finalize_gateway_session(
+                        gateway_finalized = await self._finalize_gateway_session(
                             result,
                             completion_mode=completion_mode,
                             worker_id=worker_id,
                             agent_key=agent_key,
                             trace=trace,
                         )
+
+                if (
+                    (result.status == "succeeded" or result.truncated)
+                    and completion_mode == "complete"
+                    and gateway_finalized
+                ):
+                    with trace.span("mark_environment_finished"):
+                        await self.data_manager.mark_environment_finished(lease.agent_id)
 
                 if completion_mode == "abort":
                     result.total_reward = 0.0
@@ -464,9 +473,9 @@ class SimulationWorkerGroup:
         worker_id: int,
         agent_key: str,
         trace: PerfTrace | None = None,
-    ) -> None:
+    ) -> bool:
         if self.gateway_client is None:
-            return
+            return True
         reason = "rollout_finished" if completion_mode == "complete" else "system_error"
         try:
             if trace is None:
@@ -485,6 +494,7 @@ class SimulationWorkerGroup:
                     )
                 with trace.span("gateway_wait_telemetry_flush"):
                     await self.gateway_client.wait_telemetry_flush(result.session_id)
+            return True
         except httpx.HTTPError as exc:
             log.warning(
                 "worker=%d agent=%s gateway session finalization failed; preserving rollout status=%s "
@@ -495,6 +505,7 @@ class SimulationWorkerGroup:
                 result.session_id,
                 exc,
             )
+            return False
 
     @staticmethod
     def _gateway_completion_mode(result: SimulationStartResult) -> str:

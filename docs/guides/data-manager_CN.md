@@ -185,4 +185,4 @@ SQLite strategy 会创建运行时索引：
 - `idx_job_environments_job_deleted_id` on `(job_id, is_deleted, id)`。
 - `idx_session_steps_job_trainable_id` on `(job_id, is_trainable, id)`。
 
-`--rebuild-table` 只建议用于可丢弃的本地运行；它会在加载配置前删除 SQLite DB 文件。
+已有 `job_id` 必须显式选择 `--resume` 或 `--rebuild-table`。前者跳过已完成环境，后者只删除当前任务的配置和轨迹；两个参数不能同时使用。

@@ -80,6 +80,7 @@ class SimulationRunConfig:
     cleanup_stale_docker_containers: bool = True
     max_workers: Optional[int] = None
     rebuild_table: bool = False
+    resume: bool = False
     enable_buffer: bool = True
     buffer_size: int = 100
     flush_interval: float = 5.0

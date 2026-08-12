@@ -38,6 +38,7 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
         help="SQLite storage DB URI. Cloud storage ignores this and uses wt-data-gateway defaults.",
     )
     parser.add_argument("--rebuild-table", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--resume", action="store_true", help="Continue a job and skip finished environments")
     parser.add_argument("--disable-buffer", dest="enable_buffer", action="store_false", default=True)
     parser.add_argument("--buffer-size", type=int, default=100)
     parser.add_argument("--flush-interval", type=float, default=5.0)

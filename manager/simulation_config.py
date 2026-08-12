@@ -316,6 +316,7 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         cleanup_stale_docker_containers=bool(getattr(args, "cleanup_stale_docker_containers", True)),
         max_workers=max_workers,
         rebuild_table=bool(args.rebuild_table),
+        resume=bool(getattr(args, "resume", False)),
         enable_buffer=bool(args.enable_buffer),
         buffer_size=int(args.buffer_size),
         flush_interval=float(args.flush_interval),
@@ -920,15 +921,6 @@ def set_nested(cfg: Dict[str, Any], path: List[str], value: Any) -> None:
             cur[key] = nxt
         cur = nxt
     cur[path[-1]] = value
-
-
-def rebuild_sqlite_db(db_url: str) -> None:
-    if not db_url.startswith("sqlite://"):
-        return
-    file_path = db_url[len("sqlite://") :].split("?", 1)[0]
-    if file_path and os.path.exists(file_path):
-        os.remove(file_path)
-        log.info("Removed existing SQLite DB for rebuild: %s", file_path)
 
 
 def _validate_gateway_route_key(model: str, *, arg_name: str = "--llm-model") -> None:

@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Optional, Union, Set
 from tortoise.transactions import in_transaction
 
 from .load_yaml import load_yaml_configs
-from core.data_manager.models import JobEnvironment
+from core.data_manager.models import JobEnvironment, SessionStep
 
 log = logging.getLogger("yaml_aggregator")
 
@@ -201,12 +201,15 @@ async def sync_configs_to_db(
     storage_type: str,
     startup_submit_count: int = 100,
     followup_submit_batch: int = 100,
+    *,
+    rebuild_table: bool = False,
+    resume: bool = False,
 ) -> Any:
     """
     Sync YAML configurations to the database.
 
-    For SQLite: Uses the JobEnvironment table; removed envs are soft-deleted.
-    For Cloud: Appends configs to S3 via EnvConfigManager.
+    Existing jobs must explicitly choose either rebuild or resume. Rebuild
+    deletes only the current job; resume keeps existing configs and skips sync.
 
     Returns:
         SQLite: sqlite3.Connection for manager usage
@@ -217,6 +220,39 @@ async def sync_configs_to_db(
     set_job_db_processing_done(job_id, False)
 
     try:
+        if rebuild_table and resume:
+            raise ValueError("--rebuild-table and --resume cannot be used together")
+
+        existing_cloud_configs: List[Dict] = []
+        if storage_type == "sqlite":
+            job_exists = await JobEnvironment.filter(job_id=job_id).exists()
+        elif storage_type == "cloud":
+            existing_cloud_configs = await _get_cloud_job_configs(data_manager)
+            job_exists = bool(existing_cloud_configs)
+        else:
+            raise ValueError(f"Unknown storage type: {storage_type}")
+
+        if job_exists and resume:
+            await _delete_unfinished_session_steps(
+                data_manager,
+                storage_type,
+                existing_cloud_configs,
+            )
+            if storage_type == "cloud":
+                _restore_cloud_env_cache(data_manager, existing_cloud_configs)
+            set_job_db_processing_done(job_id, True)
+            log.info("Resuming existing job_id=%s; finished environments will be skipped", job_id)
+            return data_manager.get_sync_connection() if storage_type == "sqlite" else data_manager.strategy.env_manager
+        if job_exists and not rebuild_table:
+            raise RuntimeError(
+                f"job_id={job_id!r} already exists; use --resume to continue it "
+                "or --rebuild-table to start it over"
+            )
+
+        if job_exists:
+            await _delete_job_data(data_manager, storage_type, existing_cloud_configs)
+            log.info("Deleted existing data for job_id=%s before rebuild", job_id)
+
         if storage_type == "sqlite":
             return await _sync_sqlite(
                 data_manager,
@@ -231,10 +267,116 @@ async def sync_configs_to_db(
                 startup_submit_count,
                 followup_submit_batch,
             )
-        raise ValueError(f"Unknown storage type: {storage_type}")
     except Exception:
         set_job_db_processing_done(job_id, True)
         raise
+
+
+def _escape_sql_literal(value: str) -> str:
+    return str(value).replace("'", "''")
+
+
+async def _get_cloud_job_configs(data_manager) -> List[Dict]:
+    env_manager = data_manager.strategy.env_manager
+    query = f"job_id = '{_escape_sql_literal(data_manager.job_id)}'"
+    rows: List[Dict] = []
+    offset = 0
+    page_size = 1000
+    while True:
+        page = await asyncio.to_thread(
+            env_manager.get_env_configs,
+            limit=page_size,
+            offset=offset,
+            filter_query=query,
+        )
+        if not page:
+            break
+        rows.extend(dict(row) for row in page)
+        if len(page) < page_size:
+            break
+        offset += len(page)
+    return rows
+
+
+def _restore_cloud_env_cache(data_manager, configs: List[Dict]) -> None:
+    for config in configs:
+        row = data_manager.strategy._normalize_env_config(config)
+        env_id = str(row.get("env_id") or "")
+        if env_id:
+            data_manager.strategy._env_configs[env_id] = row
+
+
+async def _delete_unfinished_session_steps(
+    data_manager,
+    storage_type: str,
+    cloud_configs: List[Dict],
+) -> None:
+    job_id = data_manager.job_id
+    if storage_type == "sqlite":
+        unfinished_env_ids = await JobEnvironment.filter(
+            job_id=job_id,
+            finished=False,
+        ).values_list("env_id", flat=True)
+        if not unfinished_env_ids:
+            return
+        session_ids = await SessionStep.filter(
+            job_id=job_id,
+            session_id__in=unfinished_env_ids,
+        ).distinct().values_list("session_id", flat=True)
+        if session_ids:
+            await SessionStep.filter(
+                job_id=job_id,
+                session_id__in=session_ids,
+            ).delete()
+        return
+
+    client = data_manager.strategy.client
+    session_ids = []
+    for config in cloud_configs:
+        if config.get("finished", False):
+            continue
+        env_id = str(config.get("env_id") or "")
+        if not env_id:
+            continue
+        query = (
+            f"job_id = '{_escape_sql_literal(job_id)}' AND "
+            f"session_id = '{_escape_sql_literal(env_id)}'"
+        )
+        rows = await asyncio.to_thread(
+            client.query_data,
+            filter_query=query,
+            limit=1,
+            columns=["session_id"],
+            partition=job_id,
+            checkout_latest=True,
+        )
+        if rows:
+            session_ids.append(str(rows[0].get("session_id") or env_id))
+
+    for session_id in session_ids:
+        query = (
+            f"job_id = '{_escape_sql_literal(job_id)}' AND "
+            f"session_id = '{_escape_sql_literal(session_id)}'"
+        )
+        await asyncio.to_thread(client.delete_landing, query)
+
+
+async def _delete_job_data(data_manager, storage_type: str, cloud_configs: List[Dict]) -> None:
+    job_id = data_manager.job_id
+    if storage_type == "sqlite":
+        async with in_transaction() as connection:
+            await SessionStep.filter(job_id=job_id).using_db(connection).delete()
+            await JobEnvironment.filter(job_id=job_id).using_db(connection).delete()
+        return
+
+    strategy = data_manager.strategy
+    query = f"job_id = '{_escape_sql_literal(job_id)}'"
+    await asyncio.to_thread(strategy.client.delete_landing, query)
+    for config in cloud_configs:
+        env_id = str(config.get("env_id") or "")
+        if env_id and not await asyncio.to_thread(strategy.env_manager.delete_config, env_id):
+            raise RuntimeError(f"failed to delete cloud env config env_id={env_id}")
+        strategy._env_configs.pop(env_id, None)
 
 
 async def _sync_sqlite(

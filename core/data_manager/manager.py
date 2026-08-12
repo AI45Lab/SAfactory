@@ -83,6 +83,10 @@ class DataManager:
         """Retrieve one environment config by env_id."""
         return await self.strategy.get_environment_by_env_id(env_id)
 
+    async def mark_environment_finished(self, env_id: str) -> int:
+        """Mark one environment completed for this job."""
+        return await self.strategy.mark_environment_finished(env_id)
+
     def create_session(
         self,
         env_id: str,
