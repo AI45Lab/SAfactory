@@ -118,7 +118,7 @@ class DataManager:
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
-        is_trainable: bool = True,
+        is_trainable: bool = False,
         dataset: Optional[Any] = None,
     ) -> None:
         """

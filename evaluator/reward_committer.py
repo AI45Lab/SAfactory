@@ -131,7 +131,6 @@ class RewardCommitter:
                         ),
                         "is_terminal": True,
                         "is_session_completed": True,
-                        "is_trainable": False,
                     },
                 )
             if recorded <= 0:
@@ -221,7 +220,7 @@ class RewardCommitter:
                         """
                         UPDATE session_steps
                         SET step_reward = ?, reward = ?, env_state = ?,
-                            is_terminal = 1, is_session_completed = 1, is_trainable = 0
+                            is_terminal = 1, is_session_completed = 1
                         WHERE id = ?
                         """,
                         (eval_result.normalized_score_10, eval_result.normalized_score_10, env_state, summary["id"]),
@@ -234,12 +233,11 @@ class RewardCommitter:
                 """
                 UPDATE session_steps
                 SET step_reward = ?, reward = ?, env_state = ?,
-                    is_terminal = 1, is_session_completed = 1, is_trainable = 1
+                    is_terminal = 1, is_session_completed = 1
                 WHERE id = ?
                 """,
                 (eval_result.normalized_score_10, eval_result.normalized_score_10, env_state, terminal["id"]),
             )
-            _mark_trainable(conn, trainable_ids)
             conn.commit()
 
     def _build_reward_metadata(self, *, session_id: str, eval_result: EvalResult) -> str:
@@ -342,15 +340,3 @@ def _has_messages(value: Any) -> bool:
     except Exception:
         return bool(value)
     return bool(parsed)
-
-
-def _mark_trainable(conn: sqlite3.Connection, ids: list[int]) -> None:
-    for offset in range(0, len(ids), 500):
-        chunk = ids[offset : offset + 500]
-        if not chunk:
-            continue
-        placeholders = ",".join("?" for _ in chunk)
-        conn.execute(
-            f"UPDATE session_steps SET is_trainable = 1 WHERE id IN ({placeholders})",
-            tuple(chunk),
-        )

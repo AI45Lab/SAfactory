@@ -82,7 +82,7 @@ class SessionStep(Model):
     is_terminal = fields.BooleanField(default=False, description="Whether this step is terminal")
     is_truncated = fields.BooleanField(default=False, description="Whether this step is truncated")
     is_session_completed = fields.BooleanField(default=False, description="Whether the session is completed (final record)")
-    is_trainable = fields.BooleanField(default=True, description="Whether this step is used for training")
+    is_trainable = fields.BooleanField(default=False, description="Whether this step is used for training")
 
     # Timestamps
     created_at = fields.DatetimeField(auto_now_add=True)

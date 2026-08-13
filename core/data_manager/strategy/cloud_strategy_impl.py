@@ -626,7 +626,7 @@ class CloudStrategy(StorageStrategy):
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
-        is_trainable: bool = True,
+        is_trainable: bool = False,
         dataset: Optional[Any] = None,
     ):
         """
@@ -783,7 +783,7 @@ class CloudStrategy(StorageStrategy):
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
-        is_trainable: bool = True,
+        is_trainable: bool = False,
         dataset: Optional[Any] = None,
         provider_meta: Optional[Dict[str, Any]] = None,
     ) -> tuple[Any, str]:
@@ -855,7 +855,9 @@ class CloudStrategy(StorageStrategy):
             is_terminal=terminated or truncated,
             is_truncated=truncated,
             is_session_completed=terminated or truncated,
-            is_trainable=is_trainable,
+            # Training eligibility is assigned by a later, explicit workflow.
+            # Every newly recorded trajectory step starts non-trainable.
+            is_trainable=False,
             meta_json=json.dumps(meta_json, ensure_ascii=False, default=str)
         )
         
@@ -984,7 +986,7 @@ class CloudStrategy(StorageStrategy):
             if "dataset" in meta:
                 row["dataset"] = meta["dataset"]
             if row.get("is_trainable") is None:
-                row["is_trainable"] = meta.get("is_trainable", True)
+                row["is_trainable"] = meta.get("is_trainable", False)
             rows.append(row)
 
         rows.sort(

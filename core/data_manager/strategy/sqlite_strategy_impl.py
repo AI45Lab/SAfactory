@@ -329,7 +329,7 @@ class SqliteStrategy(StorageStrategy):
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
-        is_trainable: bool = True,
+        is_trainable: bool = False,
         dataset: Optional[Any] = None,
     ) -> None:
         """
@@ -385,7 +385,9 @@ class SqliteStrategy(StorageStrategy):
                 is_terminal=terminated or truncated,
                 is_truncated=truncated,
                 is_session_completed=terminated or truncated,
-                is_trainable=is_trainable,
+                # Training eligibility is assigned by a later, explicit workflow.
+                # Every newly recorded trajectory step starts non-trainable.
+                is_trainable=False,
             )
 
             # Use buffer or direct save
