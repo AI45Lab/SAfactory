@@ -32,6 +32,8 @@ _RJOB_DEFAULT_CONFIG: Dict[str, Any] = {
     "auto_delete_duration": "",
     "keep_failed_jobs": False,
     "submit_concurrency": 0,
+    "resume_cleanup_timeout_s": 120.0,
+    "resume_cleanup_poll_interval_s": 1.0,
 }
 
 _SANDBOX_DEFAULT_CONFIG: Dict[str, Any] = {
@@ -115,6 +117,14 @@ def _normalize_rjob_config(section: Dict[str, Any]) -> Dict[str, Any]:
     merged["keep_failed_jobs"] = _as_bool(merged.get("keep_failed_jobs"), default=False)
     merged["retries"] = max(0, int(merged.get("retries") or 0))
     merged["poll_interval_s"] = max(0.1, float(merged.get("poll_interval_s") or 5.0))
+    merged["resume_cleanup_timeout_s"] = max(
+        1.0,
+        float(merged.get("resume_cleanup_timeout_s") or 120.0),
+    )
+    merged["resume_cleanup_poll_interval_s"] = max(
+        0.1,
+        float(merged.get("resume_cleanup_poll_interval_s") or 1.0),
+    )
     merged["submit_concurrency"] = max(0, int(merged.get("submit_concurrency") or 0))
     merged["name_prefix"] = merged["name_prefix"] or "safactory"
     return merged
@@ -606,10 +616,21 @@ def _normalize_agent_start_rjob(agent_name: Any, spec: Any, cfg_path: Path) -> D
         if key in rjob_raw:
             rjob[key] = bool(rjob_raw.get(key))
 
-    for key in ("replicas", "poll_interval_s", "termination_grace_period_seconds", "local_storage_in_mb"):
+    for key in (
+        "replicas",
+        "poll_interval_s",
+        "resume_cleanup_timeout_s",
+        "resume_cleanup_poll_interval_s",
+        "termination_grace_period_seconds",
+        "local_storage_in_mb",
+    ):
         if key in rjob_raw and rjob_raw.get(key) is not None:
             value = rjob_raw.get(key)
-            rjob[key] = float(value) if key == "poll_interval_s" else int(value)
+            rjob[key] = (
+                float(value)
+                if key in {"poll_interval_s", "resume_cleanup_timeout_s", "resume_cleanup_poll_interval_s"}
+                else int(value)
+            )
 
     for key in ("env", "labels", "annotations", "resources", "requests", "affinity"):
         if key in rjob_raw:

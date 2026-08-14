@@ -102,6 +102,10 @@ def containerize_local_gateway_url(url: str) -> str:
 
 def result_artifact_path(request: SimulationStartRequest) -> str:
     env_params = request.env_params if isinstance(request.env_params, dict) else {}
+    return _result_artifact_path(request.job_id, request.session_id, env_params)
+
+
+def _result_artifact_path(job_id: str, session_id: str, env_params: Dict[str, Any]) -> str:
     dataset = env_params.get("dataset") if isinstance(env_params.get("dataset"), dict) else {}
 
     explicit = first_text(
@@ -121,8 +125,8 @@ def result_artifact_path(request: SimulationStartRequest) -> str:
     return "/".join(
         [
             root or DEFAULT_RESULT_ROOT,
-            safe_path_part(request.job_id),
-            safe_path_part(request.session_id),
+            safe_path_part(job_id),
+            safe_path_part(session_id),
             RESULT_FILENAME,
         ]
     )
@@ -130,6 +134,36 @@ def result_artifact_path(request: SimulationStartRequest) -> str:
 
 def result_artifact_candidates(request: SimulationStartRequest, artifact_path: str | None = None) -> list[Path]:
     raw = str(artifact_path or result_artifact_path(request) or "").strip()
+    return _result_path_candidates(raw)
+
+
+def result_session_dir_candidates(
+    *,
+    job_id: str,
+    session_id: str,
+    env_params: Dict[str, Any] | None = None,
+) -> list[Path]:
+    """Return launcher-visible candidates for results/<job_id>/<session_id>."""
+    params = env_params if isinstance(env_params, dict) else {}
+    dataset = params.get("dataset") if isinstance(params.get("dataset"), dict) else {}
+    explicit = first_text(
+        dataset.get("safactory_result_path"),
+        params.get("safactory_result_path"),
+    )
+    artifact = _result_artifact_path(job_id, session_id, params)
+    candidates: list[Path] = []
+
+    def add(path: Path) -> None:
+        if path not in candidates:
+            candidates.append(path)
+
+    for path in _result_path_candidates(artifact):
+        add(path if explicit else path.parent)
+    add(Path.cwd() / "results" / safe_path_part(job_id) / safe_path_part(session_id))
+    return candidates
+
+
+def _result_path_candidates(raw: str) -> list[Path]:
     if not raw:
         return []
 

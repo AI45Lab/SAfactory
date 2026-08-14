@@ -26,6 +26,7 @@ from evaluator.trajectory_reader import TrajectoryReader
 from .agent_start_client import AgentStartClient
 from .db_loader import scheduler_db_reader
 from .manager import AgentPoolManager
+from .resume_cleanup import cleanup_resume_artifacts
 from .simulation_config import (
     build_manager_runtime_config,
     expand_rl_epoch,
@@ -121,6 +122,13 @@ class SimulationFlow:
             resume=self.cfg.resume,
         )
         self.manager_cfg = build_manager_runtime_config(self.cfg)
+        if self.cfg.resume and self.cfg.mode == "rjob":
+            await cleanup_resume_artifacts(
+                job_id=self.cfg.job_id,
+                model=self.cfg.llm_model,
+                data_manager=self.data_manager,
+                manager_cfg=self.manager_cfg,
+            )
         log.info(
             "storage prepared: job_id=%s base_pool_size=%d warm_pool_size=%d startup_submit_count=%d followup_submit_batch=%d",
             self.cfg.job_id,

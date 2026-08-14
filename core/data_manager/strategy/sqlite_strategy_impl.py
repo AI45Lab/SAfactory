@@ -279,6 +279,8 @@ class SqliteStrategy(StorageStrategy):
                     "env_params": e.env_params,
                     "image": e.image,
                     "group_id": e.group_id,
+                    "finished": e.finished,
+                    "is_deleted": e.is_deleted,
                     "created_at": e.created_at.isoformat() if e.created_at else None
                 }
                 for e in envs
@@ -320,6 +322,8 @@ class SqliteStrategy(StorageStrategy):
                 "env_params": env.env_params,
                 "image": env.image,
                 "group_id": env.group_id,
+                "finished": env.finished,
+                "is_deleted": env.is_deleted,
                 "created_at": env.created_at.isoformat() if env.created_at else None,
             }
             trace.emit_summary(status="success", row_count=1, job_id=env.job_id, env_name=env.env_name)
