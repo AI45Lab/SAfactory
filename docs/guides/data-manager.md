@@ -2,6 +2,8 @@
 
 Safactory records task rows and session rows through `core.data_manager`. The default local backend is SQLite at `sqlite://env_trajs.db`; cloud mode delegates to `wt-data-gateway` defaults.
 
+The storage boundary is intentionally narrow: Gateway constructs trajectory rows and owns session-close selection, Evaluator classifies rows and commits rewards, Manager handles the unevaluated-session fallback, and SQLite/Cloud strategies only perform row persistence. YAML aggregation and message-image persistence remain in `core.data_manager`.
+
 For SQLite, keep these values identical:
 
 ```yaml
@@ -46,22 +48,24 @@ One row per scheduled environment instance.
 
 ### `session_steps`
 
-One row per gateway telemetry event, trainable trajectory step, close event, or evaluation summary.
+One row per gateway inference, direct trajectory step, or evaluation summary. Session close updates the selected trajectory row in place.
 
 | Field | Meaning |
 |-------|---------|
 | `id` | Auto-increment primary key. |
+| `record_id` | Backend-neutral unique row identifier used for exact updates. |
 | `session_id` | Session UUID. Matches `job_environments.env_id`. |
 | `step_id` | Step index inside the session. Gateway telemetry uses request sequence IDs. |
 | `env_name` | Adapter name. Gateway may patch it after resolving the environment row. |
 | `llm_model` | Gateway route key or model name associated with the row. |
 | `group_id` | RL group identifier. |
 | `job_id` | Launcher run identifier. |
-| `messages` | JSON-serialized OpenAI-style messages. Gateway appends assistant output when possible. |
-| `response` | Raw response/action for direct runtime rows. Gateway telemetry stores response in `messages` and leaves this empty. |
+| `messages` | JSON-serialized request-side conversation history. |
+| `request` | Original or normalized provider request for the current step. |
+| `response` | Raw or normalized assistant response/action for the current step. |
 | `step_reward` | Per-row reward. Evaluation commit writes final score here. |
 | `reward` | Cumulative reward. Evaluation commit also writes final score here. |
-| `env_state` | JSON metadata. Contains `event_type` for gateway/evaluation events. |
+| `meta_json` | Unified JSON metadata. Contains `event_type` for gateway/evaluation events. |
 | `is_terminal` | Whether this row terminates the session. |
 | `is_truncated` | Whether termination was caused by truncation. |
 | `is_session_completed` | Whether the session is sealed for readers/evaluators. |
@@ -70,7 +74,7 @@ One row per gateway telemetry event, trainable trajectory step, close event, or 
 
 ## Row Types
 
-The row type is usually determined by `env_state.event_type` and `is_trainable`.
+The row type is usually determined by `meta_json.event_type` and `is_trainable`.
 
 | Type | Marker | Trainable | Produced by |
 |------|--------|-----------|-------------|
@@ -122,11 +126,11 @@ Inspect gateway event types:
 ```bash
 sqlite3 env_trajs.db "
   SELECT id, session_id, step_id,
-         json_extract(env_state, '$.event_type') AS event_type,
-         json_extract(env_state, '$.status_code') AS status_code,
-         json_extract(env_state, '$.total_latency_ms') AS total_latency_ms
+         json_extract(meta_json, '$.event_type') AS event_type,
+         json_extract(meta_json, '$.status_code') AS status_code,
+         json_extract(meta_json, '$.total_latency_ms') AS total_latency_ms
   FROM session_steps
-  WHERE env_state IS NOT NULL
+  WHERE meta_json IS NOT NULL
   ORDER BY id DESC
   LIMIT 20;"
 ```
@@ -173,7 +177,7 @@ sqlite3 env_trajs.db "
 | `reward` | `session_steps.step_reward`. |
 | `instance_id` | `session_steps.group_id`. |
 | `extra_info.session_id` | `session_steps.session_id`. |
-| `extra_info.weight_version` | Parsed from `env_state.weight_version` when present. |
+| `extra_info.weight_version` | Parsed from persisted `meta_json.weight_version` through the unchanged training adapter. |
 | `extra_info.truncated` | `session_steps.is_truncated`. |
 
 Rows are grouped by `group_id`. Set `--rl-group-size` or `RL_GROUP_SIZE` so each prompt group has the expected number of samples.
@@ -185,4 +189,6 @@ SQLite strategy creates runtime indexes:
 - `idx_job_environments_job_deleted_id` on `(job_id, is_deleted, id)`.
 - `idx_session_steps_job_trainable_id` on `(job_id, is_trainable, id)`.
 
-An existing `job_id` requires either `--resume` or `--rebuild-table`. Resume skips completed environments; rebuild deletes only the current job's configs and trajectories. The options are mutually exclusive.
+An existing `job_id` requires either `--resume` or `--rebuild-table`. Resume deletes stale landing rows for unfinished environments; rebuild deletes the current job's environment and landing rows. The options are mutually exclusive.
+
+Cloud launchers must point `--cloud-job-claim-dir` at the same durable shared filesystem. The held file lease covers the initial and background environment batches, preventing concurrent `max(id)+1` allocation. Cloud landing deletion is fail-closed: it requires an exact `--confirm-cloud-delete-job-id` and logs the resolved profile, DB URI, landing table, filter, and preflight row count. Production additionally requires `--confirm-production` and a verified archive under `--cloud-delete-archive-dir`. Serving publication and withdrawal remain entirely outside Safactory; this flow never queries or mutates a serving table.

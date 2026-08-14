@@ -1,8 +1,10 @@
+import json
 import logging
 import time
 from typing import Optional, List, Dict, Any
 
 from core.data_manager.contracts import EnvironmentQuery, SessionContext, SessionStepQuery
+from core.data_manager.image_processing import MessageImageProcessor
 from core.data_manager.strategy.base_strategy import StorageStrategy
 from core.data_manager.strategy_factory import StorageFactory
 
@@ -23,6 +25,7 @@ class DataManager:
         self.job_id = job_id
         self.storage_type = storage_type
         self._strategy: StorageStrategy
+        self._image_processor: Optional[MessageImageProcessor] = None
 
         try:
             log.debug("Initializing DataManager with strategy: %r", storage_type)
@@ -47,11 +50,25 @@ class DataManager:
     async def init(self) -> None:
         """Initialize the storage strategy"""
         await self._strategy.init()
+        if self.storage_type == "cloud" and self._image_processor is None:
+            self._image_processor = MessageImageProcessor(
+                job_id=self.job_id,
+                uploader=getattr(self._strategy, "s3_uploader", None),
+            )
 
     @property
     def backend_name(self) -> str:
         """Diagnostic backend name without exposing the DAO instance."""
         return self._strategy.__class__.__name__
+
+    @property
+    def storage_identity(self) -> str:
+        """Stable identity used to scope cross-process initialization claims."""
+        return ":".join((
+            self.storage_type,
+            str(getattr(self._strategy, "db_url", "") or ""),
+            str(getattr(self._strategy, "env_config_table", "") or ""),
+        ))
 
     async def add_environment(
         self,
@@ -94,7 +111,16 @@ class DataManager:
 
     async def mark_environment_finished(self, env_id: str) -> int:
         """Mark one environment completed for this job."""
-        return await self._strategy.mark_environment_finished(env_id)
+        updated = await self._strategy.update_environment_rows(
+            EnvironmentQuery(job_id=self.job_id, env_id=env_id, is_deleted=False),
+            {"finished": True},
+        )
+        if updated != 1:
+            raise RuntimeError(
+                f"expected one env config for job_id={self.job_id!r} env_id={env_id!r}, "
+                f"updated={updated}"
+            )
+        return updated
 
     async def list_environment_rows(
         self,
@@ -150,11 +176,13 @@ class DataManager:
         self,
         *,
         session_ids: Optional[List[str]] = None,
+        record_ids: Optional[List[str]] = None,
         job_id: Optional[str] = None,
     ) -> int:
         return await self._strategy.delete_session_step_rows(SessionStepQuery(
             job_id=job_id or self.job_id,
             session_ids=tuple(session_ids or ()),
+            record_ids=tuple(record_ids or ()),
         ))
 
     async def delete_job_rows(self, job_id: Optional[str] = None) -> None:
@@ -190,13 +218,14 @@ class DataManager:
         response: str,
         step_reward: float,
         request: Optional[str] = None,
+        meta_json: Optional[Any] = None,
         env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
         is_trainable: bool = False,
         dataset: Optional[Any] = None,
         reward: Optional[float] = None,
-    ) -> None:
+    ) -> Optional[str]:
         """
         Record a single interaction step with full conversation history.
 
@@ -204,43 +233,132 @@ class DataManager:
         For Cloud: images uploaded to S3, URLs stored in messages
         """
         session.total_reward += float(step_reward or 0.0)
-        await self._strategy.record_step(
-            session=session,
-            step_id=step_id,
-            messages=messages,
-            response=response,
-            step_reward=step_reward,
-            reward=reward,
-            request=request,
-            env_state=env_state,
-            dataset=dataset,
-            terminated=terminated,
-            truncated=truncated,
-            is_trainable=is_trainable,
-        )
+        metadata = _metadata_object(meta_json if meta_json is not None else env_state)
+        if dataset is not None:
+            metadata["dataset"] = dataset
+        record_ids = await self.insert_session_step_rows([{
+            "session_id": session.session_id,
+            "env_id": session.env_id,
+            "step_id": step_id,
+            "env_name": session.env_name,
+            "llm_model": session.llm_model,
+            "group_id": session.group_id,
+            "job_id": session.job_id,
+            "messages": messages,
+            "request": request,
+            "response": response,
+            "step_reward": step_reward,
+            "reward": reward,
+            "meta_json": metadata,
+            "is_terminal": bool(terminated or truncated),
+            "is_truncated": bool(truncated),
+            "is_session_completed": bool(terminated),
+            # Compatibility behavior; new callers should use insert_session_step_rows.
+            "is_trainable": False,
+        }])
+        session.message_history = list(messages)
+        return record_ids[0] if record_ids else None
 
     async def record_steps_batch(self, steps: List[Dict[str, Any]]) -> List[Optional[str]]:
-        """Persist multiple steps using the backend's native bulk API when available."""
+        """Compatibility adapter for the former SessionContext-based write API."""
+        rows: List[Dict[str, Any]] = []
         for step in steps:
             session = step.get("session")
-            if isinstance(session, SessionContext):
-                session.total_reward += float(step.get("step_reward") or 0.0)
-        return await self._strategy.record_steps_batch(steps)
+            if not isinstance(session, SessionContext):
+                rows.append(dict(step))
+                continue
+            session.total_reward += float(step.get("step_reward") or 0.0)
+            metadata = _metadata_object(step.get("meta_json", step.get("env_state")))
+            if step.get("dataset") is not None:
+                metadata["dataset"] = step["dataset"]
+            if isinstance(step.get("provider_meta"), dict):
+                metadata.update(step["provider_meta"])
+            messages = step.get("messages") or []
+            session.message_history = list(messages)
+            rows.append({
+                "record_id": step.get("record_id"),
+                "session_id": session.session_id,
+                "env_id": session.env_id,
+                "step_id": step.get("step_id", 0),
+                "env_name": session.env_name,
+                "llm_model": session.llm_model,
+                "group_id": session.group_id,
+                "job_id": session.job_id,
+                "messages": messages,
+                "request": step.get("request"),
+                "response": step.get("response", ""),
+                "step_reward": step.get("step_reward", 0.0),
+                "reward": step.get("reward"),
+                "meta_json": metadata,
+                "is_terminal": bool(step.get("terminated") or step.get("truncated")),
+                "is_truncated": bool(step.get("truncated")),
+                "is_session_completed": bool(step.get("terminated")),
+                "is_trainable": False,
+            })
+        return list(await self.insert_session_step_rows(rows))
+
+    async def insert_session_step_rows(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Insert fully constructed logical rows through the configured DAO."""
+        if self.storage_type == "cloud" and self._image_processor is None:
+            await self.init()
+        normalized: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["job_id"] = str(item.get("job_id") or self.job_id)
+            item["meta_json"] = _metadata_object(item.get("meta_json"))
+            normalized.append(item)
+        if self._image_processor is not None:
+            normalized = await self._image_processor.process_rows(normalized)
+        return await self._strategy.insert_session_step_rows(normalized)
 
     async def mark_records_completed(self, record_ids: List[str]) -> int:
-        """Mark known records completed without a latest-row lookup."""
-        return await self._strategy.mark_records_completed(record_ids)
+        """Compatibility wrapper for exact-ID lifecycle updates."""
+        return await self.update_session_step_rows(
+            record_ids=record_ids,
+            updates={"is_session_completed": True, "is_terminal": True},
+        )
 
     async def list_session_steps(
         self,
         session_id: str,
         *,
+        job_id: Optional[str] = None,
         checkout_latest: bool = False,
     ) -> List[Dict[str, Any]]:
         """Return persisted rows for one session in trajectory order."""
-        return await self._strategy.list_session_steps(
-            session_id,
+        return await self._strategy.list_session_step_rows(SessionStepQuery(
+            job_id=job_id or self.job_id or None,
+            session_id=session_id,
             checkout_latest=checkout_latest,
+        ))
+
+    async def update_session_step_rows(
+        self,
+        *,
+        updates: Dict[str, Any],
+        job_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        session_ids: Optional[List[str]] = None,
+        record_id: Optional[str] = None,
+        record_ids: Optional[List[str]] = None,
+        step_id: Optional[int] = None,
+        llm_model: Optional[str] = None,
+    ) -> int:
+        """Update rows using explicit caller-owned selection and values."""
+        return await self._strategy.update_session_step_rows(
+            SessionStepQuery(
+                job_id=job_id,
+                session_id=session_id,
+                session_ids=tuple(session_ids or ()),
+                record_id=record_id,
+                record_ids=tuple(record_ids or ()),
+                step_id=step_id,
+                llm_model=llm_model,
+            ),
+            dict(updates),
         )
 
     async def record_evaluation_summary(
@@ -251,14 +369,27 @@ class DataManager:
         env_state: str,
         truncated: bool = False,
     ) -> int:
-        """Persist a non-trainable evaluation summary row."""
-        return await self._strategy.record_evaluation_summary(
-            session_id=session_id,
-            step_id=step_id,
-            reward=reward,
-            env_state=env_state,
-            truncated=truncated,
-        )
+        """Compatibility wrapper; Evaluator now constructs summary rows directly."""
+        record_ids = await self.insert_session_step_rows([{
+            "session_id": session_id,
+            "env_id": session_id,
+            "step_id": step_id,
+            "env_name": "gateway",
+            "llm_model": "",
+            "group_id": "",
+            "job_id": self.job_id,
+            "messages": [],
+            "request": None,
+            "response": "",
+            "step_reward": reward,
+            "reward": reward,
+            "meta_json": _metadata_object(env_state),
+            "is_terminal": True,
+            "is_truncated": truncated,
+            "is_session_completed": True,
+            "is_trainable": False,
+        }])
+        return len(record_ids)
 
     async def update_session_step(
         self,
@@ -271,10 +402,13 @@ class DataManager:
 
         Returns the number of matched records.
         """
-        return await self._strategy.update_session_step(
-            session_id=session_id,
-            step_id=step_id,
-            updates=updates,
+        return await self._strategy.update_session_step_rows(
+            SessionStepQuery(
+                job_id=self.job_id or None,
+                session_id=session_id,
+                step_id=step_id,
+            ),
+            dict(updates),
         )
 
     async def patch_session_environment(
@@ -286,11 +420,12 @@ class DataManager:
         group_id: Optional[str] = None,
     ) -> int:
         """Patch persisted session rows after environment metadata is known."""
-        return await self._strategy.patch_session_environment(
-            session_id=session_id,
-            job_id=job_id,
-            env_name=env_name,
-            group_id=group_id,
+        updates: Dict[str, Any] = {"job_id": job_id, "env_name": env_name}
+        if group_id is not None:
+            updates["group_id"] = group_id
+        return await self._strategy.update_session_step_rows(
+            SessionStepQuery(session_id=session_id),
+            updates,
         )
 
     async def mark_latest_session_completed(
@@ -308,16 +443,33 @@ class DataManager:
 
         Returns the number of updated records.
         """
-        return await self._strategy.mark_latest_session_completed(
-            session_id=session_id,
-            llm_model=llm_model,
-            is_session_completed=is_session_completed,
-            is_terminal=is_terminal,
+        rows = await self.list_session_steps(session_id, checkout_latest=True)
+        if llm_model:
+            rows = [row for row in rows if row.get("llm_model") == llm_model]
+        if not rows:
+            return 0
+        latest = max(rows, key=lambda row: (
+            int(row.get("step_id") or 0),
+            str(row.get("created_at") or ""),
+            str(row.get("record_id") or row.get("id") or ""),
+        ))
+        completed = bool(is_session_completed)
+        updates: Dict[str, Any] = {
+            "is_session_completed": completed,
+            "is_terminal": completed if is_terminal is None else bool(is_terminal),
+        }
+        if not completed:
+            updates.update(step_reward=0.0, reward=None)
+        return await self.update_session_step_rows(
+            job_id=str(latest.get("job_id") or "") or None,
+            record_id=str(latest.get("record_id") or latest.get("id")),
+            updates=updates,
         )
 
     async def close(self) -> None:
         """Close the storage strategy"""
         await self._strategy.close()
+        self._image_processor = None
     
     async def fetch_done_steps_with_context(
         self,
@@ -341,3 +493,23 @@ class DataManager:
         if hasattr(self._strategy, 'buffer_stats'):
             return self._strategy.buffer_stats
         return None
+
+
+def _metadata_object(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        metadata = dict(value)
+    elif not value:
+        metadata = {}
+    else:
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            metadata = {"legacy_metadata": value}
+        else:
+            metadata = parsed if isinstance(parsed, dict) else {"legacy_metadata": parsed}
+    legacy_state = metadata.pop("env_state", None)
+    if legacy_state is None:
+        return metadata
+    legacy_metadata = _metadata_object(legacy_state)
+    legacy_metadata.update(metadata)
+    return legacy_metadata

@@ -42,6 +42,8 @@ class SessionStepQuery:
     job_id: Optional[str] = None
     session_id: Optional[str] = None
     session_ids: tuple[str, ...] = ()
+    record_id: Optional[str] = None
+    record_ids: tuple[str, ...] = ()
     step_id: Optional[int] = None
     llm_model: Optional[str] = None
     after_id: int = 0
@@ -49,4 +51,3 @@ class SessionStepQuery:
     is_terminal: Optional[bool] = None
     is_trainable: Optional[bool] = None
     checkout_latest: bool = False
-

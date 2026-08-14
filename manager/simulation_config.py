@@ -327,6 +327,16 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         max_workers=max_workers,
         rebuild_table=bool(args.rebuild_table),
         resume=bool(getattr(args, "resume", False)),
+        confirm_cloud_delete_job_id=str(
+            getattr(args, "confirm_cloud_delete_job_id", "") or ""
+        ).strip(),
+        confirm_production=bool(getattr(args, "confirm_production", False)),
+        cloud_delete_archive_dir=str(
+            getattr(args, "cloud_delete_archive_dir", "") or ""
+        ).strip(),
+        cloud_job_claim_dir=str(
+            getattr(args, "cloud_job_claim_dir", "") or ""
+        ).strip(),
         enable_buffer=bool(args.enable_buffer),
         buffer_size=int(args.buffer_size),
         flush_interval=float(args.flush_interval),

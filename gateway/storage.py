@@ -18,6 +18,10 @@ from gateway.anthropic_messages import (
 )
 from gateway.config import GatewayConfig
 from gateway.models import GatewaySessionBinding, GatewayTelemetryRecord
+from gateway.trajectory_builder import (
+    build_gateway_step_row,
+    select_latest_trajectory_record_ids,
+)
 
 GATEWAY_STORAGE_NAMESPACE = "gateway"
 log = logging.getLogger("gateway.storage")
@@ -346,7 +350,7 @@ class GatewayStorage:
             steps: list[dict[str, Any]] = []
             with trace.span("session_context.prepare", operation="in_memory"):
                 for binding, record in batch:
-                    session = await self.get_or_create_session(binding, record.requested_model)
+                    await self.get_or_create_session(binding, record.requested_model)
                     environment = await self._resolve_session_environment(record.session_id)
                     dataset = environment.dataset if environment is not None else None
 
@@ -379,26 +383,17 @@ class GatewayStorage:
                         elif record.endpoint == "responses":
                             stored_messages = _responses_request_input(request_payload)
                             stored_response = _responses_output(record.response)
-                    step = {
-                        "session": session,
-                        "step_id": record.seq_id,
-                        "messages": stored_messages,
-                        "request": record.request,
-                        "response": stored_response,
-                        "step_reward": 0.0,
-                        "reward": None,
-                        "env_state": json.dumps(self._metadata(record), ensure_ascii=False, default=str),
-                        "terminated": False,
-                        "truncated": record.is_truncated,
-                        "is_trainable": False,
-                    }
-                    if provider_meta is not None:
-                        step["provider_meta"] = provider_meta
-                    if dataset is not None:
-                        step["dataset"] = dataset
-                    steps.append(step)
+                    steps.append(build_gateway_step_row(
+                        binding=binding,
+                        record=record,
+                        messages=stored_messages,
+                        response=stored_response,
+                        metadata=self._metadata(record),
+                        dataset=dataset,
+                        provider_meta=provider_meta,
+                    ))
             with trace.span("storage.record_steps_batch", table="session_steps"):
-                record_ids = await self.data_manager.record_steps_batch(steps)
+                record_ids = await self.data_manager.insert_session_step_rows(steps)
 
             async with self._lock:
                 for (_, record), record_id in zip(batch, record_ids):
@@ -435,38 +430,6 @@ class GatewayStorage:
         )
         try:
             terminal = record.is_session_completed or binding.close_reason == "rollout_sealed"
-            if self.cfg.storage_type == "cloud" and record.is_session_completed:
-                async with self._lock:
-                    record_ids = [
-                        record_id
-                        for (session_id, _model), record_id in self._latest_record_ids.items()
-                        if session_id == binding.session_id
-                    ]
-                trace.update_context(record_id_count=len(record_ids), close_strategy="known_record_ids")
-                if not record_ids:
-                    elapsed_ms = (time.perf_counter() - started) * 1000
-                    log.info(
-                        "Gateway storage session_close skipped: session_id=%s has no persisted record IDs",
-                        binding.session_id,
-                    )
-                    trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_count=0)
-                    return
-                with trace.span(
-                    "storage.mark_known_records_completed",
-                    table="session_steps",
-                    record_count=len(record_ids),
-                ):
-                    updated_count = await self.data_manager.mark_records_completed(record_ids)
-                elapsed_ms = (time.perf_counter() - started) * 1000
-                log.info(
-                    "Gateway storage session_close complete: session_id=%s updated_count=%d elapsed_ms=%.2f",
-                    binding.session_id,
-                    updated_count,
-                    elapsed_ms,
-                )
-                trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_count=updated_count)
-                return
-
             with trace.span("models_for_session"):
                 models = await self._models_for_session(binding)
             trace.update_context(model_count=len(models), models=models)
@@ -477,72 +440,50 @@ class GatewayStorage:
                 binding.close_reason,
                 record.is_session_completed,
             )
-            if not models:
-                with trace.span(
-                    "mark_latest_session_completed_without_model",
-                    operation="db_write",
-                    table="session_steps",
-                ):
-                    await self.data_manager.mark_latest_session_completed(
-                        session_id=binding.session_id,
-                        is_session_completed=record.is_session_completed,
-                        is_terminal=terminal,
-                    )
-                elapsed_ms = (time.perf_counter() - started) * 1000
-                trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_without_model=True)
-                log.info(
-                    "Gateway storage session_close complete: session_id=%s updated_without_model elapsed_ms=%.2f",
+            async with self._lock:
+                record_ids = [
+                    record_id
+                    for (session_id, model), record_id in self._latest_record_ids.items()
+                    if session_id == binding.session_id and (not models or model in models)
+                ]
+            close_strategy = "known_record_ids"
+            if not record_ids:
+                close_strategy = "query_then_select"
+                rows = await self.data_manager.list_session_steps(
                     binding.session_id,
-                    elapsed_ms,
+                    job_id=binding.job_id,
+                    checkout_latest=True,
                 )
+                record_ids = select_latest_trajectory_record_ids(rows, models=models)
+            trace.update_context(
+                record_id_count=len(record_ids),
+                close_strategy=close_strategy,
+            )
+            if not record_ids:
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                log.info(
+                    "Gateway storage session_close skipped: session_id=%s has no trajectory records",
+                    binding.session_id,
+                )
+                trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_count=0)
                 return
 
-            updated_count = 0
-            if self.cfg.storage_type == "cloud" and len(models) > 1:
-                with trace.span(
-                    "mark_latest_session_completed_models",
-                    operation="db_write",
-                    table="session_steps",
-                    model_count=len(models),
-                ):
-                    update_counts = await asyncio.gather(
-                        *(
-                            self.data_manager.mark_latest_session_completed(
-                                session_id=binding.session_id,
-                                llm_model=model,
-                                is_session_completed=record.is_session_completed,
-                                is_terminal=terminal,
-                            )
-                            for model in models
-                        )
-                    )
-                updated_count = sum(update_counts)
-            else:
-                for model in models:
-                    with trace.span(
-                        "mark_latest_session_completed",
-                        operation="db_write",
-                        table="session_steps",
-                        model=model,
-                    ):
-                        updated_count += await self.data_manager.mark_latest_session_completed(
-                            session_id=binding.session_id,
-                            llm_model=model,
-                            is_session_completed=record.is_session_completed,
-                            is_terminal=terminal,
-                        )
-
-            if updated_count == 0:
-                with trace.span(
-                    "mark_latest_session_completed_fallback",
-                    operation="db_write",
-                    table="session_steps",
-                ):
-                    await self.data_manager.mark_latest_session_completed(
-                        session_id=binding.session_id,
-                        is_session_completed=record.is_session_completed,
-                        is_terminal=terminal,
-                    )
+            updates: dict[str, Any] = {
+                "is_session_completed": bool(record.is_session_completed),
+                "is_terminal": bool(terminal),
+            }
+            if not record.is_session_completed:
+                updates.update(step_reward=0.0, reward=None)
+            with trace.span(
+                "storage.update_session_lifecycle",
+                table="session_steps",
+                record_count=len(record_ids),
+            ):
+                updated_count = await self.data_manager.update_session_step_rows(
+                    job_id=binding.job_id,
+                    record_ids=record_ids,
+                    updates=updates,
+                )
             elapsed_ms = (time.perf_counter() - started) * 1000
             log.info(
                 "Gateway storage session_close complete: session_id=%s updated_count=%d elapsed_ms=%.2f",

@@ -81,6 +81,10 @@ class SimulationRunConfig:
     max_workers: Optional[int] = None
     rebuild_table: bool = False
     resume: bool = False
+    confirm_cloud_delete_job_id: str = ""
+    confirm_production: bool = False
+    cloud_delete_archive_dir: str = ""
+    cloud_job_claim_dir: str = ""
     enable_buffer: bool = True
     buffer_size: int = 100
     flush_interval: float = 5.0

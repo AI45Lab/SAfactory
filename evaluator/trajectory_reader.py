@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import asyncio
 import json
 import time
@@ -7,6 +6,11 @@ from typing import Any
 
 from core.data_manager.manager import DataManager
 from evaluator.eval_types import Trajectory
+from evaluator.trajectory_policy import (
+    is_session_sealing_event,
+    is_trajectory_step,
+    metadata_from_row,
+)
 
 
 class TrajectoryReader:
@@ -69,17 +73,17 @@ class TrajectoryReader:
         final_response = None
         steps: list[dict[str, Any]] = []
         for step in all_steps:
-            env_state = step.get("env_state") or {}
-            if _is_session_sealing_event(step):
+            meta_json = metadata_from_row(step)
+            if is_session_sealing_event(step):
                 sealed = True
-            if not _is_trajectory_step(step):
+            if not is_trajectory_step(step):
                 continue
             steps.append(step)
             response = step.get("response") or _last_assistant_content(step.get("messages"))
             if response:
                 final_response = response
             for key in token_usage:
-                token_usage[key] += int(env_state.get(key) or 0)
+                token_usage[key] += int(meta_json.get(key) or 0)
         return Trajectory(
             session_id=session_id,
             steps=steps,
@@ -92,15 +96,9 @@ class TrajectoryReader:
     def parse_gateway_row(self, row: dict[str, Any]) -> dict[str, Any]:
         parsed = dict(row)
         parsed["messages"] = _json_loads(row.get("messages"), default=[])
-        parsed["env_state"] = _json_loads(row.get("env_state"), default={})
+        parsed["meta_json"] = _json_loads(row.get("meta_json"), default={})
         parsed["response"] = _extract_response_text(row.get("response"))
         return parsed
-
-
-def _sqlite_path(db_url: str) -> str:
-    if db_url.startswith("sqlite://"):
-        return db_url[len("sqlite://") :]
-    return db_url
 
 
 def _json_loads(value: Any, *, default: Any) -> Any:
@@ -241,36 +239,3 @@ def _last_assistant_content(messages: Any) -> str:
                     parts.append(item)
             return "".join(parts)
     return ""
-
-
-_NON_TRAJECTORY_EVENT_TYPES = {
-    "gateway_session_close",
-    "episode_summary",
-    "evaluation_summary",
-}
-
-
-def _is_session_sealing_event(step: dict[str, Any]) -> bool:
-    env_state = step.get("env_state") or {}
-    event_type = env_state.get("event_type")
-    return bool(
-        step.get("is_session_completed")
-        or step.get("is_terminal")
-        or env_state.get("is_session_completed")
-        or event_type in _NON_TRAJECTORY_EVENT_TYPES
-    )
-
-
-def _is_trajectory_step(step: dict[str, Any]) -> bool:
-    env_state = step.get("env_state") or {}
-    event_type = env_state.get("event_type")
-    if event_type in _NON_TRAJECTORY_EVENT_TYPES:
-        return False
-    if env_state.get("synthetic_stop"):
-        return False
-    if event_type == "gateway_inference":
-        try:
-            return int(env_state.get("status_code") or 200) < 400
-        except (TypeError, ValueError):
-            return True
-    return bool(step.get("messages") or step.get("response"))

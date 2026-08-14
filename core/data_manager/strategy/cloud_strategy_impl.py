@@ -5,13 +5,13 @@ import logging
 import os
 import time
 import uuid
-import re
 import base64
 import tempfile
 from typing import List, Dict, Optional, Any, Set
 from datetime import date
 
-from core.data_manager.contracts import EnvironmentQuery, SessionContext, SessionStepQuery
+from core.data_manager.cloud_delete_guard import CloudDeleteGuard
+from core.data_manager.contracts import EnvironmentQuery, SessionStepQuery
 from core.data_manager.strategy.base_strategy import StorageStrategy
 from core.perf_trace import PerfTrace
 
@@ -21,8 +21,6 @@ WTGatewayClient = None
 GatewayConfig = None
 EnvConfigManager = None
 LandingRecord = None
-ChatMessage = None
-ContentItem = None
 generate_deterministic_id = None
 S3Uploader = None
 S3Downloader = None
@@ -41,8 +39,6 @@ def _load_wt_sdk() -> None:
     global GatewayConfig
     global EnvConfigManager
     global LandingRecord
-    global ChatMessage
-    global ContentItem
     global generate_deterministic_id
     global S3Uploader
     global S3Downloader
@@ -88,8 +84,6 @@ def _load_wt_sdk() -> None:
     GatewayConfig = GatewayConfig or wt_sdk.GatewayConfig
     EnvConfigManager = EnvConfigManager or wt_sdk.EnvConfigManager
     LandingRecord = LandingRecord or wt_sdk_models.LandingRecord
-    ChatMessage = ChatMessage or getattr(wt_sdk_models, "ChatMessage", None)
-    ContentItem = ContentItem or getattr(wt_sdk_models, "ContentItem", None)
     generate_deterministic_id = generate_deterministic_id or wt_sdk_utils.generate_deterministic_id
     S3Uploader = S3Uploader or wt_sdk_utils.S3Uploader
     S3Downloader = S3Downloader or wt_sdk_utils.S3Downloader
@@ -118,8 +112,6 @@ def _install_mock_wt_sdk_fallbacks() -> None:
     """Provide tiny SDK-like objects for tests that monkeypatch cloud clients."""
     global GatewayConfig
     global LandingRecord
-    global ChatMessage
-    global ContentItem
     global generate_deterministic_id
     global S3Uploader
     global S3Downloader
@@ -140,11 +132,9 @@ def _install_mock_wt_sdk_fallbacks() -> None:
             self,
             db_uri: str = "",
             landing_table: str = "",
-            serving_table: str = "",
         ):
             self.db_uri = db_uri
             self.landing_table = landing_table
-            self.serving_table = serving_table
 
     class _S3Config:
         def to_storage_options(self) -> Dict[str, Any]:
@@ -169,21 +159,11 @@ def _install_mock_wt_sdk_fallbacks() -> None:
 
     GatewayConfig = GatewayConfig or _GatewayConfig
     LandingRecord = LandingRecord or _Model
-    ChatMessage = ChatMessage or _Model
-    ContentItem = ContentItem or _Model
     generate_deterministic_id = generate_deterministic_id or _deterministic_id
     S3Uploader = S3Uploader or _S3Uploader
     S3Downloader = S3Downloader or _S3Downloader
 
 
-# Retry configuration
-MAX_UPLOAD_RETRIES = 3
-RETRY_BACKOFF_BASE = 1.0
-NON_TRAJECTORY_EVENT_TYPES = {
-    "gateway_session_close",
-    "episode_summary",
-    "evaluation_summary",
-}
 CLOUD_DATASET_TYPE = "RL"
 
 
@@ -205,17 +185,17 @@ def _escape_sql_literal(value: str) -> str:
     return value.replace("'", "''")
 
 
-def _cloud_env_state_from_meta(meta_json: Any) -> Dict[str, Any]:
+def _meta_json_object(meta_json: Any) -> Dict[str, Any]:
+    """Return canonical metadata and flatten records written by the legacy schema."""
     meta = _json_value(meta_json, {})
     if not isinstance(meta, dict):
         return {}
-    env_state = _json_value(meta.get("env_state"), {})
-    return env_state if isinstance(env_state, dict) else {}
-
-
-def _is_trajectory_meta_json(meta_json: Any) -> bool:
-    event_type = _cloud_env_state_from_meta(meta_json).get("event_type")
-    return event_type not in NON_TRAJECTORY_EVENT_TYPES
+    meta = dict(meta)
+    legacy_state = _json_value(meta.pop("env_state", None), {})
+    if isinstance(legacy_state, dict):
+        legacy_state.update(meta)
+        return legacy_state
+    return meta
 
 
 def _truthy_bool(value: Any) -> bool:
@@ -303,15 +283,10 @@ def _response_text(value: Any) -> str:
 
 class CloudStrategy(StorageStrategy):
     """
-    Cloud storage strategy:
-    - Table 1 (S3): Environment configs stored via EnvConfigManager
-    - Table 2 (LandingTable): Session steps with full conversation history
+    Cloud DAO for environment config rows and LandingTable session-step rows.
 
-    Image handling:
-    - Extract base64 images from messages
-    - Upload binary to S3 with retry logic
-    - On failure: store locally as fallback
-    - Store S3 URLs (or local paths) in messages JSON
+    Callers provide complete logical rows. Image externalization is deliberately
+    kept at the surrounding data-manager boundary, before rows reach this DAO.
     """
 
     def __init__(
@@ -322,21 +297,25 @@ class CloudStrategy(StorageStrategy):
         buffer_size: int = 1,
         flush_interval: float = 1.0,
         landing_table: Optional[str] = None,
-        serving_table: Optional[str] = None,
         env_config_table: str = "evaluation_env_config",
         dldb_model: Optional[str] = None,
         enable_dldb_timing_logs: bool = False,
         dldb_metrics_log_path: Optional[str] = None,
+        confirm_cloud_delete_job_id: str = "",
+        confirm_production: bool = False,
+        cloud_delete_archive_dir: str = "",
     ):
         self.db_url = str(db_url or "").strip()
         self.job_id = job_id
         self.initialized = False
         self.landing_table = str(landing_table or "").strip() or None
-        self.serving_table = str(serving_table or "").strip() or None
         self.env_config_table = env_config_table
         self.dldb_model = dldb_model
         self.enable_dldb_timing_logs = enable_dldb_timing_logs
         self.dldb_metrics_log_path = dldb_metrics_log_path
+        self.confirm_cloud_delete_job_id = str(confirm_cloud_delete_job_id or "").strip()
+        self.confirm_production = bool(confirm_production)
+        self.cloud_delete_archive_dir = str(cloud_delete_archive_dir or "").strip()
 
         self.client: Any = None
         self.env_manager: Any = None
@@ -359,11 +338,7 @@ class CloudStrategy(StorageStrategy):
 
         # In-memory caches
         self._env_configs: Dict[str, Dict] = {}
-        self._sessions: Dict[str, SessionContext] = {}
         self._record_job_ids: Dict[str, str] = {}
-
-        # Local fallback directory for failed uploads
-        self._local_fallback_dir = "saved_images"
 
     async def init(self):
         """Initialize cloud clients"""
@@ -383,17 +358,14 @@ class CloudStrategy(StorageStrategy):
             config.tables.db_uri = self.db_url
         if self.landing_table:
             config.tables.landing_table = self.landing_table
-        if self.serving_table:
-            config.tables.serving_table = self.serving_table
         self.landing_table = config.tables.landing_table
-        self.serving_table = config.tables.serving_table
+        self.db_url = str(config.tables.db_uri or self.db_url)
 
         try:
             self.client = WTGatewayClient(config)
             log.debug(
-                "CloudStrategy initialized with landing_table=%s serving_table=%s db_uri=%s",
+                "CloudStrategy initialized with landing_table=%s db_uri=%s",
                 config.tables.landing_table,
-                config.tables.serving_table,
                 config.tables.db_uri,
             )
         except Exception as e:
@@ -541,9 +513,11 @@ class CloudStrategy(StorageStrategy):
             clauses.append(f"job_id = '{_escape_sql_literal(query.job_id)}'")
         if query.env_id:
             clauses.append(f"env_id = '{_escape_sql_literal(query.env_id)}'")
+        if query.after_id:
+            clauses.append(f"id > {int(query.after_id)}")
         filter_query = " AND ".join(clauses) or None
         page_size = max(100, query.limit or 1000)
-        effective_offset = max(0, query.offset, query.after_id)
+        effective_offset = max(0, query.offset)
         normalized: List[Dict[str, Any]] = []
         scanned = 0
         while True:
@@ -555,9 +529,13 @@ class CloudStrategy(StorageStrategy):
             )
             if not page:
                 break
-            for index, config in enumerate(page, start=effective_offset + scanned + 1):
+            for config in page:
                 row = self._normalize_env_config(config)
-                row.setdefault("id", index)
+                if row.get("id") is None:
+                    raise RuntimeError(
+                        "cloud environment pagination requires EnvConfigManager "
+                        "to return the physical id column"
+                    )
                 if query.finished is not None and _truthy_bool(row.get("finished")) != query.finished:
                     continue
                 if query.is_deleted is not None and _truthy_bool(row.get("is_deleted")) != query.is_deleted:
@@ -618,33 +596,86 @@ class CloudStrategy(StorageStrategy):
                 updated += 1
         return updated
 
+    async def _preflight_destructive_delete(
+        self,
+        *,
+        operation: str,
+        job_id: str,
+        landing_filter: str,
+        environment_rows: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Dict[str, Any]]:
+        guard = CloudDeleteGuard(
+            client=self.client,
+            db_uri=self.db_url,
+            landing_table=str(self.landing_table or ""),
+            confirmed_job_id=self.confirm_cloud_delete_job_id,
+            confirm_production=self.confirm_production,
+            archive_dir=self.cloud_delete_archive_dir,
+        )
+        return await guard.preflight(
+            operation=operation,
+            job_id=job_id,
+            landing_filter=landing_filter,
+            environment_rows=environment_rows,
+        )
+
     async def delete_session_step_rows(self, query: SessionStepQuery) -> int:
         await self.init()
+        job_id = str(query.job_id or "").strip()
+        if query.record_id or query.record_ids:
+            record_ids = tuple(dict.fromkeys(
+                item for item in (query.record_id,) + query.record_ids if item
+            ))
+            quoted = ", ".join(
+                f"'{_escape_sql_literal(item)}'" for item in record_ids if item
+            )
+            clauses = [f"id IN ({quoted})"]
+            if job_id:
+                clauses.insert(0, f"job_id = '{_escape_sql_literal(job_id)}'")
+            landing_filter = " AND ".join(clauses)
+            rows = await self._preflight_destructive_delete(
+                operation="delete_session_step_rows",
+                job_id=job_id,
+                landing_filter=landing_filter,
+            )
+            await asyncio.to_thread(self.client.delete_landing, landing_filter)
+            return len(rows)
         session_ids = list(query.session_ids)
         if query.session_id:
             session_ids.append(query.session_id)
-        if not session_ids:
-            clauses = []
-            if query.job_id:
-                clauses.append(f"job_id = '{_escape_sql_literal(query.job_id)}'")
-            if not clauses:
-                raise ValueError("job_id or session_ids is required for cloud deletion")
-            await asyncio.to_thread(self.client.delete_landing, " AND ".join(clauses))
-            return 1
-        for session_id in dict.fromkeys(session_ids):
-            clauses = []
-            if query.job_id:
-                clauses.append(f"job_id = '{_escape_sql_literal(query.job_id)}'")
-            clauses.append(f"session_id = '{_escape_sql_literal(session_id)}'")
-            await asyncio.to_thread(self.client.delete_landing, " AND ".join(clauses))
-        return len(set(session_ids))
+        unique_session_ids = tuple(dict.fromkeys(item for item in session_ids if item))
+        clauses = []
+        if job_id:
+            clauses.append(f"job_id = '{_escape_sql_literal(job_id)}'")
+        if unique_session_ids:
+            quoted_sessions = ", ".join(
+                f"'{_escape_sql_literal(item)}'" for item in unique_session_ids
+            )
+            clauses.append(f"session_id IN ({quoted_sessions})")
+        if not clauses:
+            raise ValueError("job_id or session_ids is required for cloud deletion")
+        landing_filter = " AND ".join(clauses)
+        rows = await self._preflight_destructive_delete(
+            operation="delete_session_step_rows",
+            job_id=job_id,
+            landing_filter=landing_filter,
+        )
+        await asyncio.to_thread(self.client.delete_landing, landing_filter)
+        return len(rows)
 
     async def delete_job_rows(self, job_id: str) -> None:
         await self.init()
         rows = await self.list_environment_rows(EnvironmentQuery(job_id=job_id))
+        landing_filter = f"job_id = '{_escape_sql_literal(job_id)}'"
+        await self._preflight_destructive_delete(
+            operation="delete_job_rows",
+            job_id=job_id,
+            landing_filter=landing_filter,
+            environment_rows=rows,
+        )
         await asyncio.to_thread(
             self.client.delete_landing,
-            f"job_id = '{_escape_sql_literal(job_id)}'",
+            landing_filter,
         )
         for row in rows:
             env_id = str(row.get("env_id") or "")
@@ -652,23 +683,189 @@ class CloudStrategy(StorageStrategy):
                 raise RuntimeError(f"failed to delete cloud env config env_id={env_id}")
             self._env_configs.pop(env_id, None)
 
-    async def mark_environment_finished(self, env_id: str) -> int:
-        """Mark one cloud environment for the current job as finished."""
-        await self.init()
-        config = await self.get_environment_by_env_id(env_id)
-        if config is None or str(config.get("job_id") or "") != str(self.job_id):
-            raise RuntimeError(
-                f"env config does not belong to job_id={self.job_id!r}: env_id={env_id!r}"
-            )
-        updated = await asyncio.to_thread(
-            self.env_manager.update_config,
-            env_id,
-            {"finished": True},
+    def _landing_record_from_row(self, row: Dict[str, Any]) -> tuple[Any, str]:
+        record_id = str(row.get("record_id") or generate_deterministic_id({
+            "job_id": row.get("job_id"),
+            "session_id": row.get("session_id"),
+            "step_id": row.get("step_id"),
+            "llm_model": row.get("llm_model"),
+        }))
+        meta_json = _meta_json_object(row.get("meta_json"))
+        meta_json.setdefault("source", "AIEvoBox")
+        if row.get("group_id") not in (None, ""):
+            meta_json["group_id"] = row["group_id"]
+        if row.get("request") is not None:
+            meta_json.setdefault("request", row["request"])
+        record = LandingRecord(
+            dataset_type=CLOUD_DATASET_TYPE,
+            dt=date.today().isoformat(),
+            id=record_id,
+            session_id=str(row.get("session_id") or ""),
+            step_id=int(row.get("step_id") or 0),
+            env_id=str(row.get("env_id") or row.get("session_id") or ""),
+            job_id=str(row.get("job_id") or self.job_id),
+            created_at=int(row.get("created_at") or time.time()),
+            step_reward=float(row.get("step_reward") or 0.0),
+            reward=row.get("reward"),
+            messages=self._messages_to_landing_value(row.get("messages", [])),
+            response=self._response_to_landing_value(row.get("response", "")),
+            ground_truth_answer=None,
+            reference_answer=None,
+            agent_model=str(row.get("llm_model") or ""),
+            env_name=str(row.get("env_name") or ""),
+            is_terminal=bool(row.get("is_terminal", False)),
+            is_truncated=bool(row.get("is_truncated", False)),
+            is_session_completed=bool(row.get("is_session_completed", False)),
+            is_trainable=bool(row.get("is_trainable", False)),
+            meta_json=json.dumps(meta_json, ensure_ascii=False, default=str),
         )
-        if not updated:
-            raise RuntimeError(f"failed to mark cloud env config finished: env_id={env_id}")
-        self._env_configs[env_id]["finished"] = True
-        return 1
+        return record, record_id
+
+    async def insert_session_step_rows(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Persist caller-constructed rows without applying lifecycle policy."""
+        await self.init()
+        if not rows:
+            return []
+        records: List[Any] = []
+        record_ids: List[str] = []
+        for row in rows:
+            record, record_id = self._landing_record_from_row(row)
+            records.append(record)
+            record_ids.append(record_id)
+            job_id = str(row.get("job_id") or self.job_id)
+            if job_id:
+                self._record_job_ids[record_id] = job_id
+        if self._enable_buffer:
+            await self._buffer_records(records)
+        else:
+            await self._timed_db_call(
+                "ingest_landing_batch",
+                self.client.ingest_landing_batch,
+                records,
+                trace_context={"record_count": len(records)},
+            )
+        return record_ids
+
+    async def list_session_step_rows(
+        self,
+        query: SessionStepQuery,
+    ) -> List[Dict[str, Any]]:
+        await self.init()
+        if self._enable_buffer:
+            await self._flush_records()
+        clauses: List[str] = []
+        if query.job_id:
+            clauses.append(f"job_id = '{_escape_sql_literal(query.job_id)}'")
+        if query.session_id:
+            clauses.append(f"session_id = '{_escape_sql_literal(query.session_id)}'")
+        if query.session_ids:
+            values = ", ".join(f"'{_escape_sql_literal(item)}'" for item in query.session_ids)
+            clauses.append(f"session_id IN ({values})")
+        if query.record_id:
+            clauses.append(f"id = '{_escape_sql_literal(query.record_id)}'")
+        if query.record_ids:
+            values = ", ".join(f"'{_escape_sql_literal(item)}'" for item in query.record_ids)
+            clauses.append(f"id IN ({values})")
+        if query.step_id is not None:
+            clauses.append(f"step_id = {int(query.step_id)}")
+        if query.llm_model:
+            clauses.append(f"agent_model = '{_escape_sql_literal(query.llm_model)}'")
+        if query.is_terminal is not None:
+            clauses.append(f"is_terminal = {str(bool(query.is_terminal))}")
+        if query.is_trainable is not None:
+            clauses.append(f"is_trainable = {str(bool(query.is_trainable))}")
+        if not clauses:
+            raise ValueError("cloud session-step query requires at least one filter")
+
+        columns = [
+            "id", "session_id", "step_id", "env_id", "env_name", "agent_model",
+            "job_id", "messages", "response", "step_reward", "reward", "meta_json",
+            "is_terminal", "is_truncated", "is_session_completed", "is_trainable",
+            "created_at",
+        ]
+        cloud_rows = await self._timed_db_call(
+            "filter_landing",
+            self.client.query_data,
+            filter_query=" AND ".join(clauses),
+            limit=query.limit or 10000,
+            columns=columns,
+            partition=query.job_id or None,
+            checkout_latest=query.checkout_latest,
+            deserialize_json=True,
+            trace_context={"job_id": query.job_id, "session_id": query.session_id},
+        )
+        rows: List[Dict[str, Any]] = []
+        for cloud_row in cloud_rows or []:
+            meta_json = _meta_json_object(cloud_row.get("meta_json"))
+            row = {key: cloud_row.get(key) for key in columns if key != "meta_json"}
+            row["record_id"] = row.get("id")
+            row["llm_model"] = row.pop("agent_model", None)
+            row["messages"] = _json_value(row.get("messages"), [])
+            row["response"] = _json_value(row.get("response"), row.get("response"))
+            row["meta_json"] = meta_json
+            row["group_id"] = meta_json.get("group_id")
+            row["request"] = meta_json.get("request")
+            rows.append(row)
+            if row.get("record_id") and row.get("job_id"):
+                self._record_job_ids[str(row["record_id"])] = str(row["job_id"])
+        rows.sort(key=lambda row: (
+            int(row.get("step_id") or 0),
+            str(row.get("created_at") or ""),
+            str(row.get("record_id") or ""),
+        ))
+        return rows
+
+    async def update_session_step_rows(
+        self,
+        query: SessionStepQuery,
+        updates: Dict[str, Any],
+    ) -> int:
+        await self.init()
+        if self._enable_buffer:
+            await self._flush_records()
+        clauses: List[str] = []
+        if query.job_id:
+            clauses.append(f"job_id = '{_escape_sql_literal(query.job_id)}'")
+        if query.session_id:
+            clauses.append(f"session_id = '{_escape_sql_literal(query.session_id)}'")
+        if query.session_ids:
+            values = ", ".join(f"'{_escape_sql_literal(item)}'" for item in query.session_ids)
+            clauses.append(f"session_id IN ({values})")
+        if query.record_id:
+            clauses.append(f"id = '{_escape_sql_literal(query.record_id)}'")
+        if query.record_ids:
+            values = ", ".join(f"'{_escape_sql_literal(item)}'" for item in query.record_ids)
+            clauses.append(f"id IN ({values})")
+        if query.step_id is not None:
+            clauses.append(f"step_id = {int(query.step_id)}")
+        if query.llm_model:
+            clauses.append(f"agent_model = '{_escape_sql_literal(query.llm_model)}'")
+        if not clauses:
+            raise ValueError("cloud session-step update requires at least one filter")
+        filter_query = " AND ".join(clauses)
+        job_id = query.job_id or next(
+            (self._record_job_ids.get(item) for item in query.record_ids if self._record_job_ids.get(item)),
+            None,
+        ) or (self._record_job_ids.get(query.record_id) if query.record_id else None)
+        normalized = self._normalize_session_step_updates_for_cloud(
+            updates,
+            filter_query=filter_query,
+            job_id=job_id,
+        )
+        if not normalized:
+            return 0
+        await self._timed_db_call(
+            "update_landing",
+            self.client.update_landing,
+            filter_query,
+            normalized,
+            partition=job_id or None,
+            trace_context={"job_id": job_id, "field_count": len(normalized)},
+        )
+        return len(query.record_ids) or int(bool(query.record_id)) or 1
 
     def get_env_configs(
         self,
@@ -710,573 +907,6 @@ class CloudStrategy(StorageStrategy):
                 row["env_params"] = {}
         return row
 
-    async def create_session(
-        self,
-        env_id: str,
-        env_name: str,
-        llm_model: str,
-        group_id: str = "",
-        job_id: str = ""
-    ) -> SessionContext:
-        """Create session context (in-memory only)"""
-        session = SessionContext(
-            session_id=env_id,
-            env_id=env_id,
-            env_name=env_name,
-            llm_model=llm_model,
-            group_id=group_id,
-            job_id=job_id or self.job_id,
-            total_reward=0.0,
-            start_time=time.perf_counter(),
-            message_history=[]
-        )
-
-        self._sessions[session.session_id] = session
-        log.debug("Created cloud session: %s", session.session_id)
-        return session
-
-    async def record_step(
-        self,
-        session: SessionContext,
-        step_id: int,
-        messages: List[Dict],
-        response: str,
-        step_reward: float,
-        request: Optional[str] = None,
-        env_state: Optional[str] = None,
-        terminated: bool = False,
-        truncated: bool = False,
-        is_trainable: bool = False,
-        dataset: Optional[Any] = None,
-        reward: Optional[float] = None,
-    ):
-        """
-        Record step to cloud LandingTable.
-        Images are extracted, uploaded to S3 (with retry), and URLs stored.
-        """
-        await self.init()
-
-        record, record_id = await self._build_step_record(
-            session=session,
-            step_id=step_id,
-            messages=messages,
-            response=response,
-            step_reward=step_reward,
-            reward=reward,
-            request=request,
-            env_state=env_state,
-            dataset=dataset,
-            terminated=terminated,
-            truncated=truncated,
-            is_trainable=is_trainable,
-        )
-
-        if self._enable_buffer:
-            await self._buffer_record(record)
-        else:
-            try:
-                await self._timed_db_call(
-                    "ingest_landing",
-                    self.client.ingest_landing,
-                    record,
-                    trace_context={"session_id": session.session_id, "step_id": step_id},
-                )
-                log.debug("Step %d recorded to cloud: %s", step_id, record_id)
-            except Exception as e:
-                log.error("Failed to ingest step %d: %s", step_id, e)
-                raise
-
-        if record_id and session.job_id:
-            self._record_job_ids[record_id] = str(session.job_id)
-        return record_id
-
-    async def record_steps_batch(self, steps: List[Dict[str, Any]]) -> List[Optional[str]]:
-        """Build step records in order and persist them with one cloud batch call."""
-        await self.init()
-        if not steps:
-            return []
-
-        records: List[Any] = []
-        record_ids: List[Optional[str]] = []
-        for step in steps:
-            record, record_id = await self._build_step_record(**step)
-            records.append(record)
-            record_ids.append(record_id)
-
-        if self._enable_buffer:
-            await self._buffer_records(records)
-        else:
-            try:
-                await self._timed_db_call(
-                    "ingest_landing_batch",
-                    self.client.ingest_landing_batch,
-                    records,
-                    trace_context={"record_count": len(records)},
-                )
-                log.debug("Recorded %d steps to cloud in one batch", len(records))
-            except Exception as e:
-                log.error("Failed to ingest %d cloud steps as a batch: %s", len(records), e)
-                raise
-
-        for record, record_id in zip(records, record_ids):
-            job_id = getattr(record, "job_id", None)
-            if record_id and job_id:
-                self._record_job_ids[record_id] = str(job_id)
-        return record_ids
-
-    async def mark_records_completed(self, record_ids: List[str]) -> int:
-        """Mark known landing record IDs completed in their associated HASH buckets."""
-        await self.init()
-        unique_ids = list(dict.fromkeys(str(record_id) for record_id in record_ids if record_id))
-        if not unique_ids:
-            return 0
-        if self._enable_buffer:
-            await self._flush_records()
-
-        ids_by_job: Dict[str, List[str]] = {}
-        inferred_ids: List[str] = []
-        missing_job_ids: List[str] = []
-        for record_id in unique_ids:
-            job_id = self._record_job_ids.get(record_id)
-            if not job_id and self.job_id:
-                job_id = str(self.job_id)
-                inferred_ids.append(record_id)
-            if not job_id:
-                missing_job_ids.append(record_id)
-                continue
-            ids_by_job.setdefault(job_id, []).append(record_id)
-
-        if inferred_ids:
-            log.warning(
-                "Record-to-job association unavailable for %d landing records; "
-                "falling back to configured job_id=%s",
-                len(inferred_ids),
-                self.job_id,
-            )
-        if missing_job_ids:
-            log.error(
-                "Cannot mark %d landing records completed without job_id; "
-                "refusing an all-bucket HASH update",
-                len(missing_job_ids),
-            )
-            raise ValueError(
-                "job_id is required to mark landing records completed without "
-                "scanning all HASH buckets"
-            )
-
-        for job_id, job_record_ids in ids_by_job.items():
-            quoted_ids = ", ".join(
-                f"'{_escape_sql_literal(record_id)}'"
-                for record_id in job_record_ids
-            )
-            filter_query = (
-                f"job_id = '{_escape_sql_literal(job_id)}' "
-                f"AND id IN ({quoted_ids})"
-            )
-            await self._timed_db_call(
-                "update_landing",
-                self.client.update_landing,
-                filter_query,
-                {
-                    "is_session_completed": True,
-                    "is_terminal": True,
-                },
-                partition=job_id,
-                trace_context={
-                    "job_id": job_id,
-                    "record_count": len(job_record_ids),
-                },
-            )
-            for record_id in job_record_ids:
-                self._record_job_ids.pop(record_id, None)
-
-        log.debug("Marked %d known cloud records completed", len(unique_ids))
-        return len(unique_ids)
-
-    async def _build_step_record(
-        self,
-        *,
-        session: SessionContext,
-        step_id: int,
-        messages: Any,
-        response: Any,
-        step_reward: float,
-        reward: Optional[float] = None,
-        request: Optional[str] = None,
-        env_state: Optional[str] = None,
-        terminated: bool = False,
-        truncated: bool = False,
-        is_trainable: bool = False,
-        dataset: Optional[Any] = None,
-        provider_meta: Optional[Dict[str, Any]] = None,
-    ) -> tuple[Any, str]:
-        # Keep the real per-session job_id available for later partitioned reads
-        # and updates, including sessions created by DataManager itself.
-        self._sessions[session.session_id] = session
-        env_key = f"{session.env_name}_{session.env_id}"
-
-        # Optimization: session.message_history already holds previously processed
-        # messages with S3 URLs substituted for base64.  Reuse that prefix and only
-        # process images in the *new* messages appended since the last step, avoiding
-        # redundant re-uploads of the same images on every cumulative call.
-        if messages is None:
-            full_messages = None
-            session.message_history = []
-        else:
-            if not isinstance(messages, list):
-                raise ValueError("messages must be a list or None")
-            prev_count = len(session.message_history)
-            if prev_count > 0 and len(messages) >= prev_count:
-                new_messages = messages[prev_count:]
-                new_processed, _ = await self._process_images(
-                    new_messages, env_key, step_id
-                )
-                full_messages = list(session.message_history) + list(new_processed)
-            else:
-                # First step or unexpected message count — process everything normally.
-                full_messages, _ = await self._process_images(
-                    messages, env_key, step_id
-                )
-            session.message_history = full_messages
-        
-        # Generate deterministic record ID
-        record_id = generate_deterministic_id({
-            "session_id": session.session_id,
-            "step_id": step_id,
-            "llm_model": session.llm_model,
-            "env_name": session.env_name
-        })
-        
-        meta_json = {
-            "source": "AIEvoBox",
-            "group_id": session.group_id,
-            "request": request,
-            "env_state": env_state,
-        }
-        if dataset is not None:
-            meta_json["dataset"] = dataset
-        if provider_meta:
-            meta_json.update(provider_meta)
-
-        # Create LandingRecord
-        record = LandingRecord(
-            dataset_type=CLOUD_DATASET_TYPE,
-            dt=date.today().isoformat(),
-            id=record_id,
-            session_id=session.session_id,
-            step_id=step_id,
-            env_id=session.env_id,
-            job_id=session.job_id,
-            created_at=int(time.time()),
-            step_reward=step_reward,
-            reward=reward,
-            messages=self._messages_to_landing_value(full_messages),
-            response=self._response_to_landing_value(response),
-            ground_truth_answer=None,
-            reference_answer=None,
-            agent_model=session.llm_model,
-            env_name=session.env_name,
-            is_terminal=terminated or truncated,
-            is_truncated=truncated,
-            is_session_completed=terminated,
-            # Training eligibility is assigned by a later, explicit workflow.
-            # Every newly recorded trajectory step starts non-trainable.
-            is_trainable=False,
-            meta_json=json.dumps(meta_json, ensure_ascii=False, default=str)
-        )
-        
-        return record, record_id
-
-    async def update_session_step(
-        self,
-        session_id: str,
-        step_id: int,
-        updates: Dict[str, Any],
-    ) -> int:
-        """Update one cloud-backed session step by session_id and step_id."""
-        await self.init()
-
-        if self._enable_buffer:
-            await self._flush_records()
-
-        filter_query = self._build_session_step_filter(session_id, step_id)
-        job_id = self._job_id_for_session(session_id)
-        if not job_id:
-            log.warning(
-                "Updating landing session step without job_id; "
-                "falling back to an all-bucket HASH update: session_id=%s step_id=%s",
-                session_id,
-                step_id,
-            )
-        normalized_updates = self._normalize_session_step_updates_for_cloud(
-            updates,
-            filter_query=filter_query,
-            job_id=job_id,
-        )
-        if not normalized_updates:
-            return 0
-
-        result = await self._timed_db_call(
-            "update_landing",
-            self.client.update_landing,
-            filter_query,
-            normalized_updates,
-            partition=job_id or None,
-            trace_context={
-                "session_id": session_id,
-                "step_id": step_id,
-                "field_count": len(normalized_updates),
-            },
-        )
-        log.debug(
-            "Submitted cloud session step update: session_id=%s step_id=%s result=%s",
-            session_id,
-            step_id,
-            result,
-        )
-        return 1
-
-    async def list_session_steps(
-        self,
-        session_id: str,
-        *,
-        checkout_latest: bool = False,
-    ) -> List[Dict[str, Any]]:
-        """Read one cloud-backed session in deterministic trajectory order."""
-        await self.init()
-
-        if self._enable_buffer:
-            await self._flush_records()
-
-        job_id = self._job_id_for_session(session_id)
-        clauses = []
-        if job_id:
-            clauses.append(f"job_id = '{_escape_sql_literal(job_id)}'")
-        else:
-            log.warning(
-                "Reading landing session steps without job_id; "
-                "falling back to an all-bucket HASH query: session_id=%s",
-                session_id,
-            )
-        clauses.append(f"session_id = '{_escape_sql_literal(session_id)}'")
-        query = " AND ".join(clauses)
-        columns = [
-            "id",
-            "session_id",
-            "step_id",
-            "env_name",
-            "agent_model",
-            "job_id",
-            "messages",
-            "response",
-            "step_reward",
-            "reward",
-            "meta_json",
-            "is_terminal",
-            "is_truncated",
-            "is_session_completed",
-            "is_trainable",
-            "created_at",
-        ]
-        cloud_rows = await self._timed_db_call(
-            "filter_landing",
-            self.client.query_data,
-            filter_query=query,
-            limit=10000,
-            columns=columns,
-            partition=job_id or None,
-            checkout_latest=checkout_latest,
-            deserialize_json=True,
-            trace_context={"session_id": session_id},
-        )
-        if not cloud_rows:
-            return []
-
-        rows: List[Dict[str, Any]] = []
-        for cloud_row in cloud_rows:
-            row = {key: cloud_row.get(key) for key in columns}
-            row["messages"] = _json_value(row.get("messages"), [])
-            row["response"] = _json_value(
-                row.get("response"),
-                row.get("response"),
-            )
-            meta = _json_value(row.pop("meta_json", None), {})
-            if not isinstance(meta, dict):
-                meta = {}
-            row["llm_model"] = row.pop("agent_model", None)
-            env_state = _json_value(meta.get("env_state"), {})
-            row["env_state"] = env_state if isinstance(env_state, dict) else {}
-            row["group_id"] = meta.get("group_id")
-            if "dataset" in meta:
-                row["dataset"] = meta["dataset"]
-            if row.get("is_trainable") is None:
-                row["is_trainable"] = meta.get("is_trainable", False)
-            rows.append(row)
-
-        rows.sort(
-            key=lambda row: (
-                int(row.get("step_id") or 0),
-                str(row.get("created_at") or ""),
-                str(row.get("id") or ""),
-            )
-        )
-        return rows
-
-    async def record_evaluation_summary(
-        self,
-        session_id: str,
-        step_id: int,
-        reward: float,
-        env_state: str,
-        truncated: bool = False,
-    ) -> int:
-        """Persist an evaluation-only row when a session has no trainable step."""
-        await self.init()
-        session = self._sessions.get(session_id)
-        if session is None:
-            job_id = str(self.job_id or "")
-            if not job_id:
-                raise ValueError(
-                    "job_id is required to persist a cloud evaluation summary"
-                )
-            log.warning(
-                "Session context unavailable while recording evaluation summary; "
-                "using configured job_id=%s session_id=%s",
-                job_id,
-                session_id,
-            )
-            session = SessionContext(
-                session_id=session_id,
-                env_id=session_id,
-                env_name="gateway",
-                llm_model="",
-                job_id=job_id,
-            )
-            self._sessions[session_id] = session
-
-        await self.record_step(
-            session=session,
-            step_id=step_id,
-            messages=[],
-            response="",
-            step_reward=reward,
-            reward=reward,
-            env_state=env_state,
-            terminated=True,
-            truncated=truncated,
-            is_trainable=False,
-        )
-        return 1
-
-    async def mark_latest_session_completed(
-        self,
-        session_id: str,
-        llm_model: Optional[str] = None,
-        *,
-        is_session_completed: bool = True,
-        is_terminal: Optional[bool] = None,
-    ) -> int:
-        """Set the completion state of the latest cloud-backed trajectory row."""
-        await self.init()
-        completed = bool(is_session_completed)
-        terminal = completed if is_terminal is None else bool(is_terminal)
-
-        if self._enable_buffer:
-            await self._flush_records()
-
-        clauses = []
-        job_id = self._job_id_for_session(session_id)
-        if job_id:
-            clauses.append(f"job_id = '{_escape_sql_literal(job_id)}'")
-        else:
-            log.warning(
-                "Reading/updating latest landing session row without job_id; "
-                "falling back to all HASH buckets: session_id=%s",
-                session_id,
-            )
-        escaped_session_id = session_id.replace("'", "''")
-        clauses.append(f"session_id = '{escaped_session_id}'")
-        if llm_model:
-            escaped_llm_model = llm_model.replace("'", "''")
-            clauses.append(f"agent_model = '{escaped_llm_model}'")
-        query = " AND ".join(clauses)
-
-        rows = await self._timed_db_call(
-            "filter_landing",
-            self.client.query_data,
-            filter_query=query,
-            limit=1000,
-            columns=[
-                "step_id",
-                "is_terminal",
-                "is_session_completed",
-                "meta_json",
-                "agent_model",
-            ],
-            partition=job_id or None,
-            checkout_latest=True,
-            deserialize_json=True,
-            trace_context={"session_id": session_id, "model": llm_model},
-        )
-        if not rows:
-            return 0
-
-        candidates: List[tuple[int, bool, bool, Any]] = []
-        for row in rows:
-            try:
-                candidates.append(
-                    (
-                        int(row["step_id"]),
-                        _truthy_bool(row.get("is_terminal")),
-                        _truthy_bool(row.get("is_session_completed")),
-                        row.get("meta_json"),
-                    )
-                )
-            except Exception:
-                continue
-        if not candidates:
-            return 0
-
-        trajectory_candidates = [
-            item for item in candidates if _is_trajectory_meta_json(item[3])
-        ]
-        latest_step_id, latest_terminal, latest_completed, _latest_meta_json = max(
-            trajectory_candidates or candidates,
-            key=lambda item: item[0],
-        )
-        if latest_completed == completed and latest_terminal == terminal:
-            return 0
-
-        update_query = self._build_session_step_filter(
-            session_id,
-            latest_step_id,
-            llm_model=llm_model,
-        )
-        result = await self._timed_db_call(
-            "update_landing",
-            self.client.update_landing,
-            update_query,
-            {
-                "is_session_completed": completed,
-                "is_terminal": terminal,
-                **({"step_reward": 0.0, "reward": None} if not completed else {}),
-            },
-            partition=job_id or None,
-            trace_context={
-                "session_id": session_id,
-                "step_id": latest_step_id,
-                "model": llm_model,
-            },
-        )
-        log.debug(
-            "Submitted cloud latest-session completion update: session_id=%s step_id=%s model=%s result=%s",
-            session_id,
-            latest_step_id,
-            llm_model,
-            result,
-        )
-        return 1
-
     async def close(self) -> None:
         """Clean up cloud clients"""
         if self._enable_buffer:
@@ -1295,28 +925,6 @@ class CloudStrategy(StorageStrategy):
     def buffer_stats(self) -> Optional[dict]:
         """Get buffer statistics"""
         return self._stats if self._enable_buffer else None
-
-    def _build_session_step_filter(
-        self,
-        session_id: str,
-        step_id: int,
-        llm_model: Optional[str] = None,
-    ) -> str:
-        job_id = self._job_id_for_session(session_id)
-        clauses = []
-        if job_id:
-            clauses.append(f"job_id = '{_escape_sql_literal(job_id)}'")
-        escaped_session_id = session_id.replace("'", "''")
-        clauses.append(f"session_id = '{escaped_session_id}'")
-        clauses.append(f"step_id = {int(step_id)}")
-        if llm_model:
-            clauses.append(f"agent_model = '{_escape_sql_literal(llm_model)}'")
-        return " AND ".join(clauses)
-
-    def _job_id_for_session(self, session_id: str) -> str:
-        session = self._sessions.get(session_id)
-        job_id = session.job_id if session is not None else None
-        return str(job_id or self.job_id or "")
 
     def _normalize_session_step_updates_for_cloud(
         self,
@@ -1342,8 +950,9 @@ class CloudStrategy(StorageStrategy):
             "is_truncated": "is_truncated",
             "truncated": "is_truncated",
             "is_session_completed": "is_session_completed",
+            "is_trainable": "is_trainable",
         }
-        meta_fields = {"group_id", "env_state", "is_trainable", "request"}
+        meta_fields = {"group_id", "request"}
         blocked_fields = {"id", "created_at"}
 
         normalized: Dict[str, Any] = {}
@@ -1359,10 +968,10 @@ class CloudStrategy(StorageStrategy):
             elif field in meta_fields:
                 meta_updates[field] = value
             elif field == "meta_json":
-                if isinstance(value, str):
-                    normalized["meta_json"] = value
-                else:
-                    normalized["meta_json"] = json.dumps(value, ensure_ascii=False)
+                normalized["meta_json"] = json.dumps(
+                    _meta_json_object(value),
+                    ensure_ascii=False,
+                )
             elif field in direct_field_map:
                 normalized[direct_field_map[field]] = value
             else:
@@ -1370,9 +979,7 @@ class CloudStrategy(StorageStrategy):
 
         if meta_updates:
             if "meta_json" in normalized:
-                meta_json = _json_value(normalized["meta_json"], {})
-                if not isinstance(meta_json, dict):
-                    meta_json = {"source": "AIEvoBox"}
+                meta_json = _meta_json_object(normalized["meta_json"])
             else:
                 meta_json = self._load_existing_meta_json(
                     filter_query,
@@ -1415,9 +1022,7 @@ class CloudStrategy(StorageStrategy):
         if not raw_meta:
             return meta_json
 
-        parsed = _json_value(raw_meta, {})
-        if isinstance(parsed, dict):
-            meta_json.update(parsed)
+        meta_json.update(_meta_json_object(raw_meta))
 
         return meta_json
 
@@ -1444,140 +1049,6 @@ class CloudStrategy(StorageStrategy):
         elif not isinstance(value, (dict, list)):
             value = {"role": "assistant", "content": str(value)}
         return json.dumps(value, ensure_ascii=False, default=str)
-
-    def _convert_to_chat_messages(self, messages: List[Dict]) -> List[Any]:
-        """Adapt extended messages only for legacy SDK consumers."""
-        _load_wt_sdk()
-        if ChatMessage is None or ContentItem is None:
-            raise RuntimeError(
-                "Installed wt_sdk does not expose legacy ChatMessage/ContentItem models"
-            )
-
-        result = []
-        for message in messages:
-            content_items = []
-            for field in ("reasoning_content", "encrypted_content"):
-                value = message.get(field)
-                if isinstance(value, str) and value:
-                    content_items.append(ContentItem(type=field, text=value))
-
-            content = message.get("content")
-            if isinstance(content, str):
-                content_items.append(ContentItem(type="text", text=content))
-            elif isinstance(content, list):
-                for item in content:
-                    if not isinstance(item, dict):
-                        continue
-                    if item.get("type") == "image_url":
-                        content_items.append(
-                            ContentItem(
-                                type="image_url",
-                                image_url={"url": item.get("image_url", {}).get("url", "")},
-                            )
-                        )
-                    elif item.get("type") == "text":
-                        content_items.append(
-                            ContentItem(type="text", text=item.get("text", ""))
-                        )
-                    else:
-                        content_items.append(
-                            ContentItem(
-                                type=str(item.get("type") or "provider_content"),
-                                text=json.dumps(
-                                    item,
-                                    ensure_ascii=False,
-                                    separators=(",", ":"),
-                                    default=str,
-                                ),
-                            )
-                        )
-
-            kwargs: Dict[str, Any] = {
-                "role": message.get("role", "user"),
-                "content": content_items,
-            }
-            for field in ("name", "refusal", "tool_calls", "tool_call_id", "function_call"):
-                if message.get(field) is not None:
-                    kwargs[field] = message[field]
-            result.append(ChatMessage(**kwargs))
-        return result
-    
-    async def _process_images(
-        self,
-        messages: List[Dict],
-        env_key: str,
-        step_id: int
-    ) -> tuple[List[Dict], List[str]]:
-        """
-        Process images in messages:
-        1. Extract base64 images
-        2. Upload to S3 with retry
-        3. On failure: save locally as fallback
-        4. Replace base64 with URL/path in messages
-        """
-        processed_messages = []
-        uploaded_urls = []
-        image_count = 0
-
-        for msg_idx, message in enumerate(messages):
-            content = message.get("content")
-
-            # Skip non-list content or content without images
-            if not isinstance(content, list):
-                processed_messages.append(message)
-                continue
-
-            has_images = any(
-                isinstance(item, dict) and item.get("type") == "image_url"
-                for item in content
-            )
-            if not has_images:
-                processed_messages.append(message)
-                continue
-
-            # Process images in content
-            new_message = message.copy()
-            new_content = []
-
-            for item_idx, item in enumerate(content):
-                if not isinstance(item, dict) or item.get("type") != "image_url":
-                    new_content.append(item)
-                    continue
-
-                image_url = item.get("image_url", {}).get("url", "")
-
-                # Check if base64
-                match = re.match(r"data:image/(\w+);base64,(.+)", image_url)
-                if not match:
-                    new_content.append(item)
-                    continue
-
-                # Extract image data
-                ext = match.group(1)
-                b64_str = match.group(2)
-                file_name = f"step_{step_id}_m{msg_idx}_i{image_count}.{ext}"
-
-                # Upload with retry
-                final_url = await self._upload_image_with_retry(
-                    b64_str, env_key, file_name, ext
-                )
-
-                # Update item
-                new_item = item.copy()
-                new_item["image_url"] = item["image_url"].copy()
-                new_item["image_url"]["url"] = final_url
-
-                new_content.append(new_item)
-                uploaded_urls.append(final_url)
-                image_count += 1
-
-            new_message["content"] = new_content
-            processed_messages.append(new_message)
-
-        return processed_messages, uploaded_urls
-
-    async def _buffer_record(self, record: Any) -> None:
-        await self._buffer_records([record])
 
     async def _buffer_records(self, records: List[Any]) -> None:
         should_flush = False
@@ -1647,71 +1118,6 @@ class CloudStrategy(StorageStrategy):
             log.debug("Flushed %d cloud records", len(records))
             return len(records)
     
-    async def _upload_image_with_retry(
-        self,
-        b64_str: str,
-        env_key: str,
-        file_name: str,
-        ext: str
-    ) -> str:
-        """
-        Upload image to S3 with retry logic.
-        Falls back to local storage on failure.
-        """
-        # Decode base64
-        try:
-            img_data = base64.b64decode(b64_str)
-        except Exception as e:
-            log.error("Failed to decode base64: %s", e)
-            return f"data:image/{ext};base64,{b64_str[:50]}..."  # Keep partial for debugging
-
-        # Create local fallback path
-        local_dir = os.path.join(self._local_fallback_dir, env_key)
-        local_path = os.path.join(local_dir, file_name)
-
-        # Try S3 upload with retry
-        if self.s3_uploader:
-            s3_key = f"aievobox/{self.job_id}/{env_key}/{file_name}"
-
-            for attempt in range(MAX_UPLOAD_RETRIES):
-                try:
-                    # Save to temp file first
-                    os.makedirs(local_dir, exist_ok=True)
-                    with open(local_path, "wb") as f:
-                        f.write(img_data)
-
-                    # Upload to S3
-                    s3_url = await asyncio.to_thread(
-                        self.s3_uploader.upload_file,
-                        file_path=local_path,
-                        key=s3_key
-                    )
-
-                    if s3_url:
-                        log.debug("Uploaded image to S3: %s", s3_url)
-                        return s3_url
-
-                except Exception as e:
-                    wait_time = RETRY_BACKOFF_BASE * (2 ** attempt)
-                    log.warning(
-                        "S3 upload failed (attempt %d/%d): %s. Retrying in %.1fs",
-                        attempt + 1, MAX_UPLOAD_RETRIES, e, wait_time
-                    )
-                    await asyncio.sleep(wait_time)
-
-            log.error("S3 upload failed after %d retries. Using local fallback.", MAX_UPLOAD_RETRIES)
-
-        # Fallback to local storage
-        try:
-            os.makedirs(local_dir, exist_ok=True)
-            with open(local_path, "wb") as f:
-                f.write(img_data)
-            log.debug("Image saved locally: %s", local_path)
-            return local_path
-        except Exception as e:
-            log.error("Local save also failed: %s", e)
-            return f"[IMAGE_SAVE_FAILED:{file_name}]"
-        
     async def fetch_done_steps_with_context(
         self,
         job_id: str,
@@ -1741,9 +1147,7 @@ class CloudStrategy(StorageStrategy):
         
         rows = []
         for _, row in results.iterrows():
-            meta = _json_value(row.get("meta_json"), {})
-            if not isinstance(meta, dict):
-                meta = {}
+            meta = _meta_json_object(row.get("meta_json"))
             messages = _json_value(row.get("messages"), [])
             if not isinstance(messages, (dict, list)):
                 messages = []
@@ -1757,7 +1161,8 @@ class CloudStrategy(StorageStrategy):
                     "step_id": row["step_id"],
                     "env_name": row["env_name"],
                     "env_id": row["session_id"],
-                    "env_state": meta.get("env_state"),
+                    # Derived compatibility key for the unchanged RL buffer contract.
+                    "env_state": json.dumps(meta, ensure_ascii=False, default=str),
                     "prompt": self.normalize_messages(messages),
                     "request": meta.get("request"),
                     "response": _response_text(response),

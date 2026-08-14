@@ -21,6 +21,7 @@ from evaluator.rule_evaluator import discover_rule_eval_spec
 from evaluator.service import EvaluationService
 
 from .agent_start_client import AgentStartClient
+from .session_lifecycle import complete_latest_session_step
 from .simulation_lease_pool import SimulationLeasePool
 from .types import (
     SimulationAgentLease,
@@ -373,8 +374,10 @@ class SimulationWorkerGroup:
                         )
                         release_reusable = False
                 else:
-                    await self.data_manager.mark_latest_session_completed(
-                        result.session_id,
+                    await complete_latest_session_step(
+                        self.data_manager,
+                        session_id=result.session_id,
+                        job_id=self.cfg.job_id,
                         llm_model=self.cfg.llm_model,
                     )
                     await self.data_manager.mark_environment_finished(lease.agent_id)

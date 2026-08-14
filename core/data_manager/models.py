@@ -45,6 +45,11 @@ class SessionStep(Model):
     response, step_reward, total_reward, terminated, is_session_completed
     """
     id = fields.IntField(pk=True, autoincrement=True)
+    record_id = fields.CharField(
+        max_length=64,
+        unique=True,
+        description="Backend-neutral persisted record identifier",
+    )
     session_id = fields.CharField(
         max_length=36,
         description="Session identifier (equals env_id for compatibility)"
@@ -82,7 +87,10 @@ class SessionStep(Model):
     )
 
     # State tracking
-    env_state = fields.TextField(null=True, description="JSON: Environment state")
+    meta_json = fields.TextField(
+        null=True,
+        description="JSON: Unified trajectory and provider metadata",
+    )
     is_terminal = fields.BooleanField(default=False, description="Whether this step is terminal")
     is_truncated = fields.BooleanField(default=False, description="Whether this step is truncated")
     is_session_completed = fields.BooleanField(default=False, description="Whether the session is completed (final record)")

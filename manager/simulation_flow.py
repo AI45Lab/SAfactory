@@ -98,6 +98,12 @@ class SimulationFlow:
         }
         if self.cfg.storage_type == "sqlite":
             storage_config["db_url"] = self.cfg.db_url
+        else:
+            storage_config.update({
+                "confirm_cloud_delete_job_id": self.cfg.confirm_cloud_delete_job_id,
+                "confirm_production": self.cfg.confirm_production,
+                "cloud_delete_archive_dir": self.cfg.cloud_delete_archive_dir,
+            })
 
         self.data_manager = DataManager(
             job_id=self.cfg.job_id,
@@ -117,6 +123,7 @@ class SimulationFlow:
             self.cfg.followup_submit_batch,
             rebuild_table=self.cfg.rebuild_table,
             resume=self.cfg.resume,
+            job_claim_dir=self.cfg.cloud_job_claim_dir,
         )
         self.manager_cfg = build_manager_runtime_config(self.cfg)
         if self.cfg.resume and self.cfg.mode == "rjob":

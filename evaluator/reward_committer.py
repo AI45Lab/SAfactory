@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from typing import Any
 
 from core.data_manager.manager import DataManager
 from core.perf_trace import PerfTrace
 from evaluator.eval_types import EvalResult, EvalStatus, to_jsonable
+from evaluator.trajectory_policy import metadata_from_row, select_reward_target
 
 log = logging.getLogger("evaluator.reward_committer")
 
@@ -98,10 +100,7 @@ class RewardCommitter:
             session_id,
             checkout_latest=True,
         )
-        terminal = next(
-            (row for row in reversed(rows) if _is_trainable_step(row)),
-            None,
-        )
+        terminal = select_reward_target(rows)
         log.info(
             "EVAL REWARD rows: session=%s total_rows=%d terminal_found=%s",
             session_id,
@@ -116,22 +115,48 @@ class RewardCommitter:
             summary_metadata = _as_eval_summary_metadata(metadata)
             summary = _existing_eval_summary_row(rows, session_id)
             if summary is None:
-                recorded = await self.data_manager.record_evaluation_summary(
-                    session_id=session_id,
-                    step_id=_next_step_id(rows),
-                    reward=eval_result.normalized_score_10,
-                    env_state=summary_metadata,
-                    truncated=truncated,
-                )
+                reference = rows[-1] if rows else {}
+                insert_rows = getattr(self.data_manager, "insert_session_step_rows", None)
+                if callable(insert_rows):
+                    record_ids = await insert_rows([{
+                        "record_id": str(uuid.uuid4()),
+                        "session_id": session_id,
+                        "env_id": session_id,
+                        "step_id": _next_step_id(rows),
+                        "env_name": str(reference.get("env_name") or "gateway"),
+                        "llm_model": str(reference.get("llm_model") or ""),
+                        "group_id": str(reference.get("group_id") or ""),
+                        "job_id": str(reference.get("job_id") or self.data_manager.job_id or ""),
+                        "messages": [],
+                        "request": None,
+                        "response": "",
+                        "step_reward": eval_result.normalized_score_10,
+                        "reward": eval_result.normalized_score_10,
+                        "meta_json": _load_meta_json(summary_metadata),
+                        "is_terminal": True,
+                        "is_truncated": truncated,
+                        "is_session_completed": True,
+                        "is_trainable": False,
+                    }])
+                    recorded = len(record_ids)
+                else:
+                    # Compatibility for injected legacy test doubles.
+                    recorded = await self.data_manager.record_evaluation_summary(
+                        session_id=session_id,
+                        step_id=_next_step_id(rows),
+                        reward=eval_result.normalized_score_10,
+                        env_state=summary_metadata,
+                        truncated=truncated,
+                    )
             else:
-                recorded = await self.data_manager.update_session_step(
-                    session_id,
-                    int(summary.get("step_id") or 0),
+                recorded = await _update_persisted_row(
+                    self.data_manager,
+                    summary,
                     {
                         "step_reward": eval_result.normalized_score_10,
                         "reward": eval_result.normalized_score_10,
-                        "env_state": _merge_env_state(
-                            summary.get("env_state"),
+                        "meta_json": _merge_meta_json(
+                            summary.get("meta_json"),
                             summary_metadata,
                         ),
                         "is_terminal": True,
@@ -155,14 +180,14 @@ class RewardCommitter:
             session_id=session_id,
             eval_result=eval_result,
         )
-        env_state = _merge_env_state(terminal.get("env_state"), metadata)
-        updated = await self.data_manager.update_session_step(
-            session_id,
-            int(terminal.get("step_id") or 0),
+        meta_json = _merge_meta_json(terminal.get("meta_json"), metadata)
+        updated = await _update_persisted_row(
+            self.data_manager,
+            terminal,
             {
                 "step_reward": eval_result.normalized_score_10,
                 "reward": eval_result.normalized_score_10,
-                "env_state": env_state,
+                "meta_json": meta_json,
                 "is_terminal": True,
                 **({"is_truncated": True} if truncated else {}),
                 "is_session_completed": True,
@@ -188,14 +213,14 @@ class RewardCommitter:
         )
 
 
-def _merge_env_state(existing: Any, new_metadata: str) -> str:
+def _merge_meta_json(existing: Any, new_metadata: str) -> str:
     if isinstance(existing, dict):
         existing_obj = dict(existing)
     else:
         try:
             existing_obj = json.loads(existing) if existing else {}
         except Exception:
-            existing_obj = {"previous_env_state": existing}
+            existing_obj = {"legacy_meta_json": existing}
     try:
         new_obj = json.loads(new_metadata)
     except Exception:
@@ -204,42 +229,12 @@ def _merge_env_state(existing: Any, new_metadata: str) -> str:
     return json.dumps(existing_obj, ensure_ascii=False)
 
 
-_NON_TRAINABLE_EVENT_TYPES = {
-    "gateway_session_close",
-    "episode_summary",
-    "evaluation_summary",
-}
-
-
-def _is_trainable_step(row: dict[str, Any]) -> bool:
-    env_state = _load_env_state(row["env_state"])
-    event_type = env_state.get("event_type")
-    if event_type in _NON_TRAINABLE_EVENT_TYPES:
-        return False
-    if env_state.get("synthetic_stop"):
-        return False
-    if event_type == "gateway_inference":
-        try:
-            return int(env_state.get("status_code") or 200) < 400
-        except (TypeError, ValueError):
-            return True
-    return bool(_has_messages(row["messages"]) or row["response"])
-
-
-def _last_trainable_row(rows: list[dict[str, Any]], trainable_ids: list[int]) -> dict[str, Any] | None:
-    trainable = set(trainable_ids)
-    for row in reversed(rows):
-        if int(row["id"]) in trainable:
-            return row
-    return None
-
-
 def _existing_eval_summary_row(rows: list[dict[str, Any]], session_id: str) -> dict[str, Any] | None:
     for row in reversed(rows):
-        env_state = _load_env_state(row["env_state"])
-        if env_state.get("event_type") != "evaluation_summary":
+        meta_json = metadata_from_row(row)
+        if meta_json.get("event_type") != "evaluation_summary":
             continue
-        eval_metadata = env_state.get("eval")
+        eval_metadata = meta_json.get("eval")
         if isinstance(eval_metadata, dict) and eval_metadata.get("session_id") == session_id:
             return row
     return None
@@ -252,12 +247,12 @@ def _next_step_id(rows: list[dict[str, Any]]) -> int:
 
 
 def _as_eval_summary_metadata(metadata: str) -> str:
-    obj = _load_env_state(metadata)
+    obj = _load_meta_json(metadata)
     obj["event_type"] = "evaluation_summary"
     return json.dumps(obj, ensure_ascii=False)
 
 
-def _load_env_state(value: Any) -> dict[str, Any]:
+def _load_meta_json(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     try:
@@ -267,9 +262,21 @@ def _load_env_state(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _has_messages(value: Any) -> bool:
-    try:
-        parsed = json.loads(value) if isinstance(value, str) else value
-    except Exception:
-        return bool(value)
-    return bool(parsed)
+async def _update_persisted_row(
+    data_manager: Any,
+    row: dict[str, Any],
+    updates: dict[str, Any],
+) -> int:
+    record_id = str(row.get("record_id") or row.get("id") or "")
+    update_rows = getattr(data_manager, "update_session_step_rows", None)
+    if record_id and callable(update_rows):
+        return await update_rows(
+            job_id=str(row.get("job_id") or "") or None,
+            record_id=record_id,
+            updates=updates,
+        )
+    return await data_manager.update_session_step(
+        str(row.get("session_id") or ""),
+        int(row.get("step_id") or 0),
+        updates,
+    )
