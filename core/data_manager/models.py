@@ -75,7 +75,11 @@ class SessionStep(Model):
 
     # Rewards
     step_reward = fields.FloatField(default=0.0, description="Reward for this step")
-    reward = fields.FloatField(default=0.0, description="Cumulative reward up to this step")
+    reward = fields.FloatField(
+        null=True,
+        default=None,
+        description="Final or cumulative reward; null until evaluated",
+    )
 
     # State tracking
     env_state = fields.TextField(null=True, description="JSON: Environment state")

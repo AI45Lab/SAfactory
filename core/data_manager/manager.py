@@ -120,6 +120,7 @@ class DataManager:
         truncated: bool = False,
         is_trainable: bool = False,
         dataset: Optional[Any] = None,
+        reward: Optional[float] = None,
     ) -> None:
         """
         Record a single interaction step with full conversation history.
@@ -133,6 +134,7 @@ class DataManager:
             messages=messages,
             response=response,
             step_reward=step_reward,
+            reward=reward,
             request=request,
             env_state=env_state,
             dataset=dataset,
@@ -167,6 +169,7 @@ class DataManager:
         step_id: int,
         reward: float,
         env_state: str,
+        truncated: bool = False,
     ) -> int:
         """Persist a non-trainable evaluation summary row."""
         return await self.strategy.record_evaluation_summary(
@@ -174,6 +177,7 @@ class DataManager:
             step_id=step_id,
             reward=reward,
             env_state=env_state,
+            truncated=truncated,
         )
 
     async def update_session_step(
@@ -215,10 +219,12 @@ class DataManager:
         llm_model: Optional[str] = None,
         *,
         is_session_completed: bool = True,
+        is_terminal: Optional[bool] = None,
     ) -> int:
         """
         Set the completion state of the latest persisted trajectory row.
         When llm_model is provided, only rows for that model are considered.
+        is_terminal can seal a row before evaluator completion.
 
         Returns the number of updated records.
         """
@@ -226,6 +232,7 @@ class DataManager:
             session_id=session_id,
             llm_model=llm_model,
             is_session_completed=is_session_completed,
+            is_terminal=is_terminal,
         )
 
     async def close(self) -> None:

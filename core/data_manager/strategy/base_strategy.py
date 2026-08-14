@@ -34,7 +34,7 @@ class StorageStrategy(ABC):
     Key design principles:
     - session_id equals env_id for compatibility
     - Each step record contains full conversation history up to that point
-    - Last record of a session contains total_reward and is_session_completed=True
+    - Final reward remains null until the evaluator completes the session
     """
     
     @abstractmethod
@@ -130,6 +130,7 @@ class StorageStrategy(ABC):
         truncated: bool = False,
         is_trainable: bool = False,
         dataset: Optional[Any] = None,
+        reward: Optional[float] = None,
     ) -> None:
         """
         Record a single interaction step with full conversation history.
@@ -194,6 +195,7 @@ class StorageStrategy(ABC):
         step_id: int,
         reward: float,
         env_state: str,
+        truncated: bool = False,
     ) -> int:
         """Persist a non-trainable evaluation result when no trajectory row exists."""
         return 0
@@ -236,10 +238,12 @@ class StorageStrategy(ABC):
         llm_model: Optional[str] = None,
         *,
         is_session_completed: bool = True,
+        is_terminal: Optional[bool] = None,
     ) -> int:
         """
         Set the completion state of the latest persisted trajectory row.
         When llm_model is provided, only rows for that model are considered.
+        is_terminal can seal a row before evaluator completion.
 
         Returns:
             Number of updated records.

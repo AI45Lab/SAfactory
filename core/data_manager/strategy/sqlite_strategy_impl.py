@@ -109,20 +109,70 @@ class SqliteStrategy(StorageStrategy):
 
         file_path = self.db_url[9:].split("?", 1)[0]
 
-        def add_missing_columns() -> None:
+        def ensure_schema() -> None:
             conn = sqlite3.connect(file_path)
             try:
-                columns = {
-                    str(row[1])
-                    for row in conn.execute("PRAGMA table_info(session_steps)")
-                }
+                conn.execute("PRAGMA busy_timeout=30000")
+                table_info = list(conn.execute("PRAGMA table_info(session_steps)"))
+                columns = {str(row[1]) for row in table_info}
+                reward_column = next(
+                    (row for row in table_info if str(row[1]) == "reward"),
+                    None,
+                )
+                if reward_column and (bool(reward_column[3]) or reward_column[4] is not None):
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.execute("DROP TABLE IF EXISTS session_steps_reward_migration")
+                    conn.execute(
+                        """
+                        CREATE TABLE session_steps_reward_migration (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            session_id VARCHAR(36) NOT NULL,
+                            step_id INT NOT NULL,
+                            env_name VARCHAR(100) NOT NULL,
+                            llm_model VARCHAR(150) NOT NULL,
+                            group_id VARCHAR(150),
+                            job_id VARCHAR(64),
+                            messages TEXT NOT NULL,
+                            request TEXT,
+                            response TEXT NOT NULL,
+                            step_reward REAL NOT NULL DEFAULT 0,
+                            reward REAL,
+                            env_state TEXT,
+                            is_terminal INT NOT NULL DEFAULT 0,
+                            is_truncated INT NOT NULL DEFAULT 0,
+                            is_session_completed INT NOT NULL DEFAULT 0,
+                            is_trainable INT NOT NULL DEFAULT 0,
+                            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE (session_id, step_id, created_at)
+                        )
+                        """
+                    )
+                    target_columns = (
+                        "id", "session_id", "step_id", "env_name", "llm_model",
+                        "group_id", "job_id", "messages", "request", "response",
+                        "step_reward", "reward", "env_state", "is_terminal",
+                        "is_truncated", "is_session_completed", "is_trainable",
+                        "created_at",
+                    )
+                    copied_columns = [column for column in target_columns if column in columns]
+                    column_list = ", ".join(f'"{column}"' for column in copied_columns)
+                    conn.execute(
+                        f"INSERT INTO session_steps_reward_migration ({column_list}) "
+                        f"SELECT {column_list} FROM session_steps"
+                    )
+                    conn.execute("DROP TABLE session_steps")
+                    conn.execute(
+                        "ALTER TABLE session_steps_reward_migration RENAME TO session_steps"
+                    )
+                    conn.commit()
+                    return
                 if "request" not in columns:
                     conn.execute("ALTER TABLE session_steps ADD COLUMN request TEXT")
                 conn.commit()
             finally:
                 conn.close()
 
-        await asyncio.to_thread(add_missing_columns)
+        await asyncio.to_thread(ensure_schema)
 
     async def _ensure_runtime_indexes(self) -> None:
         if not self.db_url.startswith("sqlite://"):
@@ -331,6 +381,7 @@ class SqliteStrategy(StorageStrategy):
         truncated: bool = False,
         is_trainable: bool = False,
         dataset: Optional[Any] = None,
+        reward: Optional[float] = None,
     ) -> None:
         """
         Record a single interaction step.
@@ -380,11 +431,11 @@ class SqliteStrategy(StorageStrategy):
                 request=request,
                 response=response,
                 step_reward=step_reward,
-                reward=session.total_reward,
+                reward=reward,
                 env_state=env_state,
                 is_terminal=terminated or truncated,
                 is_truncated=truncated,
-                is_session_completed=terminated or truncated,
+                is_session_completed=terminated,
                 # Training eligibility is assigned by a later, explicit workflow.
                 # Every newly recorded trajectory step starts non-trainable.
                 is_trainable=False,
@@ -409,8 +460,8 @@ class SqliteStrategy(StorageStrategy):
             raise
 
         log.debug(
-            "Recorded step %d for session %s: reward=%.4f total=%.4f",
-            step_id, session.session_id, step_reward, session.total_reward
+            "Recorded step %d for session %s: step_reward=%.4f reward=%s",
+            step_id, session.session_id, step_reward, reward,
         )
 
     async def update_session_step(
@@ -504,10 +555,12 @@ class SqliteStrategy(StorageStrategy):
         llm_model: Optional[str] = None,
         *,
         is_session_completed: bool = True,
+        is_terminal: Optional[bool] = None,
     ) -> int:
         """Set the completion state of the latest trajectory row for a session."""
         await self.init()
         completed = bool(is_session_completed)
+        terminal = completed if is_terminal is None else bool(is_terminal)
 
         trace = PerfTrace(
             "sqlite_strategy.mark_latest_session_completed",
@@ -518,6 +571,7 @@ class SqliteStrategy(StorageStrategy):
                 "session_id": session_id,
                 "model": llm_model,
                 "is_session_completed": completed,
+                "is_terminal": terminal,
                 "buffered": bool(self._write_buffer),
             },
         )
@@ -541,7 +595,7 @@ class SqliteStrategy(StorageStrategy):
                 (step for step in candidates if _is_trajectory_env_state(step.env_state)),
                 candidates[0],
             )
-            if completed and latest.is_session_completed and latest.is_terminal:
+            if latest.is_session_completed == completed and latest.is_terminal == terminal:
                 trace.emit_summary(
                     status="skipped",
                     candidate_count=len(candidates),
@@ -553,10 +607,10 @@ class SqliteStrategy(StorageStrategy):
 
             updates: Dict[str, Any] = {
                 "is_session_completed": completed,
-                "is_terminal": completed,
+                "is_terminal": terminal,
             }
             if not completed:
-                updates.update(step_reward=0.0, reward=0.0)
+                updates.update(step_reward=0.0, reward=None)
             with trace.span("db_write.mark_session_completed", row_id=latest.id, step_id=latest.step_id):
                 updated = await SessionStep.filter(id=latest.id).update(**updates)
             trace.emit_summary(

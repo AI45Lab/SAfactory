@@ -205,13 +205,15 @@ def normalize_result(result: Any, *, session_id: str) -> SimulationStartResult:
     metrics = body.get("metrics")
     if not isinstance(metrics, dict):
         metrics = {}
+    truncated = bool(body.get("truncated", False))
+    reward = body.get("total_reward")
     return SimulationStartResult(
         session_id=str(session_id),
-        status=str(body.get("status") or "succeeded"),
-        total_reward=float(body.get("total_reward", 0.0) or 0.0),
+        status="truncated" if truncated else str(body.get("status") or "succeeded"),
+        total_reward=None if reward is None else float(reward),
         step_count=int(body.get("step_count", 0) or 0),
         terminated=bool(body.get("terminated", False)),
-        truncated=bool(body.get("truncated", False)),
+        truncated=truncated,
         error_text=None if body.get("error_text") is None else str(body.get("error_text")),
         metrics=metrics,
     )

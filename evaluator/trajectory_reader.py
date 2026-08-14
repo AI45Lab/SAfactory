@@ -269,6 +269,7 @@ def _is_session_sealing_event(step: dict[str, Any]) -> bool:
     event_type = env_state.get("event_type")
     return bool(
         step.get("is_session_completed")
+        or step.get("is_terminal")
         or env_state.get("is_session_completed")
         or event_type in _NON_TRAJECTORY_EVENT_TYPES
     )

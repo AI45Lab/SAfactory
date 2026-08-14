@@ -386,6 +386,7 @@ class GatewayStorage:
                         "request": record.request,
                         "response": stored_response,
                         "step_reward": 0.0,
+                        "reward": None,
                         "env_state": json.dumps(self._metadata(record), ensure_ascii=False, default=str),
                         "terminated": False,
                         "truncated": record.is_truncated,
@@ -433,6 +434,7 @@ class GatewayStorage:
             },
         )
         try:
+            terminal = record.is_session_completed or binding.close_reason == "rollout_sealed"
             if self.cfg.storage_type == "cloud" and record.is_session_completed:
                 async with self._lock:
                     record_ids = [
@@ -484,6 +486,7 @@ class GatewayStorage:
                     await self.data_manager.mark_latest_session_completed(
                         session_id=binding.session_id,
                         is_session_completed=record.is_session_completed,
+                        is_terminal=terminal,
                     )
                 elapsed_ms = (time.perf_counter() - started) * 1000
                 trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_without_model=True)
@@ -508,6 +511,7 @@ class GatewayStorage:
                                 session_id=binding.session_id,
                                 llm_model=model,
                                 is_session_completed=record.is_session_completed,
+                                is_terminal=terminal,
                             )
                             for model in models
                         )
@@ -525,6 +529,7 @@ class GatewayStorage:
                             session_id=binding.session_id,
                             llm_model=model,
                             is_session_completed=record.is_session_completed,
+                            is_terminal=terminal,
                         )
 
             if updated_count == 0:
@@ -536,6 +541,7 @@ class GatewayStorage:
                     await self.data_manager.mark_latest_session_completed(
                         session_id=binding.session_id,
                         is_session_completed=record.is_session_completed,
+                        is_terminal=terminal,
                     )
             elapsed_ms = (time.perf_counter() - started) * 1000
             log.info(

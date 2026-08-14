@@ -13,6 +13,7 @@ class EvalStatus(str, Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     TIMEOUT = "timeout"
+    TRUNCATED = "truncated"
 
 
 @dataclass

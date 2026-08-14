@@ -7,7 +7,7 @@ import sqlite3
 from typing import Any
 
 from core.perf_trace import PerfTrace
-from evaluator.eval_types import EvalResult, to_jsonable
+from evaluator.eval_types import EvalResult, EvalStatus, to_jsonable
 from evaluator.trajectory_reader import _sqlite_path
 
 log = logging.getLogger("evaluator.reward_committer")
@@ -38,6 +38,15 @@ class RewardCommitter:
         session_id: str,
         eval_result: EvalResult,
     ) -> None:
+        if eval_result.status not in {
+            EvalStatus.SUCCEEDED,
+            EvalStatus.SUCCEEDED.value,
+            EvalStatus.TRUNCATED,
+            EvalStatus.TRUNCATED.value,
+        }:
+            raise ValueError(
+                f"cannot commit reward for evaluation status {eval_result.status!r}"
+            )
         trace = PerfTrace(
             "evaluator.reward_commit",
             logger=log,
@@ -90,6 +99,10 @@ class RewardCommitter:
         session_id: str,
         eval_result: EvalResult,
     ) -> None:
+        truncated = eval_result.status in {
+            EvalStatus.TRUNCATED,
+            EvalStatus.TRUNCATED.value,
+        }
         rows = await self.data_manager.list_session_steps(
             session_id,
             checkout_latest=True,
@@ -117,6 +130,7 @@ class RewardCommitter:
                     step_id=_next_step_id(rows),
                     reward=eval_result.normalized_score_10,
                     env_state=summary_metadata,
+                    truncated=truncated,
                 )
             else:
                 recorded = await self.data_manager.update_session_step(
@@ -130,6 +144,7 @@ class RewardCommitter:
                             summary_metadata,
                         ),
                         "is_terminal": True,
+                        **({"is_truncated": True} if truncated else {}),
                         "is_session_completed": True,
                     },
                 )
@@ -158,6 +173,7 @@ class RewardCommitter:
                 "reward": eval_result.normalized_score_10,
                 "env_state": env_state,
                 "is_terminal": True,
+                **({"is_truncated": True} if truncated else {}),
                 "is_session_completed": True,
             },
         )
@@ -172,6 +188,10 @@ class RewardCommitter:
         session_id: str,
         eval_result: EvalResult,
     ) -> None:
+        truncated = eval_result.status in {
+            EvalStatus.TRUNCATED,
+            EvalStatus.TRUNCATED.value,
+        }
         metadata = self._build_reward_metadata(session_id=session_id, eval_result=eval_result)
         with sqlite3.connect(self.db_path, timeout=30.0) as conn:
             conn.execute("PRAGMA busy_timeout = 30000")
@@ -204,7 +224,7 @@ class RewardCommitter:
                         (session_id, step_id, env_name, llm_model, group_id, job_id, messages,
                          response, step_reward, reward, env_state, is_terminal,
                          is_truncated, is_session_completed, is_trainable)
-                        VALUES (?, ?, 'gateway', '', '', '', '[]', '', ?, ?, ?, 1, 0, 1, 0)
+                        VALUES (?, ?, 'gateway', '', '', '', '[]', '', ?, ?, ?, 1, ?, 1, 0)
                         """,
                         (
                             session_id,
@@ -212,6 +232,7 @@ class RewardCommitter:
                             eval_result.normalized_score_10,
                             eval_result.normalized_score_10,
                             summary_metadata,
+                            int(truncated),
                         ),
                     )
                 else:
@@ -220,10 +241,17 @@ class RewardCommitter:
                         """
                         UPDATE session_steps
                         SET step_reward = ?, reward = ?, env_state = ?,
+                            is_truncated = CASE WHEN ? THEN 1 ELSE is_truncated END,
                             is_terminal = 1, is_session_completed = 1
                         WHERE id = ?
                         """,
-                        (eval_result.normalized_score_10, eval_result.normalized_score_10, env_state, summary["id"]),
+                        (
+                            eval_result.normalized_score_10,
+                            eval_result.normalized_score_10,
+                            env_state,
+                            int(truncated),
+                            summary["id"],
+                        ),
                     )
                 conn.commit()
                 return
@@ -233,10 +261,17 @@ class RewardCommitter:
                 """
                 UPDATE session_steps
                 SET step_reward = ?, reward = ?, env_state = ?,
+                    is_truncated = CASE WHEN ? THEN 1 ELSE is_truncated END,
                     is_terminal = 1, is_session_completed = 1
                 WHERE id = ?
                 """,
-                (eval_result.normalized_score_10, eval_result.normalized_score_10, env_state, terminal["id"]),
+                (
+                    eval_result.normalized_score_10,
+                    eval_result.normalized_score_10,
+                    env_state,
+                    int(truncated),
+                    terminal["id"],
+                ),
             )
             conn.commit()
 

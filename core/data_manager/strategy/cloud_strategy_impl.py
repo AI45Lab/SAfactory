@@ -628,6 +628,7 @@ class CloudStrategy(StorageStrategy):
         truncated: bool = False,
         is_trainable: bool = False,
         dataset: Optional[Any] = None,
+        reward: Optional[float] = None,
     ):
         """
         Record step to cloud LandingTable.
@@ -641,6 +642,7 @@ class CloudStrategy(StorageStrategy):
             messages=messages,
             response=response,
             step_reward=step_reward,
+            reward=reward,
             request=request,
             env_state=env_state,
             dataset=dataset,
@@ -779,6 +781,7 @@ class CloudStrategy(StorageStrategy):
         messages: Any,
         response: Any,
         step_reward: float,
+        reward: Optional[float] = None,
         request: Optional[str] = None,
         env_state: Optional[str] = None,
         terminated: bool = False,
@@ -845,7 +848,7 @@ class CloudStrategy(StorageStrategy):
             job_id=session.job_id,
             created_at=int(time.time()),
             step_reward=step_reward,
-            reward=session.total_reward,
+            reward=reward,
             messages=self._messages_to_landing_value(full_messages),
             response=self._response_to_landing_value(response),
             ground_truth_answer=None,
@@ -854,7 +857,7 @@ class CloudStrategy(StorageStrategy):
             env_name=session.env_name,
             is_terminal=terminated or truncated,
             is_truncated=truncated,
-            is_session_completed=terminated or truncated,
+            is_session_completed=terminated,
             # Training eligibility is assigned by a later, explicit workflow.
             # Every newly recorded trajectory step starts non-trainable.
             is_trainable=False,
@@ -1004,6 +1007,7 @@ class CloudStrategy(StorageStrategy):
         step_id: int,
         reward: float,
         env_state: str,
+        truncated: bool = False,
     ) -> int:
         """Persist an evaluation-only row when a session has no trainable step."""
         await self.init()
@@ -1035,9 +1039,10 @@ class CloudStrategy(StorageStrategy):
             messages=[],
             response="",
             step_reward=reward,
+            reward=reward,
             env_state=env_state,
             terminated=True,
-            truncated=False,
+            truncated=truncated,
             is_trainable=False,
         )
         return 1
@@ -1048,10 +1053,12 @@ class CloudStrategy(StorageStrategy):
         llm_model: Optional[str] = None,
         *,
         is_session_completed: bool = True,
+        is_terminal: Optional[bool] = None,
     ) -> int:
         """Set the completion state of the latest cloud-backed trajectory row."""
         await self.init()
         completed = bool(is_session_completed)
+        terminal = completed if is_terminal is None else bool(is_terminal)
 
         if self._enable_buffer:
             await self._flush_records()
@@ -1078,7 +1085,13 @@ class CloudStrategy(StorageStrategy):
             self.client.query_data,
             filter_query=query,
             limit=1000,
-            columns=["step_id", "is_session_completed", "meta_json", "agent_model"],
+            columns=[
+                "step_id",
+                "is_terminal",
+                "is_session_completed",
+                "meta_json",
+                "agent_model",
+            ],
             partition=job_id or None,
             checkout_latest=True,
             deserialize_json=True,
@@ -1087,12 +1100,13 @@ class CloudStrategy(StorageStrategy):
         if not rows:
             return 0
 
-        candidates: List[tuple[int, bool, Any]] = []
+        candidates: List[tuple[int, bool, bool, Any]] = []
         for row in rows:
             try:
                 candidates.append(
                     (
                         int(row["step_id"]),
+                        _truthy_bool(row.get("is_terminal")),
                         _truthy_bool(row.get("is_session_completed")),
                         row.get("meta_json"),
                     )
@@ -1103,13 +1117,13 @@ class CloudStrategy(StorageStrategy):
             return 0
 
         trajectory_candidates = [
-            item for item in candidates if _is_trajectory_meta_json(item[2])
+            item for item in candidates if _is_trajectory_meta_json(item[3])
         ]
-        latest_step_id, latest_completed, _latest_meta_json = max(
+        latest_step_id, latest_terminal, latest_completed, _latest_meta_json = max(
             trajectory_candidates or candidates,
             key=lambda item: item[0],
         )
-        if completed and latest_completed:
+        if latest_completed == completed and latest_terminal == terminal:
             return 0
 
         update_query = self._build_session_step_filter(
@@ -1123,8 +1137,8 @@ class CloudStrategy(StorageStrategy):
             update_query,
             {
                 "is_session_completed": completed,
-                "is_terminal": completed,
-                **({"step_reward": 0.0, "reward": 0.0} if not completed else {}),
+                "is_terminal": terminal,
+                **({"step_reward": 0.0, "reward": None} if not completed else {}),
             },
             partition=job_id or None,
             trace_context={

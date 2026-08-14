@@ -690,8 +690,11 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 completion_mode = str(body.get("completion_mode") or completion_mode).strip().lower()
         except Exception:
             pass
-        if completion_mode not in {"complete", "abort"}:
-            raise HTTPException(status_code=400, detail="completion_mode must be 'complete' or 'abort'")
+        if completion_mode not in {"complete", "seal", "abort"}:
+            raise HTTPException(
+                status_code=400,
+                detail="completion_mode must be 'complete', 'seal', or 'abort'",
+            )
         binding = await resolver.close_session(session_id, reason=reason)
         log.info(
             "Gateway session close requested: session_id=%s reason=%s completion_mode=%s",

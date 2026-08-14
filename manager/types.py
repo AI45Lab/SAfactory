@@ -148,7 +148,7 @@ class SimulationStartRequest:
 class SimulationStartResult:
     session_id: str
     status: str
-    total_reward: float
+    total_reward: Optional[float]
     step_count: int
     terminated: bool
     truncated: bool
@@ -162,6 +162,7 @@ class SimulationRunSummary:
     status: str
     total_episodes: int
     succeeded_episodes: int
+    truncated_episodes: int
     failed_episodes: int
     cancelled: bool
-    results: Dict[str, float] = field(default_factory=dict)
+    results: Dict[str, Optional[float]] = field(default_factory=dict)
