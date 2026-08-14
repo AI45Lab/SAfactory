@@ -70,6 +70,9 @@ class SimulationFlow:
                 await self.prepare_storage()
             with trace.span("check_gateway_ready"):
                 await self.check_gateway_ready()
+            if self.cfg.resume:
+                with trace.span("clear_gateway_session_cache"):
+                    await self.clear_resume_gateway_session_cache()
             with trace.span("start_agent_scheduler"):
                 await self.start_agent_scheduler()
             with trace.span("run_workers"):
@@ -159,6 +162,31 @@ class SimulationFlow:
         self._validate_gateway_storage(body, ready_url)
         await self.check_gateway_model_route()
         log.info("gateway ready: %s", ready_url)
+
+    async def clear_resume_gateway_session_cache(self) -> None:
+        if self.data_manager is None:
+            raise RuntimeError("data manager is not prepared")
+        rows = await self.data_manager.get_all_environments(self.cfg.job_id)
+        session_ids = [
+            str(row.get("env_id"))
+            for row in rows
+            if row.get("env_id")
+            and not bool(row.get("finished"))
+            and not bool(row.get("is_deleted"))
+        ]
+        if not session_ids:
+            return
+        client = GatewayClient(gateway_base_url=self.cfg.gateway_base_url)
+        try:
+            result = await client.clear_session_cache(session_ids)
+        finally:
+            await client.aclose()
+        log.info(
+            "gateway resume session cache cleared: job_id=%s sessions=%d removed=%s",
+            self.cfg.job_id,
+            len(session_ids),
+            result.get("removed", 0),
+        )
 
     async def check_gateway_model_route(self) -> None:
         metrics_url = self._gateway_origin() + "/metrics"

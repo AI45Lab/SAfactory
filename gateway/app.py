@@ -729,6 +729,28 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             "completion_mode": completion_mode,
         }
 
+    async def clear_session_cache(payload: dict[str, Any]) -> dict[str, Any]:
+        raw_session_ids = payload.get("session_ids")
+        if not isinstance(raw_session_ids, list):
+            raise HTTPException(status_code=400, detail="session_ids must be a non-empty list")
+        session_ids = list(dict.fromkeys(
+            item.strip()
+            for item in raw_session_ids
+            if isinstance(item, str) and item.strip()
+        ))
+        if not session_ids:
+            raise HTTPException(status_code=400, detail="session_ids must be a non-empty list")
+
+        resolver: SessionResolver = app.state.gateway_resolver
+        removed = await resolver.clear_session_cache(session_ids)
+        log.info("Gateway session cache cleared: sessions=%d removed=%d", len(session_ids), removed)
+        return {"session_ids": session_ids, "removed": removed}
+
+    app.add_api_route(
+        f"{session_root}/cache/cleanup",
+        clear_session_cache,
+        methods=["POST"],
+    )
     app.add_api_route(
         f"{session_root}/{{session_id}}/chat/completions",
         handle_session_chat_completions,
