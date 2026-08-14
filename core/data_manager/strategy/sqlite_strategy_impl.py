@@ -485,9 +485,12 @@ class SqliteStrategy(StorageStrategy):
         self,
         session_id: str,
         llm_model: Optional[str] = None,
+        *,
+        is_session_completed: bool = True,
     ) -> int:
-        """Mark the latest trajectory row for a session as completed."""
+        """Set the completion state of the latest trajectory row for a session."""
         await self.init()
+        completed = bool(is_session_completed)
 
         trace = PerfTrace(
             "sqlite_strategy.mark_latest_session_completed",
@@ -497,6 +500,7 @@ class SqliteStrategy(StorageStrategy):
                 "table": "session_steps",
                 "session_id": session_id,
                 "model": llm_model,
+                "is_session_completed": completed,
                 "buffered": bool(self._write_buffer),
             },
         )
@@ -520,7 +524,7 @@ class SqliteStrategy(StorageStrategy):
                 (step for step in candidates if _is_trajectory_env_state(step.env_state)),
                 candidates[0],
             )
-            if latest.is_session_completed and latest.is_terminal:
+            if completed and latest.is_session_completed and latest.is_terminal:
                 trace.emit_summary(
                     status="skipped",
                     candidate_count=len(candidates),
@@ -530,11 +534,14 @@ class SqliteStrategy(StorageStrategy):
                 )
                 return 0
 
+            updates: Dict[str, Any] = {
+                "is_session_completed": completed,
+                "is_terminal": completed,
+            }
+            if not completed:
+                updates.update(step_reward=0.0, reward=0.0)
             with trace.span("db_write.mark_session_completed", row_id=latest.id, step_id=latest.step_id):
-                updated = await SessionStep.filter(id=latest.id).update(
-                    is_session_completed=True,
-                    is_terminal=True,
-                )
+                updated = await SessionStep.filter(id=latest.id).update(**updates)
             trace.emit_summary(
                 status="success",
                 candidate_count=len(candidates),

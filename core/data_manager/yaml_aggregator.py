@@ -206,7 +206,7 @@ async def sync_configs_to_db(
     Sync YAML configurations to the database.
 
     For SQLite: Uses the JobEnvironment table; removed envs are soft-deleted.
-    For Cloud: Uploads to S3 via EnvConfigManager (full replace).
+    For Cloud: Appends configs to S3 via EnvConfigManager.
 
     Returns:
         SQLite: sqlite3.Connection for manager usage
@@ -360,17 +360,13 @@ async def _sync_cloud(
     startup_submit_count: int,
     followup_submit_batch: int,
 ) -> Any:
-    """Sync configs to cloud storage (S3) — full replace strategy with batched inserts.
+    """Sync configs to cloud storage (S3) using append-only batched inserts.
 
     Commits the first batch synchronously so downstream consumers find data
     immediately, then schedules remaining records as a background task so the
     main training loop is not blocked.
     """
     env_manager = data_manager.strategy.env_manager
-
-    # Remove all existing configs before re-uploading
-    env_manager.clean_all_configs()
-    data_manager.strategy._env_configs.clear()
 
     job_id = data_manager.job_id
     pending_configs: list = []
