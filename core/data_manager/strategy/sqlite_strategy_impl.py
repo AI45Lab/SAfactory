@@ -655,10 +655,15 @@ class SqliteStrategy(StorageStrategy):
                     await self._write_buffer.flush_model(SessionStep, operation="create")
 
             with trace.span("db_write.session_step_update", field_count=len(normalized_updates)):
-                updated = await SessionStep.filter(
+                latest = await SessionStep.filter(
                     session_id=session_id,
                     step_id=step_id,
-                ).update(**normalized_updates)
+                ).order_by("-id").first()
+                updated = (
+                    await SessionStep.filter(id=latest.id).update(**normalized_updates)
+                    if latest is not None
+                    else 0
+                )
             trace.emit_summary(status="success", updated_count=updated)
             return updated
         except Exception as exc:

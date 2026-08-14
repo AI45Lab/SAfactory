@@ -910,6 +910,9 @@ class CloudStrategy(StorageStrategy):
         dataset: Optional[Any] = None,
         provider_meta: Optional[Dict[str, Any]] = None,
     ) -> tuple[Any, str]:
+        # Keep the real per-session job_id available for later partitioned reads
+        # and updates, including sessions created by DataManager itself.
+        self._sessions[session.session_id] = session
         env_key = f"{session.env_name}_{session.env_id}"
 
         # Optimization: session.message_history already holds previously processed

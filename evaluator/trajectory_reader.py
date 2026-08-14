@@ -20,6 +20,7 @@ class TrajectoryReader:
         self.storage_type = str(storage_type or "sqlite").strip().lower()
         if self.storage_type not in {"sqlite", "cloud"}:
             raise ValueError(f"TrajectoryReader does not support storage type {storage_type!r}")
+        self._owns_data_manager = data_manager is None
         if data_manager is None:
             if self.storage_type == "cloud":
                 raise ValueError("TrajectoryReader cloud mode requires a data manager")
@@ -27,14 +28,18 @@ class TrajectoryReader:
         self.data_manager = data_manager
 
     async def read_by_session(self, session_id: str) -> Trajectory:
-        init = getattr(self.data_manager, "init", None)
-        if callable(init):
-            await init()
-        rows = await self.data_manager.list_session_steps(
-            session_id,
-            checkout_latest=True,
-        )
-        return self._trajectory_from_rows(session_id, rows)
+        try:
+            init = getattr(self.data_manager, "init", None)
+            if callable(init):
+                await init()
+            rows = await self.data_manager.list_session_steps(
+                session_id,
+                checkout_latest=True,
+            )
+            return self._trajectory_from_rows(session_id, rows)
+        finally:
+            if self._owns_data_manager:
+                await self.data_manager.close()
 
     async def wait_until_sealed(
         self,

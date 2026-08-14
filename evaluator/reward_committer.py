@@ -22,6 +22,7 @@ class RewardCommitter:
         self.storage_type = str(storage_type or "sqlite").strip().lower()
         if self.storage_type not in {"sqlite", "cloud"}:
             raise ValueError(f"RewardCommitter does not support storage type {storage_type!r}")
+        self._owns_data_manager = data_manager is None
         if data_manager is None:
             if self.storage_type == "cloud":
                 raise ValueError("RewardCommitter cloud mode requires a data manager")
@@ -79,6 +80,9 @@ class RewardCommitter:
         except Exception as exc:
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
+        finally:
+            if self._owns_data_manager:
+                await self.data_manager.close()
 
     async def _commit_data_manager(
         self,
