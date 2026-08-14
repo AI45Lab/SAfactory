@@ -74,7 +74,7 @@ class RuntimeAgentPool:
             log.debug("no active rows, skip %s prewarm", self._allocator.runtime)
             return
 
-        self._image_by_env = self._repo.get_env_image_map()
+        self._image_by_env = await self._repo.get_env_image_map()
         log.debug(
             "%s prewarm start: target_pool_size=%d initial_rows=%d",
             self._allocator.runtime,

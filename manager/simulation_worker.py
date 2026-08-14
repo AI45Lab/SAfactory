@@ -10,7 +10,8 @@ from typing import Any, Dict, Optional
 import httpx
 
 from core.data_manager.load_yaml import materialize_dataset_env_params
-from core.data_manager.manager import DataManager, SessionContext
+from core.data_manager.contracts import SessionContext
+from core.data_manager.manager import DataManager
 from core.perf_trace import PerfTrace
 from core.runtime_metadata import strip_internal_env_params
 from evaluator.eval_types import EvalRequest, EvalResult, EvalStatus

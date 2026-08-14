@@ -11,7 +11,8 @@ import tempfile
 from typing import List, Dict, Optional, Any, Set
 from datetime import date
 
-from core.data_manager.strategy.base_strategy import StorageStrategy, SessionContext
+from core.data_manager.contracts import EnvironmentQuery, SessionContext, SessionStepQuery
+from core.data_manager.strategy.base_strategy import StorageStrategy
 from core.perf_trace import PerfTrace
 
 log = logging.getLogger("cloud_strategy")
@@ -532,6 +533,125 @@ class CloudStrategy(StorageStrategy):
         self._env_configs[str(config["env_id"])] = config
         return dict(config)
 
+    async def list_environment_rows(self, query: EnvironmentQuery) -> List[Dict[str, Any]]:
+        """Read environment rows from the authoritative config store."""
+        await self.init()
+        clauses = []
+        if query.job_id:
+            clauses.append(f"job_id = '{_escape_sql_literal(query.job_id)}'")
+        if query.env_id:
+            clauses.append(f"env_id = '{_escape_sql_literal(query.env_id)}'")
+        filter_query = " AND ".join(clauses) or None
+        page_size = max(100, query.limit or 1000)
+        effective_offset = max(0, query.offset, query.after_id)
+        normalized: List[Dict[str, Any]] = []
+        scanned = 0
+        while True:
+            page = await asyncio.to_thread(
+                self.env_manager.get_env_configs,
+                limit=page_size,
+                offset=effective_offset + scanned,
+                filter_query=filter_query,
+            )
+            if not page:
+                break
+            for index, config in enumerate(page, start=effective_offset + scanned + 1):
+                row = self._normalize_env_config(config)
+                row.setdefault("id", index)
+                if query.finished is not None and _truthy_bool(row.get("finished")) != query.finished:
+                    continue
+                if query.is_deleted is not None and _truthy_bool(row.get("is_deleted")) != query.is_deleted:
+                    continue
+                env_id = str(row.get("env_id") or "")
+                if env_id:
+                    self._env_configs[env_id] = row
+                normalized.append(row)
+                if query.limit is not None and len(normalized) >= query.limit:
+                    return normalized
+            scanned += len(page)
+            if len(page) < page_size:
+                break
+        return normalized
+
+    async def insert_environment_rows(self, rows: List[Dict[str, Any]]) -> List[str]:
+        await self.init()
+        if not rows:
+            return []
+        configs = []
+        env_ids = []
+        for row in rows:
+            env_id = str(row.get("env_id") or uuid.uuid4())
+            env_ids.append(env_id)
+            config = {
+                "job_id": str(row.get("job_id") or self.job_id),
+                "env_id": env_id,
+                "env_name": str(row.get("env_name") or ""),
+                "env_params": dict(row.get("env_params") or {}),
+                "image": str(row.get("image") or ""),
+                "group_id": str(row.get("group_id") or ""),
+                "finished": bool(row.get("finished", False)),
+                "is_deleted": bool(row.get("is_deleted", False)),
+                "created_at": int(row.get("created_at") or time.time()),
+            }
+            configs.append(config)
+        await asyncio.to_thread(self.env_manager.save_config, configs)
+        self._env_configs.update({row["env_id"]: row for row in configs})
+        return env_ids
+
+    async def update_environment_rows(
+        self,
+        query: EnvironmentQuery,
+        updates: Dict[str, Any],
+    ) -> int:
+        await self.init()
+        allowed = {"env_name", "env_params", "image", "group_id", "finished", "is_deleted"}
+        unknown = set(updates) - allowed
+        if unknown:
+            raise ValueError(f"Unknown environment update fields: {sorted(unknown)}")
+        rows = await self.list_environment_rows(query)
+        updated = 0
+        for row in rows:
+            env_id = str(row.get("env_id") or "")
+            if env_id and await asyncio.to_thread(self.env_manager.update_config, env_id, updates):
+                cached = self._env_configs.setdefault(env_id, dict(row))
+                cached.update(updates)
+                updated += 1
+        return updated
+
+    async def delete_session_step_rows(self, query: SessionStepQuery) -> int:
+        await self.init()
+        session_ids = list(query.session_ids)
+        if query.session_id:
+            session_ids.append(query.session_id)
+        if not session_ids:
+            clauses = []
+            if query.job_id:
+                clauses.append(f"job_id = '{_escape_sql_literal(query.job_id)}'")
+            if not clauses:
+                raise ValueError("job_id or session_ids is required for cloud deletion")
+            await asyncio.to_thread(self.client.delete_landing, " AND ".join(clauses))
+            return 1
+        for session_id in dict.fromkeys(session_ids):
+            clauses = []
+            if query.job_id:
+                clauses.append(f"job_id = '{_escape_sql_literal(query.job_id)}'")
+            clauses.append(f"session_id = '{_escape_sql_literal(session_id)}'")
+            await asyncio.to_thread(self.client.delete_landing, " AND ".join(clauses))
+        return len(set(session_ids))
+
+    async def delete_job_rows(self, job_id: str) -> None:
+        await self.init()
+        rows = await self.list_environment_rows(EnvironmentQuery(job_id=job_id))
+        await asyncio.to_thread(
+            self.client.delete_landing,
+            f"job_id = '{_escape_sql_literal(job_id)}'",
+        )
+        for row in rows:
+            env_id = str(row.get("env_id") or "")
+            if env_id and not await asyncio.to_thread(self.env_manager.delete_config, env_id):
+                raise RuntimeError(f"failed to delete cloud env config env_id={env_id}")
+            self._env_configs.pop(env_id, None)
+
     async def mark_environment_finished(self, env_id: str) -> int:
         """Mark one cloud environment for the current job as finished."""
         await self.init()
@@ -790,8 +910,6 @@ class CloudStrategy(StorageStrategy):
         dataset: Optional[Any] = None,
         provider_meta: Optional[Dict[str, Any]] = None,
     ) -> tuple[Any, str]:
-        session.total_reward += step_reward
-
         env_key = f"{session.env_name}_{session.env_id}"
 
         # Optimization: session.message_history already holds previously processed
@@ -1170,10 +1288,6 @@ class CloudStrategy(StorageStrategy):
         self.initialized = False
         log.debug("Cloud strategy closed")
                 
-    def get_sync_connection(self) -> None:
-        """Not applicable for cloud storage"""
-        return None
-
     @property
     def buffer_stats(self) -> Optional[dict]:
         """Get buffer statistics"""

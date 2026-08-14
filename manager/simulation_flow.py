@@ -24,7 +24,6 @@ from evaluator.reward_committer import RewardCommitter
 from evaluator.service import EvaluationService
 from evaluator.trajectory_reader import TrajectoryReader
 from .agent_start_client import AgentStartClient
-from .db_loader import scheduler_db_reader
 from .manager import AgentPoolManager
 from .resume_cleanup import cleanup_resume_artifacts
 from .simulation_config import (
@@ -43,8 +42,6 @@ class SimulationFlow:
     def __init__(self, cfg: SimulationRunConfig) -> None:
         self.cfg = cfg
         self.data_manager: Optional[DataManager] = None
-        self.conn: Any = None
-        self.scheduler_conn: Any = None
         self.manager_cfg: Optional[Dict[str, Any]] = None
         self.agent_pool_manager: Optional[AgentPoolManager] = None
         self.lease_pool: Optional[SimulationLeasePool] = None
@@ -112,7 +109,7 @@ class SimulationFlow:
         yaml_config_list = expand_rl_group_size(yaml_config_list, self.cfg.rl_group_size)
         yaml_config_list = expand_rl_epoch(yaml_config_list, self.cfg.rl_epoch)
 
-        self.conn = await sync_configs_to_db(
+        await sync_configs_to_db(
             self.data_manager,
             yaml_config_list,
             self.cfg.storage_type,
@@ -189,10 +186,11 @@ class SimulationFlow:
     async def start_agent_scheduler(self) -> None:
         if self.manager_cfg is None:
             self.manager_cfg = build_manager_runtime_config(self.cfg)
-        self.scheduler_conn = scheduler_db_reader(self.cfg.storage_type, self.data_manager, self.conn)
+        if self.data_manager is None:
+            raise RuntimeError("data manager is not prepared")
         self.agent_pool_manager = AgentPoolManager(
             self.manager_cfg,
-            self.scheduler_conn,
+            self.data_manager,
             job_id=self.cfg.job_id,
             db_processing_done_checker=lambda: is_job_db_processing_done(self.cfg.job_id),
         )
@@ -292,12 +290,6 @@ class SimulationFlow:
             except Exception:
                 log.exception("data manager close failed (ignored)")
 
-        if self.conn is not None:
-            try:
-                with trace.span("manager_db_connection_close"):
-                    self.conn.close()
-            except Exception:
-                log.exception("manager DB connection close failed (ignored)")
         trace.emit_summary(status="complete")
 
     def _gateway_origin(self) -> str:

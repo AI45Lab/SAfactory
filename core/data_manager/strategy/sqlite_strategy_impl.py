@@ -1,8 +1,10 @@
-from core.data_manager.strategy.base_strategy import StorageStrategy, SessionContext
+from core.data_manager.contracts import EnvironmentQuery, SessionContext, SessionStepQuery
+from core.data_manager.strategy.base_strategy import StorageStrategy
 from core.data_manager.models import JobEnvironment, SessionStep
 from core.data_manager.write_buffer import WriteBuffer
 from core.perf_trace import PerfTrace
 from tortoise import Tortoise
+from tortoise.transactions import in_transaction
 from typing import List, Dict, Optional, Tuple, Any
 import asyncio
 import uuid
@@ -154,11 +156,44 @@ class SqliteStrategy(StorageStrategy):
                         "is_truncated", "is_session_completed", "is_trainable",
                         "created_at",
                     )
-                    copied_columns = [column for column in target_columns if column in columns]
-                    column_list = ", ".join(f'"{column}"' for column in copied_columns)
+                    missing_defaults = {
+                        "id": "NULL",
+                        "session_id": "''",
+                        "step_id": "0",
+                        "env_name": "''",
+                        "llm_model": "''",
+                        "group_id": "NULL",
+                        "job_id": "NULL",
+                        "messages": "'[]'",
+                        "request": "NULL",
+                        "response": "''",
+                        "step_reward": "0",
+                        "reward": "NULL",
+                        "env_state": "NULL",
+                        "is_terminal": "0",
+                        "is_truncated": "0",
+                        "is_session_completed": "0",
+                        "is_trainable": "0",
+                        "created_at": "CURRENT_TIMESTAMP",
+                    }
+                    column_list = ", ".join(f'"{column}"' for column in target_columns)
+                    nonnull_columns = {
+                        "session_id", "step_id", "env_name", "llm_model", "messages",
+                        "response", "step_reward", "is_terminal", "is_truncated",
+                        "is_session_completed", "is_trainable", "created_at",
+                    }
+                    select_list = ", ".join(
+                        (
+                            f'COALESCE("{column}", {missing_defaults[column]})'
+                            if column in columns and column in nonnull_columns
+                            else f'"{column}"' if column in columns
+                            else missing_defaults[column]
+                        )
+                        for column in target_columns
+                    )
                     conn.execute(
                         f"INSERT INTO session_steps_reward_migration ({column_list}) "
-                        f"SELECT {column_list} FROM session_steps"
+                        f"SELECT {select_list} FROM session_steps"
                     )
                     conn.execute("DROP TABLE session_steps")
                     conn.execute(
@@ -332,6 +367,89 @@ class SqliteStrategy(StorageStrategy):
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
 
+    async def list_environment_rows(self, query: EnvironmentQuery) -> List[Dict[str, Any]]:
+        await self.init()
+        rows = JobEnvironment.all()
+        if query.job_id:
+            rows = rows.filter(job_id=query.job_id)
+        if query.env_id:
+            rows = rows.filter(env_id=query.env_id)
+        if query.after_id:
+            rows = rows.filter(id__gt=query.after_id)
+        if query.finished is not None:
+            rows = rows.filter(finished=query.finished)
+        if query.is_deleted is not None:
+            rows = rows.filter(is_deleted=query.is_deleted)
+        rows = rows.order_by("id").offset(query.offset)
+        if query.limit is not None:
+            rows = rows.limit(query.limit)
+        return [self._environment_to_dict(env) for env in await rows]
+
+    async def insert_environment_rows(self, rows: List[Dict[str, Any]]) -> List[str]:
+        await self.init()
+        if not rows:
+            return []
+        records: List[JobEnvironment] = []
+        env_ids: List[str] = []
+        for row in rows:
+            env_id = str(row.get("env_id") or uuid.uuid4())
+            env_ids.append(env_id)
+            records.append(JobEnvironment(
+                job_id=str(row.get("job_id") or self.job_id),
+                env_id=env_id,
+                env_name=str(row.get("env_name") or ""),
+                env_params=dict(row.get("env_params") or {}),
+                image=str(row.get("image") or ""),
+                group_id=str(row.get("group_id") or ""),
+                finished=bool(row.get("finished", False)),
+                is_deleted=bool(row.get("is_deleted", False)),
+            ))
+        async with in_transaction():
+            await JobEnvironment.bulk_create(records)
+        return env_ids
+
+    async def update_environment_rows(
+        self,
+        query: EnvironmentQuery,
+        updates: Dict[str, Any],
+    ) -> int:
+        await self.init()
+        allowed = {"env_name", "env_params", "image", "group_id", "finished", "is_deleted"}
+        unknown = set(updates) - allowed
+        if unknown:
+            raise ValueError(f"Unknown JobEnvironment update fields: {sorted(unknown)}")
+        rows = JobEnvironment.all()
+        if query.job_id:
+            rows = rows.filter(job_id=query.job_id)
+        if query.env_id:
+            rows = rows.filter(env_id=query.env_id)
+        if query.finished is not None:
+            rows = rows.filter(finished=query.finished)
+        if query.is_deleted is not None:
+            rows = rows.filter(is_deleted=query.is_deleted)
+        return await rows.update(**updates) if updates else 0
+
+    async def delete_session_step_rows(self, query: SessionStepQuery) -> int:
+        await self.init()
+        if self._write_buffer:
+            await self._write_buffer.flush_model(SessionStep, operation="create")
+        rows = SessionStep.all()
+        if query.job_id:
+            rows = rows.filter(job_id=query.job_id)
+        if query.session_id:
+            rows = rows.filter(session_id=query.session_id)
+        if query.session_ids:
+            rows = rows.filter(session_id__in=query.session_ids)
+        return await rows.delete()
+
+    async def delete_job_rows(self, job_id: str) -> None:
+        await self.init()
+        if self._write_buffer:
+            await self._write_buffer.flush_model(SessionStep, operation="create")
+        async with in_transaction() as connection:
+            await SessionStep.filter(job_id=job_id).using_db(connection).delete()
+            await JobEnvironment.filter(job_id=job_id).using_db(connection).delete()
+
     async def mark_environment_finished(self, env_id: str) -> int:
         """Mark one active environment for the current job as finished."""
         await self.init()
@@ -407,9 +525,6 @@ class SqliteStrategy(StorageStrategy):
         )
 
         try:
-            # Update session total reward
-            session.total_reward += step_reward
-
             # Build full message history including current response
             full_messages = list(messages)
             # full_messages.append({"role": "assistant", "content": response})
@@ -426,7 +541,6 @@ class SqliteStrategy(StorageStrategy):
             step_record = SessionStep(
                 session_id=session.session_id,
                 step_id=step_id,
-                env_id=session.env_id,
                 env_name=session.env_name,
                 llm_model=session.llm_model,
                 group_id=session.group_id,
@@ -467,6 +581,47 @@ class SqliteStrategy(StorageStrategy):
             "Recorded step %d for session %s: step_reward=%.4f reward=%s",
             step_id, session.session_id, step_reward, reward,
         )
+
+    async def list_session_steps(
+        self,
+        session_id: str,
+        *,
+        checkout_latest: bool = False,
+    ) -> List[Dict[str, Any]]:
+        await self.init()
+        if self._write_buffer:
+            await self._write_buffer.flush_model(SessionStep, operation="create")
+        rows = await SessionStep.filter(session_id=session_id).order_by("step_id", "id")
+        return [self._session_step_to_dict(row) for row in rows]
+
+    async def record_evaluation_summary(
+        self,
+        session_id: str,
+        step_id: int,
+        reward: float,
+        env_state: str,
+        truncated: bool = False,
+    ) -> int:
+        await self.init()
+        row = SessionStep(
+            session_id=session_id,
+            step_id=step_id,
+            env_name="gateway",
+            llm_model="",
+            group_id="",
+            job_id=self.job_id,
+            messages="[]",
+            response="",
+            step_reward=reward,
+            reward=reward,
+            env_state=env_state,
+            is_terminal=True,
+            is_truncated=truncated,
+            is_session_completed=True,
+            is_trainable=False,
+        )
+        await row.save()
+        return 1
 
     async def update_session_step(
         self,
@@ -652,6 +807,44 @@ class SqliteStrategy(StorageStrategy):
 
         return normalized
 
+    @staticmethod
+    def _environment_to_dict(env: JobEnvironment) -> Dict[str, Any]:
+        return {
+            "id": env.id,
+            "job_id": env.job_id,
+            "env_id": env.env_id,
+            "env_name": env.env_name,
+            "env_params": env.env_params,
+            "image": env.image,
+            "group_id": env.group_id,
+            "finished": env.finished,
+            "is_deleted": env.is_deleted,
+            "created_at": env.created_at.isoformat() if env.created_at else None,
+        }
+
+    @staticmethod
+    def _session_step_to_dict(step: SessionStep) -> Dict[str, Any]:
+        return {
+            "id": step.id,
+            "session_id": step.session_id,
+            "step_id": step.step_id,
+            "env_name": step.env_name,
+            "llm_model": step.llm_model,
+            "group_id": step.group_id,
+            "job_id": step.job_id,
+            "messages": step.messages,
+            "request": step.request,
+            "response": step.response,
+            "step_reward": step.step_reward,
+            "reward": step.reward,
+            "env_state": step.env_state,
+            "is_terminal": step.is_terminal,
+            "is_truncated": step.is_truncated,
+            "is_session_completed": step.is_session_completed,
+            "is_trainable": step.is_trainable,
+            "created_at": step.created_at.isoformat() if step.created_at else None,
+        }
+
     async def close(self) -> None:
         """Clean up resources"""
         if self._write_buffer:
@@ -662,18 +855,6 @@ class SqliteStrategy(StorageStrategy):
             self.initialized = False
 
         log.debug("SQLite strategy closed")
-
-    def get_sync_connection(self) -> sqlite3.Connection:
-        """Get raw SQLite connection for direct queries"""
-        if not self.db_url.startswith("sqlite://"):
-            raise ValueError("Only sqlite:// protocol is supported")
-
-        file_path = self.db_url[9:].split("?", 1)[0]
-        conn = sqlite3.connect(file_path, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.row_factory = sqlite3.Row
-        return conn
 
     @property
     def buffer_stats(self) -> Optional[dict]:

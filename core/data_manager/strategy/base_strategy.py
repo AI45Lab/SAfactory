@@ -1,31 +1,15 @@
 from abc import ABC, abstractmethod
 from typing import Any, Optional, List, Dict
-from dataclasses import dataclass, field
 
-
-@dataclass
-class SessionContext:
-    """
-    Runtime session context object.
-    This is NOT persisted to database - it's an in-memory object to track session state.
-    """
-    session_id: str
-    env_id: str
-    env_name: str
-    llm_model: str
-    group_id: str = ""
-    job_id: str = ""
-
-    # Runtime state (not persisted)
-    total_reward: float = 0.0
-    start_time: float = 0.0
-    message_history: List[Dict] = field(default_factory=list)
-    is_session_completed: bool = False
+from core.data_manager.contracts import EnvironmentQuery, SessionContext, SessionStepQuery
 
 
 class StorageStrategy(ABC):
     """
-    Abstract base class for storage backends.
+    DAO contract for storage backends.
+
+    Implementations translate these operations to a physical backend. Runtime
+    workflow policy belongs to ``DataManager`` and its callers, not here.
 
     Table design:
     - Table 1 (JobEnvironment): job_id + env_id mapping with env config
@@ -93,29 +77,58 @@ class StorageStrategy(ABC):
                 return env
         return None
 
+    async def list_environment_rows(self, query: EnvironmentQuery) -> List[Dict[str, Any]]:
+        """List environment rows using backend-neutral filters."""
+        rows = await self.get_all_environments(query.job_id)
+        filtered = []
+        for index, row in enumerate(rows, start=1):
+            item = dict(row)
+            item.setdefault("id", index)
+            if query.env_id and str(item.get("env_id") or "") != query.env_id:
+                continue
+            if int(item.get("id") or 0) <= query.after_id:
+                continue
+            if query.finished is not None and bool(item.get("finished", False)) != query.finished:
+                continue
+            if query.is_deleted is not None and bool(item.get("is_deleted", False)) != query.is_deleted:
+                continue
+            filtered.append(item)
+        filtered.sort(key=lambda item: int(item.get("id") or 0))
+        start = max(0, query.offset)
+        end = None if query.limit is None else start + max(0, query.limit)
+        return filtered[start:end]
+
+    async def insert_environment_rows(self, rows: List[Dict[str, Any]]) -> List[str]:
+        """Insert environment rows and return their env_ids."""
+        env_ids = []
+        for row in rows:
+            env_ids.append(await self.add_environment(
+                job_id=str(row.get("job_id") or ""),
+                env_name=str(row.get("env_name") or ""),
+                env_params=dict(row.get("env_params") or {}),
+                image=str(row.get("image") or ""),
+                group_id=str(row.get("group_id") or ""),
+            ))
+        return env_ids
+
+    async def update_environment_rows(
+        self,
+        query: EnvironmentQuery,
+        updates: Dict[str, Any],
+    ) -> int:
+        raise NotImplementedError
+
+    async def delete_session_step_rows(self, query: SessionStepQuery) -> int:
+        raise NotImplementedError
+
+    async def delete_job_rows(self, job_id: str) -> None:
+        raise NotImplementedError
+
     @abstractmethod
     async def mark_environment_finished(self, env_id: str) -> int:
         """Mark one environment completed after its full workflow succeeds."""
         pass
     
-    @abstractmethod
-    async def create_session(
-        self,
-        env_id: str,
-        env_name: str,
-        llm_model: str,
-        group_id: str = "",
-        job_id: str = ""
-    ) -> SessionContext:
-        """
-        Create a new session context (in-memory object).
-        Note: session_id = env_id by design.
-
-        Returns:
-            SessionContext object for tracking session state
-        """
-        pass
-
     @abstractmethod
     async def record_step(
         self,
@@ -253,20 +266,4 @@ class StorageStrategy(ABC):
     @abstractmethod
     async def close(self) -> None:
         """Clean up resources (DB connections, clients, buffers)"""
-        pass
-
-    def get_sync_connection(self) -> Any:
-        """
-        Get synchronous connection for direct queries (SQLite only).
-        Returns None for cloud storage.
-        """
-        return None
-
-    # Legacy compatibility methods (will be deprecated)
-    async def create_session_legacy(self, env_id, llm_model: str, group_id: str = ""):
-        """Legacy method for backward compatibility"""
-        pass
-
-    async def update_session(self, session, trajectory, total_reward, is_session_completed):
-        """Legacy method for backward compatibility"""
         pass

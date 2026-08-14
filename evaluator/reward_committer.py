@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import sqlite3
 from typing import Any
 
+from core.data_manager.manager import DataManager
 from core.perf_trace import PerfTrace
 from evaluator.eval_types import EvalResult, EvalStatus, to_jsonable
-from evaluator.trajectory_reader import _sqlite_path
 
 log = logging.getLogger("evaluator.reward_committer")
 
@@ -22,15 +20,13 @@ class RewardCommitter:
         data_manager: Any | None = None,
     ) -> None:
         self.storage_type = str(storage_type or "sqlite").strip().lower()
-        self.data_manager = data_manager
-        if self.storage_type == "sqlite":
-            self.db_path = _sqlite_path(db_url)
-        elif self.storage_type == "cloud":
-            if data_manager is None:
-                raise ValueError("RewardCommitter cloud mode requires a data manager")
-            self.db_path = ""
-        else:
+        if self.storage_type not in {"sqlite", "cloud"}:
             raise ValueError(f"RewardCommitter does not support storage type {storage_type!r}")
+        if data_manager is None:
+            if self.storage_type == "cloud":
+                raise ValueError("RewardCommitter cloud mode requires a data manager")
+            data_manager = DataManager(job_id="", storage_type="sqlite", db_url=db_url)
+        self.data_manager = data_manager
 
     async def commit(
         self,
@@ -55,7 +51,6 @@ class RewardCommitter:
                 "score": eval_result.normalized_score_10,
                 "status": eval_result.status,
                 "storage_type": self.storage_type,
-                "db_path": self.db_path or None,
             },
         )
         log.info(
@@ -64,36 +59,28 @@ class RewardCommitter:
             eval_result.normalized_score_10,
             eval_result.status,
             self.storage_type,
-            self.db_path or None,
+            None,
         )
         try:
-            if self.storage_type == "cloud":
-                with trace.span("cloud_commit"):
-                    await self._commit_cloud(
-                        session_id=session_id,
-                        eval_result=eval_result,
-                    )
-            else:
-                with trace.span("sqlite_commit"):
-                    await asyncio.to_thread(
-                        self._commit_sqlite,
-                        session_id=session_id,
-                        eval_result=eval_result,
-                    )
+            init = getattr(self.data_manager, "init", None)
+            if callable(init):
+                await init()
+            with trace.span("data_manager_commit"):
+                await self._commit_data_manager(
+                    session_id=session_id,
+                    eval_result=eval_result,
+                )
             log.info(
                 "EVAL REWARD commit complete: session=%s score=%.4f",
                 session_id,
                 eval_result.normalized_score_10,
             )
             trace.emit_summary(status="success")
-        except asyncio.CancelledError:
-            trace.emit_summary(status="cancelled", error_type="CancelledError")
-            raise
         except Exception as exc:
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
 
-    async def _commit_cloud(
+    async def _commit_data_manager(
         self,
         *,
         session_id: str,
@@ -112,7 +99,7 @@ class RewardCommitter:
             None,
         )
         log.info(
-            "EVAL REWARD cloud rows: session=%s total_rows=%d terminal_found=%s",
+            "EVAL REWARD rows: session=%s total_rows=%d terminal_found=%s",
             session_id,
             len(rows),
             terminal is not None,
@@ -150,11 +137,11 @@ class RewardCommitter:
                 )
             if recorded <= 0:
                 raise RuntimeError(
-                    "Cannot commit cloud evaluation reward: evaluation summary "
+                    "Cannot commit evaluation reward: evaluation summary "
                     f"was not persisted for {session_id}"
                 )
             log.info(
-                "EVAL REWARD cloud summary persisted: session=%s step_id=%d",
+                "EVAL REWARD summary persisted: session=%s step_id=%d",
                 session_id,
                 _next_step_id(rows) if summary is None else int(summary.get("step_id") or 0),
             )
@@ -179,101 +166,8 @@ class RewardCommitter:
         )
         if updated <= 0:
             raise RuntimeError(
-                f"Cannot commit cloud evaluation reward: session row was not updated for {session_id}"
+                f"Cannot commit evaluation reward: session row was not updated for {session_id}"
             )
-
-    def _commit_sqlite(
-        self,
-        *,
-        session_id: str,
-        eval_result: EvalResult,
-    ) -> None:
-        truncated = eval_result.status in {
-            EvalStatus.TRUNCATED,
-            EvalStatus.TRUNCATED.value,
-        }
-        metadata = self._build_reward_metadata(session_id=session_id, eval_result=eval_result)
-        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
-            conn.execute("PRAGMA busy_timeout = 30000")
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT id, step_id, env_name, messages, response, env_state
-                FROM session_steps
-                WHERE session_id = ?
-                ORDER BY step_id ASC, id ASC
-                """,
-                (session_id,),
-            ).fetchall()
-            trainable_ids = [int(row["id"]) for row in rows if _is_trainable_step(row)]
-            terminal = _last_trainable_row(rows, trainable_ids)
-            log.info(
-                "EVAL REWARD commit rows: session=%s total_rows=%d trainable_rows=%d terminal_found=%s",
-                session_id,
-                len(rows),
-                len(trainable_ids),
-                terminal is not None,
-            )
-            if terminal is None:
-                summary = _existing_eval_summary_row(rows, session_id)
-                summary_metadata = _as_eval_summary_metadata(metadata)
-                if summary is None:
-                    conn.execute(
-                        """
-                        INSERT INTO session_steps
-                        (session_id, step_id, env_name, llm_model, group_id, job_id, messages,
-                         response, step_reward, reward, env_state, is_terminal,
-                         is_truncated, is_session_completed, is_trainable)
-                        VALUES (?, ?, 'gateway', '', '', '', '[]', '', ?, ?, ?, 1, ?, 1, 0)
-                        """,
-                        (
-                            session_id,
-                            _next_step_id(rows),
-                            eval_result.normalized_score_10,
-                            eval_result.normalized_score_10,
-                            summary_metadata,
-                            int(truncated),
-                        ),
-                    )
-                else:
-                    env_state = _merge_env_state(summary["env_state"], summary_metadata)
-                    conn.execute(
-                        """
-                        UPDATE session_steps
-                        SET step_reward = ?, reward = ?, env_state = ?,
-                            is_truncated = CASE WHEN ? THEN 1 ELSE is_truncated END,
-                            is_terminal = 1, is_session_completed = 1
-                        WHERE id = ?
-                        """,
-                        (
-                            eval_result.normalized_score_10,
-                            eval_result.normalized_score_10,
-                            env_state,
-                            int(truncated),
-                            summary["id"],
-                        ),
-                    )
-                conn.commit()
-                return
-
-            env_state = _merge_env_state(terminal["env_state"], metadata)
-            conn.execute(
-                """
-                UPDATE session_steps
-                SET step_reward = ?, reward = ?, env_state = ?,
-                    is_truncated = CASE WHEN ? THEN 1 ELSE is_truncated END,
-                    is_terminal = 1, is_session_completed = 1
-                WHERE id = ?
-                """,
-                (
-                    eval_result.normalized_score_10,
-                    eval_result.normalized_score_10,
-                    env_state,
-                    int(truncated),
-                    terminal["id"],
-                ),
-            )
-            conn.commit()
 
     def _build_reward_metadata(self, *, session_id: str, eval_result: EvalResult) -> str:
         return json.dumps(
@@ -313,7 +207,7 @@ _NON_TRAINABLE_EVENT_TYPES = {
 }
 
 
-def _is_trainable_step(row: sqlite3.Row) -> bool:
+def _is_trainable_step(row: dict[str, Any]) -> bool:
     env_state = _load_env_state(row["env_state"])
     event_type = env_state.get("event_type")
     if event_type in _NON_TRAINABLE_EVENT_TYPES:
@@ -328,7 +222,7 @@ def _is_trainable_step(row: sqlite3.Row) -> bool:
     return bool(_has_messages(row["messages"]) or row["response"])
 
 
-def _last_trainable_row(rows: list[sqlite3.Row], trainable_ids: list[int]) -> sqlite3.Row | None:
+def _last_trainable_row(rows: list[dict[str, Any]], trainable_ids: list[int]) -> dict[str, Any] | None:
     trainable = set(trainable_ids)
     for row in reversed(rows):
         if int(row["id"]) in trainable:
@@ -336,7 +230,7 @@ def _last_trainable_row(rows: list[sqlite3.Row], trainable_ids: list[int]) -> sq
     return None
 
 
-def _existing_eval_summary_row(rows: list[sqlite3.Row], session_id: str) -> sqlite3.Row | None:
+def _existing_eval_summary_row(rows: list[dict[str, Any]], session_id: str) -> dict[str, Any] | None:
     for row in reversed(rows):
         env_state = _load_env_state(row["env_state"])
         if env_state.get("event_type") != "evaluation_summary":
@@ -347,7 +241,7 @@ def _existing_eval_summary_row(rows: list[sqlite3.Row], session_id: str) -> sqli
     return None
 
 
-def _next_step_id(rows: list[sqlite3.Row]) -> int:
+def _next_step_id(rows: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
     return max(int(row["step_id"] or 0) for row in rows) + 1

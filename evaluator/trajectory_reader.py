@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sqlite3
 import time
-from pathlib import Path
 from typing import Any
 
+from core.data_manager.manager import DataManager
 from evaluator.eval_types import Trajectory
 
 
@@ -19,24 +18,23 @@ class TrajectoryReader:
         data_manager: Any | None = None,
     ) -> None:
         self.storage_type = str(storage_type or "sqlite").strip().lower()
-        self.data_manager = data_manager
-        if self.storage_type == "sqlite":
-            self.db_path = _sqlite_path(db_url)
-        elif self.storage_type == "cloud":
-            if data_manager is None:
-                raise ValueError("TrajectoryReader cloud mode requires a data manager")
-            self.db_path = ""
-        else:
+        if self.storage_type not in {"sqlite", "cloud"}:
             raise ValueError(f"TrajectoryReader does not support storage type {storage_type!r}")
+        if data_manager is None:
+            if self.storage_type == "cloud":
+                raise ValueError("TrajectoryReader cloud mode requires a data manager")
+            data_manager = DataManager(job_id="", storage_type="sqlite", db_url=db_url)
+        self.data_manager = data_manager
 
     async def read_by_session(self, session_id: str) -> Trajectory:
-        if self.storage_type == "cloud":
-            rows = await self.data_manager.list_session_steps(
-                session_id,
-                checkout_latest=True,
-            )
-            return self._trajectory_from_rows(session_id, rows)
-        return await asyncio.to_thread(self._read_by_session_sync, session_id)
+        init = getattr(self.data_manager, "init", None)
+        if callable(init):
+            await init()
+        rows = await self.data_manager.list_session_steps(
+            session_id,
+            checkout_latest=True,
+        )
+        return self._trajectory_from_rows(session_id, rows)
 
     async def wait_until_sealed(
         self,
@@ -54,23 +52,6 @@ class TrajectoryReader:
                     last.warnings.append("trajectory may be incomplete: session was not sealed before timeout")
                 return last
             await asyncio.sleep(poll_interval_s)
-
-    def _read_by_session_sync(self, session_id: str) -> Trajectory:
-        if not Path(self.db_path).exists():
-            return Trajectory(session_id=session_id, warnings=[f"db not found: {self.db_path}"])
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM session_steps
-                WHERE session_id = ?
-                ORDER BY step_id ASC, id ASC
-                """,
-                (session_id,),
-            ).fetchall()
-
-        return self._trajectory_from_rows(session_id, [dict(row) for row in rows])
 
     def _trajectory_from_rows(
         self,

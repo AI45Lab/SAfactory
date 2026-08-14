@@ -8,8 +8,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from core.data_manager.contracts import SessionContext
 from core.data_manager.manager import DataManager
-from core.data_manager.strategy.base_strategy import SessionContext
 from core.perf_trace import PerfTrace
 
 from gateway.anthropic_messages import (
@@ -61,7 +61,7 @@ class GatewayStorage:
             **storage_config,
         )
         await manager.init()
-        log.info("Gateway storage from_config complete: strategy=%s", manager.strategy.__class__.__name__)
+        log.info("Gateway storage from_config complete: strategy=%s", manager.backend_name)
         return cls(cfg, manager)
 
     async def get_or_create_session(
