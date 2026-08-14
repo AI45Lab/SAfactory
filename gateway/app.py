@@ -10,7 +10,7 @@ from dataclasses import replace
 from typing import Any
 from urllib.parse import parse_qsl, urlencode
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from core.perf_trace import PerfTrace
@@ -681,21 +681,37 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         resolver: SessionResolver = app.state.gateway_resolver
         telemetry: TelemetryRecorder = app.state.gateway_telemetry
         reason = "gateway_close"
+        completion_mode = "complete"
         try:
             body = await request.json()
-            if isinstance(body, dict) and body.get("reason"):
-                reason = str(body["reason"])
+            if isinstance(body, dict):
+                if body.get("reason"):
+                    reason = str(body["reason"])
+                completion_mode = str(body.get("completion_mode") or completion_mode).strip().lower()
         except Exception:
             pass
+        if completion_mode not in {"complete", "seal", "abort"}:
+            raise HTTPException(
+                status_code=400,
+                detail="completion_mode must be 'complete', 'seal', or 'abort'",
+            )
         binding = await resolver.close_session(session_id, reason=reason)
-        log.info("Gateway session close requested: session_id=%s reason=%s", session_id, reason)
+        log.info(
+            "Gateway session close requested: session_id=%s reason=%s completion_mode=%s",
+            session_id,
+            reason,
+            completion_mode,
+        )
         drained = True
         if cfg.close_mode == "soft_close":
             drained = await _wait_for_session_drain(binding, cfg.drain_timeout_s)
 
         telemetry_status = "queued" if telemetry.async_writes_enabled else "flushed"
         try:
-            await telemetry.enqueue_session_close(binding)
+            await telemetry.enqueue_session_close(
+                binding,
+                is_session_completed=completion_mode == "complete",
+            )
         except asyncio.TimeoutError:
             telemetry_status = "timeout"
             log.warning(
@@ -710,8 +726,31 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             "status": binding.status,
             "drained": drained,
             "telemetry_status": telemetry_status,
+            "completion_mode": completion_mode,
         }
 
+    async def clear_session_cache(payload: dict[str, Any]) -> dict[str, Any]:
+        raw_session_ids = payload.get("session_ids")
+        if not isinstance(raw_session_ids, list):
+            raise HTTPException(status_code=400, detail="session_ids must be a non-empty list")
+        session_ids = list(dict.fromkeys(
+            item.strip()
+            for item in raw_session_ids
+            if isinstance(item, str) and item.strip()
+        ))
+        if not session_ids:
+            raise HTTPException(status_code=400, detail="session_ids must be a non-empty list")
+
+        resolver: SessionResolver = app.state.gateway_resolver
+        removed = await resolver.clear_session_cache(session_ids)
+        log.info("Gateway session cache cleared: sessions=%d removed=%d", len(session_ids), removed)
+        return {"session_ids": session_ids, "removed": removed}
+
+    app.add_api_route(
+        f"{session_root}/cache/cleanup",
+        clear_session_cache,
+        methods=["POST"],
+    )
     app.add_api_route(
         f"{session_root}/{{session_id}}/chat/completions",
         handle_session_chat_completions,

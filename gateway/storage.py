@@ -4,13 +4,12 @@ import asyncio
 import inspect
 import json
 import logging
-import re
 import time
 from dataclasses import dataclass
 from typing import Any
 
+from core.data_manager.contracts import SessionContext
 from core.data_manager.manager import DataManager
-from core.data_manager.strategy.base_strategy import SessionContext
 from core.perf_trace import PerfTrace
 
 from gateway.anthropic_messages import (
@@ -19,6 +18,10 @@ from gateway.anthropic_messages import (
 )
 from gateway.config import GatewayConfig
 from gateway.models import GatewaySessionBinding, GatewayTelemetryRecord
+from gateway.trajectory_builder import (
+    build_gateway_step_row,
+    select_latest_trajectory_record_ids,
+)
 
 GATEWAY_STORAGE_NAMESPACE = "gateway"
 log = logging.getLogger("gateway.storage")
@@ -45,8 +48,6 @@ class GatewayStorage:
         self._sessions: dict[tuple[str, str], _CachedSession] = {}
         self._environments: dict[str, _SessionEnvironment] = {}
         self._patched_environment_sessions: set[str] = set()
-        self._dataset_pending_sessions: set[str] = set()
-        self._dataset_written_sessions: set[str] = set()
         self._latest_record_ids: dict[tuple[str, str], str] = {}
         self._lock = asyncio.Lock()
 
@@ -64,7 +65,7 @@ class GatewayStorage:
             **storage_config,
         )
         await manager.init()
-        log.info("Gateway storage from_config complete: strategy=%s", manager.strategy.__class__.__name__)
+        log.info("Gateway storage from_config complete: strategy=%s", manager.backend_name)
         return cls(cfg, manager)
 
     async def get_or_create_session(
@@ -331,7 +332,6 @@ class GatewayStorage:
     ) -> None:
         if not batch:
             return
-        claimed_dataset_sessions: set[str] = set()
         started = time.perf_counter()
         trace = PerfTrace(
             "gateway.storage.record_inference_steps_batch",
@@ -350,41 +350,52 @@ class GatewayStorage:
             steps: list[dict[str, Any]] = []
             with trace.span("session_context.prepare", operation="in_memory"):
                 for binding, record in batch:
-                    session = await self.get_or_create_session(binding, record.requested_model)
+                    await self.get_or_create_session(binding, record.requested_model)
                     environment = await self._resolve_session_environment(record.session_id)
                     dataset = environment.dataset if environment is not None else None
-                    attach_dataset = False
-                    if dataset is not None and record.seq_id == 1:
-                        async with self._lock:
-                            if (
-                                record.session_id not in self._dataset_pending_sessions
-                                and record.session_id not in self._dataset_written_sessions
-                            ):
-                                self._dataset_pending_sessions.add(record.session_id)
-                                claimed_dataset_sessions.add(record.session_id)
-                                attach_dataset = True
 
-                    step = {
-                        "session": session,
-                        "step_id": record.seq_id,
-                        "messages": _trajectory_messages(record),
-                        "request": record.request,
-                        "response": record.response,
-                        "step_reward": 0.0,
-                        "env_state": json.dumps(self._metadata(record), ensure_ascii=False, default=str),
-                        "terminated": False,
-                        "truncated": record.is_truncated,
-                        "is_trainable": False,
-                    }
-                    if attach_dataset:
-                        step["dataset"] = dataset
-                    steps.append(step)
+                    stored_messages: Any = _trajectory_messages(record)
+                    stored_response: Any = record.response
+                    provider_meta: dict[str, Any] | None = None
+                    if self.cfg.storage_type == "cloud":
+                        request_payload = _json_loads(record.request)
+                        if record.endpoint == "messages":
+                            response_payload = _json_loads(record.response)
+                            provider_meta = {
+                                "provider": "anthropic",
+                                "request": (
+                                    request_payload
+                                    if request_payload is not None
+                                    else record.request
+                                ),
+                                "response": (
+                                    response_payload
+                                    if response_payload is not None
+                                    else record.response
+                                ),
+                            }
+                        elif record.endpoint == "chat/completions":
+                            stored_messages = _openai_request_messages(
+                                request_payload,
+                                fallback=record.messages,
+                            )
+                            stored_response = _chat_completion_output(record.response)
+                        elif record.endpoint == "responses":
+                            stored_messages = _responses_request_input(request_payload)
+                            stored_response = _responses_output(record.response)
+                    steps.append(build_gateway_step_row(
+                        binding=binding,
+                        record=record,
+                        messages=stored_messages,
+                        response=stored_response,
+                        metadata=self._metadata(record),
+                        dataset=dataset,
+                        provider_meta=provider_meta,
+                    ))
             with trace.span("storage.record_steps_batch", table="session_steps"):
-                record_ids = await self.data_manager.record_steps_batch(steps)
+                record_ids = await self.data_manager.insert_session_step_rows(steps)
 
             async with self._lock:
-                self._dataset_pending_sessions.difference_update(claimed_dataset_sessions)
-                self._dataset_written_sessions.update(claimed_dataset_sessions)
                 for (_, record), record_id in zip(batch, record_ids):
                     if record_id:
                         self._latest_record_ids[(record.session_id, record.requested_model)] = record_id
@@ -396,13 +407,9 @@ class GatewayStorage:
             )
             trace.emit_summary(status="success", elapsed_ms=elapsed_ms)
         except asyncio.CancelledError:
-            async with self._lock:
-                self._dataset_pending_sessions.difference_update(claimed_dataset_sessions)
             trace.emit_summary(status="cancelled", error_type="CancelledError")
             raise
         except Exception as exc:
-            async with self._lock:
-                self._dataset_pending_sessions.difference_update(claimed_dataset_sessions)
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
 
@@ -415,104 +422,68 @@ class GatewayStorage:
         trace = PerfTrace(
             "gateway.storage.record_session_close",
             logger=log,
-            context={"session_id": binding.session_id, "reason": binding.close_reason},
+            context={
+                "session_id": binding.session_id,
+                "reason": binding.close_reason,
+                "is_session_completed": record.is_session_completed,
+            },
         )
         try:
-            if self.cfg.storage_type == "cloud":
-                async with self._lock:
-                    record_ids = [
-                        record_id
-                        for (session_id, _model), record_id in self._latest_record_ids.items()
-                        if session_id == binding.session_id
-                    ]
-                trace.update_context(record_id_count=len(record_ids), close_strategy="known_record_ids")
-                if not record_ids:
-                    elapsed_ms = (time.perf_counter() - started) * 1000
-                    log.info(
-                        "Gateway storage session_close skipped: session_id=%s has no persisted record IDs",
-                        binding.session_id,
-                    )
-                    trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_count=0)
-                    return
-                with trace.span(
-                    "storage.mark_known_records_completed",
-                    table="session_steps",
-                    record_count=len(record_ids),
-                ):
-                    updated_count = await self.data_manager.mark_records_completed(record_ids)
-                elapsed_ms = (time.perf_counter() - started) * 1000
-                log.info(
-                    "Gateway storage session_close complete: session_id=%s updated_count=%d elapsed_ms=%.2f",
-                    binding.session_id,
-                    updated_count,
-                    elapsed_ms,
-                )
-                trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_count=updated_count)
-                return
-
+            terminal = record.is_session_completed or binding.close_reason == "rollout_sealed"
             with trace.span("models_for_session"):
                 models = await self._models_for_session(binding)
             trace.update_context(model_count=len(models), models=models)
             log.info(
-                "Gateway storage session_close begin: session_id=%s models=%s reason=%s",
+                "Gateway storage session_close begin: session_id=%s models=%s reason=%s completed=%s",
                 binding.session_id,
                 models,
                 binding.close_reason,
+                record.is_session_completed,
             )
-            if not models:
-                with trace.span(
-                    "mark_latest_session_completed_without_model",
-                    operation="db_write",
-                    table="session_steps",
-                ):
-                    await self.data_manager.mark_latest_session_completed(session_id=binding.session_id)
-                elapsed_ms = (time.perf_counter() - started) * 1000
-                trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_without_model=True)
-                log.info(
-                    "Gateway storage session_close complete: session_id=%s updated_without_model elapsed_ms=%.2f",
+            async with self._lock:
+                record_ids = [
+                    record_id
+                    for (session_id, model), record_id in self._latest_record_ids.items()
+                    if session_id == binding.session_id and (not models or model in models)
+                ]
+            close_strategy = "known_record_ids"
+            if not record_ids:
+                close_strategy = "query_then_select"
+                rows = await self.data_manager.list_session_steps(
                     binding.session_id,
-                    elapsed_ms,
+                    job_id=binding.job_id,
+                    checkout_latest=True,
                 )
+                record_ids = select_latest_trajectory_record_ids(rows, models=models)
+            trace.update_context(
+                record_id_count=len(record_ids),
+                close_strategy=close_strategy,
+            )
+            if not record_ids:
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                log.info(
+                    "Gateway storage session_close skipped: session_id=%s has no trajectory records",
+                    binding.session_id,
+                )
+                trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_count=0)
                 return
 
-            updated_count = 0
-            if self.cfg.storage_type == "cloud" and len(models) > 1:
-                with trace.span(
-                    "mark_latest_session_completed_models",
-                    operation="db_write",
-                    table="session_steps",
-                    model_count=len(models),
-                ):
-                    update_counts = await asyncio.gather(
-                        *(
-                            self.data_manager.mark_latest_session_completed(
-                                session_id=binding.session_id,
-                                llm_model=model,
-                            )
-                            for model in models
-                        )
-                    )
-                updated_count = sum(update_counts)
-            else:
-                for model in models:
-                    with trace.span(
-                        "mark_latest_session_completed",
-                        operation="db_write",
-                        table="session_steps",
-                        model=model,
-                    ):
-                        updated_count += await self.data_manager.mark_latest_session_completed(
-                            session_id=binding.session_id,
-                            llm_model=model,
-                        )
-
-            if updated_count == 0:
-                with trace.span(
-                    "mark_latest_session_completed_fallback",
-                    operation="db_write",
-                    table="session_steps",
-                ):
-                    await self.data_manager.mark_latest_session_completed(session_id=binding.session_id)
+            updates: dict[str, Any] = {
+                "is_session_completed": bool(record.is_session_completed),
+                "is_terminal": bool(terminal),
+            }
+            if not record.is_session_completed:
+                updates.update(step_reward=0.0, reward=None)
+            with trace.span(
+                "storage.update_session_lifecycle",
+                table="session_steps",
+                record_count=len(record_ids),
+            ):
+                updated_count = await self.data_manager.update_session_step_rows(
+                    job_id=binding.job_id,
+                    record_ids=record_ids,
+                    updates=updates,
+                )
             elapsed_ms = (time.perf_counter() - started) * 1000
             log.info(
                 "Gateway storage session_close complete: session_id=%s updated_count=%d elapsed_ms=%.2f",
@@ -606,9 +577,6 @@ class GatewayStorage:
         }
 
 
-THINK_TAG_RE = re.compile(r"<think>(.*?)</think>", re.IGNORECASE | re.DOTALL)
-
-
 def _trajectory_messages(record: GatewayTelemetryRecord) -> list[dict[str, Any]]:
     # A step's messages are the request-side conversation history. The current
     # assistant output belongs in step.response and will naturally appear in a
@@ -625,252 +593,75 @@ def _trajectory_messages(record: GatewayTelemetryRecord) -> list[dict[str, Any]]
     return [dict(message) for message in record.messages]
 
 
-def _assistant_messages_from_response(response: str) -> list[dict[str, Any]]:
-    if not response:
-        return []
-
-    parsed = _json_loads(response)
-    if isinstance(parsed, dict):
-        return _assistant_messages_from_payload(parsed)
-    if isinstance(parsed, list):
-        message = _assistant_message_from_stream(parsed)
-        return [message] if message else []
-
-    if isinstance(response, str):
-        if response.lstrip().startswith("data:"):
-            message = _assistant_message_from_stream(response)
-            return [message] if message else []
-        message = _assistant_message_from_parts(response)
-        return [message] if message else []
-    return []
-
-
-def _assistant_messages_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    messages: list[dict[str, Any]] = []
-
-    if payload.get("type") == "message" and payload.get("role") == "assistant":
-        anthropic_message = _assistant_message_from_anthropic(payload)
-        if anthropic_message:
-            return [anthropic_message]
-
-    choices = payload.get("choices")
-    if isinstance(choices, list):
-        for choice in choices:
-            if not isinstance(choice, dict):
-                continue
-            raw_message = choice.get("message")
-            if isinstance(raw_message, dict):
-                message = _assistant_message_from_chat_message(raw_message)
-                if message:
-                    messages.append(message)
-                    continue
-            raw_delta = choice.get("delta")
-            if isinstance(raw_delta, dict):
-                message = _assistant_message_from_chat_message(raw_delta)
-                if message:
-                    messages.append(message)
-        if messages:
+def _openai_request_messages(
+    request_payload: Any,
+    *,
+    fallback: list[dict[str, Any]],
+) -> Any:
+    if isinstance(request_payload, dict):
+        messages = request_payload.get("messages")
+        if isinstance(messages, list):
             return messages
-
-    message = _assistant_message_from_response_payload(payload)
-    if message:
-        return [message]
-
-    stream_message = _assistant_message_from_stream(payload.get("stream_text"))
-    return [stream_message] if stream_message else []
+    return [dict(message) for message in fallback]
 
 
-def _assistant_message_from_anthropic(payload: dict[str, Any]) -> dict[str, Any] | None:
-    content = payload.get("content")
-    if not isinstance(content, list):
+def _responses_request_input(request_payload: Any) -> Any:
+    if not isinstance(request_payload, dict):
+        return []
+    input_value = request_payload.get("input")
+    if isinstance(input_value, list):
+        return input_value
+    if isinstance(input_value, dict):
+        return [input_value]
+    if input_value is None:
+        return []
+    return [{"role": "user", "content": input_value}]
+
+
+def _chat_completion_output(response: Any) -> Any:
+    payload = _json_loads(response)
+    if not isinstance(payload, dict):
         return None
-
-    text_parts: list[str] = []
-    thinking_parts: list[str] = []
-    tool_calls: list[dict[str, Any]] = []
-    for block in content:
-        if not isinstance(block, dict):
-            continue
-        block_type = block.get("type")
-        if block_type == "text" and isinstance(block.get("text"), str):
-            text_parts.append(block["text"])
-        elif block_type == "thinking" and isinstance(block.get("thinking"), str):
-            thinking_parts.append(block["thinking"])
-        elif block_type == "tool_use":
-            tool_calls.append(
-                {
-                    "id": str(block.get("id") or ""),
-                    "type": "function",
-                    "function": {
-                        "name": str(block.get("name") or ""),
-                        "arguments": json.dumps(block.get("input") or {}, ensure_ascii=False),
-                    },
-                }
-            )
-
-    message = _assistant_message_from_parts("".join(text_parts), "\n\n".join(thinking_parts))
-    if message is None:
-        message = {"role": "assistant"}
-    if tool_calls:
-        message["tool_calls"] = tool_calls
-    return message if len(message) > 1 else None
-
-
-def _assistant_message_from_chat_message(raw_message: dict[str, Any]) -> dict[str, Any] | None:
-    content = raw_message.get("content")
-    reasoning = _first_string(raw_message, ("think", "reasoning", "reasoning_content"))
-    message = _assistant_message_from_parts(content if isinstance(content, str) else None, reasoning)
-
-    if message is None:
-        message = {"role": "assistant"}
-    if content is not None and not isinstance(content, str):
-        message["content"] = content
-
-    tool_calls = raw_message.get("tool_calls")
-    if isinstance(tool_calls, list) and tool_calls:
-        message["tool_calls"] = tool_calls
-
-    function_call = raw_message.get("function_call")
-    if isinstance(function_call, dict) and function_call:
-        message["function_call"] = function_call
-
-    return message if len(message) > 1 else None
-
-
-def _assistant_message_from_response_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
-    content = _first_string(payload, ("output_text", "text", "content"))
-    reasoning = _first_string(payload, ("think", "reasoning_text", "reasoning", "reasoning_content"))
-    output_content, output_reasoning = _extract_responses_output(payload.get("output"))
-
-    if output_content:
-        content = (content or "") + output_content
-    if output_reasoning:
-        reasoning = "\n\n".join(part for part in (reasoning, output_reasoning) if part)
-
-    return _assistant_message_from_parts(content, reasoning)
-
-
-def _assistant_message_from_stream(stream_text: Any) -> dict[str, Any] | None:
-    if isinstance(stream_text, str):
-        events = _iter_sse_events(stream_text)
-    elif isinstance(stream_text, list):
-        events = (event for event in stream_text if isinstance(event, dict))
-    else:
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
         return None
-
-    content_parts: list[str] = []
-    reasoning_parts: list[str] = []
-    for event in events:
-        _collect_event_text(event, content_parts, reasoning_parts)
-    return _assistant_message_from_parts("".join(content_parts), "\n\n".join(reasoning_parts))
-
-
-def _collect_event_text(
-    event: dict[str, Any],
-    content_parts: list[str],
-    reasoning_parts: list[str],
-) -> None:
-    choices = event.get("choices")
-    if isinstance(choices, list):
-        for choice in choices:
-            if not isinstance(choice, dict):
-                continue
-            for key in ("message", "delta"):
-                payload = choice.get(key)
-                if isinstance(payload, dict):
-                    _collect_message_text(payload, content_parts, reasoning_parts)
-
-    event_type = event.get("type")
-    delta = event.get("delta")
-    if event_type == "response.output_text.delta" and isinstance(delta, str):
-        content_parts.append(delta)
-    elif event_type == "response.reasoning_text.delta" and isinstance(delta, str):
-        reasoning_parts.append(delta)
+    messages = [
+        dict(choice["message"])
+        for choice in choices
+        if isinstance(choice, dict) and isinstance(choice.get("message"), dict)
+    ]
+    if len(messages) == 1:
+        return messages[0]
+    return messages or None
 
 
-def _collect_message_text(
-    payload: dict[str, Any],
-    content_parts: list[str],
-    reasoning_parts: list[str],
-) -> None:
-    content = payload.get("content")
-    if isinstance(content, str):
-        content_parts.append(content)
-    reasoning = _first_string(payload, ("think", "reasoning", "reasoning_content"))
-    if reasoning:
-        reasoning_parts.append(reasoning)
+def _responses_output(response: Any) -> Any:
+    payload = _json_loads(response)
+    if not isinstance(payload, dict):
+        return None
+    output = payload.get("output")
+    if isinstance(output, (dict, list)):
+        return output
+    if payload.get("type") in {"message", "function_call", "reasoning"}:
+        return payload
+
+    # Streaming summaries may only contain the aggregated model text. Keep the
+    # derived message free of HTTP envelope fields.
+    output_text = payload.get("output_text")
+    reasoning_text = payload.get("reasoning_text")
+    if not isinstance(output_text, str) and not isinstance(reasoning_text, str):
+        return None
+    message: dict[str, Any] = {"role": "assistant", "content": []}
+    if isinstance(output_text, str):
+        message["content"].append({"type": "output_text", "text": output_text})
+    if isinstance(reasoning_text, str):
+        message["reasoning"] = reasoning_text
+    return message
 
 
-def _extract_responses_output(output: Any) -> tuple[str, str]:
-    if not isinstance(output, list):
-        return "", ""
-
-    content_parts: list[str] = []
-    reasoning_parts: list[str] = []
-    for item in output:
-        if not isinstance(item, dict):
-            continue
-        item_type = item.get("type")
-        if item_type == "reasoning":
-            reasoning = _first_string(item, ("text", "content", "summary"))
-            if reasoning:
-                reasoning_parts.append(reasoning)
-            continue
-        if item_type == "message":
-            content = item.get("content")
-            if isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict):
-                        text = _first_string(part, ("text", "content"))
-                        if text:
-                            content_parts.append(text)
-            else:
-                text = _first_string(item, ("text", "content"))
-                if text:
-                    content_parts.append(text)
-    return "".join(content_parts), "\n\n".join(reasoning_parts)
-
-
-def _assistant_message_from_parts(
-    content: str | None = None,
-    reasoning: str | None = None,
-) -> dict[str, Any] | None:
-    content = content or ""
-    tag_think, clean_content = _split_think_tags(content)
-    think = "\n\n".join(part.strip() for part in (reasoning, tag_think) if part and part.strip())
-
-    message: dict[str, Any] = {"role": "assistant"}
-    if clean_content.strip():
-        message["content"] = clean_content.strip()
-    elif content or think:
-        message["content"] = ""
-    if think:
-        message["think"] = think
-    return message if len(message) > 1 else None
-
-
-def _split_think_tags(content: str) -> tuple[str, str]:
-    matches = [match.group(1).strip() for match in THINK_TAG_RE.finditer(content)]
-    if not matches:
-        return "", content
-    clean_content = THINK_TAG_RE.sub("", content)
-    return "\n\n".join(match for match in matches if match), clean_content
-
-
-def _iter_sse_events(stream_text: str):
-    for raw_line in stream_text.splitlines():
-        line = raw_line.strip()
-        if not line.startswith("data:"):
-            continue
-        data = line[len("data:") :].strip()
-        if not data or data == "[DONE]":
-            continue
-        parsed = _json_loads(data)
-        if isinstance(parsed, dict):
-            yield parsed
-
-
-def _json_loads(value: str) -> Any:
+def _json_loads(value: Any) -> Any:
+    if isinstance(value, (dict, list)):
+        return value
     try:
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
@@ -888,11 +679,3 @@ def _response_weight_version(response: str) -> Any:
             if isinstance(metadata, dict) and metadata.get("weight_version") is not None:
                 return metadata["weight_version"]
     return None
-
-
-def _first_string(payload: dict[str, Any], keys: tuple[str, ...]) -> str:
-    for key in keys:
-        value = payload.get(key)
-        if isinstance(value, str):
-            return value
-    return ""

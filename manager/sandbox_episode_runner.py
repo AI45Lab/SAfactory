@@ -64,8 +64,8 @@ class SandboxEpisodeRunner:
         except asyncio.TimeoutError:
             return SimulationStartResult(
                 session_id=request.session_id,
-                status="failed",
-                total_reward=0.0,
+                status="truncated",
+                total_reward=None,
                 step_count=0,
                 terminated=True,
                 truncated=True,
@@ -92,7 +92,7 @@ class SandboxEpisodeRunner:
             return SimulationStartResult(
                 session_id=request.session_id,
                 status="succeeded",
-                total_reward=0.0,
+                total_reward=None,
                 step_count=0,
                 terminated=True,
                 truncated=False,

@@ -26,6 +26,8 @@ _DEFAULT_RUNNER_CONTAINER_PATH = "/tmp/safactory-openclaw-runner.mjs"
 _DEFAULT_RUN_COMMAND = f"node {_DEFAULT_RUNNER_CONTAINER_PATH}"
 _INVALID_NAME_CHARS = re.compile(r"[^a-z0-9.-]+")
 _MAX_RJOB_NAME_LEN = 49
+_MAX_RJOB_AGENT_NAME_LEN = 12
+_MAX_RJOB_MODEL_NAME_LEN = 16
 
 
 class RJobClusterBackend(ClusterBackend):
@@ -355,6 +357,71 @@ class RJobClusterBackend(ClusterBackend):
         except Exception:
             log.warning("RJob delete failed for %s", job_name, exc_info=True)
 
+    async def cleanup_resume_session(
+        self,
+        *,
+        agent_name: str,
+        model: str,
+        job_id: str,
+        session_id: str,
+    ) -> List[str]:
+        """Force-delete current and legacy RJobs for one resumable session."""
+        cfg = self._rjob_cfg_for_env(agent_name)
+        client = self.client(cfg)
+        names = [
+            build_rjob_name(agent_name, model, session_id),
+            _build_legacy_rjob_name(cfg, agent_name, job_id, session_id),
+        ]
+        cleaned: List[str] = []
+        for job_name in dict.fromkeys(names):
+            if await self.force_cleanup_job(
+                client,
+                job_name,
+                timeout_s=max(1.0, float(cfg.get("resume_cleanup_timeout_s", 120.0) or 120.0)),
+                poll_interval_s=max(
+                    0.1,
+                    float(cfg.get("resume_cleanup_poll_interval_s", 1.0) or 1.0),
+                ),
+            ):
+                cleaned.append(job_name)
+        return cleaned
+
+    async def force_cleanup_job(
+        self,
+        client: Any,
+        job_name: str,
+        *,
+        timeout_s: float = 120.0,
+        poll_interval_s: float = 1.0,
+    ) -> bool:
+        """Delete an existing RJob and wait until it disappears."""
+        exists, status = await self._get_job_status(client, job_name)
+        if not exists:
+            return False
+
+        log.info("cleaning stale RJob before resume: name=%s status=%s", job_name, status)
+        if status not in RJOB_SUCCEEDED_STATUSES | RJOB_FAILED_STATUSES | {"Killing", "Deleting"}:
+            await self.stop_job(client, job_name)
+
+        if status != "Deleting":
+            try:
+                await asyncio.to_thread(client.delete, [job_name], async_=True)
+            except TypeError:
+                await asyncio.to_thread(client.delete, [job_name])
+
+        deadline = time.monotonic() + max(1.0, float(timeout_s))
+        while True:
+            exists, status = await self._get_job_status(client, job_name)
+            if not exists:
+                log.info("stale RJob removed before resume: name=%s", job_name)
+                return True
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"stale RJob {job_name} was not removed within {timeout_s:.1f}s; "
+                    f"last_status={status}"
+                )
+            await asyncio.sleep(max(0.1, float(poll_interval_s)))
+
     def client(self, cfg: Dict[str, Any]) -> Any:
         symbols = self.symbols()
         kwargs = {
@@ -449,11 +516,7 @@ class RJobClusterBackend(ClusterBackend):
         lease: SimulationAgentLease,
         request: SimulationStartRequest,
     ) -> str:
-        prefix = _safe_name(str(cfg.get("name_prefix") or "safactory"), max_len=12)
-        agent = _safe_name(lease.agent_name, max_len=8)
-        job = _safe_name(request.job_id, max_len=10)
-        session = _safe_name(request.session_id, max_len=10)
-        return f"{prefix}-{job}-{agent}-{session}".strip("-")[:_MAX_RJOB_NAME_LEN].strip("-") or "safactory-rjob"
+        return build_rjob_name(lease.agent_name, request.model, request.session_id)
 
     def _docker_cfg_for_env(self, env_name: str) -> Dict[str, Any]:
         env_cfg = dict(self._env_types.get(env_name, {}) or {})
@@ -546,19 +609,50 @@ class RJobClusterBackend(ClusterBackend):
 
     @staticmethod
     async def _get_status(client: Any, job_name: str) -> str:
+        _, status = await RJobClusterBackend._get_job_status(client, job_name)
+        return status
+
+    @staticmethod
+    async def _get_job_status(client: Any, job_name: str) -> tuple[bool, str]:
         jobs = await asyncio.to_thread(client.list, [job_name])
         if not jobs:
-            return "Unknown"
+            return False, "Unknown"
         job = jobs[0]
         if isinstance(job, dict):
-            return str(job.get("status") or _nested_name(job.get("status")) or "Unknown")
+            raw_status = job.get("status")
+            if isinstance(raw_status, str):
+                return True, raw_status
+            return True, _nested_name(raw_status) or "Unknown"
         status = getattr(job, "status", None)
         if isinstance(status, str):
-            return status
+            return True, status
         current = getattr(status, "current", None)
         if current is not None:
-            return str(getattr(current, "name", current))
-        return str(getattr(status, "name", status) or "Unknown")
+            return True, str(getattr(current, "name", current))
+        return True, str(getattr(status, "name", status) or "Unknown")
+
+
+def build_rjob_name(agent_name: str, model: str, session_id: str) -> str:
+    """Build a stable RJob name from start-config agent, model, and session prefix."""
+    agent = _safe_name(agent_name, max_len=_MAX_RJOB_AGENT_NAME_LEN)
+    model_name = _safe_name(model, max_len=_MAX_RJOB_MODEL_NAME_LEN)
+    session_budget = _MAX_RJOB_NAME_LEN - len(agent) - len(model_name) - 2
+    session = _safe_name(session_id, max_len=max(1, session_budget))
+    return f"{agent}-{model_name}-{session}".strip("-") or "safactory-rjob"
+
+
+def _build_legacy_rjob_name(
+    cfg: Dict[str, Any],
+    agent_name: str,
+    job_id: str,
+    session_id: str,
+) -> str:
+    """Recreate the pre-change name so resume can remove migrated stale jobs."""
+    prefix = _safe_name(str(cfg.get("name_prefix") or "safactory"), max_len=12)
+    agent = _safe_name(agent_name, max_len=8)
+    job = _safe_name(job_id, max_len=10)
+    session = _safe_name(session_id, max_len=10)
+    return f"{prefix}-{job}-{agent}-{session}".strip("-")[:_MAX_RJOB_NAME_LEN].strip("-") or "safactory-rjob"
 
 
 def merge_dicts(*values: Any) -> Dict[str, Any]:

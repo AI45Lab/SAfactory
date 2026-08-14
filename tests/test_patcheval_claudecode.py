@@ -125,11 +125,45 @@ def test_generate_claudecode_exp1_config(tmp_path, monkeypatch) -> None:
     assert eval_spec.rule_evaluator.endswith(f"/{env_name}/rule_evaluator.py")
 
 
-def test_anthropic_headers_drop_unsupported_beta_flag() -> None:
+def test_generate_openhands_config(tmp_path, monkeypatch) -> None:
+    output = tmp_path / "generated"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_full_config.py",
+            "--output-dir",
+            str(output),
+            "--baseline",
+            "openhands",
+            "--claude-gateway-base-url",
+            "http://gateway:18000/v1/sessions",
+            "--claude-model",
+            "gpt-5-2025-08-07",
+            "--limit",
+            "1",
+        ],
+    )
+
+    generate_full_config.main()
+
+    start = yaml.safe_load((output / "patcheval_start.yaml").read_text(encoding="utf-8"))
+    agent = next(iter(start["agents"].values()))["container"]
+    assert agent["runner_entrypoint"]["source"].endswith("openhands_runner.py")
+    assert agent["env"]["PATCHEVAL_OPENHANDS_GATEWAY_BASE_URL"] == "http://gateway:18000/v1/sessions"
+    assert agent["env"]["PATCHEVAL_OPENHANDS_MODEL"] == "gpt-5-2025-08-07"
+    task_file = next((output / "datasets").glob("*.jsonl"))
+    task = json.loads(task_file.read_text(encoding="utf-8"))
+    assert task["agent_framework"] == "openhands"
+    assert "problem_statement" in task
+
+
+def test_anthropic_headers_preserve_native_headers_and_add_safe_beta() -> None:
     target = LLMRouteTarget(
         route_model="claude",
         base_url="http://upstream/v1",
         api_key="upstream-key",
+        anthropic_interleaved_thinking=True,
     )
 
     headers = object.__new__(InferenceForwarder).build_anthropic_headers(
@@ -140,7 +174,7 @@ def test_anthropic_headers_drop_unsupported_beta_flag() -> None:
             "x-api-key": "client-key",
         },
     )
-    assert "anthropic-beta" not in headers
+    assert headers["anthropic-beta"] == "interleaved-thinking-2025-05-14"
     assert headers["x-api-key"] == "upstream-key"
     assert "X-Safactory-Session-Id" not in headers
 
@@ -262,6 +296,7 @@ def test_gateway_streams_native_anthropic_and_records_request_response(monkeypat
             "claude": LLMRouteConfig(
                 base_url="https://provider.example/v1",
                 api_key="upstream-key",
+                anthropic_interleaved_thinking=True,
             )
         },
     )

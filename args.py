@@ -37,7 +37,56 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
         default=None,
         help="SQLite storage DB URI. Cloud storage ignores this and uses wt-data-gateway defaults.",
     )
-    parser.add_argument("--rebuild-table", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--rebuild-table",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Delete this job's environment and landing rows before rebuilding. "
+            "Cloud mode requires exact deletion confirmation and applies "
+            "production archive safeguards."
+        ),
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Continue a job and skip finished environments. Before continuing, "
+            "all landing rows for unfinished sessions are deleted; Cloud mode "
+            "requires the same destructive-operation safeguards as rebuild."
+        ),
+    )
+    parser.add_argument(
+        "--confirm-cloud-delete-job-id",
+        default="",
+        help=(
+            "Exact job_id confirmation required before Cloud resume/rebuild may "
+            "delete landing rows"
+        ),
+    )
+    parser.add_argument(
+        "--confirm-production",
+        action="store_true",
+        help=(
+            "Acknowledge that the resolved Cloud landing target is production."
+        ),
+    )
+    parser.add_argument(
+        "--cloud-delete-archive-dir",
+        default="",
+        help=(
+            "Durable directory for verified pre-delete Cloud archives; required "
+            "for production landing deletes"
+        ),
+    )
+    parser.add_argument(
+        "--cloud-job-claim-dir",
+        default="",
+        help=(
+            "Durable shared filesystem directory used for the Cloud environment-"
+            "initialization lease; required in Cloud mode"
+        ),
+    )
     parser.add_argument("--disable-buffer", dest="enable_buffer", action="store_false", default=True)
     parser.add_argument("--buffer-size", type=int, default=100)
     parser.add_argument("--flush-interval", type=float, default=5.0)

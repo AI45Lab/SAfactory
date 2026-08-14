@@ -30,7 +30,7 @@ class AgentPoolManager:
     def __init__(
         self,
         cfg: dict,
-        conn: Any,
+        data_manager: Any,
         *,
         job_id: str = "",
         db_processing_done_checker: Optional[Callable[[], bool]] = None,
@@ -38,7 +38,7 @@ class AgentPoolManager:
         self.cfg = cfg or {}
         self._job_id = str(job_id or "").strip()
         self._repo = AgentDataRepository(
-            conn,
+            data_manager,
             job_id=self._job_id,
             db_processing_done_checker=db_processing_done_checker,
         )
@@ -71,7 +71,7 @@ class AgentPoolManager:
                 return
             self._closed = False
 
-            plan = build_binding_plan(self._repo)
+            plan = await build_binding_plan(self._repo)
             if not plan.env_to_image:
                 log.warning("No agent/image mapping found in DB; nothing to start.")
                 self._initialized = True

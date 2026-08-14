@@ -25,6 +25,7 @@ _ANTHROPIC_CLIENT_HEADERS = {
     "user-agent",
     "x-app",
 }
+_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
 
 
 class SessionClosedError(Exception):
@@ -369,6 +370,15 @@ class InferenceForwarder:
                     or normalized_name.startswith("x-stainless-")
                 ):
                     headers[normalized_name] = str(value)
+        if target.anthropic_interleaved_thinking:
+            beta_values = [
+                value.strip()
+                for value in headers.get("anthropic-beta", "").split(",")
+                if value.strip()
+            ]
+            if _INTERLEAVED_THINKING_BETA not in beta_values:
+                beta_values.append(_INTERLEAVED_THINKING_BETA)
+            headers["anthropic-beta"] = ",".join(beta_values)
         headers.setdefault("anthropic-version", "2023-06-01")
         if target.api_key:
             if "x-api-key" in inbound_header_names:
@@ -377,6 +387,12 @@ class InferenceForwarder:
                 headers["Authorization"] = f"Bearer {target.api_key}"
             if not {"x-api-key", "authorization"} & inbound_header_names:
                 headers["x-api-key"] = target.api_key
+        if session_id:
+            headers["X-Safactory-Session-Id"] = session_id
+        if request_id:
+            headers["X-Safactory-Request-Id"] = request_id
+        if llm_step_index is not None:
+            headers["X-Safactory-Step-Index"] = str(llm_step_index)
         return headers
 
     def normalize_error(self, exc: Exception) -> tuple[int, dict[str, Any]]:

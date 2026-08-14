@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import sqlite3
+import uuid
 from typing import Any
 
+from core.data_manager.manager import DataManager
 from core.perf_trace import PerfTrace
-from evaluator.eval_types import EvalResult, to_jsonable
-from evaluator.trajectory_reader import _sqlite_path
+from evaluator.eval_types import EvalResult, EvalStatus, to_jsonable
+from evaluator.trajectory_policy import metadata_from_row, select_reward_target
 
 log = logging.getLogger("evaluator.reward_committer")
 
@@ -22,15 +22,14 @@ class RewardCommitter:
         data_manager: Any | None = None,
     ) -> None:
         self.storage_type = str(storage_type or "sqlite").strip().lower()
-        self.data_manager = data_manager
-        if self.storage_type == "sqlite":
-            self.db_path = _sqlite_path(db_url)
-        elif self.storage_type == "cloud":
-            if data_manager is None:
-                raise ValueError("RewardCommitter cloud mode requires a data manager")
-            self.db_path = ""
-        else:
+        if self.storage_type not in {"sqlite", "cloud"}:
             raise ValueError(f"RewardCommitter does not support storage type {storage_type!r}")
+        self._owns_data_manager = data_manager is None
+        if data_manager is None:
+            if self.storage_type == "cloud":
+                raise ValueError("RewardCommitter cloud mode requires a data manager")
+            data_manager = DataManager(job_id="", storage_type="sqlite", db_url=db_url)
+        self.data_manager = data_manager
 
     async def commit(
         self,
@@ -38,6 +37,15 @@ class RewardCommitter:
         session_id: str,
         eval_result: EvalResult,
     ) -> None:
+        if eval_result.status not in {
+            EvalStatus.SUCCEEDED,
+            EvalStatus.SUCCEEDED.value,
+            EvalStatus.TRUNCATED,
+            EvalStatus.TRUNCATED.value,
+        }:
+            raise ValueError(
+                f"cannot commit reward for evaluation status {eval_result.status!r}"
+            )
         trace = PerfTrace(
             "evaluator.reward_commit",
             logger=log,
@@ -46,7 +54,6 @@ class RewardCommitter:
                 "score": eval_result.normalized_score_10,
                 "status": eval_result.status,
                 "storage_type": self.storage_type,
-                "db_path": self.db_path or None,
             },
         )
         log.info(
@@ -55,51 +62,47 @@ class RewardCommitter:
             eval_result.normalized_score_10,
             eval_result.status,
             self.storage_type,
-            self.db_path or None,
+            None,
         )
         try:
-            if self.storage_type == "cloud":
-                with trace.span("cloud_commit"):
-                    await self._commit_cloud(
-                        session_id=session_id,
-                        eval_result=eval_result,
-                    )
-            else:
-                with trace.span("sqlite_commit"):
-                    await asyncio.to_thread(
-                        self._commit_sqlite,
-                        session_id=session_id,
-                        eval_result=eval_result,
-                    )
+            init = getattr(self.data_manager, "init", None)
+            if callable(init):
+                await init()
+            with trace.span("data_manager_commit"):
+                await self._commit_data_manager(
+                    session_id=session_id,
+                    eval_result=eval_result,
+                )
             log.info(
                 "EVAL REWARD commit complete: session=%s score=%.4f",
                 session_id,
                 eval_result.normalized_score_10,
             )
             trace.emit_summary(status="success")
-        except asyncio.CancelledError:
-            trace.emit_summary(status="cancelled", error_type="CancelledError")
-            raise
         except Exception as exc:
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
+        finally:
+            if self._owns_data_manager:
+                await self.data_manager.close()
 
-    async def _commit_cloud(
+    async def _commit_data_manager(
         self,
         *,
         session_id: str,
         eval_result: EvalResult,
     ) -> None:
+        truncated = eval_result.status in {
+            EvalStatus.TRUNCATED,
+            EvalStatus.TRUNCATED.value,
+        }
         rows = await self.data_manager.list_session_steps(
             session_id,
             checkout_latest=True,
         )
-        terminal = next(
-            (row for row in reversed(rows) if _is_trainable_step(row)),
-            None,
-        )
+        terminal = select_reward_target(rows)
         log.info(
-            "EVAL REWARD cloud rows: session=%s total_rows=%d terminal_found=%s",
+            "EVAL REWARD rows: session=%s total_rows=%d terminal_found=%s",
             session_id,
             len(rows),
             terminal is not None,
@@ -112,35 +115,62 @@ class RewardCommitter:
             summary_metadata = _as_eval_summary_metadata(metadata)
             summary = _existing_eval_summary_row(rows, session_id)
             if summary is None:
-                recorded = await self.data_manager.record_evaluation_summary(
-                    session_id=session_id,
-                    step_id=_next_step_id(rows),
-                    reward=eval_result.normalized_score_10,
-                    env_state=summary_metadata,
-                )
+                reference = rows[-1] if rows else {}
+                insert_rows = getattr(self.data_manager, "insert_session_step_rows", None)
+                if callable(insert_rows):
+                    record_ids = await insert_rows([{
+                        "record_id": str(uuid.uuid4()),
+                        "session_id": session_id,
+                        "env_id": session_id,
+                        "step_id": _next_step_id(rows),
+                        "env_name": str(reference.get("env_name") or "gateway"),
+                        "llm_model": str(reference.get("llm_model") or ""),
+                        "group_id": str(reference.get("group_id") or ""),
+                        "job_id": str(reference.get("job_id") or self.data_manager.job_id or ""),
+                        "messages": [],
+                        "request": None,
+                        "response": "",
+                        "step_reward": eval_result.normalized_score_10,
+                        "reward": eval_result.normalized_score_10,
+                        "meta_json": _load_meta_json(summary_metadata),
+                        "is_terminal": True,
+                        "is_truncated": truncated,
+                        "is_session_completed": True,
+                        "is_trainable": False,
+                    }])
+                    recorded = len(record_ids)
+                else:
+                    # Compatibility for injected legacy test doubles.
+                    recorded = await self.data_manager.record_evaluation_summary(
+                        session_id=session_id,
+                        step_id=_next_step_id(rows),
+                        reward=eval_result.normalized_score_10,
+                        env_state=summary_metadata,
+                        truncated=truncated,
+                    )
             else:
-                recorded = await self.data_manager.update_session_step(
-                    session_id,
-                    int(summary.get("step_id") or 0),
+                recorded = await _update_persisted_row(
+                    self.data_manager,
+                    summary,
                     {
                         "step_reward": eval_result.normalized_score_10,
                         "reward": eval_result.normalized_score_10,
-                        "env_state": _merge_env_state(
-                            summary.get("env_state"),
+                        "meta_json": _merge_meta_json(
+                            summary.get("meta_json"),
                             summary_metadata,
                         ),
                         "is_terminal": True,
+                        **({"is_truncated": True} if truncated else {}),
                         "is_session_completed": True,
-                        "is_trainable": False,
                     },
                 )
             if recorded <= 0:
                 raise RuntimeError(
-                    "Cannot commit cloud evaluation reward: evaluation summary "
+                    "Cannot commit evaluation reward: evaluation summary "
                     f"was not persisted for {session_id}"
                 )
             log.info(
-                "EVAL REWARD cloud summary persisted: session=%s step_id=%d",
+                "EVAL REWARD summary persisted: session=%s step_id=%d",
                 session_id,
                 _next_step_id(rows) if summary is None else int(summary.get("step_id") or 0),
             )
@@ -150,97 +180,23 @@ class RewardCommitter:
             session_id=session_id,
             eval_result=eval_result,
         )
-        env_state = _merge_env_state(terminal.get("env_state"), metadata)
-        updated = await self.data_manager.update_session_step(
-            session_id,
-            int(terminal.get("step_id") or 0),
+        meta_json = _merge_meta_json(terminal.get("meta_json"), metadata)
+        updated = await _update_persisted_row(
+            self.data_manager,
+            terminal,
             {
                 "step_reward": eval_result.normalized_score_10,
                 "reward": eval_result.normalized_score_10,
-                "env_state": env_state,
+                "meta_json": meta_json,
                 "is_terminal": True,
+                **({"is_truncated": True} if truncated else {}),
                 "is_session_completed": True,
             },
         )
         if updated <= 0:
             raise RuntimeError(
-                f"Cannot commit cloud evaluation reward: session row was not updated for {session_id}"
+                f"Cannot commit evaluation reward: session row was not updated for {session_id}"
             )
-
-    def _commit_sqlite(
-        self,
-        *,
-        session_id: str,
-        eval_result: EvalResult,
-    ) -> None:
-        metadata = self._build_reward_metadata(session_id=session_id, eval_result=eval_result)
-        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
-            conn.execute("PRAGMA busy_timeout = 30000")
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT id, step_id, env_name, messages, response, env_state
-                FROM session_steps
-                WHERE session_id = ?
-                ORDER BY step_id ASC, id ASC
-                """,
-                (session_id,),
-            ).fetchall()
-            trainable_ids = [int(row["id"]) for row in rows if _is_trainable_step(row)]
-            terminal = _last_trainable_row(rows, trainable_ids)
-            log.info(
-                "EVAL REWARD commit rows: session=%s total_rows=%d trainable_rows=%d terminal_found=%s",
-                session_id,
-                len(rows),
-                len(trainable_ids),
-                terminal is not None,
-            )
-            if terminal is None:
-                summary = _existing_eval_summary_row(rows, session_id)
-                summary_metadata = _as_eval_summary_metadata(metadata)
-                if summary is None:
-                    conn.execute(
-                        """
-                        INSERT INTO session_steps
-                        (session_id, step_id, env_name, llm_model, group_id, job_id, messages,
-                         response, step_reward, reward, env_state, is_terminal,
-                         is_truncated, is_session_completed, is_trainable)
-                        VALUES (?, ?, 'gateway', '', '', '', '[]', '', ?, ?, ?, 1, 0, 1, 0)
-                        """,
-                        (
-                            session_id,
-                            _next_step_id(rows),
-                            eval_result.normalized_score_10,
-                            eval_result.normalized_score_10,
-                            summary_metadata,
-                        ),
-                    )
-                else:
-                    env_state = _merge_env_state(summary["env_state"], summary_metadata)
-                    conn.execute(
-                        """
-                        UPDATE session_steps
-                        SET step_reward = ?, reward = ?, env_state = ?,
-                            is_terminal = 1, is_session_completed = 1, is_trainable = 0
-                        WHERE id = ?
-                        """,
-                        (eval_result.normalized_score_10, eval_result.normalized_score_10, env_state, summary["id"]),
-                    )
-                conn.commit()
-                return
-
-            env_state = _merge_env_state(terminal["env_state"], metadata)
-            conn.execute(
-                """
-                UPDATE session_steps
-                SET step_reward = ?, reward = ?, env_state = ?,
-                    is_terminal = 1, is_session_completed = 1, is_trainable = 1
-                WHERE id = ?
-                """,
-                (eval_result.normalized_score_10, eval_result.normalized_score_10, env_state, terminal["id"]),
-            )
-            _mark_trainable(conn, trainable_ids)
-            conn.commit()
 
     def _build_reward_metadata(self, *, session_id: str, eval_result: EvalResult) -> str:
         return json.dumps(
@@ -257,14 +213,14 @@ class RewardCommitter:
         )
 
 
-def _merge_env_state(existing: Any, new_metadata: str) -> str:
+def _merge_meta_json(existing: Any, new_metadata: str) -> str:
     if isinstance(existing, dict):
         existing_obj = dict(existing)
     else:
         try:
             existing_obj = json.loads(existing) if existing else {}
         except Exception:
-            existing_obj = {"previous_env_state": existing}
+            existing_obj = {"legacy_meta_json": existing}
     try:
         new_obj = json.loads(new_metadata)
     except Exception:
@@ -273,60 +229,30 @@ def _merge_env_state(existing: Any, new_metadata: str) -> str:
     return json.dumps(existing_obj, ensure_ascii=False)
 
 
-_NON_TRAINABLE_EVENT_TYPES = {
-    "gateway_session_close",
-    "episode_summary",
-    "evaluation_summary",
-}
-
-
-def _is_trainable_step(row: sqlite3.Row) -> bool:
-    env_state = _load_env_state(row["env_state"])
-    event_type = env_state.get("event_type")
-    if event_type in _NON_TRAINABLE_EVENT_TYPES:
-        return False
-    if env_state.get("synthetic_stop"):
-        return False
-    if event_type == "gateway_inference":
-        try:
-            return int(env_state.get("status_code") or 200) < 400
-        except (TypeError, ValueError):
-            return True
-    return bool(_has_messages(row["messages"]) or row["response"])
-
-
-def _last_trainable_row(rows: list[sqlite3.Row], trainable_ids: list[int]) -> sqlite3.Row | None:
-    trainable = set(trainable_ids)
+def _existing_eval_summary_row(rows: list[dict[str, Any]], session_id: str) -> dict[str, Any] | None:
     for row in reversed(rows):
-        if int(row["id"]) in trainable:
-            return row
-    return None
-
-
-def _existing_eval_summary_row(rows: list[sqlite3.Row], session_id: str) -> sqlite3.Row | None:
-    for row in reversed(rows):
-        env_state = _load_env_state(row["env_state"])
-        if env_state.get("event_type") != "evaluation_summary":
+        meta_json = metadata_from_row(row)
+        if meta_json.get("event_type") != "evaluation_summary":
             continue
-        eval_metadata = env_state.get("eval")
+        eval_metadata = meta_json.get("eval")
         if isinstance(eval_metadata, dict) and eval_metadata.get("session_id") == session_id:
             return row
     return None
 
 
-def _next_step_id(rows: list[sqlite3.Row]) -> int:
+def _next_step_id(rows: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
     return max(int(row["step_id"] or 0) for row in rows) + 1
 
 
 def _as_eval_summary_metadata(metadata: str) -> str:
-    obj = _load_env_state(metadata)
+    obj = _load_meta_json(metadata)
     obj["event_type"] = "evaluation_summary"
     return json.dumps(obj, ensure_ascii=False)
 
 
-def _load_env_state(value: Any) -> dict[str, Any]:
+def _load_meta_json(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     try:
@@ -336,21 +262,21 @@ def _load_env_state(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _has_messages(value: Any) -> bool:
-    try:
-        parsed = json.loads(value) if isinstance(value, str) else value
-    except Exception:
-        return bool(value)
-    return bool(parsed)
-
-
-def _mark_trainable(conn: sqlite3.Connection, ids: list[int]) -> None:
-    for offset in range(0, len(ids), 500):
-        chunk = ids[offset : offset + 500]
-        if not chunk:
-            continue
-        placeholders = ",".join("?" for _ in chunk)
-        conn.execute(
-            f"UPDATE session_steps SET is_trainable = 1 WHERE id IN ({placeholders})",
-            tuple(chunk),
+async def _update_persisted_row(
+    data_manager: Any,
+    row: dict[str, Any],
+    updates: dict[str, Any],
+) -> int:
+    record_id = str(row.get("record_id") or row.get("id") or "")
+    update_rows = getattr(data_manager, "update_session_step_rows", None)
+    if record_id and callable(update_rows):
+        return await update_rows(
+            job_id=str(row.get("job_id") or "") or None,
+            record_id=record_id,
+            updates=updates,
         )
+    return await data_manager.update_session_step(
+        str(row.get("session_id") or ""),
+        int(row.get("step_id") or 0),
+        updates,
+    )

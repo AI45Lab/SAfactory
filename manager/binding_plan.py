@@ -13,11 +13,11 @@ class BindingPlan:
     images_needed: Set[str]
 
 
-def build_binding_plan(repo: AgentDataRepository) -> BindingPlan:
+async def build_binding_plan(repo: AgentDataRepository) -> BindingPlan:
     """
     Build agent->image bindings and discover distinct images needed.
     """
-    env_image_map = repo.get_env_image_map()
+    env_image_map = await repo.get_env_image_map()
     if not env_image_map:
         return BindingPlan(env_to_image={}, image_to_env={}, images_needed=set())
 
@@ -28,7 +28,7 @@ def build_binding_plan(repo: AgentDataRepository) -> BindingPlan:
             + ", ".join(sorted(missing_images))
         )
 
-    image_to_env = repo.get_image_to_env_map()
+    image_to_env = await repo.get_image_to_env_map()
     images_needed: Set[str] = set(image_to_env.keys())
 
     final_env_image: Dict[str, str] = {}

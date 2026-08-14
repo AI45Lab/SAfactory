@@ -98,7 +98,7 @@ For cloud storage, start both processes with `storage_type: cloud` and the cloud
 
 ## Telemetry And Request Logs
 
-Gateway telemetry writes rows into `session_steps` with `is_trainable = false`. These rows contain request and response payloads in `messages`, plus event metadata in `env_state`.
+Gateway telemetry writes rows into `session_steps` with `is_trainable = false`. Request-side history is stored in `messages`, the current output in `response`, and event metadata in `meta_json`.
 
 Relevant config:
 

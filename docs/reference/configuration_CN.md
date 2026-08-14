@@ -65,7 +65,12 @@ python launcher.py \
 
 | 类别 | 参数 | 默认值 | 说明 |
 |------|------|--------|------|
-| Storage | `--rebuild-table` / `--no-rebuild-table` | `false` | SQLite 下，加载配置前删除 DB 文件。 |
+| Storage | `--rebuild-table` / `--no-rebuild-table` | `false` | 删除当前 `job_id` 的配置和 landing 轨迹后重头运行。不能与 `--resume` 同时使用；Cloud 会执行安全门检查。 |
+| Storage | `--resume` | `false` | 续跑已有 `job_id`，继续前会删除未完成环境的旧 landing 行；Cloud 会执行安全门检查。 |
+| Storage | `--cloud-job-claim-dir` | 空 | 用于串行化 Cloud 环境初始化的持久共享文件系统目录；Cloud 模式必填。 |
+| Storage | `--confirm-cloud-delete-job-id` | 空 | Cloud resume/rebuild 删除前必须精确确认的 `job_id`。 |
+| Storage | `--confirm-production` | `false` | 解析出的 Cloud profile/表为生产环境时必须额外确认。 |
+| Storage | `--cloud-delete-archive-dir` | 空 | 删除前校验归档的持久目录；Cloud 生产删除必填。 |
 | Storage | `--disable-buffer` | buffer 启用 | 禁用缓冲写入。 |
 | Storage | `--buffer-size` | `100` | 写入缓冲区容量。 |
 | Storage | `--flush-interval` | `5.0` | 写入缓冲刷新间隔，单位秒。 |
