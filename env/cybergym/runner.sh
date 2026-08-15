@@ -131,11 +131,19 @@ agent_command=(
 printf 'command:' >"$NATIVE_OUTPUT"
 printf ' %q' "${agent_command[@]}" >>"$NATIVE_OUTPUT"
 printf '\n' >>"$NATIVE_OUTPUT"
-set +e
-timeout --signal=TERM --kill-after=30 "${process_timeout_s}s" \
-  "${agent_command[@]}" >>"$NATIVE_OUTPUT" 2>&1
-native_returncode=$?
-set -e
+agent_started_s=$SECONDS
+if timeout --signal=TERM --kill-after=30 "${process_timeout_s}s" \
+  "${agent_command[@]}" >>"$NATIVE_OUTPUT" 2>&1; then
+  native_returncode=0
+else
+  native_returncode=$?
+fi
+agent_elapsed_s=$((SECONDS - agent_started_s))
+if (( native_returncode == 124 || \
+      (native_returncode != 0 && agent_elapsed_s >= agent_timeout_s) )); then
+  printf '\nagent timed out: elapsed=%ss timeout=%ss\n' \
+    "$agent_elapsed_s" "$agent_timeout_s" >>"$NATIVE_OUTPUT"
+fi
 printf '\nreturncode: %s\n' "$native_returncode" >>"$NATIVE_OUTPUT"
 
 python3.12 "${CYBERGYM_RUNNER_ROOT}/result_writer.py" discover \
