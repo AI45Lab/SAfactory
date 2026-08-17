@@ -59,6 +59,16 @@ class GatewayClient:
         response.raise_for_status()
         return response.json()
 
+    async def clear_session_cache(self, session_ids: list[str]) -> dict[str, Any]:
+        if not session_ids:
+            return {"session_ids": [], "removed": {}}
+        response = await self._client.post(
+            f"{self.gateway_base_url}/cache/cleanup",
+            json={"session_ids": session_ids},
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def aclose(self) -> None:
         await self._client.aclose()
 

@@ -45,6 +45,11 @@ class SessionStep(Model):
     response, step_reward, total_reward, terminated, is_session_completed
     """
     id = fields.IntField(pk=True, autoincrement=True)
+    record_id = fields.CharField(
+        max_length=64,
+        unique=True,
+        description="Backend-neutral persisted record identifier",
+    )
     session_id = fields.CharField(
         max_length=36,
         description="Session identifier (equals env_id for compatibility)"
@@ -75,14 +80,21 @@ class SessionStep(Model):
 
     # Rewards
     step_reward = fields.FloatField(default=0.0, description="Reward for this step")
-    reward = fields.FloatField(default=0.0, description="Cumulative reward up to this step")
+    reward = fields.FloatField(
+        null=True,
+        default=None,
+        description="Final or cumulative reward; null until evaluated",
+    )
 
     # State tracking
-    env_state = fields.TextField(null=True, description="JSON: Environment state")
+    meta_json = fields.TextField(
+        null=True,
+        description="JSON: Unified trajectory and provider metadata",
+    )
     is_terminal = fields.BooleanField(default=False, description="Whether this step is terminal")
     is_truncated = fields.BooleanField(default=False, description="Whether this step is truncated")
     is_session_completed = fields.BooleanField(default=False, description="Whether the session is completed (final record)")
-    is_trainable = fields.BooleanField(default=True, description="Whether this step is used for training")
+    is_trainable = fields.BooleanField(default=False, description="Whether this step is used for training")
 
     # Timestamps
     created_at = fields.DatetimeField(auto_now_add=True)

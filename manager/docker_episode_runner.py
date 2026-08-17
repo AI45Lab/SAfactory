@@ -83,7 +83,7 @@ class DockerEpisodeRunner:
             return SimulationStartResult(
                 session_id=str(request.session_id),
                 status="succeeded",
-                total_reward=0.0,
+                total_reward=None,
                 step_count=0,
                 terminated=True,
                 truncated=False,
@@ -189,8 +189,8 @@ class DockerEpisodeRunner:
         timeout_s = float(exc.timeout or self.timeout_s)
         return SimulationStartResult(
             session_id=str(request.session_id),
-            status="failed",
-            total_reward=0.0,
+            status="truncated",
+            total_reward=None,
             step_count=0,
             terminated=True,
             truncated=True,

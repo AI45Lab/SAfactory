@@ -98,7 +98,7 @@ python launcher.py \
 
 ## Telemetry 与请求日志
 
-Gateway telemetry 会写入 `session_steps`，并设置 `is_trainable = false`。这些行的 `messages` 中保存请求/响应 payload，`env_state` 中保存事件元数据。
+Gateway telemetry 会写入 `session_steps`，并设置 `is_trainable = false`。请求侧历史保存在 `messages`，当前输出保存在 `response`，事件元数据保存在 `meta_json`。
 
 相关配置：
 
