@@ -57,9 +57,9 @@ class KimiProtocol(ModelProtocol):
         if not action_str or not action_str.strip():
             return []
         if "<tool_call>" in action_str:
-            from .qwen import QwenProtocol
+            from .qwen35 import Qwen35Protocol
 
-            return QwenProtocol(
+            return Qwen35Protocol(
                 self.prompt_observation_type,
                 self.screen_width,
                 self.screen_height,

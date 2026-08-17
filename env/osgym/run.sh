@@ -6,8 +6,8 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 REGISTRY_URL="${REGISTRY_URL:-registry.h.pjlab.org.cn}"
-DOCKER_USER="${DOCKER_USER:-8cc07f27716d056e625b0f6522a93823}"
-DOCKER_PASS="${DOCKER_PASS:-d1e27df7d809b0819e838baf8d3f6425}"
+DOCKER_USER="${DOCKER_USER:-user}"
+DOCKER_PASS="${DOCKER_PASS:-pass}"
 OSWORLD_IMAGE="${OSWORLD_IMAGE:-registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/osworld:v1.0}"
 DOCKER_STORAGE_DRIVER="${DOCKER_STORAGE_DRIVER:-vfs}"
 

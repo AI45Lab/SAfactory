@@ -98,26 +98,27 @@ class DesktopEnv(gym.Env):
     """
     def __init__(
             self,
-            provider_name: str = "vmware",
+            provider_name: str = "docker",
             region: str = None,
             path_to_vm: str = None,
             snapshot_name: str = "init_state",
             action_space: str = "pyautogui",
             cache_dir: str = "cache",
+            download_cache_dir: str = "/tmp/osgym-download-cache",
+            setup_connect_timeout_seconds: float = 10.0,
             screen_size: Tuple[int] = (int(os.environ.get("SCREEN_WIDTH", 1920)), int(os.environ.get("SCREEN_HEIGHT", 1080))),
             headless: bool = False,
             require_a11y_tree: bool = True,
             require_terminal: bool = False,
             os_type: str = "Ubuntu",
-            enable_proxy: bool = False,
             client_password: str = "",
             auto_start: bool = True,
     ):
         """
         Args:
-            provider_name (str): virtualization provider name, default to "vmware"
-            region (str): the region for allocate machines, work for cloud services, default to  "us-east-1"
-            path_to_vm (str): path to .vmx file
+            provider_name (str): virtualization provider name; only "docker" is supported
+            region (str): retained for Docker provider interface compatibility
+            path_to_vm (str): path to the qcow2 image
             snapshot_name (str): snapshot name to revert to, default to "init_state"
             action_space (str): "computer_13" | "pyautogui"
             cache_dir (str): cache directory to cache task-related stuffs like
@@ -127,20 +128,16 @@ class DesktopEnv(gym.Env):
             require_a11y_tree (bool): whether to require accessibility tree
             require_terminal (bool): whether to require terminal output
             os_type (str): operating system type, default to "Ubuntu"
-            enable_proxy (bool): whether to enable proxy support, default to False
             auto_start (bool): whether to start the emulator during initialization
         """
         # Initialize VM manager and vitualization provider
         self.region = region
-        self.provider_name = provider_name
-        self.enable_proxy = enable_proxy  # Store proxy enablement setting
-        if client_password == "":
-            if self.provider_name == "aws":
-                self.client_password = "osworld-public-evaluation"
-            else:
-                self.client_password = "password"
-        else:
-            self.client_password = client_password
+        self.provider_name = provider_name.lower().strip()
+        if self.provider_name != "docker":
+            raise ValueError(
+                f"Unsupported OSGym provider {provider_name!r}; only 'docker' is supported"
+            )
+        self.client_password = client_password or "password"
 
         self.screen_width = screen_size[0]
         self.screen_height = screen_size[1]
@@ -151,24 +148,25 @@ class DesktopEnv(gym.Env):
         self.vnc_port = 8006
         self.vlc_port = 8080
         
-        # Initialize with default (no proxy) provider
+        # Some stock Chrome getters inspect this flag. OSGym does not support
+        # provider-managed proxies, so it remains false.
         self.current_use_proxy = False
         self.manager, self.provider = None, None
         self.os_type = os_type
         self.path_to_vm = path_to_vm
         self.snapshot_name = snapshot_name
         self.cache_dir_base: str = cache_dir
+        self.download_cache_dir = download_cache_dir
+        self.setup_connect_timeout_seconds = float(
+            setup_connect_timeout_seconds
+        )
+        self.setup_deadline: Optional[float] = None
         self.headless = headless
         self.require_a11y_tree = require_a11y_tree
         self.require_terminal = require_terminal
 
-        # Track whether environment has been used (step/setup) to optimize snapshot revert.
-        if self.provider_name in {"docker", "aws", "gcp", "azure", "aliyun", "volcengine", "fastvm"}:
-            self.is_environment_used = False
-        elif self.provider_name in {"vmware", "virtualbox"}:
-            self.is_environment_used = True
-        else:
-            raise ValueError(f"Invalid provider name: {self.provider_name}")
+        # Skip the first Docker restart until the environment has actually been used.
+        self.is_environment_used = False
 
         # mode: human or machine
         self.instruction = None
@@ -193,13 +191,10 @@ class DesktopEnv(gym.Env):
         self.manager, self.provider = create_vm_manager_and_provider(
             self.provider_name,
             self.region,
-            use_proxy=False,
         )
         if self.path_to_vm:
-            self.path_to_vm = (
-                os.path.abspath(os.path.expandvars(os.path.expanduser(self.path_to_vm)))
-                if self.provider_name in {"vmware", "virtualbox"}
-                else self.path_to_vm
+            self.path_to_vm = os.path.abspath(
+                os.path.expandvars(os.path.expanduser(self.path_to_vm))
             )
         else:
             self.path_to_vm = self.manager.get_vm_path(
@@ -216,21 +211,31 @@ class DesktopEnv(gym.Env):
             self.provider.start_emulator(self.path_to_vm, self.headless, self.os_type)
 
             # Get the ip from the virtual machine, and setup the controller.
-            # Providers that carry ports return "<host>:<server>:<chromium>:<vnc>:<vlc>".
-            # IPv6 providers (e.g. fastvm) bracket the host — "[2001:db8::1]:5000:…" — so
-            # we rsplit from the right to avoid chewing up the host's own colons.
+            # Docker returns "<host>:<server>:<chromium>:<vnc>:<vlc>".
             ip_ports_str = self.provider.get_ip_address(self.path_to_vm)
             vm_ip_ports = ip_ports_str.rsplit(':', 4)
+            if len(vm_ip_ports) != 5:
+                raise RuntimeError(f"Invalid Docker endpoint: {ip_ports_str!r}")
             self.vm_ip = vm_ip_ports[0]
-            # Providers that don't embed ports return just "<host>" → rsplit yields a single
-            # element and we keep the class-level port defaults.
-            if len(vm_ip_ports) == 5:
-                self.server_port = int(vm_ip_ports[1])
-                self.chromium_port = int(vm_ip_ports[2])
-                self.vnc_port = int(vm_ip_ports[3])
-                self.vlc_port = int(vm_ip_ports[4])
+            self.server_port = int(vm_ip_ports[1])
+            self.chromium_port = int(vm_ip_ports[2])
+            self.vnc_port = int(vm_ip_ports[3])
+            self.vlc_port = int(vm_ip_ports[4])
             self.controller = PythonController(vm_ip=self.vm_ip, server_port=self.server_port)
-            self.setup_controller = SetupController(vm_ip=self.vm_ip, server_port=self.server_port, chromium_port=self.chromium_port, vlc_port=self.vlc_port, cache_dir=self.cache_dir_base, client_password=self.client_password, screen_width=self.screen_width, screen_height=self.screen_height)
+            self.controller.set_deadline(self.setup_deadline)
+            self.setup_controller = SetupController(
+                vm_ip=self.vm_ip,
+                server_port=self.server_port,
+                chromium_port=self.chromium_port,
+                vlc_port=self.vlc_port,
+                cache_dir=self.cache_dir_base,
+                download_cache_dir=self.download_cache_dir,
+                client_password=self.client_password,
+                screen_width=self.screen_width,
+                screen_height=self.screen_height,
+                connect_timeout=self.setup_connect_timeout_seconds,
+            )
+            self.setup_controller.set_deadline(self.setup_deadline)
 
         except Exception as e:
             try:
@@ -240,16 +245,22 @@ class DesktopEnv(gym.Env):
             raise
 
     def _revert_to_snapshot(self):
-        # Revert to certain snapshot of the virtual machine, and refresh the path to vm and ip of vm
-        # due to the fact it could be changed when implemented by cloud services
-        path_to_vm = self.provider.revert_to_snapshot(self.path_to_vm, self.snapshot_name)
-        if path_to_vm and not path_to_vm == self.path_to_vm:
-            # path_to_vm has to be a new path 
-            
-            self.manager.delete_vm(self.path_to_vm, self.region)
-            self.manager.add_vm(path_to_vm, self.region)
-            self.manager.occupy_vm(path_to_vm, os.getpid(), self.region)
-            self.path_to_vm = path_to_vm
+        # Docker reset is implemented by replacing the container while keeping
+        # the qcow2 base image unchanged.
+        self.provider.revert_to_snapshot(self.path_to_vm, self.snapshot_name)
+
+    def set_setup_deadline(self, deadline: Optional[float]) -> None:
+        """Apply one reset deadline to all current and future setup controllers."""
+        self.setup_deadline = deadline
+        python_controller = getattr(self, "controller", None)
+        if python_controller is not None:
+            python_controller.set_deadline(deadline)
+        controller = getattr(self, "setup_controller", None)
+        if controller is not None:
+            controller.set_deadline(deadline)
+
+    def clear_setup_deadline(self) -> None:
+        self.set_setup_deadline(None)
 
     def _save_state(self, snapshot_name=None):
         # Save the current virtual machine state to a certain snapshot name
@@ -279,19 +290,7 @@ class DesktopEnv(gym.Env):
 
         for attempt in range(MAX_RETRIES):
             # Only revert to snapshot if environment has been used (step/setup)
-            # This optimization is especially important for cloud providers like AWS
-            # where unnecessary snapshot operations are costly and time-consuming
-            
-            if task_config is not None:
-                # Only consider task proxy requirement if proxy is enabled at system level
-                task_use_proxy = task_config.get("proxy", False) and self.enable_proxy
-                if not self.enable_proxy and task_config.get("proxy", False):
-                    logger.info("Task requires proxy but proxy is disabled at system level, ignoring proxy requirement.")
-                
-                if task_use_proxy != self.current_use_proxy:
-                    # keep because get_info_from_website depend on this
-                    self.current_use_proxy = task_use_proxy
-            
+
             if self.is_environment_used:
                 logger.info("Environment has been used, reverting to snapshot {}...".format(self.snapshot_name))
                 self._revert_to_snapshot()
@@ -304,13 +303,10 @@ class DesktopEnv(gym.Env):
                 logger.info("Environment is clean, skipping snapshot revert (provider: {}).".format(self.provider_name))
 
             if task_config is not None:
-                if task_config.get("proxy", False) and self.enable_proxy:
-                    # If using proxy and proxy is enabled, set up the proxy configuration
-                    self.setup_controller._proxy_setup(self.client_password)
                 self._set_task_info(task_config)
                 self.setup_controller.reset_cache_dir(self.cache_dir)
                 logger.info("Setting up environment...")
-                success = self.setup_controller.setup(self.config, task_config.get("proxy", False) and self.enable_proxy)
+                success = self.setup_controller.setup(self.config)
                 if success:
                     # Mark environment as used when setup is successfully executed
                     if self.config:  # Only mark as used if there were actual setup operations
@@ -462,7 +458,7 @@ class DesktopEnv(gym.Env):
         """
 
         postconfig = self.evaluator.get("postconfig", [])
-        self.setup_controller.setup(postconfig, self.enable_proxy)
+        self.setup_controller.setup(postconfig)
         # Mark environment as used if there were postconfig setup operations
         if postconfig:
             self.is_environment_used = True

@@ -1,4 +1,4 @@
-"""Qwen XML-tool-call OSGym prompt and action protocol."""
+"""Qwen3.5 XML-tool-call OSGym prompt and action protocol."""
 
 import json
 import re
@@ -7,8 +7,11 @@ from typing import Dict, List
 from .base import ModelProtocol
 
 
-class QwenProtocol(ModelProtocol):
-    """Protocol using `<tool_call>` XML blocks with 1000x1000 coordinates."""
+class Qwen35Protocol(ModelProtocol):
+    """Qwen3.5 protocol using XML tool calls and 1000x1000 coordinates."""
+
+    allow_multiple_tool_calls = True
+    step_limit_signal = None
 
     def build_system_prompt(self) -> str:
         description_prompt_lines = [
@@ -70,9 +73,9 @@ class QwenProtocol(ModelProtocol):
                         "keys": {"type": "array", "description": "Required only by `action=key`."},
                         "text": {
                             "type": "string",
-                            "description": "Required by `action=type` and `action=answer`. Optional for click actions (left_click, right_click, middle_click, double_click, triple_click) to specify modifier keys.",
+                            "description": "Required by `action=type` and `action=answer`. Optional for click actions (left_click, right_click, middle_click, double_click, triple_click) to specify modifier keys (e.g., 'ctrl', 'shift', 'ctrl+shift'). Optional for scroll actions (scroll, hscroll) to specify a modifier key (e.g., 'shift', 'ctrl') to hold during scrolling.",
                         },
-                        "coordinate": {"type": "array", "description": "Pixel (x, y) coordinates in 1000x1000 scale (0-999)."},
+                        "coordinate": {"type": "array", "description": "(x, y) coordinates."},
                         "pixels": {"type": "number", "description": "Scroll amount."},
                         "time": {"type": "number", "description": "Seconds to wait."},
                         "status": {
@@ -92,7 +95,7 @@ class QwenProtocol(ModelProtocol):
             "<tools>\n"
             + json.dumps(tools_def)
             + "\n</tools>\n\n"
-            "If you choose to call a function ONLY reply in the following format with NO suffix:\n\n"
+            "If you choose to call one or more functions, reply using one block per call in the following format:\n\n"
             "<tool_call>\n"
             "<function=example_function_name>\n"
             "<parameter=example_parameter_1>\n"
@@ -107,19 +110,21 @@ class QwenProtocol(ModelProtocol):
             "</tool_call>\n\n"
             "<IMPORTANT>\n"
             "Reminder:\n"
-            "- Function calls MUST follow the specified format.\n"
-            "- Required parameters MUST be specified.\n"
-            "- Collapsed screenshots appear as text: <history_image_removed_for_memory_saving>\n"
+            "- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n"
+            "- Required parameters MUST be specified\n"
+            "- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n"
+            "- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n"
+            "- Collapsed screenshots appear as text: This screenshot has been collapsed.\n"
             "</IMPORTANT>\n\n"
             "# Response format\n\n"
             "Response format for every step:\n"
             "1) Action: a short imperative describing what to do in the UI.\n"
-            "2) A single <tool_call>...</tool_call> block.\n\n"
+            "2) One or more consecutive <tool_call>...</tool_call> blocks.\n\n"
             "Rules:\n"
-            "- Output exactly in the order: Action, <tool_call>.\n"
-            "- Be brief: one sentence for Action.\n"
-            "- Do not output Code, Python, pyautogui, markdown code fences, or any extra text after </tool_call>.\n"
-            "- If finishing, use action=terminate in the tool call."
+            "- Output exactly in the order: Action, then every <tool_call> block.\n"
+            "- Calls are executed in the order shown, and Action must briefly describe the complete sequence.\n"
+            "- Do not output anything else outside those parts.\n"
+            "- If finishing, the final tool call must use action=terminate with an explicit status."
         )
 
     def user_instruction_hint(self, instruction: str) -> str:
@@ -161,8 +166,8 @@ Instruction: {instruction}"""
     def _extract_tool_call(content: str) -> str:
         if not content:
             return ""
-        match = re.search(r"<tool_call>.*?</tool_call>", content, re.DOTALL)
-        return match.group(0).strip() if match else ""
+        matches = re.findall(r"<tool_call>.*?</tool_call>", content, re.DOTALL)
+        return "\n".join(match.strip() for match in matches)
 
     def _process_xml_params_to_pyautogui(self, params: Dict) -> List[str]:
         action = params.get("action")
@@ -176,62 +181,125 @@ Instruction: {instruction}"""
         def py_str(value):
             return json.dumps(str(value), ensure_ascii=False)
 
-        commands = []
-        action_map = {
-            "left_click": "click",
-            "right_click": "rightClick",
-            "middle_click": "middleClick",
-            "double_click": "doubleClick",
-            "triple_click": "doubleClick",
-            "mouse_move": "moveTo",
-            "left_click_drag": "dragTo",
-        }
+        def adjust_coordinates(x: float, y: float):
+            return int(float(x) * self.screen_width / 999), int(float(y) * self.screen_height / 999)
 
-        if action in action_map:
-            func_name = action_map[action]
+        def press_modifier_keys() -> None:
+            if text:
+                for key in str(text).split("+"):
+                    key = key.strip().lower()
+                    if key:
+                        commands.append(f"pyautogui.keyDown({py_str(key)})")
+
+        def release_modifier_keys() -> None:
+            if text:
+                modifier_keys = [key.strip().lower() for key in str(text).split("+") if key.strip()]
+                for key in reversed(modifier_keys):
+                    commands.append(f"pyautogui.keyUp({py_str(key)})")
+
+        commands = []
+
+        if action == "left_click":
+            press_modifier_keys()
             if coordinate:
-                commands.append(f"pyautogui.{func_name}({coordinate[0]}, {coordinate[1]})")
+                x, y = adjust_coordinates(*coordinate)
+                commands.append(f"pyautogui.click({x}, {y})")
             else:
-                commands.append(f"pyautogui.{func_name}()")
+                commands.append("pyautogui.click()")
+            release_modifier_keys()
+        elif action == "right_click":
+            press_modifier_keys()
+            if coordinate:
+                x, y = adjust_coordinates(*coordinate)
+                commands.append(f"pyautogui.rightClick({x}, {y})")
+            else:
+                commands.append("pyautogui.rightClick()")
+            release_modifier_keys()
+        elif action == "middle_click":
+            press_modifier_keys()
+            if coordinate:
+                x, y = adjust_coordinates(*coordinate)
+                commands.append(f"pyautogui.middleClick({x}, {y})")
+            else:
+                commands.append("pyautogui.middleClick()")
+            release_modifier_keys()
+        elif action == "double_click":
+            press_modifier_keys()
+            if coordinate:
+                x, y = adjust_coordinates(*coordinate)
+                commands.append(f"pyautogui.doubleClick({x}, {y})")
+            else:
+                commands.append("pyautogui.doubleClick()")
+            release_modifier_keys()
+        elif action == "triple_click":
+            press_modifier_keys()
+            if coordinate:
+                x, y = adjust_coordinates(*coordinate)
+                commands.append(f"pyautogui.tripleClick({x}, {y})")
+            else:
+                commands.append("pyautogui.tripleClick()")
+            release_modifier_keys()
         elif action == "type":
             commands.append(f"pyautogui.typewrite({py_str(text)})")
         elif action == "key":
+            keys_str = ", ".join(py_str(key) for key in keys)
             if len(keys) > 1:
-                commands.append(f"pyautogui.hotkey({', '.join(py_str(k) for k in keys)})")
-            elif keys:
-                commands.append(f"pyautogui.press({py_str(keys[0])})")
+                commands.append(f"pyautogui.hotkey({keys_str})")
+            else:
+                commands.append(f"pyautogui.press({keys_str})")
+        elif action in {"scroll", "hscroll"}:
+            press_modifier_keys()
+            commands.append(f"pyautogui.scroll({self._parse_pixels(params.get('pixels', 0))})")
+            release_modifier_keys()
         elif action == "wait":
             commands.append("WAIT")
-        elif action in {"terminate", "answer"}:
-            status = params.get("status", "success")
-            commands.append("DONE" if status == "success" else "FAIL")
-        elif action in {"scroll", "hscroll"}:
-            commands.append(f"pyautogui.scroll({self._parse_pixels(params.get('pixels', 0))})")
+        elif action == "terminate":
+            status = str(params.get("status", "success")).lower()
+            commands.append("FAIL" if status == "failure" else "DONE")
+        elif action == "answer":
+            commands.append("DONE")
+        elif action == "mouse_move":
+            if coordinate:
+                x, y = adjust_coordinates(*coordinate)
+                commands.append(f"pyautogui.moveTo({x}, {y})")
+            else:
+                commands.append("pyautogui.moveTo(0, 0)")
+        elif action == "left_click_drag":
+            if coordinate:
+                x, y = adjust_coordinates(*coordinate)
+                duration = 0.5
+                if "duration" in params:
+                    try:
+                        duration = float(params["duration"])
+                    except Exception:
+                        duration = 0.5
+                commands.append(f"pyautogui.dragTo({x}, {y}, duration={duration})")
+            else:
+                commands.append("pyautogui.dragTo(0, 0)")
 
         return commands
 
-    def _parse_coordinate(self, raw_coord):
-        if not isinstance(raw_coord, str):
-            return None
-        try:
-            cleaned_coord = raw_coord.strip("[]() ")
-            parts = [part.strip() for part in cleaned_coord.split(",")]
-            if len(parts) < 2:
+    @staticmethod
+    def _parse_coordinate(raw_coord):
+        if isinstance(raw_coord, str):
+            try:
+                raw_coord = json.loads(raw_coord)
+            except Exception:
                 return None
-            x = int(float(parts[0]) * (self.screen_width / 999.0))
-            y = int(float(parts[1]) * (self.screen_height / 999.0))
-            return x, y
-        except (ValueError, TypeError):
-            return None
+        if isinstance(raw_coord, list) and len(raw_coord) >= 2:
+            return raw_coord[0], raw_coord[1]
+        return None
 
     @staticmethod
-    def _parse_keys(keys):
-        if not isinstance(keys, str):
-            return keys
-        try:
-            return json.loads(keys) if keys.startswith(("[", "{")) else [keys]
-        except Exception:
-            return [keys]
+    def _parse_keys(raw_keys):
+        if isinstance(raw_keys, str):
+            try:
+                raw_keys = json.loads(raw_keys)
+            except Exception:
+                raw_keys = [raw_keys]
+        if isinstance(raw_keys, list):
+            return [str(key).strip() for key in raw_keys]
+        return [str(raw_keys).strip()]
 
     @staticmethod
     def _parse_pixels(pixels) -> int:

@@ -83,9 +83,15 @@ def create_desktop_env(
     headless: bool,
     require_a11y_tree: bool,
     cache_dir: str,
-    host_ip: Optional[str],
+    download_cache_dir: str,
+    setup_connect_timeout_seconds: float,
 ) -> DesktopEnv:
-    kwargs = {
+    if provider_name.lower().strip() != "docker":
+        raise ValueError(
+            f"Unsupported OSGym provider {provider_name!r}; only 'docker' is supported"
+        )
+
+    return DesktopEnv(**{
         "provider_name": provider_name,
         "path_to_vm": vm_path,
         "action_space": action_space,
@@ -95,10 +101,9 @@ def create_desktop_env(
         "require_terminal": False,
         "os_type": "Ubuntu",
         "cache_dir": cache_dir,
-    }
-    if provider_name == "containerd":
-        kwargs["host_ip"] = host_ip
-    return DesktopEnv(**kwargs)
+        "download_cache_dir": download_cache_dir,
+        "setup_connect_timeout_seconds": setup_connect_timeout_seconds,
+    })
 
 
 def run_halfway_setup(env, task_config, logger) -> None:
@@ -108,9 +113,8 @@ def run_halfway_setup(env, task_config, logger) -> None:
         return
 
     logger.info("Running halfway setup...")
-    use_proxy = bool(task_config.get("proxy", False) and getattr(env, "enable_proxy", False))
 
     if hasattr(env.setup_controller, "halfway_setup"):
         env.setup_controller.halfway_setup(halfway_config)
     else:
-        env.setup_controller.setup(halfway_config, use_proxy=use_proxy)
+        env.setup_controller.setup(halfway_config)

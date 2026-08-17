@@ -337,6 +337,86 @@ def compare_docx_tables(docx_file1, docx_file2):
     return 1
 
 
+def compare_docx_format(docx_file1, docx_file2, **options):
+    if not docx_file1 or not docx_file2:
+        return 0
+
+    if not compare_docx_files(docx_file1, docx_file2, ignore_blanks=False):
+        return 0
+
+    try:
+        doc1 = Document(docx_file1)
+        doc2 = Document(docx_file2)
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        return 0
+
+    checks = options.get("checks", [])
+
+    def paragraph_index(doc, text):
+        for idx, paragraph in enumerate(doc.paragraphs):
+            if paragraph.text.strip() == text:
+                return idx
+        return -1
+
+    def run_matches(run1, run2, props):
+        if "bold" in props and bool(run1.font.bold) != bool(run2.font.bold):
+            return False
+        if "underline" in props and bool(run1.font.underline) != bool(run2.font.underline):
+            return False
+        if "color" in props:
+            color1 = run1.font.color.rgb if run1.font.color is not None else None
+            color2 = run2.font.color.rgb if run2.font.color is not None else None
+            if color1 != color2:
+                return False
+        return True
+
+    for check in checks:
+        kind = check.get("type")
+        if kind == "run_props":
+            text = check["text"]
+            props = check.get("props", [])
+            found = False
+            for para1, para2 in zip(doc1.paragraphs, doc2.paragraphs):
+                for run1, run2 in zip(para1.runs, para2.runs):
+                    if run1.text == text and run2.text == text:
+                        if not run_matches(run1, run2, props):
+                            return 0
+                        found = True
+            if not found:
+                return 0
+        elif kind == "paragraph_style":
+            text = check["text"]
+            idx1 = paragraph_index(doc1, text)
+            idx2 = paragraph_index(doc2, text)
+            if idx1 < 0 or idx2 < 0:
+                return 0
+            if doc1.paragraphs[idx1].style.name != doc2.paragraphs[idx2].style.name:
+                return 0
+        elif kind == "header_text":
+            if len(doc1.sections) != len(doc2.sections):
+                return 0
+            for section1, section2 in zip(doc1.sections, doc2.sections):
+                text1 = "\n".join(p.text for p in section1.header.paragraphs).strip()
+                text2 = "\n".join(p.text for p in section2.header.paragraphs).strip()
+                if text1 != text2:
+                    return 0
+        elif kind == "orientation":
+            if len(doc1.sections) != len(doc2.sections):
+                return 0
+            for section1, section2 in zip(doc1.sections, doc2.sections):
+                if section1.orientation != section2.orientation:
+                    return 0
+                if section1.page_width != section2.page_width:
+                    return 0
+                if section1.page_height != section2.page_height:
+                    return 0
+        else:
+            return 0
+
+    return 1
+
+
 def compare_docx_images(docx_file1, docx_file2):
     if not docx_file1 or not docx_file2:
         return 0
@@ -378,11 +458,15 @@ def compare_image_text(image_path, rule):
     # Check image format and convert if necessary
     temp_image_path = None
     actual_image_path = image_path
+    file_info = ""
     
     try:
         # First, try to identify the file format
-        result = subprocess.run(['file', image_path], capture_output=True, text=True)
-        file_info = result.stdout.lower()
+        try:
+            result = subprocess.run(['file', image_path], capture_output=True, text=True)
+            file_info = result.stdout.lower()
+        except FileNotFoundError:
+            logger.warning("The 'file' command is not available; skipping image format detection for %s", image_path)
         
         # If it's an X11 screen dump, we need to convert it
         if 'x-window screen dump' in file_info or 'xwd' in file_info:

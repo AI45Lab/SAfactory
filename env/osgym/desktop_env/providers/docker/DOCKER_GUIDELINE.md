@@ -14,7 +14,8 @@ egrep -c '(vmx|svm)' /proc/cpuinfo
 
 on Linux. If the return value is greater than zero, the processor should be able to support KVM.
 
-> **Note**: macOS hosts generally do not support KVM. You are advised to use VMware if you would like to run OSWorld on macOS.
+> **Note**: OSGym only supports the Docker provider. A Linux host with KVM is
+> recommended; without KVM, the virtual machine uses slower software emulation.
 
 ## Install Docker
 

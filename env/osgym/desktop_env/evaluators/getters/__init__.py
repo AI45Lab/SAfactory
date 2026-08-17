@@ -34,6 +34,7 @@ from .chrome import (
     get_None,
     get_download_file
 )
+from .scope import get_scope_task
 from .file import get_cloud_file, get_vm_file, get_cache_file, get_content_from_vm_file
 from .general import get_vm_command_line, get_vm_terminal_output, get_vm_command_error
 from .gimp import get_gimp_config_file

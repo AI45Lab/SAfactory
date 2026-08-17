@@ -30,17 +30,25 @@ Configure through `os_config.yaml` or constructor arguments:
 |-----------|-------------|---------|
 | `dataset` | Task dataset path; relative paths are resolved from `env/osgym` | `datasets/cases.jsonl` |
 | `eval_mode` | Evaluation mode (`standard` / `safety`) | `standard` |
-| `provider_name` | Backend provider (`docker` / `containerd`) | `docker` |
+| `provider_name` | Backend provider; only `docker` is supported | `docker` |
 | `vm_path` | Explicit VM image path; supports paths relative to `env/osgym` | `None` |
 | `prompt_observation_type` | Prompt modality (`screenshot`, `a11y_tree`, `screenshot_a11y_tree`) | `screenshot` |
-| `prompt_format` | Prompt protocol format (`kimi`, `qwen`) | `qwen` |
+| `prompt_format` | Prompt protocol format (`kimi`, `qwen3vl`, `qwen35`) | `qwen35` |
 | `action_space` | Action space | `pyautogui` |
 | `screen_width/height` | Screen resolution | `1920x1080` |
+| `download_cache_dir` | Pod-local shared cache for task setup downloads | `/tmp/osgym-download-cache` |
+| `reset_timeout_seconds` | Total OSGym reset/setup deadline; keep below the Manager HTTP timeout | `270.0` |
+| `setup_connect_timeout_seconds` | Connection timeout for setup HTTP calls | `10.0` |
 | `max_steps` | Maximum allowed steps per task | `30` |
 | `repeated_click_distance_threshold` | Pixel distance below which consecutive click actions are treated as the same click | `10.0` |
 | `repeated_click_limit` | Consecutive repeated click count that truncates the task; set `0` to disable | `2` |
+| `repeated_action_signature_limit` | Consecutive identical low-level pyautogui action signatures (`moveTo`, `scroll`, `dragTo`, `typewrite`, `press`, `hotkey`, `keyDown`, `keyUp`) that trigger stuck handling; set `0` to disable | `3` |
 
 OSGym selects accessibility-tree capture automatically: it is enabled for a11y prompt modes and for safety `popup` / `induced_text` tasks.
+
+Safety web services on ports `6002`-`6008` are shared across OSGym actors in
+the same pod. OSGym verifies service identity before use and releases the
+service only after its last actor finishes.
 
 ## 4. Run Examples
 

@@ -11,6 +11,10 @@ from ..actions import KEYBOARD_KEYS
 logger = logging.getLogger("desktopenv.pycontroller")
 
 
+class ControllerDeadlineExceeded(RuntimeError):
+    """Raised when a controller call exceeds the OSGym reset deadline."""
+
+
 class PythonController:
     def __init__(self, vm_ip: str,
                  server_port: int,
@@ -20,10 +24,44 @@ class PythonController:
         self.pkgs_prefix = pkgs_prefix  # fixme: this is a hacky way to execute python commands. fix it and combine it with installation of packages
         self.retry_times = 3
         self.retry_interval = 5
+        self._deadline: Optional[float] = None
         self.session = requests.Session()
 
     def close(self) -> None:
         self.session.close()
+
+    def set_deadline(self, deadline: Optional[float]) -> None:
+        self._deadline = deadline
+
+    def _remaining_seconds(self) -> Optional[float]:
+        if self._deadline is None:
+            return None
+        return self._deadline - time.monotonic()
+
+    def _request_timeout(self, maximum: float) -> float:
+        remaining = self._remaining_seconds()
+        if remaining is None:
+            return maximum
+        if remaining <= 0:
+            raise ControllerDeadlineExceeded(
+                "OSGym reset deadline exceeded before controller request"
+            )
+        return max(0.1, min(float(maximum), remaining))
+
+    def _retry_sleep(self) -> None:
+        remaining = self._remaining_seconds()
+        if remaining is None:
+            time.sleep(self.retry_interval)
+            return
+        if remaining <= 0:
+            raise ControllerDeadlineExceeded(
+                "OSGym reset deadline exceeded before controller retry"
+            )
+        time.sleep(min(self.retry_interval, remaining))
+        if time.monotonic() >= self._deadline:
+            raise ControllerDeadlineExceeded(
+                "OSGym reset deadline exceeded during controller retry"
+            )
 
     @staticmethod
     def _is_valid_image_response(content_type: str, data: Optional[bytes]) -> bool:
@@ -50,7 +88,10 @@ class PythonController:
 
         for attempt_idx in range(self.retry_times):
             try:
-                response = self.session.get(self.http_server + "/screenshot", timeout=10)
+                response = self.session.get(
+                    self.http_server + "/screenshot",
+                    timeout=self._request_timeout(10),
+                )
                 if response.status_code == 200:
                     content_type = response.headers.get("Content-Type", "")
                     content = response.content
@@ -66,7 +107,7 @@ class PythonController:
             except Exception as e:
                 logger.error("An error occurred while trying to get the screenshot: %s", e)
                 logger.info("Retrying to get screenshot.")
-            time.sleep(self.retry_interval)
+            self._retry_sleep()
 
         logger.error("Failed to get screenshot.")
         return None
@@ -78,7 +119,10 @@ class PythonController:
 
         for _ in range(self.retry_times):
             try:
-                response: requests.Response = self.session.get(self.http_server + "/accessibility")
+                response: requests.Response = self.session.get(
+                    self.http_server + "/accessibility",
+                    timeout=self._request_timeout(30),
+                )
                 if response.status_code == 200:
                     logger.info("Got accessibility tree successfully")
                     return response.json()["AT"]
@@ -88,7 +132,7 @@ class PythonController:
             except Exception as e:
                 logger.error("An error occurred while trying to get the accessibility tree: %s", e)
                 logger.info("Retrying to get accessibility tree.")
-            time.sleep(self.retry_interval)
+            self._retry_sleep()
 
         logger.error("Failed to get accessibility tree.")
         return None
@@ -100,7 +144,10 @@ class PythonController:
 
         for _ in range(self.retry_times):
             try:
-                response = self.session.get(self.http_server + "/terminal")
+                response = self.session.get(
+                    self.http_server + "/terminal",
+                    timeout=self._request_timeout(30),
+                )
                 if response.status_code == 200:
                     logger.info("Got terminal output successfully")
                     return response.json()["output"]
@@ -110,7 +157,7 @@ class PythonController:
             except Exception as e:
                 logger.error("An error occurred while trying to get the terminal output: %s", e)
                 logger.info("Retrying to get terminal output.")
-            time.sleep(self.retry_interval)
+            self._retry_sleep()
 
         logger.error("Failed to get terminal output.")
         return None
