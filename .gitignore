@@ -23,4 +23,10 @@ tmp/
 /wt-data-gateway/
 
 # Private configuration
+.env
 *.local.yaml
+/gateway/config.local.boyue.yaml
+/gateway/config.local.s3.yaml
+
+# Local Harbor dataset tooling
+/env/harbor/generate_vulhub_dataset.py

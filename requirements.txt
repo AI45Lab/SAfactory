@@ -2,6 +2,8 @@ aiohttp==3.13.2
 aiosqlite==0.21.0
 boto3>=1.34.0
 brainpp
+# brainpp 2.7.12.16 writes RJob Basic Auth under the legacy "authorization" key.
+kubernetes==32.0.1
 docker==7.2.0
 fastapi==0.118.2
 gymnasium==0.29.1
