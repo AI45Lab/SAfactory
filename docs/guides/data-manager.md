@@ -177,7 +177,7 @@ sqlite3 env_trajs.db "
 | `reward` | `session_steps.step_reward`. |
 | `instance_id` | `session_steps.group_id`. |
 | `extra_info.session_id` | `session_steps.session_id`. |
-| `extra_info.weight_version` | Parsed from persisted `meta_json.weight_version` through the unchanged training adapter. |
+| `extra_info.weight_version` | Parsed from persisted `meta_json.weight_version`. |
 | `extra_info.truncated` | `session_steps.is_truncated`. |
 
 Rows are grouped by `group_id`. Set `--rl-group-size` or `RL_GROUP_SIZE` so each prompt group has the expected number of samples.
@@ -191,4 +191,4 @@ SQLite strategy creates runtime indexes:
 
 An existing `job_id` requires either `--resume` or `--rebuild-table`. Resume deletes stale landing rows for unfinished environments; rebuild deletes the current job's environment and landing rows. The options are mutually exclusive.
 
-Cloud launchers must point `--cloud-job-claim-dir` at the same durable shared filesystem. The held file lease covers the initial and background environment batches, preventing concurrent `max(id)+1` allocation. Cloud landing deletion is fail-closed: it requires an exact `--confirm-cloud-delete-job-id` and logs the resolved profile, DB URI, landing table, filter, and preflight row count. Production additionally requires `--confirm-production` and a verified archive under `--cloud-delete-archive-dir`. Serving publication and withdrawal remain entirely outside Safactory; this flow never queries or mutates a serving table.
+Cloud landing deletion is fail-closed: it requires an exact `--confirm-cloud-delete-job-id` and logs the resolved profile, DB URI, landing table, filter, and preflight row count. Production additionally requires `--confirm-production`. Serving publication and withdrawal remain entirely outside Safactory; this flow never queries or mutates a serving table.

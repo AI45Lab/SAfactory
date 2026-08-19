@@ -31,20 +31,11 @@ def _json_object(value: Any) -> Dict[str, Any]:
     if not value:
         return {}
     if isinstance(value, dict):
-        metadata = dict(value)
-    else:
-        try:
-            parsed = json.loads(value)
-        except Exception:
-            metadata = {"legacy_meta_json": value}
-        else:
-            metadata = parsed if isinstance(parsed, dict) else {"legacy_meta_json": parsed}
-    legacy_state = metadata.pop("env_state", None)
-    if legacy_state is None:
-        return metadata
-    legacy_metadata = _json_object(legacy_state)
-    legacy_metadata.update(metadata)
-    return legacy_metadata
+        return dict(value)
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise ValueError("meta_json must contain a JSON object")
+    return parsed
 
 
 class SqliteStrategy(StorageStrategy):
@@ -86,7 +77,6 @@ class SqliteStrategy(StorageStrategy):
             modules={"models": ["core.data_manager.models"]}
         )
         await Tortoise.generate_schemas()
-        await self._ensure_runtime_schema()
         await self._ensure_runtime_indexes()
         self.initialized = True
 
@@ -100,131 +90,6 @@ class SqliteStrategy(StorageStrategy):
             )
 
         log.debug("SQLite strategy initialized: %s", self.db_url)
-
-    async def _ensure_runtime_schema(self) -> None:
-        if not self.db_url.startswith("sqlite://"):
-            raise ValueError("Only sqlite:// protocol is supported")
-
-        file_path = self.db_url[9:].split("?", 1)[0]
-
-        def ensure_schema() -> None:
-            conn = sqlite3.connect(file_path)
-            try:
-                conn.execute("PRAGMA busy_timeout=30000")
-                table_info = list(conn.execute("PRAGMA table_info(session_steps)"))
-                columns = {str(row[1]) for row in table_info}
-                reward_column = next(
-                    (row for row in table_info if str(row[1]) == "reward"),
-                    None,
-                )
-                needs_rebuild = bool(table_info) and (
-                    "record_id" not in columns
-                    or "meta_json" not in columns
-                    or "env_state" in columns
-                    or "request" not in columns
-                    or reward_column is None
-                    or bool(reward_column[3])
-                    or reward_column[4] is not None
-                )
-                if not needs_rebuild:
-                    return
-
-                conn.execute("BEGIN IMMEDIATE")
-                conn.execute("DROP TABLE IF EXISTS session_steps_schema_migration")
-                conn.execute(
-                    """
-                    CREATE TABLE session_steps_schema_migration (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                        record_id VARCHAR(64) NOT NULL UNIQUE,
-                        session_id VARCHAR(36) NOT NULL,
-                        step_id INT NOT NULL,
-                        env_name VARCHAR(100) NOT NULL,
-                        llm_model VARCHAR(150) NOT NULL,
-                        group_id VARCHAR(150),
-                        job_id VARCHAR(64),
-                        messages TEXT NOT NULL,
-                        request TEXT,
-                        response TEXT NOT NULL,
-                        step_reward REAL NOT NULL DEFAULT 0,
-                        reward REAL,
-                        meta_json TEXT,
-                        is_terminal INT NOT NULL DEFAULT 0,
-                        is_truncated INT NOT NULL DEFAULT 0,
-                        is_session_completed INT NOT NULL DEFAULT 0,
-                        is_trainable INT NOT NULL DEFAULT 0,
-                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE (session_id, step_id, created_at)
-                    )
-                    """
-                )
-                target_columns = (
-                    "id", "record_id", "session_id", "step_id", "env_name",
-                    "llm_model", "group_id", "job_id", "messages", "request",
-                    "response", "step_reward", "reward", "meta_json", "is_terminal",
-                    "is_truncated", "is_session_completed", "is_trainable", "created_at",
-                )
-                missing_defaults = {
-                    "id": "NULL",
-                    "session_id": "''",
-                    "step_id": "0",
-                    "env_name": "''",
-                    "llm_model": "''",
-                    "group_id": "NULL",
-                    "job_id": "NULL",
-                    "messages": "'[]'",
-                    "request": "NULL",
-                    "response": "''",
-                    "step_reward": "0",
-                    "reward": "NULL",
-                    "is_terminal": "0",
-                    "is_truncated": "0",
-                    "is_session_completed": "0",
-                    "is_trainable": "0",
-                    "created_at": "CURRENT_TIMESTAMP",
-                }
-                record_id_expr = (
-                    "COALESCE(NULLIF(\"record_id\", ''), 'legacy-' || CAST(\"id\" AS TEXT))"
-                    if "record_id" in columns
-                    else "'legacy-' || CAST(\"id\" AS TEXT)"
-                )
-                if "meta_json" in columns and "env_state" in columns:
-                    meta_json_expr = "COALESCE(NULLIF(\"meta_json\", ''), \"env_state\")"
-                elif "meta_json" in columns:
-                    meta_json_expr = '"meta_json"'
-                elif "env_state" in columns:
-                    meta_json_expr = '"env_state"'
-                else:
-                    meta_json_expr = "NULL"
-                nonnull_columns = {
-                    "session_id", "step_id", "env_name", "llm_model", "messages",
-                    "response", "step_reward", "is_terminal", "is_truncated",
-                    "is_session_completed", "is_trainable", "created_at",
-                }
-                select_expressions = []
-                for column in target_columns:
-                    if column == "record_id":
-                        expression = record_id_expr
-                    elif column == "meta_json":
-                        expression = meta_json_expr
-                    elif column in columns and column in nonnull_columns:
-                        expression = f'COALESCE("{column}", {missing_defaults[column]})'
-                    elif column in columns:
-                        expression = f'"{column}"'
-                    else:
-                        expression = missing_defaults[column]
-                    select_expressions.append(expression)
-                column_list = ", ".join(f'"{column}"' for column in target_columns)
-                conn.execute(
-                    f"INSERT INTO session_steps_schema_migration ({column_list}) "
-                    f"SELECT {', '.join(select_expressions)} FROM session_steps"
-                )
-                conn.execute("DROP TABLE session_steps")
-                conn.execute("ALTER TABLE session_steps_schema_migration RENAME TO session_steps")
-                conn.commit()
-            finally:
-                conn.close()
-
-        await asyncio.to_thread(ensure_schema)
 
     async def _ensure_runtime_indexes(self) -> None:
         if not self.db_url.startswith("sqlite://"):
@@ -708,9 +573,7 @@ class SqliteStrategy(StorageStrategy):
                     "step_id": s.step_id,
                     "env_name": s.env_name,
                     "env_id": s.session_id,
-                    # Kept as a derived compatibility key because rl/buffer_server.py
-                    # intentionally remains unchanged in this refactor.
-                    "env_state": s.meta_json,
+                    "meta_json": s.meta_json,
                     "prompt": s.messages,
                     "request": s.request,
                     "response": s.response,
