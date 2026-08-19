@@ -147,7 +147,7 @@ class RJobEpisodeRunner:
                 result = SimulationStartResult(
                     session_id=request.session_id,
                     status="succeeded",
-                    total_reward=0.0,
+                    total_reward=None,
                     step_count=0,
                     terminated=True,
                     truncated=False,
@@ -214,16 +214,17 @@ class RJobEpisodeRunner:
                 timings_ms["rjob_fetch_timeout_logs_ms"] = _elapsed_ms(started)
             result = SimulationStartResult(
                 session_id=request.session_id,
-                status="failed",
-                total_reward=0.0,
+                status="truncated",
+                total_reward=None,
                 step_count=0,
                 terminated=True,
-                truncated=False,
+                truncated=True,
                 error_text=str(exc),
                 metrics={
                     "runtime": "rjob",
                     "rjob_name": submitted_name or rjob_name,
                     "rjob_status": terminal_status,
+                    "timeout_layer": "rjob_wait_terminal",
                     "logs_tail": tail(logs_text),
                 },
             )
@@ -298,7 +299,7 @@ class RJobEpisodeRunner:
             return SimulationStartResult(
                 session_id=request.session_id,
                 status="succeeded",
-                total_reward=0.0,
+                total_reward=None,
                 step_count=0,
                 terminated=True,
                 truncated=False,
@@ -337,7 +338,7 @@ class RJobEpisodeRunner:
                 return SimulationStartResult(
                     session_id=request.session_id,
                     status="failed",
-                    total_reward=0.0,
+                    total_reward=None,
                     step_count=0,
                     terminated=True,
                     truncated=False,

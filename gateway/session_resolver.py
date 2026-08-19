@@ -91,6 +91,14 @@ class SessionResolver:
                 binding.close(reason, now)
             return binding
 
+    async def clear_session_cache(self, session_ids: list[str]) -> int:
+        targets = set(session_ids)
+        async with self._lock:
+            removed = sum(session_id in self._bindings for session_id in targets)
+            for session_id in targets:
+                self._bindings.pop(session_id, None)
+            return removed
+
     async def get_status(self, session_id: str) -> dict[str, Any] | None:
         async with self._lock:
             binding = self._bindings.get(session_id)

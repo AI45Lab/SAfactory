@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import ipaddress
 import json
 import logging
@@ -19,6 +18,13 @@ from gateway.llm_router import LLMRouteTarget, LLMRouteUnavailableError, ModelNo
 from gateway.session_resolver import SessionResolutionError
 
 log = logging.getLogger("gateway.inference_forwarder")
+_ANTHROPIC_CLIENT_HEADERS = {
+    "accept",
+    "anthropic-dangerous-direct-browser-access",
+    "anthropic-version",
+    "user-agent",
+    "x-app",
+}
 _INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
 
 
@@ -118,8 +124,16 @@ class InferenceForwarder:
         target: LLMRouteTarget,
         payload: dict[str, Any],
         headers: dict[str, str],
+        *,
+        query_string: str | None = None,
     ) -> ForwardResult:
-        return await self._forward_json(target, "messages", payload, headers)
+        return await self._forward_json(
+            target,
+            "messages",
+            payload,
+            headers,
+            query_string=query_string,
+        )
 
     async def forward_anthropic_count_tokens(
         self,
@@ -150,8 +164,16 @@ class InferenceForwarder:
         target: LLMRouteTarget,
         payload: dict[str, Any],
         headers: dict[str, str],
+        *,
+        query_string: str | None = None,
     ) -> StreamForwardContext:
-        return await self._open_stream(target, "messages", payload, headers)
+        return await self._open_stream(
+            target,
+            "messages",
+            payload,
+            headers,
+            query_string=query_string,
+        )
 
     async def _forward_json(
         self,
@@ -159,9 +181,11 @@ class InferenceForwarder:
         endpoint: str,
         payload: dict[str, Any],
         headers: dict[str, str],
+        *,
+        query_string: str | None = None,
     ) -> ForwardResult:
         started = time.perf_counter()
-        url = self._url(target, endpoint)
+        url = self._url(target, endpoint, query_string=query_string)
         log.debug(
             "Gateway forwarder json POST begin: route_model=%s endpoint=%s url=%s proxy=%s",
             target.route_model,
@@ -235,9 +259,11 @@ class InferenceForwarder:
         endpoint: str,
         payload: dict[str, Any],
         headers: dict[str, str],
+        *,
+        query_string: str | None = None,
     ) -> StreamForwardContext:
         started = time.perf_counter()
-        url = self._url(target, endpoint)
+        url = self._url(target, endpoint, query_string=query_string)
         log.debug(
             "Gateway forwarder stream POST begin: route_model=%s endpoint=%s url=%s proxy=%s",
             target.route_model,
@@ -324,21 +350,6 @@ class InferenceForwarder:
             headers["X-Safactory-Session-Id"] = session_id
         return headers
 
-    @staticmethod
-    def prepare_anthropic_payload(
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        prepared = copy.deepcopy(payload)
-        prepared.pop("context_management", None)
-        prepared["thinking"] = {"type": "adaptive"}
-        output_config = prepared.get("output_config")
-        if not isinstance(output_config, dict):
-            output_config = {}
-        prepared["output_config"] = {**output_config, "effort": "max"}
-        prepared["display"] = "summarized"
-        prepared["max_tokens"] = 64000
-        return prepared
-
     def build_anthropic_headers(
         self,
         target: LLMRouteTarget,
@@ -349,10 +360,16 @@ class InferenceForwarder:
         llm_step_index: int | None = None,
     ) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        for name in ("anthropic-version", "user-agent"):
-            value = inbound_headers.get(name) if inbound_headers is not None else None
-            if value:
-                headers[name] = str(value)
+        inbound_header_names: set[str] = set()
+        if inbound_headers is not None:
+            for name, value in inbound_headers.items():
+                normalized_name = str(name).lower()
+                inbound_header_names.add(normalized_name)
+                if (
+                    normalized_name in _ANTHROPIC_CLIENT_HEADERS
+                    or normalized_name.startswith("x-stainless-")
+                ):
+                    headers[normalized_name] = str(value)
         if target.anthropic_interleaved_thinking:
             beta_values = [
                 value.strip()
@@ -364,8 +381,12 @@ class InferenceForwarder:
             headers["anthropic-beta"] = ",".join(beta_values)
         headers.setdefault("anthropic-version", "2023-06-01")
         if target.api_key:
-            headers["x-api-key"] = target.api_key
-            headers["Authorization"] = f"Bearer {target.api_key}"
+            if "x-api-key" in inbound_header_names:
+                headers["x-api-key"] = target.api_key
+            if "authorization" in inbound_header_names:
+                headers["Authorization"] = f"Bearer {target.api_key}"
+            if not {"x-api-key", "authorization"} & inbound_header_names:
+                headers["x-api-key"] = target.api_key
         if session_id:
             headers["X-Safactory-Session-Id"] = session_id
         if request_id:
@@ -445,8 +466,16 @@ class InferenceForwarder:
         return proxy
 
     @staticmethod
-    def _url(target: LLMRouteTarget, endpoint: str) -> str:
-        return f"{target.base_url.rstrip('/')}/{endpoint}"
+    def _url(
+        target: LLMRouteTarget,
+        endpoint: str,
+        *,
+        query_string: str | None = None,
+    ) -> str:
+        url = f"{target.base_url.rstrip('/')}/{endpoint}"
+        if query_string:
+            url = f"{url}?{query_string.lstrip('?')}"
+        return url
 
     @staticmethod
     def _parse_bytes_body(body: bytes) -> Any:

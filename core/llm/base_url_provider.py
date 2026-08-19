@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Optional
-from core.data_manager.manager import SessionContext
+from core.data_manager.contracts import SessionContext
 
 
 class BaseURLProvider:
@@ -38,4 +38,3 @@ class SessionSuffixBaseURLProvider(BaseURLProvider):
         if session is None:
             raise ValueError("SessionSuffixBaseURLProvider requires a session")
         return f"{self.base_url_root}/{session.session_id}"
-

@@ -1,13 +1,16 @@
 from __future__ import annotations
-
 import asyncio
 import json
-import sqlite3
 import time
-from pathlib import Path
 from typing import Any
 
+from core.data_manager.manager import DataManager
 from evaluator.eval_types import Trajectory
+from evaluator.trajectory_policy import (
+    is_session_sealing_event,
+    is_trajectory_step,
+    metadata_from_row,
+)
 
 
 class TrajectoryReader:
@@ -19,24 +22,28 @@ class TrajectoryReader:
         data_manager: Any | None = None,
     ) -> None:
         self.storage_type = str(storage_type or "sqlite").strip().lower()
-        self.data_manager = data_manager
-        if self.storage_type == "sqlite":
-            self.db_path = _sqlite_path(db_url)
-        elif self.storage_type == "cloud":
-            if data_manager is None:
-                raise ValueError("TrajectoryReader cloud mode requires a data manager")
-            self.db_path = ""
-        else:
+        if self.storage_type not in {"sqlite", "cloud"}:
             raise ValueError(f"TrajectoryReader does not support storage type {storage_type!r}")
+        self._owns_data_manager = data_manager is None
+        if data_manager is None:
+            if self.storage_type == "cloud":
+                raise ValueError("TrajectoryReader cloud mode requires a data manager")
+            data_manager = DataManager(job_id="", storage_type="sqlite", db_url=db_url)
+        self.data_manager = data_manager
 
     async def read_by_session(self, session_id: str) -> Trajectory:
-        if self.storage_type == "cloud":
+        try:
+            init = getattr(self.data_manager, "init", None)
+            if callable(init):
+                await init()
             rows = await self.data_manager.list_session_steps(
                 session_id,
                 checkout_latest=True,
             )
             return self._trajectory_from_rows(session_id, rows)
-        return await asyncio.to_thread(self._read_by_session_sync, session_id)
+        finally:
+            if self._owns_data_manager:
+                await self.data_manager.close()
 
     async def wait_until_sealed(
         self,
@@ -55,23 +62,6 @@ class TrajectoryReader:
                 return last
             await asyncio.sleep(poll_interval_s)
 
-    def _read_by_session_sync(self, session_id: str) -> Trajectory:
-        if not Path(self.db_path).exists():
-            return Trajectory(session_id=session_id, warnings=[f"db not found: {self.db_path}"])
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM session_steps
-                WHERE session_id = ?
-                ORDER BY step_id ASC, id ASC
-                """,
-                (session_id,),
-            ).fetchall()
-
-        return self._trajectory_from_rows(session_id, [dict(row) for row in rows])
-
     def _trajectory_from_rows(
         self,
         session_id: str,
@@ -83,17 +73,17 @@ class TrajectoryReader:
         final_response = None
         steps: list[dict[str, Any]] = []
         for step in all_steps:
-            env_state = step.get("env_state") or {}
-            if _is_session_sealing_event(step):
+            meta_json = metadata_from_row(step)
+            if is_session_sealing_event(step):
                 sealed = True
-            if not _is_trajectory_step(step):
+            if not is_trajectory_step(step):
                 continue
             steps.append(step)
             response = step.get("response") or _last_assistant_content(step.get("messages"))
             if response:
                 final_response = response
             for key in token_usage:
-                token_usage[key] += int(env_state.get(key) or 0)
+                token_usage[key] += int(meta_json.get(key) or 0)
         return Trajectory(
             session_id=session_id,
             steps=steps,
@@ -106,15 +96,9 @@ class TrajectoryReader:
     def parse_gateway_row(self, row: dict[str, Any]) -> dict[str, Any]:
         parsed = dict(row)
         parsed["messages"] = _json_loads(row.get("messages"), default=[])
-        parsed["env_state"] = _json_loads(row.get("env_state"), default={})
+        parsed["meta_json"] = _json_loads(row.get("meta_json"), default={})
         parsed["response"] = _extract_response_text(row.get("response"))
         return parsed
-
-
-def _sqlite_path(db_url: str) -> str:
-    if db_url.startswith("sqlite://"):
-        return db_url[len("sqlite://") :]
-    return db_url
 
 
 def _json_loads(value: Any, *, default: Any) -> Any:
@@ -255,35 +239,3 @@ def _last_assistant_content(messages: Any) -> str:
                     parts.append(item)
             return "".join(parts)
     return ""
-
-
-_NON_TRAJECTORY_EVENT_TYPES = {
-    "gateway_session_close",
-    "episode_summary",
-    "evaluation_summary",
-}
-
-
-def _is_session_sealing_event(step: dict[str, Any]) -> bool:
-    env_state = step.get("env_state") or {}
-    event_type = env_state.get("event_type")
-    return bool(
-        step.get("is_session_completed")
-        or env_state.get("is_session_completed")
-        or event_type in _NON_TRAJECTORY_EVENT_TYPES
-    )
-
-
-def _is_trajectory_step(step: dict[str, Any]) -> bool:
-    env_state = step.get("env_state") or {}
-    event_type = env_state.get("event_type")
-    if event_type in _NON_TRAJECTORY_EVENT_TYPES:
-        return False
-    if env_state.get("synthetic_stop"):
-        return False
-    if event_type == "gateway_inference":
-        try:
-            return int(env_state.get("status_code") or 200) < 400
-        except (TypeError, ValueError):
-            return True
-    return bool(step.get("messages") or step.get("response"))

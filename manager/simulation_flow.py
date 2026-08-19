@@ -24,13 +24,12 @@ from evaluator.reward_committer import RewardCommitter
 from evaluator.service import EvaluationService
 from evaluator.trajectory_reader import TrajectoryReader
 from .agent_start_client import AgentStartClient
-from .db_loader import scheduler_db_reader
 from .manager import AgentPoolManager
+from .resume_cleanup import cleanup_resume_artifacts
 from .simulation_config import (
     build_manager_runtime_config,
     expand_rl_epoch,
     expand_rl_group_size,
-    rebuild_sqlite_db,
 )
 from .simulation_lease_pool import SimulationLeasePool
 from .simulation_worker import SimulationWorkerGroup
@@ -43,8 +42,6 @@ class SimulationFlow:
     def __init__(self, cfg: SimulationRunConfig) -> None:
         self.cfg = cfg
         self.data_manager: Optional[DataManager] = None
-        self.conn: Any = None
-        self.scheduler_conn: Any = None
         self.manager_cfg: Optional[Dict[str, Any]] = None
         self.agent_pool_manager: Optional[AgentPoolManager] = None
         self.lease_pool: Optional[SimulationLeasePool] = None
@@ -73,6 +70,9 @@ class SimulationFlow:
                 await self.prepare_storage()
             with trace.span("check_gateway_ready"):
                 await self.check_gateway_ready()
+            if self.cfg.resume:
+                with trace.span("clear_gateway_session_cache"):
+                    await self.clear_resume_gateway_session_cache()
             with trace.span("start_agent_scheduler"):
                 await self.start_agent_scheduler()
             with trace.span("run_workers"):
@@ -81,6 +81,7 @@ class SimulationFlow:
                 summary_status=summary.status,
                 total_episodes=summary.total_episodes,
                 succeeded_episodes=summary.succeeded_episodes,
+                truncated_episodes=summary.truncated_episodes,
                 failed_episodes=summary.failed_episodes,
             )
             trace.emit_summary(status=summary.status)
@@ -93,9 +94,6 @@ class SimulationFlow:
             raise
 
     async def prepare_storage(self) -> None:
-        if self.cfg.rebuild_table and self.cfg.storage_type == "sqlite":
-            rebuild_sqlite_db(self.cfg.db_url)
-
         storage_config: Dict[str, Any] = {
             "enable_buffer": self.cfg.enable_buffer,
             "buffer_size": self.cfg.buffer_size,
@@ -103,6 +101,12 @@ class SimulationFlow:
         }
         if self.cfg.storage_type == "sqlite":
             storage_config["db_url"] = self.cfg.db_url
+        else:
+            storage_config.update({
+                "confirm_cloud_delete_job_id": self.cfg.confirm_cloud_delete_job_id,
+                "confirm_production": self.cfg.confirm_production,
+                "cloud_delete_archive_dir": self.cfg.cloud_delete_archive_dir,
+            })
 
         self.data_manager = DataManager(
             job_id=self.cfg.job_id,
@@ -114,14 +118,24 @@ class SimulationFlow:
         yaml_config_list = expand_rl_group_size(yaml_config_list, self.cfg.rl_group_size)
         yaml_config_list = expand_rl_epoch(yaml_config_list, self.cfg.rl_epoch)
 
-        self.conn = await sync_configs_to_db(
+        await sync_configs_to_db(
             self.data_manager,
             yaml_config_list,
             self.cfg.storage_type,
             self.cfg.startup_submit_count,
             self.cfg.followup_submit_batch,
+            rebuild_table=self.cfg.rebuild_table,
+            resume=self.cfg.resume,
+            job_claim_dir=self.cfg.cloud_job_claim_dir,
         )
         self.manager_cfg = build_manager_runtime_config(self.cfg)
+        if self.cfg.resume and self.cfg.mode == "rjob":
+            await cleanup_resume_artifacts(
+                job_id=self.cfg.job_id,
+                model=self.cfg.llm_model,
+                data_manager=self.data_manager,
+                manager_cfg=self.manager_cfg,
+            )
         log.info(
             "storage prepared: job_id=%s base_pool_size=%d warm_pool_size=%d startup_submit_count=%d followup_submit_batch=%d",
             self.cfg.job_id,
@@ -148,6 +162,31 @@ class SimulationFlow:
         self._validate_gateway_storage(body, ready_url)
         await self.check_gateway_model_route()
         log.info("gateway ready: %s", ready_url)
+
+    async def clear_resume_gateway_session_cache(self) -> None:
+        if self.data_manager is None:
+            raise RuntimeError("data manager is not prepared")
+        rows = await self.data_manager.get_all_environments(self.cfg.job_id)
+        session_ids = [
+            str(row.get("env_id"))
+            for row in rows
+            if row.get("env_id")
+            and not bool(row.get("finished"))
+            and not bool(row.get("is_deleted"))
+        ]
+        if not session_ids:
+            return
+        client = GatewayClient(gateway_base_url=self.cfg.gateway_base_url)
+        try:
+            result = await client.clear_session_cache(session_ids)
+        finally:
+            await client.aclose()
+        log.info(
+            "gateway resume session cache cleared: job_id=%s sessions=%d removed=%s",
+            self.cfg.job_id,
+            len(session_ids),
+            result.get("removed", 0),
+        )
 
     async def check_gateway_model_route(self) -> None:
         metrics_url = self._gateway_origin() + "/metrics"
@@ -182,10 +221,11 @@ class SimulationFlow:
     async def start_agent_scheduler(self) -> None:
         if self.manager_cfg is None:
             self.manager_cfg = build_manager_runtime_config(self.cfg)
-        self.scheduler_conn = scheduler_db_reader(self.cfg.storage_type, self.data_manager, self.conn)
+        if self.data_manager is None:
+            raise RuntimeError("data manager is not prepared")
         self.agent_pool_manager = AgentPoolManager(
             self.manager_cfg,
-            self.scheduler_conn,
+            self.data_manager,
             job_id=self.cfg.job_id,
             db_processing_done_checker=lambda: is_job_db_processing_done(self.cfg.job_id),
         )
@@ -211,6 +251,11 @@ class SimulationFlow:
             close_retries=self.cfg.gateway_close_retries,
             retry_backoff_s=self.cfg.gateway_close_retry_backoff_s,
         )
+        self.reward_committer = RewardCommitter(
+            db_url=self.cfg.db_url,
+            storage_type=self.cfg.storage_type,
+            data_manager=self.data_manager,
+        )
         evaluation_service = None
         if self.cfg.evaluation_enabled:
             log.info("EVAL FLOW enabled: rule evaluator only")
@@ -223,11 +268,6 @@ class SimulationFlow:
                 max_concurrency=self.cfg.max_workers or self.cfg.warm_pool_size,
             )
             evaluation_service = self.evaluation_service
-            self.reward_committer = RewardCommitter(
-                db_url=self.cfg.db_url,
-                storage_type=self.cfg.storage_type,
-                data_manager=self.data_manager,
-            )
         else:
             log.debug("EVAL FLOW disabled: launcher was not started with --enable-evaluation")
         self.worker_group = SimulationWorkerGroup(
@@ -285,12 +325,6 @@ class SimulationFlow:
             except Exception:
                 log.exception("data manager close failed (ignored)")
 
-        if self.conn is not None:
-            try:
-                with trace.span("manager_db_connection_close"):
-                    self.conn.close()
-            except Exception:
-                log.exception("manager DB connection close failed (ignored)")
         trace.emit_summary(status="complete")
 
     def _gateway_origin(self) -> str:

@@ -118,6 +118,49 @@ def _required_gateway_base_url() -> str:
     return gateway_base_url
 
 
+def _assistant_message_from_stored_response(response: Any) -> Optional[Dict[str, Any]]:
+    """Rebuild this step's assistant turn from ``session_steps.response``.
+
+    What the column holds depends on the storage backend: the whole chat
+    completion envelope on sqlite, the extracted message on cloud, and plain
+    assistant text on legacy rows. All three resolve to the same turn here.
+
+    The message is returned verbatim. The training-side mask builder compares
+    every non-``content`` key for exact equality against the turn it generated,
+    so neither dropping fields nor synthesizing them is safe -- an unexpected
+    shape must fail loudly instead of matching by luck.
+    """
+    if not response:
+        return None
+
+    payload: Any = response
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            # Legacy rows store the assistant text directly.
+            return {"role": "assistant", "content": response}
+
+    if isinstance(payload, dict):
+        if payload.get("role"):
+            return payload
+        # The sqlite backend persists the whole envelope. Reading the message
+        # back out is what keeps those trajectories trainable at all.
+        choices = payload.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                message = choice.get("message") if isinstance(choice, dict) else None
+                if isinstance(message, dict) and message.get("role"):
+                    return message
+        return None
+    if isinstance(payload, list):
+        return next(
+            (item for item in payload if isinstance(item, dict) and item.get("role")),
+            None,
+        )
+    return None
+
+
 def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a database row to the expected item format."""
     # Parse stored prompt (JSON serialized messages list)
@@ -127,13 +170,11 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     else:
         base_messages = prompt_str
     messages = list(base_messages or [])
-    # Gateway rows already store the assistant response in ``prompt`` as part of
-    # the full trajectory. Legacy rows keep it in the separate response field.
-    # Appending an empty response to gateway rows prevents exact trajectory
-    # matching in the training-side mask builder.
-    response = row.get("response", "")
-    if response:
-        messages.append({"role": "assistant", "content": response})
+    # ``prompt`` holds the request-side history; this step's own assistant turn
+    # lives in ``response``. Relying on it reappearing in a later step's request
+    # would lose the final turn of every trajectory.
+    if assistant := _assistant_message_from_stored_response(row.get("response", "")):
+        messages.append(assistant)
 
     session_id = row.get("session_id", "")
     env_id = row.get("env_id", "")

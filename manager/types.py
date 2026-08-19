@@ -80,6 +80,11 @@ class SimulationRunConfig:
     cleanup_stale_docker_containers: bool = True
     max_workers: Optional[int] = None
     rebuild_table: bool = False
+    resume: bool = False
+    confirm_cloud_delete_job_id: str = ""
+    confirm_production: bool = False
+    cloud_delete_archive_dir: str = ""
+    cloud_job_claim_dir: str = ""
     enable_buffer: bool = True
     buffer_size: int = 100
     flush_interval: float = 5.0
@@ -147,7 +152,7 @@ class SimulationStartRequest:
 class SimulationStartResult:
     session_id: str
     status: str
-    total_reward: float
+    total_reward: Optional[float]
     step_count: int
     terminated: bool
     truncated: bool
@@ -161,6 +166,7 @@ class SimulationRunSummary:
     status: str
     total_episodes: int
     succeeded_episodes: int
+    truncated_episodes: int
     failed_episodes: int
     cancelled: bool
-    results: Dict[str, float] = field(default_factory=dict)
+    results: Dict[str, Optional[float]] = field(default_factory=dict)

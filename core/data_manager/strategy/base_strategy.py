@@ -1,40 +1,22 @@
 from abc import ABC, abstractmethod
 from typing import Any, Optional, List, Dict
-from dataclasses import dataclass, field
 
-
-@dataclass
-class SessionContext:
-    """
-    Runtime session context object.
-    This is NOT persisted to database - it's an in-memory object to track session state.
-    """
-    session_id: str
-    env_id: str
-    env_name: str
-    llm_model: str
-    group_id: str = ""
-    job_id: str = ""
-
-    # Runtime state (not persisted)
-    total_reward: float = 0.0
-    start_time: float = 0.0
-    message_history: List[Dict] = field(default_factory=list)
-    is_session_completed: bool = False
+from core.data_manager.contracts import EnvironmentQuery, SessionContext, SessionStepQuery
 
 
 class StorageStrategy(ABC):
     """
-    Abstract base class for storage backends.
+    DAO contract for storage backends.
+
+    Implementations translate these operations to a physical backend. Runtime
+    workflow policy belongs to ``DataManager`` and its callers, not here.
 
     Table design:
     - Table 1 (JobEnvironment): job_id + env_id mapping with env config
     - Table 2 (SessionStep): session_id + step_id with full conversation history
 
-    Key design principles:
-    - session_id equals env_id for compatibility
-    - Each step record contains full conversation history up to that point
-    - Last record of a session contains total_reward and is_session_completed=True
+    Callers provide complete row values. Implementations must not infer workflow
+    state, classify events, construct evaluation rows, or change trainability.
     """
     
     @abstractmethod
@@ -76,186 +58,63 @@ class StorageStrategy(ABC):
         """
         pass
 
+    @abstractmethod
     async def get_environment_by_env_id(self, env_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Retrieve one environment config by env_id.
-
-        Storage backends can override this with an indexed lookup. The default
-        implementation keeps older strategies compatible by scanning
-        get_all_environments().
-        """
-        for env in await self.get_all_environments():
-            if not isinstance(env, dict):
-                continue
-            if str(env.get("env_id") or "") == str(env_id):
-                if bool(env.get("is_deleted", False)):
-                    continue
-                return env
-        return None
-    
-    @abstractmethod
-    async def create_session(
-        self,
-        env_id: str,
-        env_name: str,
-        llm_model: str,
-        group_id: str = "",
-        job_id: str = ""
-    ) -> SessionContext:
-        """
-        Create a new session context (in-memory object).
-        Note: session_id = env_id by design.
-
-        Returns:
-            SessionContext object for tracking session state
-        """
+        """Retrieve one active environment by env_id."""
         pass
 
     @abstractmethod
-    async def record_step(
-        self,
-        session: SessionContext,
-        step_id: int,
-        messages: List[Dict],
-        response: str,
-        step_reward: float,
-        request: Optional[str] = None,
-        env_state: Optional[str] = None,
-        terminated: bool = False,
-        truncated: bool = False,
-        is_trainable: bool = True,
-        dataset: Optional[Any] = None,
-    ) -> None:
-        """
-        Record a single interaction step with full conversation history.
-
-        The messages parameter should contain the FULL conversation history
-        up to and including the current user message (but NOT the assistant response,
-        which is stored in the response parameter).
-
-        For SQLite: stores base64 images directly in messages JSON
-        For Cloud: uploads binary images to S3, stores URLs in messages JSON
-
-        Args:
-            session: Session context object
-            step_id: Step number (1-indexed)
-            messages: Full conversation history (list of {role, content} dicts)
-            response: LLM response/action for this step
-            step_reward: Reward for this step
-            request: Optional provider-bound request JSON for this step
-            env_state: Optional JSON string of environment state
-            terminated: Whether this is a terminal step
-            truncated: Whether episode was truncated
-            is_trainable: Whether this step is eligible for training
-            dataset: Optional task dataset stored on the first gateway step
-        """
+    async def list_environment_rows(self, query: EnvironmentQuery) -> List[Dict[str, Any]]:
+        """List environment rows using backend-neutral filters."""
         pass
 
-    async def record_steps_batch(self, steps: List[Dict[str, Any]]) -> List[Optional[str]]:
-        """Persist multiple steps.
-
-        Backends may override this to use a native bulk API. The default keeps
-        existing strategies compatible and preserves input ordering.
-        """
-        record_ids: List[Optional[str]] = []
-        for step in steps:
-            await self.record_step(**step)
-            record_ids.append(None)
-        return record_ids
-
-    async def mark_records_completed(self, record_ids: List[str]) -> int:
-        """Mark known records completed without discovering them by a table scan."""
-        return 0
-
-    async def list_session_steps(
-        self,
-        session_id: str,
-        *,
-        checkout_latest: bool = False,
-    ) -> List[Dict[str, Any]]:
-        """
-        Return persisted rows for one session in trajectory order.
-
-        Storage backends may override this when callers such as evaluators need
-        storage-agnostic access to the completed trajectory. Cloud callers can
-        request the latest table version when another process performed writes.
-        The default keeps older/custom strategies compatible.
-        """
-        return []
-
-    async def record_evaluation_summary(
-        self,
-        session_id: str,
-        step_id: int,
-        reward: float,
-        env_state: str,
-    ) -> int:
-        """Persist a non-trainable evaluation result when no trajectory row exists."""
-        return 0
+    @abstractmethod
+    async def insert_environment_rows(self, rows: List[Dict[str, Any]]) -> List[str]:
+        """Insert environment rows and return their env_ids."""
+        pass
 
     @abstractmethod
-    async def update_session_step(
+    async def update_environment_rows(
         self,
-        session_id: str,
-        step_id: int,
+        query: EnvironmentQuery,
         updates: Dict[str, Any],
     ) -> int:
-        """
-        Update fields for one persisted session step identified by session_id and step_id.
-
-        Returns:
-            Number of matched records.
-        """
         pass
 
-    async def patch_session_environment(
-        self,
-        session_id: str,
-        *,
-        job_id: str,
-        env_name: str,
-        group_id: Optional[str] = None,
-    ) -> int:
-        """
-        Patch persisted session rows after their environment metadata is known.
-
-        Backends that cannot efficiently or safely rewrite existing rows may
-        leave the default no-op behavior.
-        """
-        return 0
+    @abstractmethod
+    async def delete_session_step_rows(self, query: SessionStepQuery) -> int:
+        pass
 
     @abstractmethod
-    async def mark_latest_session_completed(
-        self,
-        session_id: str,
-        llm_model: Optional[str] = None,
-    ) -> int:
-        """
-        Mark the latest persisted trajectory row for a session as completed.
-        When llm_model is provided, only rows for that model are considered.
+    async def delete_job_rows(self, job_id: str) -> None:
+        pass
 
-        Returns:
-            Number of updated records.
-        """
+    @abstractmethod
+    async def insert_session_step_rows(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Insert fully constructed session-step rows without applying workflow policy."""
+        pass
+
+    @abstractmethod
+    async def list_session_step_rows(
+        self,
+        query: SessionStepQuery,
+    ) -> List[Dict[str, Any]]:
+        """List raw session-step rows using backend-neutral filters."""
+        pass
+
+    @abstractmethod
+    async def update_session_step_rows(
+        self,
+        query: SessionStepQuery,
+        updates: Dict[str, Any],
+    ) -> int:
+        """Update matching session-step rows with caller-decided field values."""
         pass
 
     @abstractmethod
     async def close(self) -> None:
         """Clean up resources (DB connections, clients, buffers)"""
-        pass
-
-    def get_sync_connection(self) -> Any:
-        """
-        Get synchronous connection for direct queries (SQLite only).
-        Returns None for cloud storage.
-        """
-        return None
-
-    # Legacy compatibility methods (will be deprecated)
-    async def create_session_legacy(self, env_id, llm_model: str, group_id: str = ""):
-        """Legacy method for backward compatibility"""
-        pass
-
-    async def update_session(self, session, trajectory, total_reward, is_session_completed):
-        """Legacy method for backward compatibility"""
         pass
