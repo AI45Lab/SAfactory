@@ -1,3 +1,4 @@
+import fcntl
 import json
 import logging
 import os
@@ -8,8 +9,9 @@ import tempfile
 import time
 import traceback
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Any, Union, Optional
+from typing import Any, Callable, Iterator, Union, Optional
 from typing import Dict, List
 
 import requests
@@ -20,25 +22,85 @@ from requests_toolbelt.multipart.encoder import MultipartEncoder
 
 from .python import PythonController
 from ..evaluators.metrics.utils import compare_urls
-from ..providers.aws.proxy_pool import get_global_proxy_pool, init_proxy_pool, ProxyInfo
-
-import dotenv
-# Load environment variables from .env file
-dotenv.load_dotenv()
-
-
-PROXY_CONFIG_FILE = os.getenv("PROXY_CONFIG_FILE", "evaluation_examples/settings/proxy/dataimpulse.json")  # Default proxy config file
 
 logger = logging.getLogger("desktopenv.setup")
 
 FILE_PATH = os.path.dirname(os.path.abspath(__file__))
 
-init_proxy_pool(PROXY_CONFIG_FILE)  # initialize the global proxy pool
-
 MAX_RETRIES = 20
 
+
+class SetupDeadlineExceeded(RuntimeError):
+    """Raised when setup would exceed the OSGym reset time budget."""
+
+
+class _DeadlineSession(requests.Session):
+    """Requests session that applies the controller's current deadline."""
+
+    def __init__(
+        self,
+        remaining_seconds: Callable[[], Optional[float]],
+        connect_timeout: float,
+        default_read_timeout: float,
+    ) -> None:
+        super().__init__()
+        self._remaining_seconds = remaining_seconds
+        self._connect_timeout = connect_timeout
+        self._default_read_timeout = default_read_timeout
+
+    @staticmethod
+    def _positive_timeout(value: float) -> float:
+        return max(0.1, float(value))
+
+    def request(self, method, url, **kwargs):
+        remaining = self._remaining_seconds()
+        requested = kwargs.get("timeout")
+
+        if remaining is not None and remaining <= 0:
+            raise SetupDeadlineExceeded(
+                f"OSGym setup deadline exceeded before {method} {url}"
+            )
+
+        if isinstance(requested, tuple):
+            requested_connect, requested_read = requested
+        elif requested is None:
+            requested_connect = self._connect_timeout
+            requested_read = self._default_read_timeout
+        else:
+            requested_connect = requested
+            requested_read = requested
+
+        requested_connect = min(
+            float(requested_connect), self._connect_timeout
+        )
+        requested_read = min(
+            float(requested_read), self._default_read_timeout
+        )
+        if remaining is not None:
+            requested_connect = min(float(requested_connect), remaining)
+            requested_read = min(float(requested_read), remaining)
+
+        kwargs["timeout"] = (
+            self._positive_timeout(requested_connect),
+            self._positive_timeout(requested_read),
+        )
+        return super().request(method, url, **kwargs)
+
+
 class SetupController:
-    def __init__(self, vm_ip: str, server_port: int = 5000, chromium_port: int = 9222, vlc_port: int = 8080, cache_dir: str = "cache", client_password: str = "", screen_width: int = 1920, screen_height: int = 1080):
+    def __init__(
+        self,
+        vm_ip: str,
+        server_port: int = 5000,
+        chromium_port: int = 9222,
+        vlc_port: int = 8080,
+        cache_dir: str = "cache",
+        download_cache_dir: str = "/tmp/osgym-download-cache",
+        client_password: str = "",
+        screen_width: int = 1920,
+        screen_height: int = 1080,
+        connect_timeout: float = 10.0,
+    ):
         self.vm_ip: str = vm_ip
         self.server_port: int = server_port
         self.chromium_port: int = chromium_port
@@ -46,11 +108,19 @@ class SetupController:
         self.http_server: str = f"http://{vm_ip}:{server_port}"
         self.http_server_setup_root: str = f"http://{vm_ip}:{server_port}/setup"
         self.cache_dir: str = cache_dir
-        self.use_proxy: bool = False
+        self.download_cache_dir = os.path.abspath(
+            os.path.expanduser(download_cache_dir)
+        )
+        os.makedirs(self.download_cache_dir, exist_ok=True)
         self.client_password: str = client_password
         self.screen_width: int = screen_width
         self.screen_height: int = screen_height
-        self.session = requests.Session()
+        self._deadline: Optional[float] = None
+        self.session = _DeadlineSession(
+            self._remaining_seconds,
+            connect_timeout=float(connect_timeout),
+            default_read_timeout=240.0,
+        )
 
     def close(self) -> None:
         self.session.close()
@@ -58,7 +128,154 @@ class SetupController:
     def reset_cache_dir(self, cache_dir: str):
         self.cache_dir = cache_dir
 
-    def setup(self, config: List[Dict[str, Any]], use_proxy: bool = False)-> bool:
+    def set_deadline(self, deadline: Optional[float]) -> None:
+        """Set an absolute ``time.monotonic`` deadline for setup operations."""
+        self._deadline = deadline
+
+    def clear_deadline(self) -> None:
+        self._deadline = None
+
+    def _remaining_seconds(self) -> Optional[float]:
+        if self._deadline is None:
+            return None
+        return self._deadline - time.monotonic()
+
+    def _check_deadline(self, operation: str = "setup") -> None:
+        remaining = self._remaining_seconds()
+        if remaining is not None and remaining <= 0:
+            raise SetupDeadlineExceeded(
+                f"OSGym reset deadline exceeded during {operation}"
+            )
+
+    def _sleep_with_deadline(self, seconds: float) -> None:
+        remaining = self._remaining_seconds()
+        if remaining is None:
+            time.sleep(seconds)
+            return
+        if remaining <= 0:
+            self._check_deadline("sleep")
+        time.sleep(min(float(seconds), remaining))
+        self._check_deadline("sleep")
+
+    def _playwright_timeout_ms(self, maximum_seconds: float = 30.0) -> float:
+        remaining = self._remaining_seconds()
+        if remaining is None:
+            return maximum_seconds * 1000
+        self._check_deadline("Playwright operation")
+        return max(100.0, min(maximum_seconds, remaining) * 1000)
+
+    @contextmanager
+    def _cache_lock(self, cache_path: str) -> Iterator[None]:
+        lock_path = f"{cache_path}.lock"
+        with open(lock_path, "a+") as lock_file:
+            while True:
+                self._check_deadline(f"wait for cache lock {cache_path}")
+                try:
+                    fcntl.flock(
+                        lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB
+                    )
+                    break
+                except BlockingIOError:
+                    self._sleep_with_deadline(0.1)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    def _download_cache_path(self, url: str, destination: str) -> str:
+        filename = "{:}_{:}".format(
+            uuid.uuid5(uuid.NAMESPACE_URL, url),
+            os.path.basename(destination),
+        )
+        return os.path.join(self.download_cache_dir, filename)
+
+    def _download_to_cache(
+        self,
+        url: str,
+        destination: str,
+        max_retries: int = 3,
+    ) -> str:
+        cache_path = self._download_cache_path(url, destination)
+        with self._cache_lock(cache_path):
+            if os.path.isfile(cache_path) and os.path.getsize(cache_path) > 0:
+                logger.info("Using shared download cache: %s", cache_path)
+                return cache_path
+
+            last_error: Optional[Exception] = None
+            for attempt in range(1, max_retries + 1):
+                self._check_deadline(f"download {url}")
+                fd, partial_path = tempfile.mkstemp(
+                    dir=self.download_cache_dir,
+                    prefix=f".{os.path.basename(cache_path)}.",
+                    suffix=".part",
+                )
+                os.close(fd)
+                try:
+                    logger.info(
+                        "Download attempt %s/%s for %s",
+                        attempt,
+                        max_retries,
+                        url,
+                    )
+                    with self.session.get(url, stream=True) as response:
+                        response.raise_for_status()
+                        total_size = int(
+                            response.headers.get("content-length", 0)
+                        )
+                        downloaded_size = 0
+                        next_progress_log = 10 * 1024 * 1024
+                        with open(partial_path, "wb") as partial_file:
+                            for chunk in response.iter_content(
+                                chunk_size=1024 * 1024
+                            ):
+                                self._check_deadline(f"download {url}")
+                                if not chunk:
+                                    continue
+                                partial_file.write(chunk)
+                                downloaded_size += len(chunk)
+                                if downloaded_size >= next_progress_log:
+                                    if total_size > 0:
+                                        logger.info(
+                                            "Download progress for %s: %.1f%%",
+                                            url,
+                                            downloaded_size / total_size * 100,
+                                        )
+                                    next_progress_log += 10 * 1024 * 1024
+                            partial_file.flush()
+                            os.fsync(partial_file.fileno())
+                    if downloaded_size <= 0:
+                        raise requests.RequestException(
+                            f"Downloaded empty file from {url}"
+                        )
+                    os.replace(partial_path, cache_path)
+                    logger.info(
+                        "Cached download %s (%.2f MiB)",
+                        cache_path,
+                        downloaded_size / (1024 * 1024),
+                    )
+                    return cache_path
+                except SetupDeadlineExceeded:
+                    raise
+                except Exception as exc:
+                    last_error = exc
+                    logger.warning(
+                        "Download attempt %s/%s failed for %s: %s",
+                        attempt,
+                        max_retries,
+                        url,
+                        exc,
+                    )
+                finally:
+                    try:
+                        os.unlink(partial_path)
+                    except FileNotFoundError:
+                        pass
+
+            raise requests.RequestException(
+                f"Failed to download {url} after {max_retries} attempts"
+            ) from last_error
+
+    def setup(self, config: List[Dict[str, Any]]) -> bool:
         """
         Args:
             config (List[Dict[str, Any]]): list of dict like {str: Any}. each
@@ -70,7 +287,7 @@ class SetupController:
                       parameters
                 }
         """  
-        self.use_proxy = use_proxy
+        self._check_deadline("setup start")
         # make sure connection can be established
         logger.info(f"try to connect {self.http_server}")
         retry = 0
@@ -78,8 +295,8 @@ class SetupController:
             try:
                 _ = self.session.get(self.http_server + "/terminal")
                 break
-            except:
-                time.sleep(5)
+            except requests.RequestException:
+                self._sleep_with_deadline(5)
                 retry += 1
                 logger.info(f"retry: {retry}/{MAX_RETRIES}")
             
@@ -88,6 +305,7 @@ class SetupController:
                 
 
         for i, cfg in enumerate(config):
+            self._check_deadline(f"setup step {i + 1}")
             config_type: str = cfg["type"]
             parameters: Dict[str, Any] = cfg["parameters"]
 
@@ -121,63 +339,25 @@ class SetupController:
         for f in files:
             url: str = f["url"]
             path: str = f["path"]
-            cache_path: str = os.path.join(self.cache_dir, "{:}_{:}".format(
-                uuid.uuid5(uuid.NAMESPACE_URL, url),
-                os.path.basename(path)))
             if not url or not path:
                 raise Exception(f"Setup Download - Invalid URL ({url}) or path ({path}).")
-
-            if not os.path.exists(cache_path):
-                logger.info(f"Cache file not found, downloading from {url} to {cache_path}")
-                max_retries = 3
-                downloaded = False
-                e = None
-                for i in range(max_retries):
-                    try:
-                        logger.info(f"Download attempt {i+1}/{max_retries} for {url}")
-                        response = self.session.get(url, stream=True, timeout=300)  # Add 5 minute timeout
-                        response.raise_for_status()
-                        
-                        # Get file size if available
-                        total_size = int(response.headers.get('content-length', 0))
-                        if total_size > 0:
-                            logger.info(f"File size: {total_size / (1024*1024):.2f} MB")
-
-                        downloaded_size = 0
-                        with open(cache_path, 'wb') as f:
-                            for chunk in response.iter_content(chunk_size=8192):
-                                if chunk:
-                                    f.write(chunk)
-                                    downloaded_size += len(chunk)
-                                    if total_size > 0 and downloaded_size % (1024*1024) == 0:  # Log every MB
-                                        progress = (downloaded_size / total_size) * 100
-                                        logger.info(f"Download progress: {progress:.1f}%")
-                        
-                        logger.info(f"File downloaded successfully to {cache_path} ({downloaded_size / (1024*1024):.2f} MB)")
-                        downloaded = True
-                        break
-
-                    except requests.RequestException as e:
-                        logger.error(
-                            f"Failed to download {url} caused by {e}. Retrying... ({max_retries - i - 1} attempts left)")
-                        # Clean up partial download
-                        if os.path.exists(cache_path):
-                            os.remove(cache_path)
-                if not downloaded:
-                    raise requests.RequestException(f"Failed to download {url}. No retries left.")
-
-            form = MultipartEncoder({
-                "file_path": path,
-                "file_data": (os.path.basename(path), open(cache_path, "rb"))
-            })
-            headers = {"Content-Type": form.content_type}
-            logger.debug(form.content_type)
+            cache_path = self._download_to_cache(url, path)
 
             # send request to server to upload file
             try:
                 logger.info(f"Uploading {os.path.basename(path)} to VM at {path}")
                 logger.debug("REQUEST ADDRESS: %s", self.http_server + "/setup" + "/upload")
-                response = self.session.post(self.http_server + "/setup" + "/upload", headers=headers, data=form, timeout=600)  # 10 minute timeout for upload
+                with open(cache_path, "rb") as cached_file:
+                    form = MultipartEncoder({
+                        "file_path": path,
+                        "file_data": (os.path.basename(path), cached_file)
+                    })
+                    headers = {"Content-Type": form.content_type}
+                    response = self.session.post(
+                        self.http_server + "/setup" + "/upload",
+                        headers=headers,
+                        data=form,
+                    )
                 if response.status_code == 200:
                     logger.info(f"File uploaded successfully: {path}")
                     logger.debug("Upload response: %s", response.text)
@@ -254,7 +434,7 @@ class SetupController:
 
                 # Exponential backoff between retries
                 if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
+                    self._sleep_with_deadline(2 ** attempt)
 
             if last_error is not None:
                 raise last_error
@@ -309,9 +489,6 @@ class SetupController:
             logger.warning("Command should be a list of strings. Now it is a string. Will split it by space.")
             command = command.split()
             
-        if command[0] == "google-chrome" and self.use_proxy:
-            command.append("--proxy-server=http://127.0.0.1:18888")  # Use the proxy server set up by _proxy_setup
-
         payload = json.dumps({"command": command, "shell": shell})
         headers = {"Content-Type": "application/json"}
 
@@ -402,7 +579,7 @@ class SetupController:
                              or "stderr" in until and until["stderr"] in results["error"]
             terminates = terminates or nb_failings >= 5
             if not terminates:
-                time.sleep(0.3)
+                self._sleep_with_deadline(0.3)
 
     def _execute_with_verification_setup(
             self,
@@ -459,7 +636,7 @@ class SetupController:
         self._execute_setup(command, **kwargs)
 
     def _sleep_setup(self, seconds: float):
-        time.sleep(seconds)
+        self._sleep_with_deadline(seconds)
 
     def _act_setup(self, action_seq: List[Union[Dict[str, Any], str]]):
         # TODO
@@ -512,73 +689,6 @@ class SetupController:
         except requests.exceptions.RequestException as e:
             logger.error("An error occurred while trying to send the request: %s", e)
 
-    def _proxy_setup(self, client_password: str = ""):
-        """Setup system-wide proxy configuration using proxy pool
-        
-        Args:
-            client_password (str): Password for sudo operations, defaults to "password"
-        """
-        retry = 0
-        while retry < MAX_RETRIES:
-            try:
-                _ = self.session.get(self.http_server + "/terminal")
-                break
-            except:
-                time.sleep(5)
-                retry += 1
-                logger.info(f"retry: {retry}/{MAX_RETRIES}")
-            
-            if retry == MAX_RETRIES:
-                return False
-            
-        # Get proxy from global proxy pool
-        proxy_pool = get_global_proxy_pool()
-        current_proxy = proxy_pool.get_next_proxy()
-        
-        if not current_proxy:
-            logger.error("No proxy available from proxy pool")
-            raise Exception("No proxy available from proxy pool")
-        
-        # Format proxy URL
-        proxy_url = proxy_pool._format_proxy_url(current_proxy)
-        logger.info(f"Setting up proxy: {current_proxy.host}:{current_proxy.port}")
-        
-        # Configure system proxy environment variables  
-        proxy_commands = [
-            f"echo '{client_password}' | sudo -S bash -c \"apt-get update\"", ## TODO: remove this line if ami is already updated
-            f"echo '{client_password}' | sudo -S bash -c \"apt-get install -y tinyproxy\"", ## TODO: remove this line if tinyproxy is already installed
-            f"echo '{client_password}' | sudo -S bash -c \"echo 'Port 18888' > /tmp/tinyproxy.conf\"",
-            f"echo '{client_password}' | sudo -S bash -c \"echo 'Allow 127.0.0.1' >> /tmp/tinyproxy.conf\"",
-            f"echo '{client_password}' | sudo -S bash -c \"echo 'Upstream http {current_proxy.username}:{current_proxy.password}@{current_proxy.host}:{current_proxy.port}' >> /tmp/tinyproxy.conf\"",
-            
-            # CML commands to set environment variables for proxy
-            f"echo 'export http_proxy={proxy_url}' >> ~/.bashrc",
-            f"echo 'export https_proxy={proxy_url}' >> ~/.bashrc",
-            f"echo 'export HTTP_PROXY={proxy_url}' >> ~/.bashrc",
-            f"echo 'export HTTPS_PROXY={proxy_url}' >> ~/.bashrc",
-        ]
-
-        # Execute all proxy configuration commands
-        for cmd in proxy_commands:
-            try:
-                self._execute_setup([cmd], shell=True)
-            except Exception as e:
-                logger.error(f"Failed to execute proxy setup command: {e}")
-                proxy_pool.mark_proxy_failed(current_proxy)
-                raise
-        
-        self._launch_setup(["tinyproxy -c /tmp/tinyproxy.conf -d"], shell=True)
-        
-        # Reload environment variables
-        reload_cmd = "source /etc/environment"
-        try:
-            logger.info(f"Proxy setup completed successfully for {current_proxy.host}:{current_proxy.port}")
-            proxy_pool.mark_proxy_success(current_proxy)
-        except Exception as e:
-            logger.error(f"Failed to reload environment variables: {e}")
-            proxy_pool.mark_proxy_failed(current_proxy)
-            raise
-
     # Chrome setup
     def _chrome_open_tabs_setup(self, urls_to_open: List[str]):
         host = self.vm_ip
@@ -588,13 +698,17 @@ class SetupController:
         logger.info("Connect to Chrome @: %s", remote_debugging_url)
         logger.debug("PLAYWRIGHT ENV: %s", repr(os.environ))
         for attempt in range(15):
+            self._check_deadline("connect to Chrome")
             if attempt > 0:
-                time.sleep(5)
+                self._sleep_with_deadline(5)
 
             browser = None
             with sync_playwright() as p:
                 try:
-                    browser = p.chromium.connect_over_cdp(remote_debugging_url)
+                    browser = p.chromium.connect_over_cdp(
+                        remote_debugging_url,
+                        timeout=self._playwright_timeout_ms(),
+                    )
                     # break
                 except Exception as e:
                     if attempt < 14:
@@ -616,7 +730,10 @@ class SetupController:
 
                     page = context.new_page()  # Create a new page (tab) within the existing context
                     try:
-                        page.goto(url, timeout=60000)
+                        page.goto(
+                            url,
+                            timeout=self._playwright_timeout_ms(60.0),
+                        )
                     except:
                         logger.warning("Opening %s exceeds time limit", url)  # only for human test
                     logger.info(f"Opened tab {i + 1}: {url}")
@@ -630,7 +747,7 @@ class SetupController:
                 return browser, context
 
     def _chrome_close_tabs_setup(self, urls_to_close: List[str]):
-        time.sleep(5)  # Wait for Chrome to finish launching
+        self._sleep_with_deadline(5)  # Wait for Chrome to finish launching
 
         host = self.vm_ip
         port = self.chromium_port  # fixme: this port is hard-coded, need to be changed from config file
@@ -639,13 +756,17 @@ class SetupController:
         with sync_playwright() as p:
             browser = None
             for attempt in range(15):
+                self._check_deadline("connect to Chrome")
                 try:
-                    browser = p.chromium.connect_over_cdp(remote_debugging_url)
+                    browser = p.chromium.connect_over_cdp(
+                        remote_debugging_url,
+                        timeout=self._playwright_timeout_ms(),
+                    )
                     break
                 except Exception as e:
                     if attempt < 14:
                         logger.error(f"Attempt {attempt + 1}: Failed to connect, retrying. Error: {e}")
-                        time.sleep(5)
+                        self._sleep_with_deadline(5)
                     else:
                         logger.error(f"Failed to connect after multiple attempts: {e}")
                         raise e
@@ -741,6 +862,7 @@ class SetupController:
                     response = self.session.get(url, stream=True)
                     response.raise_for_status()
                     for chunk in response.iter_content(chunk_size=8192):
+                        self._check_deadline(f"download {url}")
                         if chunk:
                             tmpf.write(chunk)
                     tmpf.close()
@@ -770,13 +892,17 @@ class SetupController:
         with sync_playwright() as p:
             browser = None
             for attempt in range(15):
+                self._check_deadline("connect to Chrome")
                 try:
-                    browser = p.chromium.connect_over_cdp(remote_debugging_url)
+                    browser = p.chromium.connect_over_cdp(
+                        remote_debugging_url,
+                        timeout=self._playwright_timeout_ms(),
+                    )
                     break
                 except Exception as e:
                     if attempt < 14:
                         logger.error(f"Attempt {attempt + 1}: Failed to connect, retrying. Error: {e}")
-                        time.sleep(5)
+                        self._sleep_with_deadline(5)
                     else:
                         logger.error(f"Failed to connect after multiple attempts: {e}")
                         raise e
@@ -790,7 +916,10 @@ class SetupController:
                 url = 'https://drive.google.com/drive/my-drive'
                 page = context.new_page()  # Create a new page (tab) within the existing context
                 try:
-                    page.goto(url, timeout=60000)
+                    page.goto(
+                        url,
+                        timeout=self._playwright_timeout_ms(60.0),
+                    )
                 except:
                     logger.warning("Opening %s exceeds time limit", url)  # only for human test
                 logger.info(f"Opened new page: {url}")
@@ -828,6 +957,7 @@ class SetupController:
 
                     with open(cache_path, 'wb') as f:
                         for chunk in response.iter_content(chunk_size=8192):
+                            self._check_deadline(f"download {db_url}")
                             if chunk:
                                 f.write(chunk)
                     logger.info("File downloaded successfully")

@@ -2,22 +2,27 @@ environments:
   - env_name: os_gym
     env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/os-gym:v0.2.0
     env_num: 1
-    dataset: /mnt/shared-storage-gpfs2/evobox-share-gpfs2/kangzeyu/Safactory/datasets/standard/osworld_no_chrome.jsonl  # JSONL dataset file with task configurations
+    dataset: /path/to/osgym_tasks.jsonl
     env_params:
-      eval_mode: standard  # "standard" or "safety"
+      eval_mode: standard
       provider_name: "docker"
-      vm_path: "/mnt/shared-storage-gpfs2/evobox-share-gpfs2/kangzeyu/projects/AIEvoBox/env/osgym/docker_vm_data/Ubuntu.qcow2"
+      vm_path: "/path/to/Ubuntu.qcow2"
       prompt_observation_type: screenshot
       headless: true
       action_space: "pyautogui"
-      prompt_format: qwen
+      prompt_format: qwen35
+      history_n: 5
+      image_max: 3
+      fold_size: 2
       screen_width: 1920
       screen_height: 1080
-      cache_dir: null  # Let each Ray actor create a unique /tmp/osgym_cache_<id> directory.
+      cache_dir: null
+      download_cache_dir: /tmp/osgym-download-cache
+      reset_timeout_seconds: 270.0
+      setup_connect_timeout_seconds: 10.0
+      post_reset_wait: 15.0
       sleep_after_execution: 1.0
+      repeated_click_limit: 3
+      repeated_wait_limit: 3
+      repeated_action_signature_limit: 3
       max_steps: 30
-      # LLM Judge configuration
-      llm_judge_config:
-        api_key: your-api-key
-        base_url: your-base-url
-        model: your-model

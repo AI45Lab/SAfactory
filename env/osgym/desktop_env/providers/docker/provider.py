@@ -16,6 +16,7 @@ logger.setLevel(logging.INFO)
 WAIT_TIME = 3
 RETRY_INTERVAL = 1
 LOCK_TIMEOUT = 600
+MAX_START_RETRIES = 5
 
 
 class PortAllocationError(Exception):
@@ -49,15 +50,39 @@ class DockerProvider(Provider):
 
         return system_ports | docker_ports
 
-    def _get_available_port(self, start_port: int) -> int:
+    def _get_available_port(self, start_port: int, used_ports=None) -> int:
         """Find next available port starting from start_port."""
-        used_ports = self._get_used_ports()
+        if used_ports is None:
+            used_ports = self._get_used_ports()
         port = start_port
         while port < 65354:
             if port not in used_ports:
                 return port
             port += 1
         raise PortAllocationError(f"No available ports found starting from {start_port}")
+
+    def _allocate_ports(self):
+        """Allocate distinct host ports for one Docker VM."""
+        used_ports = self._get_used_ports()
+        self.vnc_port = self._get_available_port(8006, used_ports)
+        used_ports.add(self.vnc_port)
+        self.server_port = self._get_available_port(5000, used_ports)
+        used_ports.add(self.server_port)
+        self.chromium_port = self._get_available_port(9222, used_ports)
+        used_ports.add(self.chromium_port)
+        self.vlc_port = self._get_available_port(8080, used_ports)
+        used_ports.add(self.vlc_port)
+
+    @staticmethod
+    def _is_bind_conflict(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "bind for" in message and "port is already allocated" in message
+
+    def _clear_allocated_ports(self):
+        self.server_port = None
+        self.vnc_port = None
+        self.chromium_port = None
+        self.vlc_port = None
 
     def _wait_for_vm_ready(self, timeout: int = 300):
         """Wait for VM to be ready by checking screenshot endpoint."""
@@ -87,41 +112,62 @@ class DockerProvider(Provider):
         
         try:
             with lock:
-                # Allocate all required ports
-                self.vnc_port = self._get_available_port(8006)
-                self.server_port = self._get_available_port(5000)
-                self.chromium_port = self._get_available_port(9222)
-                self.vlc_port = self._get_available_port(8080)
+                for attempt in range(1, MAX_START_RETRIES + 1):
+                    # Allocate all required ports. The allocation set is shared
+                    # within this VM so overlapping ranges cannot pick the same
+                    # host port under high concurrency.
+                    self._allocate_ports()
 
-                # Start container while still holding the lock
-                # Check if KVM is available
-                devices = []
-                if os.path.exists("/dev/kvm"):
-                    devices.append("/dev/kvm")
-                    logger.info("KVM device found, using hardware acceleration")
-                else:
-                    self.environment["KVM"] = "N"
-                    logger.warning("KVM device not found, running without hardware acceleration (will be slower)")
+                    # Start container while still holding the lock
+                    # Check if KVM is available
+                    devices = []
+                    if os.path.exists("/dev/kvm"):
+                        devices.append("/dev/kvm")
+                        logger.info("KVM device found, using hardware acceleration")
+                    else:
+                        self.environment["KVM"] = "N"
+                        logger.warning("KVM device not found, running without hardware acceleration (will be slower)")
 
-                self.container = self.client.containers.run(
-                    "registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/osworld:v1.0",
-                    environment=self.environment,
-                    cap_add=["NET_ADMIN"],
-                    devices=devices,
-                    volumes={
-                        os.path.abspath(path_to_vm): {
-                            "bind": "/System.qcow2",
-                            "mode": "ro"
-                        }
-                    },
-                    ports={
-                        8006: self.vnc_port,
-                        5000: self.server_port,
-                        9222: self.chromium_port,
-                        8080: self.vlc_port
-                    },
-                    detach=True
-                )
+                    try:
+                        self.container = self.client.containers.run(
+                            "registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/osworld:v1.0",
+                            environment=self.environment,
+                            cap_add=["NET_ADMIN"],
+                            devices=devices,
+                            volumes={
+                                os.path.abspath(path_to_vm): {
+                                    "bind": "/System.qcow2",
+                                    "mode": "ro"
+                                }
+                            },
+                            ports={
+                                8006: self.vnc_port,
+                                5000: self.server_port,
+                                9222: self.chromium_port,
+                                8080: self.vlc_port
+                            },
+                            detach=True
+                        )
+                        break
+                    except Exception as e:
+                        if self._is_bind_conflict(e) and attempt < MAX_START_RETRIES:
+                            logger.warning(
+                                "Docker port bind conflict on attempt %s/%s; reallocating ports",
+                                attempt,
+                                MAX_START_RETRIES,
+                            )
+                            if self.container:
+                                try:
+                                    self.container.stop()
+                                    self.container.remove()
+                                except Exception:
+                                    pass
+                                finally:
+                                    self.container = None
+                            self._clear_allocated_ports()
+                            time.sleep(RETRY_INTERVAL)
+                            continue
+                        raise
 
             logger.info(f"Started container with ports - VNC: {self.vnc_port}, "
                        f"Server: {self.server_port}, Chrome: {self.chromium_port}, VLC: {self.vlc_port}")
@@ -163,7 +209,4 @@ class DockerProvider(Provider):
                 logger.error(f"Error stopping container: {e}")
             finally:
                 self.container = None
-                self.server_port = None
-                self.vnc_port = None
-                self.chromium_port = None
-                self.vlc_port = None
+                self._clear_allocated_ports()

@@ -762,6 +762,180 @@ def check_image_mirror(src_path, tgt_path):
         return 0.
 
 
+def check_image_vertical_mirror(src_path, tgt_path):
+    """
+    Check if the image is flipped vertically.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    source_image = Image.open(src_path)
+    target_image = Image.open(tgt_path)
+
+    transposed_image = target_image.transpose(Image.FLIP_TOP_BOTTOM)
+    mirrored = structure_check_by_ssim(source_image, transposed_image, 0.99)
+    return 1. if mirrored else 0.
+
+
+def check_image_rotated_90_clockwise(src_path, tgt_path):
+    """
+    Check if the image is rotated 90 degrees clockwise.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    source_image = Image.open(src_path)
+    target_image = Image.open(tgt_path)
+
+    rotated_image = target_image.transpose(Image.ROTATE_270)
+    rotated = structure_check_by_ssim(source_image, rotated_image, 0.99)
+    return 1. if rotated else 0.
+
+
+def check_image_rotated_180(src_path, tgt_path):
+    """
+    Check if the image is rotated 180 degrees.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    source_image = Image.open(src_path)
+    target_image = Image.open(tgt_path)
+
+    rotated_image = target_image.transpose(Image.ROTATE_180)
+    rotated = structure_check_by_ssim(source_image, rotated_image, 0.99)
+    return 1. if rotated else 0.
+
+
+def check_brightness_increase_and_structure_sim(src_path, tgt_path, threshold=0.03):
+    """
+    Check that the result is brighter than the original while preserving structure.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    img_src = Image.open(src_path)
+    img_tgt = Image.open(tgt_path)
+
+    brightness_src = calculate_brightness(img_src)
+    brightness_tgt = calculate_brightness(img_tgt)
+    brightness_increased = brightness_src > brightness_tgt
+
+    target_brightness = 128
+    img_src_normalized = normalize_brightness(img_src, target_brightness)
+    img_tgt_normalized = normalize_brightness(img_tgt, target_brightness)
+
+    structure_same = structure_check_by_mse(img_src_normalized, img_tgt_normalized, threshold=threshold)
+    return 1. if brightness_increased and structure_same else 0.
+
+
+def check_saturation_decrease_and_structure_sim(src_path, tgt_path):
+    """
+    Check that the result has lower saturation than the original while preserving structure.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    img_src = Image.open(src_path)
+    hsv_img_src = img_src.convert('HSV')
+    img_tgt = Image.open(tgt_path)
+    hsv_img_tgt = img_tgt.convert('HSV')
+
+    src_saturation = measure_saturation(hsv_img_src)
+    tgt_saturation = measure_saturation(hsv_img_tgt)
+    saturation_decreased = src_saturation < tgt_saturation
+
+    h1, s1, v1 = hsv_img_src.split()
+    h2, s2, v2 = hsv_img_tgt.split()
+    h_same = structure_check_by_ssim(h1, h2)
+    v_same = structure_check_by_ssim(v1, v2)
+    return 1. if saturation_decreased and h_same and v_same else 0.
+
+
+def check_grayscale_and_structure_sim(src_path, tgt_path):
+    """
+    Check that the result is grayscale and visually matches the original structure.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    result_image = Image.open(src_path)
+    original_image = Image.open(tgt_path)
+
+    result_rgb = result_image.convert("RGB")
+    pixels = np.asarray(result_rgb, dtype=np.int16)
+    channel_delta = np.max(np.abs(pixels[:, :, 0] - pixels[:, :, 1])) + \
+        np.max(np.abs(pixels[:, :, 1] - pixels[:, :, 2]))
+    grayscale = channel_delta <= 6
+
+    expected_gray = original_image.convert("L").convert("RGB")
+    structure_same = structure_check_by_ssim(result_rgb, expected_gray, threshold=0.92)
+    return 1. if grayscale and structure_same else 0.
+
+
+def check_crop_size_and_source_region(src_path, tgt_path, rule):
+    """
+    Check that the result is an exact crop of a named region from the original.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    result_image = Image.open(src_path)
+    original_image = Image.open(tgt_path)
+    width = rule["width"]
+    height = rule["height"]
+    region = rule.get("region", "center")
+
+    if result_image.size != (width, height):
+        return 0.
+
+    original_width, original_height = original_image.size
+    if width > original_width or height > original_height:
+        return 0.
+
+    if region == "center":
+        left = (original_width - width) // 2
+        top = (original_height - height) // 2
+    elif region == "top_left":
+        left = 0
+        top = 0
+    elif region == "top_right":
+        left = original_width - width
+        top = 0
+    elif region == "bottom_left":
+        left = 0
+        top = original_height - height
+    elif region == "bottom_right":
+        left = original_width - width
+        top = original_height - height
+    else:
+        logging.error(f"Unsupported crop region: {region}")
+        return 0.
+
+    expected_crop = original_image.crop((left, top, left + width, top + height))
+    structure_same = structure_check_by_ssim(result_image, expected_crop, threshold=0.98)
+    return 1. if structure_same else 0.
+
+
+def check_structure_sim_and_file_size(src_path, tgt_path, rule):
+    """
+    Check that a compressed/exported image keeps the original structure and stays under a size limit.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+    if not os.path.isfile(src_path):
+        return 0.
+    if os.path.getsize(src_path) > rule["max_size"]:
+        return 0.
+
+    source_image = Image.open(src_path)
+    target_image = Image.open(tgt_path)
+    if source_image.size != target_image.size:
+        source_image = source_image.resize(target_image.size, Image.Resampling.LANCZOS)
+    structure_same = structure_check_by_ssim(source_image, target_image, threshold=rule.get("ssim_threshold", 0.75))
+    return 1. if structure_same else 0.
+
+
 def check_green_background(src_path, tgt_path):
     """
     Check if the background of the source image is green.
@@ -969,3 +1143,234 @@ def check_structure_sim_with_threshold(src_path, tgt_path, **options):
         logging.error(f"  check_structure_sim_with_threshold error: {type(e).__name__}: {str(e)}")
         logging.error(f"  Traceback: {traceback.format_exc()}")
         return 0.0
+
+
+
+def _open_rgb_image(path):
+    if path is None:
+        return None
+    image = Image.open(path)
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    return image
+
+
+def _same_size_pair(result_image, original_image):
+    if result_image.size != original_image.size:
+        result_image = result_image.resize(original_image.size, Image.Resampling.LANCZOS)
+    return result_image, original_image
+
+
+def _luminance_image(image):
+    return image.convert("L").convert("RGB")
+
+
+def _mean_rgb(image):
+    arr = np.asarray(image.convert("RGB"), dtype=np.float32)
+    return arr[:, :, 0].mean(), arr[:, :, 1].mean(), arr[:, :, 2].mean()
+
+
+def check_blur_and_structure_sim(src_path, tgt_path, min_drop_ratio=0.25, ssim_threshold=0.55):
+    """
+    Check that the result is visibly blurrier than the original while keeping the
+    same composition. This is a generic check for blur-style GIMP tasks.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    result = _open_rgb_image(src_path)
+    original = _open_rgb_image(tgt_path)
+    result, original = _same_size_pair(result, original)
+
+    result_sharpness = calculate_image_sharpness(src_path)
+    original_sharpness = calculate_image_sharpness(tgt_path)
+    if original_sharpness <= 1:
+        return 0.
+
+    blur_ok = result_sharpness < original_sharpness * (1 - min_drop_ratio)
+    structure_ok = structure_check_by_ssim(result, original, threshold=ssim_threshold)
+    return 1. if blur_ok and structure_ok else 0.
+
+
+def check_sharpen_and_structure_sim(src_path, tgt_path, min_gain_ratio=0.12, ssim_threshold=0.45):
+    """
+    Check that the result is sharper than the original while still resembling it.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    result = _open_rgb_image(src_path)
+    original = _open_rgb_image(tgt_path)
+    result, original = _same_size_pair(result, original)
+
+    result_sharpness = calculate_image_sharpness(src_path)
+    original_sharpness = calculate_image_sharpness(tgt_path)
+    sharpen_ok = result_sharpness > original_sharpness * (1 + min_gain_ratio)
+    structure_ok = structure_check_by_ssim(result, original, threshold=ssim_threshold)
+    return 1. if sharpen_ok and structure_ok else 0.
+
+
+def check_warm_tone_and_structure_sim(src_path, tgt_path, min_delta=6.0, ssim_threshold=0.70):
+    """
+    Check that the result shifts warmer: red rises relative to blue, with the
+    luminance structure preserved.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    result = _open_rgb_image(src_path)
+    original = _open_rgb_image(tgt_path)
+    result, original = _same_size_pair(result, original)
+
+    res_r, _, res_b = _mean_rgb(result)
+    ori_r, _, ori_b = _mean_rgb(original)
+    tone_ok = (res_r - res_b) >= (ori_r - ori_b) + min_delta
+    structure_ok = structure_check_by_ssim(_luminance_image(result), _luminance_image(original), threshold=ssim_threshold)
+    return 1. if tone_ok and structure_ok else 0.
+
+
+def check_cool_tone_and_structure_sim(src_path, tgt_path, min_delta=6.0, ssim_threshold=0.70):
+    """
+    Check that the result shifts cooler: blue rises relative to red, with the
+    luminance structure preserved.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    result = _open_rgb_image(src_path)
+    original = _open_rgb_image(tgt_path)
+    result, original = _same_size_pair(result, original)
+
+    res_r, _, res_b = _mean_rgb(result)
+    ori_r, _, ori_b = _mean_rgb(original)
+    tone_ok = (res_b - res_r) >= (ori_b - ori_r) + min_delta
+    structure_ok = structure_check_by_ssim(_luminance_image(result), _luminance_image(original), threshold=ssim_threshold)
+    return 1. if tone_ok and structure_ok else 0.
+
+
+def check_canvas_border(src_path, tgt_path, rule):
+    """
+    Check that the result adds a solid border around the original image and keeps
+    the original content centered inside it.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    result = _open_rgb_image(src_path)
+    original = _open_rgb_image(tgt_path)
+    border = int(rule["border"])
+    expected_width = original.width + 2 * border
+    expected_height = original.height + 2 * border
+    if result.size != (expected_width, expected_height):
+        return 0.
+
+    color = np.asarray(rule.get("color", [255, 255, 255]), dtype=np.float32)
+    tolerance = float(rule.get("tolerance", 18))
+    arr = np.asarray(result, dtype=np.float32)
+    border_pixels = np.concatenate(
+        [
+            arr[:border, :, :].reshape(-1, 3),
+            arr[-border:, :, :].reshape(-1, 3),
+            arr[:, :border, :].reshape(-1, 3),
+            arr[:, -border:, :].reshape(-1, 3),
+        ],
+        axis=0,
+    )
+    border_ok = np.mean(np.abs(border_pixels - color)) <= tolerance
+
+    inner = result.crop((border, border, border + original.width, border + original.height))
+    structure_ok = structure_check_by_ssim(inner, original, threshold=rule.get("ssim_threshold", 0.94))
+    return 1. if border_ok and structure_ok else 0.
+
+
+def check_rotated_90_counterclockwise(src_path, tgt_path):
+    """
+    Check if the image is rotated 90 degrees counterclockwise.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    result = _open_rgb_image(src_path)
+    original = _open_rgb_image(tgt_path)
+    rotated_back = result.transpose(Image.ROTATE_270)
+    rotated = structure_check_by_ssim(original, rotated_back, 0.97)
+    return 1. if rotated else 0.
+
+
+def check_inverted_and_structure_sim(src_path, tgt_path, ssim_threshold=0.88):
+    """
+    Check that the result is the color inverse of the original image.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    result = _open_rgb_image(src_path)
+    original = _open_rgb_image(tgt_path)
+    expected = ImageChops.invert(original)
+    if result.size != expected.size:
+        result = result.resize(expected.size, Image.Resampling.LANCZOS)
+    inverted = structure_check_by_ssim(result, expected, threshold=ssim_threshold)
+    return 1. if inverted else 0.
+
+
+def check_sepia_and_structure_sim(src_path, tgt_path, min_delta=4.0, ssim_threshold=0.68):
+    """
+    Check that the result has a sepia-like brown tone while preserving luminance
+    structure from the original.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    result = _open_rgb_image(src_path)
+    original = _open_rgb_image(tgt_path)
+    result, original = _same_size_pair(result, original)
+
+    res_r, res_g, res_b = _mean_rgb(result)
+    ori_r, ori_g, ori_b = _mean_rgb(original)
+    sepia_order = res_r > res_g > res_b
+    warmer_than_original = (res_r - res_b) >= (ori_r - ori_b) + min_delta
+    structure_ok = structure_check_by_ssim(_luminance_image(result), _luminance_image(original), threshold=ssim_threshold)
+    return 1. if sepia_order and warmer_than_original and structure_ok else 0.
+
+
+def check_threshold_bw_and_structure_sim(src_path, tgt_path, threshold=128, binary_tolerance=10, min_binary_ratio=0.96, ssim_threshold=0.82):
+    """
+    Check that the result is a black-and-white thresholded version of the original.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    result = Image.open(src_path).convert("L")
+    original = Image.open(tgt_path).convert("L")
+    if result.size != original.size:
+        result = result.resize(original.size, Image.Resampling.LANCZOS)
+
+    arr = np.asarray(result, dtype=np.int16)
+    near_black_or_white = (arr <= binary_tolerance) | (arr >= 255 - binary_tolerance)
+    if float(np.mean(near_black_or_white)) < min_binary_ratio:
+        return 0.
+
+    expected = original.point(lambda x: 255 if x >= threshold else 0).convert("RGB")
+    result_rgb = result.convert("RGB")
+    structure_ok = structure_check_by_ssim(result_rgb, expected, threshold=ssim_threshold)
+    return 1. if structure_ok else 0.
+
+
+def check_scaled_width_and_structure_sim(src_path, tgt_path, rule):
+    """
+    Check that the whole image was scaled to the requested width while preserving
+    the original aspect ratio and visual structure.
+    """
+    if src_path is None or tgt_path is None:
+        return 0.
+
+    result = _open_rgb_image(src_path)
+    original = _open_rgb_image(tgt_path)
+    width = int(rule["width"])
+    expected_height = round(original.height * width / original.width)
+    if result.size != (width, expected_height):
+        return 0.
+
+    expected = original.resize((width, expected_height), Image.Resampling.LANCZOS)
+    structure_ok = structure_check_by_ssim(result, expected, threshold=rule.get("ssim_threshold", 0.92))
+    return 1. if structure_ok else 0.

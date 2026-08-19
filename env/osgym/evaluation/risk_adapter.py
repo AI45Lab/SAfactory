@@ -586,8 +586,6 @@ def is_locally_supported_evaluator_config(config: Optional[Dict[str, Any]]) -> b
         return True
 
     for name in _iter_func_names(config):
-        if name == "llm_judge":
-            continue
         if not is_supported_metric_name(name):
             return False
 
@@ -679,7 +677,7 @@ class MetricEvaluatorAdapter:
 
         postconfig = self.config.get("postconfig", [])
         if postconfig:
-            env.setup_controller.setup(postconfig, getattr(env, "enable_proxy", False))
+            env.setup_controller.setup(postconfig)
 
         if self.config["func"] == "infeasible":
             action_history = getattr(env, "action_history", [])

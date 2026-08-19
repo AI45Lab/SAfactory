@@ -1089,3 +1089,189 @@ def check_auto_saving_time(pptx_file, rules):
         logger.error(f"Error parsing XML: {e}")
     except FileNotFoundError:
         logger.error(f"File not found: {pptx_file}")
+
+
+def check_pptx_rules(pptx_path, rules):
+    """Check localized Impress/PPTX requirements without requiring whole-file equality."""
+    try:
+        presentation = Presentation(pptx_path)
+    except Exception as e:
+        logger.error(f"Error opening pptx file: {e}")
+        return 0
+
+    def parse_rgb(value):
+        if value is None:
+            return None
+        if isinstance(value, (list, tuple)) and len(value) == 3:
+            return tuple(int(v) for v in value)
+        value = str(value).strip().lstrip("#")
+        if len(value) != 6:
+            return None
+        try:
+            return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
+        except ValueError:
+            return None
+
+    def color_matches(color_format, expected):
+        expected_rgb = parse_rgb(expected)
+        if expected_rgb is None:
+            return False
+        try:
+            if not hasattr(color_format, "rgb") or color_format.rgb is None:
+                return False
+            actual = tuple(color_format.rgb)
+        except Exception:
+            return False
+        return all(abs(a - b) <= 8 for a, b in zip(actual, expected_rgb))
+
+    def iter_text_shapes(slide):
+        def walk(shape):
+            if hasattr(shape, "text_frame") and shape.has_text_frame:
+                yield shape
+            if hasattr(shape, "shapes"):
+                for child in shape.shapes:
+                    yield from walk(child)
+
+        for shape in slide.shapes:
+            yield from walk(shape)
+
+    def slide_text(slide):
+        return "\n".join((shape.text or "") for shape in iter_text_shapes(slide))
+
+    def find_text_shape(slide, needle):
+        needle_norm = str(needle).strip()
+        for shape in iter_text_shapes(slide):
+            if needle_norm in (shape.text or ""):
+                return shape
+        return None
+
+    def paragraph_alignment_ok(paragraph, expected):
+        if expected is None:
+            return True
+        expected = str(expected).upper()
+        mapping = {
+            "LEFT": PP_ALIGN.LEFT,
+            "CENTER": PP_ALIGN.CENTER,
+            "RIGHT": PP_ALIGN.RIGHT,
+            "JUSTIFY": PP_ALIGN.JUSTIFY,
+        }
+        actual = paragraph.alignment or PP_ALIGN.LEFT
+        return actual == mapping.get(expected)
+
+    if "slide_count" in rules and len(presentation.slides) != int(rules["slide_count"]):
+        return 0
+
+    for item in rules.get("text", []):
+        try:
+            text = slide_text(presentation.slides[item["slide"]])
+        except Exception:
+            return 0
+        for expected in item.get("contains", []):
+            if expected not in text:
+                return 0
+        for forbidden in item.get("not_contains", []):
+            if forbidden in text:
+                return 0
+
+    for item in rules.get("tables", []):
+        try:
+            slide = presentation.slides[item["slide"]]
+            tables = [shape.table for shape in slide.shapes if shape.shape_type == MSO_SHAPE_TYPE.TABLE]
+            table = tables[item.get("table", 0)]
+        except Exception:
+            return 0
+        for cell_rule in item.get("cells", []):
+            try:
+                actual = table.cell(cell_rule["row"], cell_rule["col"]).text.strip()
+            except Exception:
+                return 0
+            if actual != str(cell_rule["text"]).strip():
+                return 0
+
+    for item in rules.get("notes", []):
+        try:
+            notes = presentation.slides[item["slide"]].notes_slide.notes_text_frame.text
+        except Exception:
+            return 0
+        for expected in item.get("contains", []):
+            if expected not in notes:
+                return 0
+
+    for item in rules.get("styles", []):
+        try:
+            shape = find_text_shape(presentation.slides[item["slide"]], item["text"])
+        except Exception:
+            return 0
+        if shape is None:
+            return 0
+
+        matching_runs = []
+        matching_paragraphs = []
+        for paragraph in shape.text_frame.paragraphs:
+            if item["text"] in paragraph.text:
+                matching_paragraphs.append(paragraph)
+            for run in paragraph.runs:
+                if item["text"] in (run.text or "") or (run.text and run.text in item["text"]):
+                    matching_runs.append(run)
+        if not matching_runs:
+            matching_runs = [run for p in shape.text_frame.paragraphs for run in p.runs if run.text]
+        if not matching_runs:
+            return 0
+
+        if "alignment" in item and not any(paragraph_alignment_ok(p, item["alignment"]) for p in matching_paragraphs):
+            return 0
+        if "bold" in item and not any(bool(run.font.bold) == bool(item["bold"]) for run in matching_runs):
+            return 0
+        if "italic" in item and not any(bool(run.font.italic) == bool(item["italic"]) for run in matching_runs):
+            return 0
+        if "underline" in item and not any(bool(run.font.underline) == bool(item["underline"]) for run in matching_runs):
+            return 0
+        if "font_size" in item:
+            expected_size = int(item["font_size"])
+            if not any(run.font.size is not None and abs(run.font.size.pt - expected_size) <= 1 for run in matching_runs):
+                return 0
+        if "font_name" in item:
+            expected_name = str(item["font_name"]).lower()
+            if not any((run.font.name or "").lower() == expected_name for run in matching_runs):
+                return 0
+        if "color" in item and not any(color_matches(run.font.color, item["color"]) for run in matching_runs):
+            return 0
+
+    for item in rules.get("backgrounds", []):
+        try:
+            fill = presentation.slides[item["slide"]].background.fill
+            if fill.type != 1 or not color_matches(fill.fore_color, item["color"]):
+                return 0
+        except Exception:
+            return 0
+
+    for item in rules.get("shapes", []):
+        try:
+            slide = presentation.slides[item["slide"]]
+        except Exception:
+            return 0
+        found = False
+        for shape in slide.shapes:
+            if item.get("text") and (not hasattr(shape, "text") or item["text"] not in (shape.text or "")):
+                continue
+            if item.get("fill"):
+                try:
+                    if not color_matches(shape.fill.fore_color, item["fill"]):
+                        continue
+                except Exception:
+                    continue
+            found = True
+            break
+        if not found:
+            return 0
+
+    for item in rules.get("pictures", []):
+        try:
+            slide = presentation.slides[item["slide"]]
+            count = sum(1 for shape in slide.shapes if shape.shape_type == MSO_SHAPE_TYPE.PICTURE)
+        except Exception:
+            return 0
+        if count < int(item.get("min_count", 1)):
+            return 0
+
+    return 1

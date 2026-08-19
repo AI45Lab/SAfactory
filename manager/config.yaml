@@ -24,11 +24,11 @@ cluster:
       limit: 1
     os_gym:
       quotagroup: "evobox_proxy"
-      entrypoint: "bash /mnt/shared-storage-gpfs2/evobox-share-gpfs2/kangzeyu/Safactory/env/osgym/run.sh"
+      entrypoint: "bash /path/to/Safactory/env/osgym/run.sh"
       volumes:
         - fsType: "mount.brainpp.cn/gpfs"
-          endpoint: "gpfs://gpfs2/evobox-share-gpfs2"
-          containerPath: "/mnt/shared-storage-gpfs2/evobox-share-gpfs2"
+          endpoint: "gpfs://gpfs1/evobox-share"
+          containerPath: "/mnt/shared-storage-user/evobox-share"
       resources:
         head:
           cpu: 25

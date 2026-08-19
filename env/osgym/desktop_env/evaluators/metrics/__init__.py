@@ -35,6 +35,7 @@ from .chrome import (
     is_expected_popup,
     is_expected_induced_text
 )
+from .scope import scope_reward
 from .docs import (
     compare_font_names,
     compare_subscript_contains,
@@ -52,6 +53,7 @@ from .docs import (
     compare_init_lines,
     find_default_font,
     contains_page_break,
+    compare_docx_format,
     compare_docx_files,
     compare_docx_tables,
     compare_line_spacing,
@@ -102,6 +104,14 @@ from .gimp import (
     check_saturation_increase_and_structure_sim,
     check_image_size,
     check_image_mirror,
+    check_image_vertical_mirror,
+    check_image_rotated_90_clockwise,
+    check_image_rotated_180,
+    check_brightness_increase_and_structure_sim,
+    check_saturation_decrease_and_structure_sim,
+    check_grayscale_and_structure_sim,
+    check_crop_size_and_source_region,
+    check_structure_sim_and_file_size,
     check_palette_and_structure_sim,
     check_textbox_on_leftside,
     check_green_background,
@@ -116,7 +126,17 @@ from .gimp import (
     compare_triangle_positions,
     check_sharper,
     check_image_file_size,
-    check_text_content
+    check_text_content,
+    check_blur_and_structure_sim,
+    check_sharpen_and_structure_sim,
+    check_warm_tone_and_structure_sim,
+    check_cool_tone_and_structure_sim,
+    check_canvas_border,
+    check_rotated_90_counterclockwise,
+    check_inverted_and_structure_sim,
+    check_sepia_and_structure_sim,
+    check_threshold_bw_and_structure_sim,
+    check_scaled_width_and_structure_sim
 )
 from .libreoffice import check_libre_locale
 from .others import compare_epub, check_mp3_meta
@@ -132,7 +152,8 @@ from .slides import (
     check_left_panel,
     check_transition,
     check_page_number_colors,
-    check_auto_saving_time
+    check_auto_saving_time,
+    check_pptx_rules
 )
 from .table import (
     compare_table,
@@ -175,7 +196,5 @@ from .vscode import (
     check_text_in_python_file,
     check_text_in_zip
 )
-
-
 def infeasible():
     pass

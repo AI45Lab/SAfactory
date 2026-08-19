@@ -52,6 +52,11 @@ class ModelProtocol:
     """Base class for model-specific prompt and action parsing logic."""
 
     SPECIAL_COMMANDS = {"WAIT", "DONE", "FAIL"}
+    uses_qwen35vl_history = True
+    allowed_tool_names = {"computer_use"}
+    allow_multiple_tool_calls = False
+    coordinate_denominator = 999.0
+    step_limit_signal: Optional[str] = "FAIL"
 
     def __init__(
         self,
@@ -62,6 +67,9 @@ class ModelProtocol:
         self.prompt_observation_type = prompt_observation_type
         self.screen_width = screen_width
         self.screen_height = screen_height
+
+    def reset(self) -> None:
+        """Reset protocol-specific conversation state."""
 
     def build_system_prompt(self) -> str:
         raise NotImplementedError
@@ -93,6 +101,43 @@ class ModelProtocol:
 
     def user_instruction_hint(self, instruction: str) -> str:
         raise NotImplementedError
+
+    def build_observation_messages(
+        self,
+        *,
+        current_obs: Dict[str, Any],
+        instruction: str,
+        previous_actions: Optional[str] = None,
+        history_truncated: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Build one or more messages carrying the latest observation."""
+        return [
+            {
+                "role": "user",
+                "content": self.build_user_content(
+                    current_obs=current_obs,
+                    instruction=instruction,
+                    previous_actions=previous_actions,
+                    history_truncated=history_truncated,
+                ),
+            }
+        ]
+
+    def build_assistant_message(
+        self,
+        content: str,
+        parsed_actions: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Build the history message representing the latest model response."""
+        del parsed_actions
+        return {"role": "assistant", "content": content}
+
+    def postprocess_messages(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Apply protocol-specific history filtering in place."""
+        return messages
 
     @staticmethod
     def _build_history_text(

@@ -257,6 +257,23 @@ def compare_csv(result: str, expected: Union[str, List[str]], **options) -> floa
     return 0.0
 
 
+def _cell_values_equal(value1: Any, value2: Any, precision: int, ignore_case: bool) -> bool:
+    if value1 is None and value2 is None:
+        return True
+    if value1 is None or value2 is None:
+        return False
+
+    if isinstance(value1, Number) and isinstance(value2, Number):
+        return round(float(value1), precision) == round(float(value2), precision)
+
+    text1 = str(value1).strip()
+    text2 = str(value2).strip()
+    if ignore_case:
+        text1 = text1.lower()
+        text2 = text2.lower()
+    return text1 == text2
+
+
 def compare_table(result: str, expected: str = None, **options) -> float:
     #  function compare_table {{{ #
     """
@@ -354,6 +371,54 @@ def compare_table(result: str, expected: str = None, **options) -> float:
                 "Assertion: %s =v= %s - %s", r["sheet_idx0"], r["sheet_idx1"], metric
             )
             #  }}} Compare Sheet Data by Internal Value #
+
+        elif r["type"] == "sheet_range_data":
+            #  Compare selected ranges by cached cell values {{{ #
+            # sheet_idx0: result sheet
+            # sheet_idx1: expected sheet
+            # ranges: list of Excel ranges, e.g. ["E2:F12"]
+            # precision: int as number of decimal digits, default to 4
+            # ignore_case: optional text comparison flag
+
+            error_limit: int = r.get("precision", 4)
+            ignore_case: bool = r.get("ignore_case", False)
+            sheet1: Tuple[BOOK, str] = parse_idx(r["sheet_idx0"], result, expected)
+            sheet2: Tuple[BOOK, str] = parse_idx(r["sheet_idx1"], result, expected)
+
+            total_metric = True
+            for rng in r["ranges"]:
+                for cell_range in MultiCellRange(rng):
+                    for row, col in cell_range.cells:
+                        coordinate = f"{get_column_letter(col)}{row}"
+                        value1 = read_cell_value(*sheet1, coordinate)
+                        value2 = read_cell_value(*sheet2, coordinate)
+                        metric = _cell_values_equal(
+                            value1, value2, error_limit, ignore_case
+                        )
+                        if not metric:
+                            logger.debug(
+                                "Range mismatch %s.%s: %r != %r",
+                                r["sheet_idx0"],
+                                coordinate,
+                                value1,
+                                value2,
+                            )
+                            total_metric = False
+                            break
+                    if not total_metric:
+                        break
+                if not total_metric:
+                    break
+            metric: bool = total_metric
+            logger.debug(
+                "Assertion: %s range %s == %s range %s - %s",
+                r["sheet_idx0"],
+                r["ranges"],
+                r["sheet_idx1"],
+                r["ranges"],
+                metric,
+            )
+            #  }}} Compare selected ranges by cached cell values #
 
         elif r["type"] == "sheet_print":
             #  Compare Sheet Data by Printed Value {{{ #

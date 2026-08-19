@@ -30,17 +30,24 @@ cd env/osgym && pip install -r requirements.txt
 |------|------|--------|
 | `dataset` | 任务数据集路径（支持相对路径，相对于 `env/osgym` 目录） | `datasets/cases.jsonl` |
 | `eval_mode` | 评估模式 (`standard` / `safety`) | `standard` |
-| `provider_name` | 后端提供商 (`docker` / `containerd`) | `docker` |
+| `provider_name` | 后端提供商；仅支持 `docker` | `docker` |
 | `vm_path` | 显式指定 VM 镜像路径；支持相对 `env/osgym` 的路径 | `None` |
 | `prompt_observation_type` | 提示词模态 (`screenshot`, `a11y_tree`, `screenshot_a11y_tree`) | `screenshot` |
-| `prompt_format` | 提示词协议格式 (`kimi`, `qwen`) | `qwen` |
+| `prompt_format` | 提示词协议格式 (`kimi`, `qwen3vl`, `qwen35`) | `qwen35` |
 | `action_space` | 动作空间 | `pyautogui` |
 | `screen_width/height` | 屏幕分辨率 | `1920x1080` |
+| `download_cache_dir` | Pod 内任务初始化下载的共享缓存目录 | `/tmp/osgym-download-cache` |
+| `reset_timeout_seconds` | OSGym reset/setup 总截止时间，应小于 Manager HTTP 超时 | `270.0` |
+| `setup_connect_timeout_seconds` | setup HTTP 请求的连接超时 | `10.0` |
 | `max_steps` | 每个任务的最大允许步数 | `30` |
 | `repeated_click_distance_threshold` | 连续 click 坐标距离小于该像素阈值时视为同一点击 | `10.0` |
 | `repeated_click_limit` | 连续重复 click 达到该次数后截断任务；设为 `0` 可关闭 | `2` |
+| `repeated_action_signature_limit` | 连续相同低层 pyautogui 动作签名（`moveTo`, `scroll`, `dragTo`, `typewrite`, `press`, `hotkey`, `keyDown`, `keyUp`）达到该次数后触发 stuck 处理；设为 `0` 可关闭 | `3` |
 
 OSGym 自动决定是否采集 accessibility tree：a11y 提示词模式会开启，safety 的 `popup` / `induced_text` 任务也会开启。
+
+safety 任务使用的 `6002`–`6008` Web 服务会在同一 Pod 的 OSGym actor
+之间共享。OSGym 会在使用前校验服务身份，并在最后一个 actor 结束后才关闭服务。
 
 ## 4. 运行示例
 

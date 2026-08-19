@@ -1,18 +1,17 @@
 """Registry for OSGym model protocols."""
 
-import logging
 from typing import Type
 
 from .base import ModelProtocol
 from .kimi import KimiProtocol
-from .qwen import QwenProtocol
-
-logger = logging.getLogger("osgym.model_protocols")
+from .qwen3vl import Qwen3VLProtocol
+from .qwen35 import Qwen35Protocol
 
 
 PROTOCOLS: dict[str, Type[ModelProtocol]] = {
     "kimi": KimiProtocol,
-    "qwen": QwenProtocol,
+    "qwen3vl": Qwen3VLProtocol,
+    "qwen35": Qwen35Protocol,
 }
 
 
@@ -26,8 +25,10 @@ def get_model_protocol(
     protocol_name = (prompt_format or "kimi").strip().lower()
     protocol_cls = PROTOCOLS.get(protocol_name)
     if protocol_cls is None:
-        logger.warning("Unknown prompt_format: %s. Defaulting to 'kimi'.", prompt_format)
-        protocol_cls = KimiProtocol
+        supported = ", ".join(sorted(PROTOCOLS))
+        raise ValueError(
+            f"Unsupported prompt_format {prompt_format!r}; expected one of: {supported}"
+        )
     return protocol_cls(
         prompt_observation_type=prompt_observation_type,
         screen_width=screen_width,

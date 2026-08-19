@@ -123,7 +123,6 @@ def _set_credentials(obj: Dict[str, Any], credential_key: str, credentials: Dict
 
 def _should_bypass_desktop_evaluator(evaluator: Dict[str, Any]) -> bool:
     return (
-        evaluator.get("func") == "llm_judge"
-        or requires_local_evaluator_adapter(evaluator)
+        requires_local_evaluator_adapter(evaluator)
         or not is_locally_supported_evaluator_config(evaluator)
     )
