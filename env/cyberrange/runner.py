@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""SAfactory adapter for cyberrange's native source-bootstrap runtime-task."""
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit, urlunsplit
+
+
+RESULT_PREFIX = "SAFACTORY_RESULT_JSON "
+
+
+def main() -> int:
+    started_at = time.perf_counter()
+    session_id = os.environ.get("SAFACTORY_SESSION_ID", "")
+    key_path: Path | None = None
+    try:
+        request = _read_request()
+        session_id = _required_text(request.get("session_id"), "session_id")
+        env_params = _mapping(request.get("env_params"))
+        case = _mapping(env_params.get("dataset"))
+        scenario_ref = _required_text(case.get("scenario_ref"), "dataset.scenario_ref")
+        if scenario_ref not in {f"postexploitbench-range{number}-v1" for number in range(3, 7)}:
+            raise RuntimeError("scenario_ref must select released Range3 through Range6")
+
+        task_id = str(case.get("task_id") or case.get("case_id") or scenario_ref)
+        source_root = Path(_required_text(env_params.get("source_root"), "source_root"))
+        wheelhouse_root = Path(_required_text(env_params.get("wheelhouse_root"), "wheelhouse_root"))
+        release_root = Path(_required_text(env_params.get("release_root"), "release_root"))
+        bootstrap = source_root / "scripts/brainpp_source_bootstrap_acceptance.sh"
+        if not bootstrap.is_file():
+            raise RuntimeError(f"cyberrange runtime-task entrypoint is missing: {bootstrap}")
+
+        output_root = Path(str(env_params.get("output_root") or (source_root / "results/brainpp/safactory")))
+        deployment_report_root = source_root / "results/brainpp"
+        try:
+            output_root.relative_to(deployment_report_root)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"output_root must be below cyberrange deployment report root: {deployment_report_root}"
+            ) from exc
+        safe_task = _safe_component(task_id)
+        # A DB row/session may be intentionally retried. Native deployment
+        # reports are immutable, so every attempt gets a fresh unique path.
+        attempt_id = f"{time.time_ns()}-{os.getpid()}"
+        report_dir = output_root / f"safactory_runtime_task_{safe_task}_{session_id}_{attempt_id}"
+
+        gateway_url = _gateway_session_url(request, session_id)
+        route_model = _required_text(
+            request.get("model") or env_params.get("route_model") or os.environ.get("SAFACTORY_ROUTE_MODEL"),
+            "model",
+        )
+        agent_kind = str(case.get("agent_kind") or env_params.get("agent_kind") or "codex")
+        model_format = "openai_responses" if agent_kind == "codex" else "openai_chat"
+        wall_time = _integer(case.get("wall_time_seconds", env_params.get("wall_time_seconds")), 600, 300, 36000)
+        wait_timeout = _integer(env_params.get("wait_timeout_s"), wall_time + 3000, 600, 172800)
+
+        # cyberrange's runtime TestSpec requires a write-only key file. The
+        # SAfactory Gateway session does not require a provider credential, so
+        # use a random per-episode value and remove it after the native command.
+        key_path = Path(f"/tmp/safactory-cyberrange-{session_id}.key")
+        key_path.write_text(secrets.token_urlsafe(32) + "\n", encoding="ascii")
+        key_path.chmod(0o600)
+
+        native_env = os.environ.copy()
+        native_env.update(
+            {
+                "AGENT_RANGE_BRAINPP_SOURCE_BOOTSTRAP_ACCEPTANCE": "1",
+                "AGENT_RANGE_BRAINPP_SOURCE_ROOT": str(source_root),
+                "AGENT_RANGE_BRAINPP_SOURCE_BOOTSTRAP_MODE": "runtime-task",
+                "AGENT_RANGE_BRAINPP_ACCEPTANCE_WHEELHOUSE_ROOT": str(wheelhouse_root),
+                "AGENT_RANGE_BRAINPP_RELEASE_ROOT": str(release_root),
+                "AGENT_RANGE_BRAINPP_ACCEPTANCE_REPORT_DIR": str(report_dir),
+                "AGENT_RANGE_BRAINPP_CLEANUP_TIMEOUT_SECONDS": "1800",
+                "AGENT_RANGE_BRAINPP_RUNTIME_SCENARIO_ID": scenario_ref,
+                "AGENT_RANGE_BRAINPP_RUNTIME_AGENT_KIND": agent_kind,
+                "AGENT_RANGE_BRAINPP_RUNTIME_MODEL_NAME": route_model,
+                "AGENT_RANGE_BRAINPP_RUNTIME_MODEL_BASE_URL": gateway_url,
+                "AGENT_RANGE_BRAINPP_RUNTIME_MODEL_FORMAT": model_format,
+                "AGENT_RANGE_BRAINPP_RUNTIME_MODEL_KEY_PATH": str(key_path),
+                "AGENT_RANGE_BRAINPP_RUNTIME_WALL_TIME_SECONDS": str(wall_time),
+                "AGENT_RANGE_BRAINPP_RUNTIME_WAIT_TIMEOUT_SECONDS": str(wait_timeout),
+                "AGENT_RANGE_BRAINPP_RUNTIME_EGRESS_PROFILE": str(
+                    case.get("egress_profile") or env_params.get("egress_profile") or "research-web-v1"
+                ),
+            }
+        )
+        prompt_path = case.get("initial_prompt_path")
+        if prompt_path:
+            native_env["AGENT_RANGE_BRAINPP_RUNTIME_PROMPT_FILE"] = str(prompt_path)
+
+        completed = subprocess.run(
+            ["/bin/bash", "/tmp/safactory-cyberrange/rjob_deploy_and_evaluate.sh"],
+            cwd=str(source_root),
+            env=native_env,
+            stdin=subprocess.DEVNULL,
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+            timeout=wait_timeout + 3600,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(f"cyberrange runtime-task exited with status {completed.returncode}")
+
+        native_path = report_dir / "runtime-test-result.json"
+        native_result = json.loads(native_path.read_text(encoding="utf-8"))
+        if not isinstance(native_result, dict):
+            raise RuntimeError("cyberrange runtime-test-result.json must contain an object")
+        e2e_success = native_result.get("e2e_success")
+        _emit(
+            {
+                "session_id": session_id,
+                "status": "succeeded",
+                "total_reward": 0.0,
+                "step_count": 1,
+                "terminated": True,
+                "truncated": native_result.get("run_outcome") == "timeout",
+                "error_text": None,
+                "metrics": {
+                    "bench": "cyberrange",
+                    "task_id": task_id,
+                    "case_id": case.get("case_id") or scenario_ref,
+                    "scenario_ref": scenario_ref,
+                    "cyberrange_run_id": native_result.get("run_id"),
+                    "run_outcome": native_result.get("run_outcome"),
+                    "e2e_success": e2e_success,
+                    "scorable": isinstance(e2e_success, bool),
+                    "platform_health": native_result.get("platform_health"),
+                    "evidence_status": native_result.get("evidence_status"),
+                    "objective_state": native_result.get("objective_state"),
+                    "reporting_contract": native_result.get("reporting_contract"),
+                    "termination_reason": native_result.get("termination_reason"),
+                    "milestone_vector": native_result.get("milestone_vector") or [],
+                    "native_metrics": native_result.get("metrics") or {},
+                    "native_result_path": str(native_path),
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 3),
+                },
+            }
+        )
+        return 0
+    except subprocess.TimeoutExpired as exc:
+        _emit_failure(session_id, f"cyberrange runtime-task timed out: {exc}", started_at, truncated=True)
+        return 0
+    except Exception as exc:  # runtime must always return contract JSON
+        _emit_failure(session_id, f"{type(exc).__name__}: {exc}", started_at)
+        return 0
+    finally:
+        if key_path is not None:
+            try:
+                key_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _gateway_session_url(request: dict[str, Any], session_id: str) -> str:
+    value = os.environ.get("SAFACTORY_GATEWAY_SESSION_URL_CONTAINER", "").strip()
+    if not value:
+        value = _required_text(request.get("gateway_base_url"), "gateway_base_url").rstrip("/") + "/" + session_id
+    parts = urlsplit(value)
+    if parts.hostname in {"127.0.0.1", "localhost", "::1"}:
+        netloc = "host.docker.internal" + (f":{parts.port}" if parts.port else "")
+        value = urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    return value.rstrip("/")
+
+
+def _read_request() -> dict[str, Any]:
+    raw = sys.stdin.read().strip() or os.environ.get("SAFACTORY_START_REQUEST_JSON", "").strip()
+    if not raw:
+        raise RuntimeError("SimulationStartRequest JSON was not provided")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise RuntimeError("SimulationStartRequest must be a JSON object")
+    return value
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _required_text(value: Any, name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise RuntimeError(f"missing {name}")
+    return text
+
+
+def _integer(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    if not minimum <= number <= maximum:
+        raise RuntimeError(f"integer value must be in {minimum}-{maximum}, got {number}")
+    return number
+
+
+def _safe_component(value: str) -> str:
+    return "".join(character if character.isalnum() or character in "-_." else "_" for character in value)[:160] or "case"
+
+
+def _emit_failure(session_id: str, error: str, started_at: float, *, truncated: bool = False) -> None:
+    _emit(
+        {
+            "session_id": session_id,
+            "status": "failed",
+            "total_reward": 0.0,
+            "step_count": 0,
+            "terminated": True,
+            "truncated": truncated,
+            "error_text": error,
+            "metrics": {
+                "bench": "cyberrange",
+                "duration_ms": round((time.perf_counter() - started_at) * 1000, 3),
+            },
+        }
+    )
+
+
+def _emit(result: dict[str, Any]) -> None:
+    _write_result_artifact(result)
+    print(RESULT_PREFIX + json.dumps(result, ensure_ascii=False), flush=True)
+
+
+def _write_result_artifact(result: dict[str, Any]) -> None:
+    """Atomically persist the same SimulationStartResult used on stdout."""
+    raw_path = os.environ.get("SAFACTORY_RESULT_PATH", "").strip()
+    if not raw_path:
+        return
+    path = Path(raw_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(json.dumps(result, ensure_ascii=False) + "\n", encoding="utf-8")
+        temporary.replace(path)
+        path.chmod(0o444)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
