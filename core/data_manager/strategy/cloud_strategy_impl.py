@@ -303,7 +303,6 @@ class CloudStrategy(StorageStrategy):
         dldb_metrics_log_path: Optional[str] = None,
         confirm_cloud_delete_job_id: str = "",
         confirm_production: bool = False,
-        cloud_delete_archive_dir: str = "",
     ):
         self.db_url = str(db_url or "").strip()
         self.job_id = job_id
@@ -315,7 +314,6 @@ class CloudStrategy(StorageStrategy):
         self.dldb_metrics_log_path = dldb_metrics_log_path
         self.confirm_cloud_delete_job_id = str(confirm_cloud_delete_job_id or "").strip()
         self.confirm_production = bool(confirm_production)
-        self.cloud_delete_archive_dir = str(cloud_delete_archive_dir or "").strip()
 
         self.client: Any = None
         self.env_manager: Any = None
@@ -602,7 +600,6 @@ class CloudStrategy(StorageStrategy):
         operation: str,
         job_id: str,
         landing_filter: str,
-        environment_rows: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         guard = CloudDeleteGuard(
             client=self.client,
@@ -610,13 +607,11 @@ class CloudStrategy(StorageStrategy):
             landing_table=str(self.landing_table or ""),
             confirmed_job_id=self.confirm_cloud_delete_job_id,
             confirm_production=self.confirm_production,
-            archive_dir=self.cloud_delete_archive_dir,
         )
         return await guard.preflight(
             operation=operation,
             job_id=job_id,
             landing_filter=landing_filter,
-            environment_rows=environment_rows,
         )
 
     async def delete_session_step_rows(self, query: SessionStepQuery) -> int:
@@ -671,7 +666,6 @@ class CloudStrategy(StorageStrategy):
             operation="delete_job_rows",
             job_id=job_id,
             landing_filter=landing_filter,
-            environment_rows=rows,
         )
         await asyncio.to_thread(
             self.client.delete_landing,
@@ -1161,8 +1155,7 @@ class CloudStrategy(StorageStrategy):
                     "step_id": row["step_id"],
                     "env_name": row["env_name"],
                     "env_id": row["session_id"],
-                    # Derived compatibility key for the unchanged RL buffer contract.
-                    "env_state": json.dumps(meta, ensure_ascii=False, default=str),
+                    "meta_json": json.dumps(meta, ensure_ascii=False, default=str),
                     "prompt": self.normalize_messages(messages),
                     "request": meta.get("request"),
                     "response": _response_text(response),
