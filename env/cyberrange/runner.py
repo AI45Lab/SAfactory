@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -14,9 +16,17 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 RESULT_PREFIX = "SAFACTORY_RESULT_JSON "
+CANONICAL_SOURCE_ROOT = Path("/mnt/shared-storage-user/wangyixu/cyberrange")
+NATIVE_RESULT_FIELDS = (
+    "run_outcome",
+    "e2e_success",
+    "platform_health",
+    "evidence_status",
+)
 
 
 def main() -> int:
+    os.umask(0o077)
     started_at = time.perf_counter()
     session_id = os.environ.get("SAFACTORY_SESSION_ID", "")
     key_path: Path | None = None
@@ -50,6 +60,7 @@ def main() -> int:
         # reports are immutable, so every attempt gets a fresh unique path.
         attempt_id = f"{time.time_ns()}-{os.getpid()}"
         report_dir = output_root / f"safactory_runtime_task_{safe_task}_{session_id}_{attempt_id}"
+        _validate_runtime_environment(source_root, report_dir)
 
         gateway_url = _gateway_session_url(request, session_id)
         route_model = _required_text(
@@ -95,8 +106,14 @@ def main() -> int:
         if prompt_path:
             native_env["AGENT_RANGE_BRAINPP_RUNTIME_PROMPT_FILE"] = str(prompt_path)
 
+        print(
+            "[safactory-cyberrange] deploying production stack and running "
+            f"one case report={report_dir}",
+            file=sys.stderr,
+            flush=True,
+        )
         completed = subprocess.run(
-            ["/bin/bash", "/tmp/safactory-cyberrange/rjob_deploy_and_evaluate.sh"],
+            ["/bin/bash", str(bootstrap)],
             cwd=str(source_root),
             env=native_env,
             stdin=subprocess.DEVNULL,
@@ -108,10 +125,7 @@ def main() -> int:
         if completed.returncode != 0:
             raise RuntimeError(f"cyberrange runtime-task exited with status {completed.returncode}")
 
-        native_path = report_dir / "runtime-test-result.json"
-        native_result = json.loads(native_path.read_text(encoding="utf-8"))
-        if not isinstance(native_result, dict):
-            raise RuntimeError("cyberrange runtime-test-result.json must contain an object")
+        native_path, native_result = _load_and_seal_native_result(report_dir)
         e2e_success = native_result.get("e2e_success")
         _emit(
             {
@@ -198,6 +212,57 @@ def _integer(value: Any, default: int, minimum: int, maximum: int) -> int:
     if not minimum <= number <= maximum:
         raise RuntimeError(f"integer value must be in {minimum}-{maximum}, got {number}")
     return number
+
+
+def _validate_runtime_environment(source_root: Path, report_dir: Path) -> None:
+    """Enforce cyberrange's privileged source-bootstrap deployment contract."""
+    if os.geteuid() != 0:
+        raise RuntimeError("DEPLOYMENT.md host deployment requires root")
+    if source_root != CANONICAL_SOURCE_ROOT:
+        raise RuntimeError("source root must use cyberrange's canonical GPFS path")
+    if not source_root.is_dir() or source_root.is_symlink():
+        raise RuntimeError("source root is unavailable or is a symlink")
+
+    report_root = source_root / "results/brainpp"
+    try:
+        relative_report = report_dir.relative_to(report_root)
+    except ValueError as exc:
+        raise RuntimeError(f"report directory must be a unique child below {report_root}") from exc
+    if not relative_report.parts:
+        raise RuntimeError(f"report directory must be a unique child below {report_root}")
+    if report_dir.exists() or report_dir.is_symlink():
+        raise RuntimeError(f"cyberrange report directory already exists: {report_dir}")
+
+    for device in (Path("/dev/kvm"), Path("/dev/net/tun")):
+        try:
+            mode = device.stat().st_mode
+        except OSError as exc:
+            raise RuntimeError(f"{device} is unavailable") from exc
+        if not stat.S_ISCHR(mode) or not os.access(device, os.R_OK | os.W_OK):
+            raise RuntimeError(f"{device} is unavailable")
+
+    for command in ("bash", "python3", "apt-get"):
+        if shutil.which(command) is None:
+            raise RuntimeError(f"required deployment command is missing: {command}")
+
+
+def _load_and_seal_native_result(report_dir: Path) -> tuple[Path, dict[str, Any]]:
+    native_path = report_dir / "runtime-test-result.json"
+    if not native_path.is_file() or native_path.is_symlink():
+        raise RuntimeError("deployment/evaluation did not produce runtime-test-result.json")
+    native_result = json.loads(native_path.read_text(encoding="utf-8"))
+    if not isinstance(native_result, dict):
+        raise RuntimeError("cyberrange runtime-test-result.json must contain an object")
+    missing = [field for field in NATIVE_RESULT_FIELDS if field not in native_result]
+    if missing:
+        raise RuntimeError(f"cyberrange runtime-test-result.json is missing fields: {missing}")
+    native_path.chmod(0o444)
+    print(
+        f"[safactory-cyberrange] sealed native result={native_path}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return native_path, native_result
 
 
 def _safe_component(value: str) -> str:

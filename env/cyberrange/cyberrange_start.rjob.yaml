@@ -32,10 +32,6 @@ rjob:
     gpu: 0
     memory_in_mb: 98304
 
-  embedded_files:
-    - source: ./rjob_deploy_and_evaluate.sh
-      target: /tmp/safactory-cyberrange/rjob_deploy_and_evaluate.sh
-
   # Cluster-visible GPFS mounts, not launcher-local Docker binds. Map the
   # requested yxwang checkout to cyberrange's enforced historical canonical
   # path. The second mount resolves the release's absolute base-images symlink.

@@ -96,12 +96,12 @@ embeds the runner, while source, wheelhouse, release, qcow2 images and results
 come from the same GPFS mounts as cyberrange's native RJob submitter. No image
 build is needed.
 
-The embedded `rjob_deploy_and_evaluate.sh` applies the production deployment
-contract from cyberrange `docs/DEPLOYMENT.md`: it fails closed unless the RJob
-is root, privileged, has usable KVM/TUN devices and the fixed canonical source
-layout; then it invokes the sealed source-bootstrap deployment, runs exactly
-one runtime TestSpec, validates `runtime-test-result.json`, and changes that
-native scoring source to read-only mode. The Python runner converts it into a
+The Python runner applies the production deployment contract from cyberrange
+`docs/DEPLOYMENT.md`: it fails closed unless the runtime is root, privileged,
+has usable KVM/TUN devices and the fixed canonical source layout; then it
+invokes the sealed source-bootstrap deployment, runs exactly one runtime
+TestSpec, validates `runtime-test-result.json`, and changes that native scoring
+source to read-only mode. It then converts the result into a
 `SimulationStartResult`, atomically writes the mounted SAfactory artifact, and
 also makes that artifact read-only before returning it on stdout.
 
