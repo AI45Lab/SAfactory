@@ -1,0 +1,16 @@
+rjob:
+  cluster_entry: https://h.pjlab.org.cn
+  namespace: ailab-evobox
+  access_key: ""
+  secret_key: ""
+  verifyssl: true
+  retries: 3
+
+  charged_group: evobox_gpu
+  name_prefix: harbor-vulhub
+  poll_interval_s: 5
+  cleanup_on_finish: true
+  keep_failed_jobs: true
+  no_packaging: true
+  auto_delete_duration: 12h
+  submit_concurrency: 40

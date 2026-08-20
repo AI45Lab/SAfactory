@@ -1,0 +1,13 @@
+environments:
+  - env_name: harbor
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:safactory-harbor-runtime-v0.21.0
+    env_num: 1
+    dataset: ./datasets/harbor_oracle_smoke.jsonl
+    dataset_load_mode: eager
+
+    env_params:
+      task_family: harbor
+      agent: oracle
+      task_path: /tmp/safactory-harbor-task
+      reward_key: reward
+      timeout_s: 900
