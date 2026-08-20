@@ -2,6 +2,8 @@
 
 Safactory v2 通过 `core.data_manager` 记录任务行和 session 行。默认本地后端是 `sqlite://env_trajs.db`；cloud 模式交给 `wt-data-gateway` 默认配置。
 
+存储边界保持精简：Gateway 负责构造轨迹行及选择 session close 的目标行，Evaluator 负责行分类与奖励提交，Manager 负责未评测 session 的兜底完成逻辑，SQLite/Cloud strategy 只负责行持久化。YAML 聚合和消息图片持久化仍保留在 `core.data_manager`。
+
 使用 SQLite 时，这两处必须一致：
 
 ```yaml
@@ -46,22 +48,24 @@ storage_config:
 
 ### `session_steps`
 
-每个 gateway telemetry event、可训练轨迹 step、close event 或 evaluation summary 一行。
+每个 gateway inference、直接轨迹 step 或 evaluation summary 一行；session close 会原位更新选中的轨迹行。
 
 | 字段 | 含义 |
 |------|------|
 | `id` | 自增主键。 |
+| `record_id` | 跨后端统一的行唯一标识，用于精确更新。 |
 | `session_id` | Session UUID。匹配 `job_environments.env_id`。 |
 | `step_id` | Session 内 step 索引。Gateway telemetry 使用请求序列号。 |
 | `env_name` | Adapter 名。Gateway 解析环境行后可能 patch 该字段。 |
 | `llm_model` | 与该行关联的 gateway route key 或 model name。 |
 | `group_id` | RL group 标识。 |
 | `job_id` | Launcher run 标识。 |
-| `messages` | JSON 序列化的 OpenAI 风格 messages。Gateway 会尽量追加 assistant output。 |
-| `response` | 直接 runtime 行的原始响应/action。Gateway telemetry 通常将响应存在 `messages`，这里为空。 |
+| `messages` | JSON 序列化的请求侧对话历史。 |
+| `request` | 当前 step 的原始或规范化 provider 请求。 |
+| `response` | 当前 step 的原始或规范化 assistant 响应/action。 |
 | `step_reward` | 单行奖励。Evaluation commit 会把最终分数写到这里。 |
 | `reward` | 累计奖励。Evaluation commit 也会写入最终分数。 |
-| `env_state` | JSON 元数据。Gateway/evaluation 事件中包含 `event_type`。 |
+| `meta_json` | 统一 JSON 元数据。Gateway/evaluation 事件中包含 `event_type`。 |
 | `is_terminal` | 该行是否终止 session。 |
 | `is_truncated` | 是否因截断终止。 |
 | `is_session_completed` | Session 是否对 reader/evaluator sealed。 |
@@ -70,7 +74,7 @@ storage_config:
 
 ## 行类型
 
-通常通过 `env_state.event_type` 和 `is_trainable` 判断行类型。
+通常通过 `meta_json.event_type` 和 `is_trainable` 判断行类型。
 
 | 类型 | 标记 | 可训练 | 产生方 |
 |------|------|--------|--------|
@@ -122,11 +126,11 @@ sqlite3 env_trajs.db "
 ```bash
 sqlite3 env_trajs.db "
   SELECT id, session_id, step_id,
-         json_extract(env_state, '$.event_type') AS event_type,
-         json_extract(env_state, '$.status_code') AS status_code,
-         json_extract(env_state, '$.total_latency_ms') AS total_latency_ms
+         json_extract(meta_json, '$.event_type') AS event_type,
+         json_extract(meta_json, '$.status_code') AS status_code,
+         json_extract(meta_json, '$.total_latency_ms') AS total_latency_ms
   FROM session_steps
-  WHERE env_state IS NOT NULL
+  WHERE meta_json IS NOT NULL
   ORDER BY id DESC
   LIMIT 20;"
 ```
@@ -173,7 +177,7 @@ sqlite3 env_trajs.db "
 | `reward` | `session_steps.step_reward`。 |
 | `instance_id` | `session_steps.group_id`。 |
 | `extra_info.session_id` | `session_steps.session_id`。 |
-| `extra_info.weight_version` | 存在时从 `env_state.weight_version` 解析。 |
+| `extra_info.weight_version` | 从持久化的 `meta_json.weight_version` 解析。 |
 | `extra_info.truncated` | `session_steps.is_truncated`。 |
 
 行会按 `group_id` 聚合。设置 `--rl-group-size` 或 `RL_GROUP_SIZE`，确保每个 prompt group 有预期数量的样本。
@@ -185,4 +189,6 @@ SQLite strategy 会创建运行时索引：
 - `idx_job_environments_job_deleted_id` on `(job_id, is_deleted, id)`。
 - `idx_session_steps_job_trainable_id` on `(job_id, is_trainable, id)`。
 
-`--rebuild-table` 只建议用于可丢弃的本地运行；它会在加载配置前删除 SQLite DB 文件。
+已有 `job_id` 必须显式选择 `--resume` 或 `--rebuild-table`。前者会删除未完成环境的旧 landing 行，后者删除当前任务的环境配置和 landing 行；两个参数不能同时使用。
+
+Cloud landing 删除默认关闭：必须用 `--confirm-cloud-delete-job-id` 精确确认任务，并输出解析后的 profile、DB URI、landing 表、过滤条件和预检行数。生产目标还必须提供 `--confirm-production`。serving 的发布与撤回完全属于数据平台职责；该流程不会查询或修改 serving 表。

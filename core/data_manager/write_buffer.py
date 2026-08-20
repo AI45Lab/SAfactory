@@ -356,7 +356,7 @@ class WriteBuffer:
         # 使用 Tortoise ORM 的 _meta.fields_map 来检查字段是否存在
         unique_field = None
         fields_map = getattr(model_class._meta, 'fields_map', {})
-        for field_name in ("session_id", "env_id", "uuid", "uid"):
+        for field_name in ("record_id", "session_id", "env_id", "uuid", "uid"):
             if field_name in fields_map:
                 unique_field = field_name
                 break

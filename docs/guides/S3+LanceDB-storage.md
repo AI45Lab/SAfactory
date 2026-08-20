@@ -5,7 +5,7 @@ Safactory can optionally persist trajectory and environment data to an S3-backed
 Install the optional dependencies:
 
 ```bash
-pip install -r requirements-cloud.txtExpand commentComment on line R203Resolved
+pip install -r requirements-cloud.txt
 ```
 
 Create a local `.env` file (do not commit credentials) with the data platform connection settings:
@@ -30,4 +30,4 @@ source .env
 set +a
 ```
 
-Then set the gateway `storage_type` to `cloud` and launch Safactory with `--storage-type cloud`. The `production` profile selects the production landing/serving tables, while `test` selects the test tables. See [AI45Lab/wt-data-platform-sdk](https://github.com/AI45Lab/wt-data-platform-sdk) for the complete configuration and table documentation.x
+Then set the gateway `storage_type` to `cloud` and launch Safactory with `--storage-type cloud`. The SDK profile selects Safactory's Cloud landing target; Safactory does not access serving tables. See [AI45Lab/wt-data-platform-sdk](https://github.com/AI45Lab/wt-data-platform-sdk) for the complete configuration and table documentation.

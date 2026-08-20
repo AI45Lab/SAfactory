@@ -2,20 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
+from core.data_manager.manager import DataManager
 from core.perf_trace import PerfTrace
-
-from .db_loader import (
-    get_active_data,
-    get_active_data_after_id,
-    get_all_image,
-    get_env_image_map,
-)
 
 log = logging.getLogger("manager.repository")
 
@@ -24,7 +16,7 @@ DB_FETCH_WARN_SECONDS = 1.0
 
 class AgentDataRepository:
     """
-    Thin repository around db_loader helpers.
+    Scheduler-facing repository over the public DataManager query API.
 
     The repository owns row-reservation state so callers can reserve buffered rows
     without holding the actor-pool state lock across database reads.
@@ -32,30 +24,27 @@ class AgentDataRepository:
 
     def __init__(
         self,
-        conn: Any,
+        data_manager: DataManager,
         *,
         job_id: str = "",
         db_processing_done_checker: Optional[Callable[[], bool]] = None,
     ) -> None:
-        self._conn = conn
+        self._data_manager = data_manager
         self._job_id = str(job_id or "").strip() or None
         self._db_processing_done_checker = db_processing_done_checker
 
-        self._cursor_reads_enabled = isinstance(conn, sqlite3.Connection)
         self._last_seen_id: int = 0
         self._fallback_offset: int = 0
         self._row_buffer: Deque[Dict[str, Any]] = deque()
         self._fetch_lock = asyncio.Lock()
         self._db_processing_done_cached: bool = False
         self._stop_db_reads: bool = False
-        self._fetch_executor = ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="safactory-agent-db-fetch",
-        )
-        self._pending_fetch: Optional[asyncio.Future[Tuple[List[Dict[str, Any]], int, int]]] = None
+        self._pending_fetch: Optional[asyncio.Task[Tuple[List[Dict[str, Any]], int, int]]] = None
         self._pending_fetch_args: Optional[Tuple[int, int, int]] = None
 
     def reset_cursor(self) -> None:
+        if self._pending_fetch is not None and not self._pending_fetch.done():
+            self._pending_fetch.cancel()
         self._last_seen_id = 0
         self._fallback_offset = 0
         self._row_buffer.clear()
@@ -65,11 +54,12 @@ class AgentDataRepository:
         self._pending_fetch_args = None
 
     def close(self) -> None:
+        if self._pending_fetch is not None and not self._pending_fetch.done():
+            self._pending_fetch.cancel()
         self._pending_fetch = None
         self._pending_fetch_args = None
-        self._fetch_executor.shutdown(wait=False, cancel_futures=True)
 
-    def get_env_image_map(self) -> Dict[str, str]:
+    async def get_env_image_map(self) -> Dict[str, str]:
         trace = PerfTrace(
             "manager.repository.get_env_image_map",
             logger=log,
@@ -77,7 +67,16 @@ class AgentDataRepository:
         )
         try:
             with trace.span("db_read.env_image_map"):
-                m = get_env_image_map(self._conn, job_id=self._job_id) or {}
+                rows = await self._data_manager.list_environment_rows(
+                    job_id=self._job_id,
+                    finished=False,
+                    is_deleted=False,
+                )
+                m = {
+                    str(row.get("env_name") or ""): row.get("image")
+                    for row in rows
+                    if row.get("env_name")
+                }
             trace.emit_summary(status="success", row_count=len(m))
         except Exception as exc:
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
@@ -87,7 +86,7 @@ class AgentDataRepository:
             out[str(k)] = "" if v is None else str(v)
         return out
 
-    def get_image_to_env_map(self) -> Dict[str, str]:
+    async def get_image_to_env_map(self) -> Dict[str, str]:
         trace = PerfTrace(
             "manager.repository.get_image_to_env_map",
             logger=log,
@@ -95,7 +94,16 @@ class AgentDataRepository:
         )
         try:
             with trace.span("db_read.image_to_env_map"):
-                m = get_all_image(self._conn, job_id=self._job_id) or {}
+                rows = await self._data_manager.list_environment_rows(
+                    job_id=self._job_id,
+                    finished=False,
+                    is_deleted=False,
+                )
+                m = {
+                    str(row.get("image") or ""): str(row.get("env_name") or "")
+                    for row in rows
+                    if row.get("image") and row.get("env_name")
+                }
             trace.emit_summary(status="success", row_count=len(m))
         except Exception as exc:
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
@@ -285,26 +293,26 @@ class AgentDataRepository:
     def _get_or_start_fetch_task(
         self,
         fetch_args: Tuple[int, int, int],
-    ) -> asyncio.Future[Tuple[List[Dict[str, Any]], int, int]]:
+    ) -> asyncio.Task[Tuple[List[Dict[str, Any]], int, int]]:
         if (
             self._pending_fetch is not None
             and self._pending_fetch_args == fetch_args
         ):
             return self._pending_fetch
 
-        loop = asyncio.get_running_loop()
-        task = loop.run_in_executor(
-            self._fetch_executor,
-            self._fetch_rows_snapshot,
-            fetch_args[0],
-            fetch_args[1],
-            fetch_args[2],
+        task = asyncio.create_task(
+            self._fetch_rows_snapshot(
+                fetch_args[0],
+                fetch_args[1],
+                fetch_args[2],
+            ),
+            name="safactory-agent-db-fetch",
         )
         self._pending_fetch = task
         self._pending_fetch_args = fetch_args
         return task
 
-    def _fetch_rows_snapshot(
+    async def _fetch_rows_snapshot(
         self,
         limit: int,
         last_seen_id: int,
@@ -320,50 +328,27 @@ class AgentDataRepository:
                 "limit": int(limit),
                 "last_seen_id": int(last_seen_id),
                 "fallback_offset": int(fallback_offset),
-                "cursor_reads_enabled": self._cursor_reads_enabled,
             },
         )
-        if self._cursor_reads_enabled:
-            try:
-                with trace.span("db_read.active_data_after_id"):
-                    rows = get_active_data_after_id(
-                        self._conn,
-                        int(limit),
-                        int(last_seen_id),
-                        job_id=self._job_id,
-                    ) or []
-                next_last_seen_id = int(last_seen_id)
-                if rows:
-                    next_last_seen_id = int(rows[-1].get("id") or next_last_seen_id)
-                trace.emit_summary(
-                    status="success",
-                    row_count=len(rows),
-                    next_last_seen_id=next_last_seen_id,
-                    next_fallback_offset=int(fallback_offset),
-                )
-                return rows, next_last_seen_id, int(fallback_offset)
-            except Exception as exc:
-                trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
-                raise
-
         try:
-            with trace.span("db_read.active_data_page"):
-                rows = get_active_data(
-                    self._conn,
-                    int(limit),
-                    int(fallback_offset),
+            with trace.span("db_read.active_data_after_id"):
+                rows = await self._data_manager.list_environment_rows(
                     job_id=self._job_id,
-                ) or []
-            next_fallback_offset = int(fallback_offset)
+                    after_id=int(last_seen_id),
+                    limit=int(limit),
+                    finished=False,
+                    is_deleted=False,
+                )
+            next_last_seen_id = int(last_seen_id)
             if rows:
-                next_fallback_offset += len(rows)
+                next_last_seen_id = int(rows[-1].get("id") or next_last_seen_id)
             trace.emit_summary(
                 status="success",
                 row_count=len(rows),
-                next_last_seen_id=int(last_seen_id),
-                next_fallback_offset=next_fallback_offset,
+                next_last_seen_id=next_last_seen_id,
+                next_fallback_offset=int(fallback_offset),
             )
-            return rows, int(last_seen_id), next_fallback_offset
+            return rows, next_last_seen_id, int(fallback_offset)
         except Exception as exc:
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise

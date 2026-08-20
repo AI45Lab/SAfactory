@@ -10,16 +10,18 @@ from typing import Any, Dict, Optional
 import httpx
 
 from core.data_manager.load_yaml import materialize_dataset_env_params
-from core.data_manager.manager import DataManager, SessionContext
+from core.data_manager.contracts import SessionContext
+from core.data_manager.manager import DataManager
 from core.perf_trace import PerfTrace
 from core.runtime_metadata import strip_internal_env_params
-from evaluator.eval_types import EvalRequest
+from evaluator.eval_types import EvalRequest, EvalResult, EvalStatus
 from evaluator.gateway_client import GatewayClient
 from evaluator.reward_committer import RewardCommitter
 from evaluator.rule_evaluator import discover_rule_eval_spec
 from evaluator.service import EvaluationService
 
 from .agent_start_client import AgentStartClient
+from .session_lifecycle import complete_latest_session_step
 from .simulation_lease_pool import SimulationLeasePool
 from .types import (
     SimulationAgentLease,
@@ -64,6 +66,8 @@ class _SimulationCircuitBreaker:
 
     async def record(self, result: SimulationStartResult) -> bool:
         if not self.enabled or self._opened.is_set():
+            return False
+        if result.truncated or str(result.status or "").lower() == "truncated":
             return False
 
         failed = str(result.status or "").lower() != "succeeded"
@@ -179,22 +183,29 @@ class SimulationWorkerGroup:
                 status="failed_no_episodes",
                 total_episodes=0,
                 succeeded_episodes=0,
+                truncated_episodes=0,
                 failed_episodes=0,
                 cancelled=cancelled,
                 results={},
             )
 
         succeeded = sum(1 for result in results.values() if result.status == "succeeded")
-        failed = len(results) - succeeded
+        truncated = sum(1 for result in results.values() if result.status == "truncated")
+        failed = len(results) - succeeded - truncated
         if cancelled:
             status = "cancelled"
+        elif failed:
+            status = "completed_with_failures"
+        elif truncated:
+            status = "completed_with_truncations"
         else:
-            status = "succeeded" if failed == 0 else "completed_with_failures"
+            status = "succeeded"
         return SimulationRunSummary(
             job_id=self.cfg.job_id,
             status=status,
             total_episodes=len(results),
             succeeded_episodes=succeeded,
+            truncated_episodes=truncated,
             failed_episodes=failed,
             cancelled=cancelled,
             results={key: result.total_reward for key, result in results.items()},
@@ -237,6 +248,7 @@ class SimulationWorkerGroup:
             result: SimulationStartResult | None = None
             release_reusable: bool | None = None
             cancelled = False
+            gateway_finalized = self.gateway_client is None
             try:
                 log.debug(
                     "worker=%d acquired agent=%s runtime=%s resource=%s reuse=%s",
@@ -258,17 +270,26 @@ class SimulationWorkerGroup:
                 )
                 with trace.span("agent_rollout"):
                     result = await self._run_one_episode(lease, session, request, worker_id)
+                metrics = result.metrics if isinstance(result.metrics, dict) else {}
+                if result.truncated or str(metrics.get("timeout_layer") or "") in {
+                    "docker_exec",
+                    "sandbox_command",
+                    "rjob_wait_terminal",
+                }:
+                    result.status = "truncated"
+                    result.truncated = True
                 trace.update_context(
                     rollout_status=result.status,
                     rollout_steps=result.step_count,
                     rollout_reward=result.total_reward,
                     rollout_truncated=result.truncated,
                 )
+                result.total_reward = None
                 completion_mode = self._gateway_completion_mode(result)
                 trace.update_context(gateway_completion_mode=completion_mode)
                 if self.gateway_client is not None:
                     with trace.span("gateway_finalize"):
-                        await self._finalize_gateway_session(
+                        gateway_finalized = await self._finalize_gateway_session(
                             result,
                             completion_mode=completion_mode,
                             worker_id=worker_id,
@@ -276,12 +297,31 @@ class SimulationWorkerGroup:
                             trace=trace,
                         )
 
-                if completion_mode == "abort":
+                if not gateway_finalized:
+                    result.status = "failed"
+                    result.error_text = result.error_text or "gateway session finalization failed"
+                    release_reusable = False
+                elif completion_mode == "abort":
+                    release_reusable = False
+                elif result.truncated:
+                    if self.reward_committer is None:
+                        raise RuntimeError("reward committer is required for truncated sessions")
+                    with trace.span("reward_commit_truncated"):
+                        await self.reward_committer.commit(
+                            session_id=result.session_id,
+                            eval_result=EvalResult(
+                                session_id=result.session_id,
+                                status=EvalStatus.TRUNCATED.value,
+                                normalized_score_10=0.0,
+                                reason=result.error_text or "agent rollout timed out",
+                                artifacts={"metrics": dict(result.metrics or {})},
+                            ),
+                        )
                     result.total_reward = 0.0
+                    with trace.span("mark_environment_finished"):
+                        await self.data_manager.mark_environment_finished(lease.agent_id)
                     release_reusable = False
-                elif self.evaluation_service is None or self.reward_committer is None:
-                    release_reusable = False
-                else:
+                elif self.evaluation_service is not None and self.reward_committer is not None:
                     with trace.span("eval_discover_rule"):
                         public_env_params = strip_internal_env_params(lease.env_params)
                         eval_spec = discover_rule_eval_spec(
@@ -314,20 +354,34 @@ class SimulationWorkerGroup:
                             eval_status=eval_result.status,
                             eval_score=eval_result.normalized_score_10,
                         )
-                        with trace.span("reward_commit"):
-                            await self.reward_committer.commit(
-                                session_id=result.session_id,
-                                eval_result=eval_result,
-                            )
                         if eval_result.status == "succeeded":
+                            with trace.span("reward_commit"):
+                                await self.reward_committer.commit(
+                                    session_id=result.session_id,
+                                    eval_result=eval_result,
+                                )
                             result.total_reward = eval_result.normalized_score_10
+                            with trace.span("mark_environment_finished"):
+                                await self.data_manager.mark_environment_finished(lease.agent_id)
                         else:
-                            result.total_reward = 0.0
                             result.status = "failed"
                             result.error_text = eval_result.error_text or eval_result.reason
                         release_reusable = result.status == "succeeded" and eval_result.status == "succeeded"
                     else:
-                        release_reusable = None
+                        result.status = "failed"
+                        result.error_text = (
+                            f"rule evaluator not found for environment {lease.agent_name!r}"
+                        )
+                        release_reusable = False
+                else:
+                    await complete_latest_session_step(
+                        self.data_manager,
+                        session_id=result.session_id,
+                        job_id=self.cfg.job_id,
+                        llm_model=self.cfg.llm_model,
+                    )
+                    await self.data_manager.mark_environment_finished(lease.agent_id)
+                    release_reusable = None
 
                 with trace.span("store_result"):
                     async with self._results_lock:
@@ -344,7 +398,7 @@ class SimulationWorkerGroup:
                     result = SimulationStartResult(
                         session_id=session.session_id if session is not None else lease.agent_id,
                         status="failed",
-                        total_reward=0.0,
+                        total_reward=None,
                         step_count=0,
                         terminated=True,
                         truncated=False,
@@ -381,7 +435,7 @@ class SimulationWorkerGroup:
                 )
             trace.emit_summary(status=result.status if result is not None else "failed")
             log.info(
-                "worker=%d agent=%s finished status=%s reward=%.6f time=%.2fs",
+                "worker=%d agent=%s finished status=%s reward=%s time=%.2fs",
                 worker_id,
                 agent_key,
                 result.status,
@@ -435,7 +489,7 @@ class SimulationWorkerGroup:
             result = SimulationStartResult(
                 session_id=session.session_id,
                 status="failed",
-                total_reward=0.0,
+                total_reward=None,
                 step_count=0,
                 terminated=True,
                 truncated=False,
@@ -464,10 +518,14 @@ class SimulationWorkerGroup:
         worker_id: int,
         agent_key: str,
         trace: PerfTrace | None = None,
-    ) -> None:
+    ) -> bool:
         if self.gateway_client is None:
-            return
-        reason = "rollout_finished" if completion_mode == "complete" else "system_error"
+            return True
+        reason = {
+            "complete": "rollout_finished",
+            "seal": "rollout_sealed",
+            "abort": "system_error",
+        }[completion_mode]
         try:
             if trace is None:
                 await self.gateway_client.close_session(
@@ -485,6 +543,7 @@ class SimulationWorkerGroup:
                     )
                 with trace.span("gateway_wait_telemetry_flush"):
                     await self.gateway_client.wait_telemetry_flush(result.session_id)
+            return True
         except httpx.HTTPError as exc:
             log.warning(
                 "worker=%d agent=%s gateway session finalization failed; preserving rollout status=%s "
@@ -495,22 +554,23 @@ class SimulationWorkerGroup:
                 result.session_id,
                 exc,
             )
+            return False
 
     @staticmethod
     def _gateway_completion_mode(result: SimulationStartResult) -> str:
         metrics = result.metrics if isinstance(result.metrics, dict) else {}
-        if str(metrics.get("rjob_status") or "") in {"Failed", "Stopped", "Killed"}:
-            return "abort"
-        if result.truncated:
-            return "complete"
+        if result.truncated or result.status == "truncated":
+            return "seal"
         if str(metrics.get("timeout_layer") or "") in {
             "docker_exec",
             "sandbox_command",
             "rjob_wait_terminal",
         }:
-            return "complete"
+            return "seal"
+        if str(metrics.get("rjob_status") or "") in {"Failed", "Stopped", "Killed"}:
+            return "abort"
         if result.status == "succeeded":
-            return "complete"
+            return "seal"
         return "abort"
 
     def _build_start_request(

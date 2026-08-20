@@ -65,7 +65,10 @@ For the first smoke test, use `env/geo3k/datasets/geo3k_sample.jsonl` in a local
 
 | Category | Flag | Default | Description |
 |----------|------|---------|-------------|
-| Storage | `--rebuild-table` / `--no-rebuild-table` | `false` | For SQLite, delete the DB file before loading configs. |
+| Storage | `--rebuild-table` / `--no-rebuild-table` | `false` | Delete configs and landing trajectories for the current `job_id`, then start over. Mutually exclusive with `--resume`; Cloud safety gates apply. |
+| Storage | `--resume` | `false` | Resume an existing `job_id`, deleting stale landing rows for unfinished environments before continuing. Cloud safety gates apply. |
+| Storage | `--confirm-cloud-delete-job-id` | empty | Exact `job_id` confirmation required for Cloud resume/rebuild deletion. |
+| Storage | `--confirm-production` | `false` | Additional acknowledgement required when the resolved Cloud profile/table is production. |
 | Storage | `--disable-buffer` | buffer enabled | Disable buffered writes. |
 | Storage | `--buffer-size` | `100` | Write buffer capacity. |
 | Storage | `--flush-interval` | `5.0` | Write buffer flush interval in seconds. |

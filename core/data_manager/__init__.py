@@ -1,14 +1,11 @@
 from .manager import DataManager
-from .strategy.base_strategy import StorageStrategy, SessionContext
-from .models import (
-    JobEnvironment,
-    SessionStep,
-)
+from .contracts import EnvironmentQuery, SessionContext, SessionStepQuery
+from .strategy.base_strategy import StorageStrategy
 
 __all__ = [
     "DataManager",
     "StorageStrategy",
     "SessionContext",
-    "JobEnvironment",
-    "SessionStep",
+    "EnvironmentQuery",
+    "SessionStepQuery",
 ]

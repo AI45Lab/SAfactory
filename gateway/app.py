@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -28,6 +29,15 @@ from gateway.storage import GatewayStorage
 from gateway.telemetry import StreamTelemetryStats, TelemetryRecorder
 
 log = logging.getLogger("gateway.app")
+
+
+def _without_beta_query(query: str) -> str | None:
+    filtered = [
+        (name, value)
+        for name, value in parse_qsl(query, keep_blank_values=True)
+        if name != "beta"
+    ]
+    return urlencode(filtered, doseq=True) or None
 
 
 def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None = None) -> FastAPI:
@@ -265,8 +275,13 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 target.route_model,
                 ctx.is_stream,
             )
-            if endpoint == "messages":
-                payload = forwarder.prepare_anthropic_payload(payload)
+            # The Shanhai/Bedrock route rejects Claude Code's beta query flag.
+            # Preserve any other native Anthropic query parameters.
+            anthropic_query_string = (
+                _without_beta_query(request.url.query)
+                if endpoint == "messages"
+                else None
+            )
 
             headers = (
                 forwarder.build_anthropic_headers(
@@ -289,7 +304,14 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     endpoint,
                 )
                 with trace.span("upstream_stream_open"):
-                    opened = await _open_stream(forwarder, target, endpoint, payload, headers)
+                    opened = await _open_stream(
+                        forwarder,
+                        target,
+                        endpoint,
+                        payload,
+                        headers,
+                        anthropic_query_string=anthropic_query_string,
+                    )
                 trace.mark(
                     "upstream_stream_opened",
                     status_code=opened.status_code,
@@ -329,7 +351,14 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 endpoint,
             )
             with trace.span("upstream_json_forward"):
-                result = await _forward_json(forwarder, target, endpoint, payload, headers)
+                result = await _forward_json(
+                    forwarder,
+                    target,
+                    endpoint,
+                    payload,
+                    headers,
+                    anthropic_query_string=anthropic_query_string,
+                )
             latency_ms = (time.perf_counter() - started) * 1000
             trace.mark(
                 "upstream_json_complete",
@@ -661,8 +690,11 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 completion_mode = str(body.get("completion_mode") or completion_mode).strip().lower()
         except Exception:
             pass
-        if completion_mode not in {"complete", "abort"}:
-            raise HTTPException(status_code=400, detail="completion_mode must be 'complete' or 'abort'")
+        if completion_mode not in {"complete", "seal", "abort"}:
+            raise HTTPException(
+                status_code=400,
+                detail="completion_mode must be 'complete', 'seal', or 'abort'",
+            )
         binding = await resolver.close_session(session_id, reason=reason)
         log.info(
             "Gateway session close requested: session_id=%s reason=%s completion_mode=%s",
@@ -697,6 +729,28 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             "completion_mode": completion_mode,
         }
 
+    async def clear_session_cache(payload: dict[str, Any]) -> dict[str, Any]:
+        raw_session_ids = payload.get("session_ids")
+        if not isinstance(raw_session_ids, list):
+            raise HTTPException(status_code=400, detail="session_ids must be a non-empty list")
+        session_ids = list(dict.fromkeys(
+            item.strip()
+            for item in raw_session_ids
+            if isinstance(item, str) and item.strip()
+        ))
+        if not session_ids:
+            raise HTTPException(status_code=400, detail="session_ids must be a non-empty list")
+
+        resolver: SessionResolver = app.state.gateway_resolver
+        removed = await resolver.clear_session_cache(session_ids)
+        log.info("Gateway session cache cleared: sessions=%d removed=%d", len(session_ids), removed)
+        return {"session_ids": session_ids, "removed": removed}
+
+    app.add_api_route(
+        f"{session_root}/cache/cleanup",
+        clear_session_cache,
+        methods=["POST"],
+    )
     app.add_api_route(
         f"{session_root}/{{session_id}}/chat/completions",
         handle_session_chat_completions,
@@ -832,13 +886,22 @@ async def _forward_json(
     endpoint: str,
     payload: dict[str, Any],
     headers: dict[str, str],
+    *,
+    anthropic_query_string: str | None = None,
 ):
     if endpoint == "chat/completions":
         return await forwarder.forward_chat(target, payload, headers)
     if endpoint == "responses":
         return await forwarder.forward_responses(target, payload, headers)
     if endpoint == "messages":
-        return await forwarder.forward_anthropic_messages(target, payload, headers)
+        if anthropic_query_string is None:
+            return await forwarder.forward_anthropic_messages(target, payload, headers)
+        return await forwarder.forward_anthropic_messages(
+            target,
+            payload,
+            headers,
+            query_string=anthropic_query_string,
+        )
     raise ValueError(f"unsupported endpoint {endpoint}")
 
 
@@ -848,13 +911,26 @@ async def _open_stream(
     endpoint: str,
     payload: dict[str, Any],
     headers: dict[str, str],
+    *,
+    anthropic_query_string: str | None = None,
 ) -> StreamForwardContext:
     if endpoint == "chat/completions":
         return await forwarder.open_chat_stream(target, payload, headers)
     if endpoint == "responses":
         return await forwarder.open_responses_stream(target, payload, headers)
     if endpoint == "messages":
-        return await forwarder.open_anthropic_messages_stream(target, payload, headers)
+        if anthropic_query_string is None:
+            return await forwarder.open_anthropic_messages_stream(
+                target,
+                payload,
+                headers,
+            )
+        return await forwarder.open_anthropic_messages_stream(
+            target,
+            payload,
+            headers,
+            query_string=anthropic_query_string,
+        )
     raise ValueError(f"unsupported endpoint {endpoint}")
 
 
@@ -1015,7 +1091,7 @@ async def _stream_and_finalize(
     client_cancelled = False
     upstream_cancelled = False
     stream_response_body: dict[str, Any] = {}
-    stream_metadata_buffer = ""
+    stream_metadata_buffer = b""
     stream_choice_states: dict[int, dict[str, Any]] = {}
     stream_text_parts: list[str] = []
     stream_total_bytes = 0
@@ -1034,7 +1110,8 @@ async def _stream_and_finalize(
             if chunk:
                 stream_capture.append(chunk)
                 stream_total_bytes += len(chunk)
-                stream_text_parts.append(chunk.decode("utf-8", errors="replace"))
+                if ctx.endpoint != "messages":
+                    stream_text_parts.append(chunk.decode("utf-8", errors="replace"))
                 if first_chunk_at is None:
                     first_chunk_at = time.perf_counter()
                     log.info(
@@ -1106,7 +1183,7 @@ async def _stream_and_finalize(
             stream_body = stream_capture.snapshot()
             stream_text = "".join(stream_text_parts)
             telemetry_response_body = (
-                None
+                _anthropic_stream_response_body_for_telemetry(stream_response_body)
                 if ctx.endpoint == "messages"
                 else _stream_response_body_for_telemetry(
                     summary=stream_response_body,
@@ -1115,6 +1192,17 @@ async def _stream_and_finalize(
                     stream_total_bytes=stream_total_bytes,
                     stream_truncated=False,
                 )
+            )
+            # Anthropic stays provider-native both on the wire and in the
+            # trajectory; only the SSE event framing is removed.
+            trajectory_response_text = (
+                json.dumps(
+                    telemetry_response_body,
+                    ensure_ascii=False,
+                    default=str,
+                )
+                if ctx.endpoint == "messages"
+                else None
             )
             with trace.span("request_log_stream_response"):
                 await request_logger.log_stream_response(
@@ -1146,7 +1234,7 @@ async def _stream_and_finalize(
                         upstream_latency_ms=upstream_stream_total_ms,
                         stream_stats=stats,
                         request_headers=request_headers,
-                        response_text=stream_text if ctx.endpoint == "messages" else None,
+                        response_text=trajectory_response_text,
                     )
             else:
                 with trace.span("telemetry_enqueue_stream_failure"):
@@ -1162,7 +1250,7 @@ async def _stream_and_finalize(
                         stream_stats=stats,
                         response_body=telemetry_response_body,
                         request_headers=request_headers,
-                        response_text=stream_text if ctx.endpoint == "messages" else None,
+                        response_text=trajectory_response_text,
                     )
             log.info(
                 "Gateway stream finalize complete: request_id=%s status=%d telemetry_recorded=true",
@@ -1346,18 +1434,18 @@ def _metric_label(value: str) -> str:
 
 def _collect_stream_metadata(
     chunk: bytes,
-    buffer: str,
+    buffer: bytes,
     summary: dict[str, Any],
     choice_states: dict[int, dict[str, Any]],
-) -> str:
-    buffer += chunk.decode("utf-8", errors="ignore")
-    while "\n" in buffer:
-        line, buffer = buffer.split("\n", 1)
+) -> bytes:
+    buffer += chunk
+    while b"\n" in buffer:
+        line, buffer = buffer.split(b"\n", 1)
         line = line.strip()
-        if not line or line.startswith(":") or not line.startswith("data:"):
+        if not line or line.startswith(b":") or not line.startswith(b"data:"):
             continue
         data = line[5:].strip()
-        if data == "[DONE]":
+        if data == b"[DONE]":
             summary.setdefault("status", "completed")
             continue
         try:
@@ -1376,6 +1464,16 @@ def _merge_stream_event(
     event: dict[str, Any],
     choice_states: dict[int, dict[str, Any]] | None = None,
 ) -> None:
+    event_type = event.get("type")
+    if event_type in {
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "message_delta",
+    }:
+        _merge_anthropic_stream_event(summary, event)
+        return
+
     for key in ("id", "object"):
         value = event.get(key)
         if value is not None:
@@ -1410,7 +1508,6 @@ def _merge_stream_event(
         if isinstance(response_usage, dict):
             summary["usage"] = response_usage
 
-    event_type = event.get("type")
     if event_type == "response.completed":
         summary["status"] = "completed"
     elif event_type == "response.failed":
@@ -1421,6 +1518,117 @@ def _merge_stream_event(
         summary.setdefault("output_text_parts", []).append(event["delta"])
     elif event_type == "response.reasoning_text.delta" and isinstance(event.get("delta"), str):
         summary.setdefault("reasoning_text_parts", []).append(event["delta"])
+
+
+def _merge_anthropic_stream_event(summary: dict[str, Any], event: dict[str, Any]) -> None:
+    event_type = event.get("type")
+    if event_type == "message_start":
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return
+        summary["anthropic_message"] = dict(message)
+        usage = message.get("usage")
+        if isinstance(usage, dict):
+            summary["usage"] = dict(usage)
+        return
+
+    if event_type == "content_block_start":
+        block = event.get("content_block")
+        if not isinstance(block, dict):
+            return
+        index = _safe_int(event.get("index"), 0)
+        state = summary.setdefault("anthropic_blocks", {}).setdefault(index, {})
+        state.update(block)
+        for key in ("text", "thinking", "signature"):
+            value = block.get(key)
+            if isinstance(value, str) and value:
+                state.setdefault(f"{key}_parts", []).append(value)
+        if "input" in block:
+            state["input"] = block["input"]
+        return
+
+    if event_type == "content_block_delta":
+        delta = event.get("delta")
+        if not isinstance(delta, dict):
+            return
+        index = _safe_int(event.get("index"), 0)
+        state = summary.setdefault("anthropic_blocks", {}).setdefault(index, {})
+        delta_type = delta.get("type")
+        if delta_type == "citations_delta" and isinstance(delta.get("citation"), dict):
+            state.setdefault("citations", []).append(delta["citation"])
+            return
+        field_by_delta_type = {
+            "text_delta": ("text", "text"),
+            "thinking_delta": ("thinking", "thinking"),
+            "signature_delta": ("signature", "signature"),
+            "input_json_delta": ("partial_json", "input_json"),
+        }
+        source_and_target = field_by_delta_type.get(delta_type)
+        if source_and_target is None:
+            return
+        source, target = source_and_target
+        state.setdefault(
+            "type",
+            {
+                "text_delta": "text",
+                "thinking_delta": "thinking",
+                "signature_delta": "thinking",
+                "input_json_delta": "tool_use",
+            }[delta_type],
+        )
+        value = delta.get(source)
+        if isinstance(value, str):
+            state.setdefault(f"{target}_parts", []).append(value)
+        return
+
+    if event_type == "message_delta":
+        delta = event.get("delta")
+        if isinstance(delta, dict):
+            summary.setdefault("anthropic_message", {}).update(delta)
+        usage = event.get("usage")
+        if isinstance(usage, dict):
+            summary.setdefault("usage", {}).update(usage)
+
+
+def _anthropic_stream_response_body_for_telemetry(summary: dict[str, Any]) -> dict[str, Any]:
+    message = dict(summary.get("anthropic_message") or {})
+    message.setdefault("type", "message")
+    message.setdefault("role", "assistant")
+    content: list[dict[str, Any]] = []
+    blocks = summary.get("anthropic_blocks")
+    if isinstance(blocks, dict):
+        for index in sorted(blocks):
+            block = blocks[index]
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            item = {
+                key: value
+                for key, value in block.items()
+                if not key.endswith("_parts")
+                and not (key == "input" and block_type == "tool_use")
+            }
+            if block_type == "text":
+                item["text"] = "".join(str(part) for part in block.get("text_parts", []))
+            elif block_type == "thinking":
+                item["thinking"] = "".join(
+                    str(part) for part in block.get("thinking_parts", [])
+                )
+                item["signature"] = "".join(
+                    str(part) for part in block.get("signature_parts", [])
+                )
+            elif block_type == "tool_use":
+                arguments = "".join(str(part) for part in block.get("input_json_parts", []))
+                try:
+                    item["input"] = json.loads(arguments) if arguments else block.get("input", {})
+                except json.JSONDecodeError:
+                    item["input"] = block.get("input", {})
+            content.append(item)
+    message["content"] = content
+    usage = summary.get("usage")
+    if isinstance(usage, dict):
+        message["usage"] = dict(usage)
+    return message
 
 
 def _merge_chat_completion_choice(choice_states: dict[int, dict[str, Any]], choice: dict[str, Any]) -> None:

@@ -28,6 +28,7 @@ async def main(argv: Sequence[str] | None = None) -> int:
     log.debug("log run directory: %s", log_session.run_dir)
 
     cfg = load_simulation_run_config(args)
+    log.info("JOB INITIALIZED | job_id=\033[1;96m%s\033[0m", cfg.job_id)
     flow = SimulationFlow(cfg)
     stop_event = asyncio.Event()
     _install_signal_handlers(stop_event)
