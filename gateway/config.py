@@ -29,7 +29,7 @@ class GatewayConfig:
     max_queue_size: int = 4096
     upstream_max_connections: int = 512
     upstream_keepalive_connections: int = 128
-    upstream_request_timeout_s: float = 300.0
+    upstream_request_timeout_s: float = 600.0
     upstream_connect_timeout_s: float = 10.0
     upstream_http_proxy: str | None = None
     upstream_no_proxy: list[str] | str | None = None
