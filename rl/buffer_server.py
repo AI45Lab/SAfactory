@@ -565,7 +565,7 @@ def start_aievobox_process(data: dict):
     pool_size = int(get_env("AIEVOBOX_POOL_SIZE") or 16)
     rl_epoch = int(get_env("RL_EPOCH") or 1)
     env_transport = os.environ.get("AIEVOBOX_ENV_TRANSPORT", "http")
-    multiplier = os.environ.get("AIEVOBOC_MULTIPLIER", 1.2)
+    multiplier = os.environ.get("AIEVOBOX_MULTIPLIER", 1.2)
 
     cmd = [
         "python3", launcher_script,
