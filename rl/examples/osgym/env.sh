@@ -46,7 +46,6 @@ export BUFFER_SERVER_PORT="${BUFFER_SERVER_PORT:-18889}"
 export LLM_PROXY_HOST="${LLM_PROXY_HOST:-127.0.0.1}"
 export LLM_PROXY_PORT="${LLM_PROXY_PORT:-18890}"
 export LLM_MAX_LENGTH="${LLM_MAX_LENGTH:-16384}"
-export RL_ROLLOUT_MAX_RESPONSE_LEN="${RL_ROLLOUT_MAX_RESPONSE_LEN:-256}"
 export LLM_TEMPERATURE="${LLM_TEMPERATURE:-1.0}"
 export LLM_TOP_P="${LLM_TOP_P:-1.0}"
 export LLM_PROXY_ENABLE_CONSOLE_LOG="${LLM_PROXY_ENABLE_CONSOLE_LOG:-0}"
@@ -66,12 +65,25 @@ export SGLANG_LOGGING_CONFIG_PATH="${SGLANG_LOGGING_CONFIG_PATH:-}"
 
 # Slime model script. It must define MODEL_ARGS.
 export MODEL_SCRIPT="${MODEL_SCRIPT:-${SLIME_HOME}/scripts/models/qwen3.5-9B.sh}"
+export MODEL_ARGS_ROTARY_BASE="${MODEL_ARGS_ROTARY_BASE:-}"
+export MODEL_ARGS_EXTRA="${MODEL_ARGS_EXTRA:-\
+--qkv-format bshd \
+--sequence-parallel \
+--freeze-params-name-list vision_model\. \
+--micro-batch-size 1 \
+--log-probs-chunk-size 1024 \
+--disable-grpo-std-normalization \
+--rollout-top-p ${LLM_TOP_P} \
+--sglang-mamba-scheduler-strategy extra_buffer}"
 
 # -------------------------------------------
 # Ray / Slime placement
 # -------------------------------------------
+export PYTHON_BIN="${PYTHON_BIN:-python3}"
+export RAY_BIN="${RAY_BIN:-ray}"
 export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
 export RAY_ADDRESS="${RAY_ADDRESS:-http://127.0.0.1:8265}"
+export RAY_PORT="${RAY_PORT:-}"
 export NUM_GPUS="${NUM_GPUS:-4}"
 export ACTOR_NUM_NODES="${ACTOR_NUM_NODES:-1}"
 export ACTOR_NUM_GPUS_PER_NODE="${ACTOR_NUM_GPUS_PER_NODE:-2}"
@@ -85,9 +97,11 @@ export KILL_PYTHON_BEFORE_RUN="${KILL_PYTHON_BEFORE_RUN:-false}"
 # -------------------------------------------
 # Slime checkpoint / rollout args
 # -------------------------------------------
+export TRAIN_ENTRYPOINT="${TRAIN_ENTRYPOINT:-${SLIME_HOME}/train.py}"
 export SAVE_INTERVAL="${SAVE_INTERVAL:-20}"
 export ROLLOUT_FUNCTION_PATH="${ROLLOUT_FUNCTION_PATH:-rl.examples.osgym.slime_generator.generate_rollout}"
 export NUM_ROLLOUT="${NUM_ROLLOUT:-300}"
+export LOSS_MASK_TYPE="${LOSS_MASK_TYPE:-qwen}"
 export CUSTOM_REWARD_POST_PROCESS_PATH="${CUSTOM_REWARD_POST_PROCESS_PATH:-rl.examples.osgym.trajectory_rewards.post_process_rewards}"
 
 # -------------------------------------------
@@ -108,6 +122,11 @@ export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flash}"
 # -------------------------------------------
 # Training / optimizer
 # -------------------------------------------
+export USE_DYNAMIC_BATCH_SIZE="${USE_DYNAMIC_BATCH_SIZE:-false}"
+export USE_DYNAMIC_GLOBAL_BATCH_SIZE="${USE_DYNAMIC_GLOBAL_BATCH_SIZE:-false}"
+export MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-16384}"
+export CALCULATE_PER_TOKEN_LOSS="${CALCULATE_PER_TOKEN_LOSS:-false}"
+
 export ADVANTAGE_ESTIMATOR="${ADVANTAGE_ESTIMATOR:-grpo}"
 export ENTROPY_COEF="${ENTROPY_COEF:-0.00}"
 export EPS_CLIP="${EPS_CLIP:-0.2}"
