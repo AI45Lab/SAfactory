@@ -23,7 +23,7 @@ from gateway.inference_forwarder import (
 )
 from gateway.llm_router import LLMRouteTarget, LLMRouter
 from gateway.models import GatewayRequestContext, GatewaySessionBinding
-from gateway.request_logger import GatewayRequestLogger, StreamBodyCapture
+from gateway.request_logger import GatewayRequestLogger
 from gateway.session_resolver import SessionResolver
 from gateway.storage import GatewayStorage
 from gateway.telemetry import StreamTelemetryStats, TelemetryRecorder
@@ -1162,36 +1162,141 @@ async def _stream_and_finalize(
             upstream_cancelled=upstream_cancelled,
         )
         ok = status_code < 400
+
+        async def finalize() -> None:
+            try:
+                log.info(
+                    "Gateway stream finalize begin: request_id=%s status=%d chunks=%d bytes=%d total_latency_ms=%.2f",
+                    ctx.request_id,
+                    status_code,
+                    chunk_count,
+                    output_bytes,
+                    latency_ms,
+                )
+                trace.mark(
+                    "stream_finalize_begin",
+                    status_code=status_code,
+                    chunk_count=chunk_count,
+                    output_bytes=output_bytes,
+                    total_latency_ms=latency_ms,
+                    upstream_open_latency_ms=opened.upstream_latency_ms,
+                    upstream_stream_total_ms=upstream_stream_total_ms,
+                    ttft_ms=ttft_ms,
+                )
+                stream_body = stream_capture.snapshot()
+                stream_text = "".join(stream_text_parts)
+                telemetry_response_body = (
+                    _anthropic_stream_response_body_for_telemetry(stream_response_body)
+                    if ctx.endpoint == "messages"
+                    else _stream_response_body_for_telemetry(
+                        summary=stream_response_body,
+                        choice_states=stream_choice_states,
+                        stream_text=stream_text,
+                        stream_total_bytes=stream_total_bytes,
+                        stream_truncated=False,
+                    )
+                )
+                # Anthropic stays provider-native both on the wire and in the
+                # trajectory; only the SSE event framing is removed.
+                trajectory_response_text = (
+                    json.dumps(
+                        telemetry_response_body,
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                    if ctx.endpoint == "messages"
+                    else None
+                )
+
+                if ok:
+                    with trace.span("telemetry_enqueue_stream_success"):
+                        await telemetry.enqueue_success(
+                            ctx,
+                            binding,
+                            target,
+                            payload,
+                            telemetry_response_body,
+                            latency_ms,
+                            upstream_latency_ms=upstream_stream_total_ms,
+                            stream_stats=stats,
+                            request_headers=request_headers,
+                            response_text=trajectory_response_text,
+                        )
+                else:
+                    with trace.span("telemetry_enqueue_stream_failure"):
+                        await telemetry.enqueue_failure(
+                            ctx,
+                            binding,
+                            target,
+                            payload,
+                            error_text or "stream failed",
+                            status_code,
+                            latency_ms,
+                            upstream_latency_ms=upstream_stream_total_ms,
+                            stream_stats=stats,
+                            response_body=telemetry_response_body,
+                            request_headers=request_headers,
+                            response_text=trajectory_response_text,
+                        )
+
+                with trace.span("router_mark_stream_result"):
+                    await router.mark_route_result(target.route_model, ok, latency_ms, status_code)
+                with trace.span("request_log_stream_response"):
+                    await request_logger.log_stream_response(
+                        ctx,
+                        binding,
+                        target,
+                        status_code=status_code,
+                        stream_body=stream_body,
+                        stream_summary=stream_response_body,
+                        latency_ms=latency_ms,
+                        upstream_latency_ms=upstream_stream_total_ms,
+                        ttft_ms=ttft_ms,
+                        output_chunk_count=chunk_count,
+                        client_cancelled=client_cancelled,
+                        upstream_cancelled=upstream_cancelled,
+                        error_text=error_text,
+                        upstream_open_latency_ms=opened.upstream_latency_ms,
+                        upstream_stream_total_ms=upstream_stream_total_ms,
+                    )
+                log.info(
+                    "Gateway stream finalize complete: request_id=%s status=%d telemetry_recorded=true",
+                    ctx.request_id,
+                    status_code,
+                )
+                trace.mark("stream_finalize_complete", status_code=status_code)
+            finally:
+                try:
+                    with trace.span("route_release"):
+                        await router.on_release(target.route_model, is_stream=ctx.is_stream)
+                finally:
+                    with trace.span("admission_release"):
+                        await admission.release(ctx, binding, target)
+                trace.update_context(
+                    final_status_code=status_code,
+                    stream_chunk_count=chunk_count,
+                    stream_output_bytes=output_bytes,
+                )
+                trace.emit_summary(
+                    status=(
+                        "client_cancelled"
+                        if client_cancelled
+                        else "upstream_failed"
+                        if upstream_cancelled
+                        else "success"
+                        if ok
+                        else "failed"
+                    ),
+                    status_code=status_code,
+                    total_latency_ms=latency_ms,
+                    upstream_open_latency_ms=opened.upstream_latency_ms,
+                    upstream_stream_total_ms=upstream_stream_total_ms,
+                    ttft_ms=ttft_ms,
+                )
+                log.debug("Gateway stream resources released: request_id=%s", ctx.request_id)
+
         await _await_stream_finalize_cancel_safe(
-            _finalize_stream_response(
-                ctx=ctx,
-                binding=binding,
-                target=target,
-                payload=payload,
-                router=router,
-                telemetry=telemetry,
-                request_logger=request_logger,
-                admission=admission,
-                request_headers=request_headers,
-                trace=trace,
-                stream_capture=stream_capture,
-                stream_response_body=stream_response_body,
-                stream_choice_states=stream_choice_states,
-                stream_text_parts=stream_text_parts,
-                stream_total_bytes=stream_total_bytes,
-                status_code=status_code,
-                error_text=error_text,
-                latency_ms=latency_ms,
-                upstream_latency_ms=opened.upstream_latency_ms,
-                upstream_stream_total_ms=upstream_stream_total_ms,
-                ttft_ms=ttft_ms,
-                chunk_count=chunk_count,
-                output_bytes=output_bytes,
-                stats=stats,
-                ok=ok,
-                client_cancelled=client_cancelled,
-                upstream_cancelled=upstream_cancelled,
-            ),
+            finalize(),
             request_id=ctx.request_id,
             finalize_tasks=finalize_tasks,
         )
@@ -1219,6 +1324,7 @@ async def _await_stream_finalize_cancel_safe(
                 error,
                 exc_info=(type(error), error, error.__traceback__),
             )
+
     task.add_done_callback(_on_done)
     try:
         await asyncio.shield(task)
@@ -1228,197 +1334,6 @@ async def _await_stream_finalize_cancel_safe(
             request_id,
         )
         raise
-
-
-async def _finalize_stream_response(
-    *,
-    ctx: GatewayRequestContext,
-    binding: GatewaySessionBinding,
-    target: LLMRouteTarget,
-    payload: dict[str, Any],
-    router: LLMRouter,
-    telemetry: TelemetryRecorder,
-    request_logger: GatewayRequestLogger,
-    admission: AdmissionController,
-    request_headers: dict[str, str],
-    trace: PerfTrace,
-    stream_capture: StreamBodyCapture,
-    stream_response_body: dict[str, Any],
-    stream_choice_states: dict[int, dict[str, Any]],
-    stream_text_parts: list[str],
-    stream_total_bytes: int,
-    status_code: int,
-    error_text: str | None,
-    latency_ms: float,
-    upstream_latency_ms: float,
-    upstream_stream_total_ms: float,
-    ttft_ms: float | None,
-    chunk_count: int,
-    output_bytes: int,
-    stats: StreamTelemetryStats,
-    ok: bool,
-    client_cancelled: bool,
-    upstream_cancelled: bool,
-) -> None:
-    telemetry_error: Exception | None = None
-    try:
-        log.info(
-            "Gateway stream finalize begin: request_id=%s status=%d chunks=%d bytes=%d total_latency_ms=%.2f",
-            ctx.request_id,
-            status_code,
-            chunk_count,
-            output_bytes,
-            latency_ms,
-        )
-        trace.mark(
-            "stream_finalize_begin",
-            status_code=status_code,
-            chunk_count=chunk_count,
-            output_bytes=output_bytes,
-            total_latency_ms=latency_ms,
-            upstream_open_latency_ms=upstream_latency_ms,
-            upstream_stream_total_ms=upstream_stream_total_ms,
-            ttft_ms=ttft_ms,
-        )
-        stream_body = stream_capture.snapshot()
-        stream_text = "".join(stream_text_parts)
-        telemetry_response_body = (
-            _anthropic_stream_response_body_for_telemetry(stream_response_body)
-            if ctx.endpoint == "messages"
-            else _stream_response_body_for_telemetry(
-                summary=stream_response_body,
-                choice_states=stream_choice_states,
-                stream_text=stream_text,
-                stream_total_bytes=stream_total_bytes,
-                stream_truncated=False,
-            )
-        )
-        # Anthropic stays provider-native both on the wire and in the
-        # trajectory; only the SSE event framing is removed.
-        trajectory_response_text = (
-            json.dumps(
-                telemetry_response_body,
-                ensure_ascii=False,
-                default=str,
-            )
-            if ctx.endpoint == "messages"
-            else None
-        )
-
-        # Trajectory persistence is the critical side effect. Submit it before
-        # the optional request log, while this independent task is isolated from
-        # downstream disconnect cancellation.
-        try:
-            if ok:
-                with trace.span("telemetry_enqueue_stream_success"):
-                    await telemetry.enqueue_success(
-                        ctx,
-                        binding,
-                        target,
-                        payload,
-                        telemetry_response_body,
-                        latency_ms,
-                        upstream_latency_ms=upstream_stream_total_ms,
-                        stream_stats=stats,
-                        request_headers=request_headers,
-                        response_text=trajectory_response_text,
-                    )
-            else:
-                with trace.span("telemetry_enqueue_stream_failure"):
-                    await telemetry.enqueue_failure(
-                        ctx,
-                        binding,
-                        target,
-                        payload,
-                        error_text or "stream failed",
-                        status_code,
-                        latency_ms,
-                        upstream_latency_ms=upstream_stream_total_ms,
-                        stream_stats=stats,
-                        response_body=telemetry_response_body,
-                        request_headers=request_headers,
-                        response_text=trajectory_response_text,
-                    )
-        except Exception as exc:
-            telemetry_error = exc
-            log.exception(
-                "Gateway stream telemetry submission failed: request_id=%s",
-                ctx.request_id,
-            )
-
-        try:
-            with trace.span("router_mark_stream_result"):
-                await router.mark_route_result(target.route_model, ok, latency_ms, status_code)
-        except Exception:
-            log.exception(
-                "Gateway stream route result update failed after telemetry submission: request_id=%s",
-                ctx.request_id,
-            )
-
-        try:
-            with trace.span("request_log_stream_response"):
-                await request_logger.log_stream_response(
-                    ctx,
-                    binding,
-                    target,
-                    status_code=status_code,
-                    stream_body=stream_body,
-                    stream_summary=stream_response_body,
-                    latency_ms=latency_ms,
-                    upstream_latency_ms=upstream_stream_total_ms,
-                    ttft_ms=ttft_ms,
-                    output_chunk_count=chunk_count,
-                    client_cancelled=client_cancelled,
-                    upstream_cancelled=upstream_cancelled,
-                    error_text=error_text,
-                    upstream_open_latency_ms=upstream_latency_ms,
-                    upstream_stream_total_ms=upstream_stream_total_ms,
-                )
-        except Exception:
-            log.exception(
-                "Gateway stream request log failed after telemetry submission: request_id=%s",
-                ctx.request_id,
-            )
-
-        if telemetry_error is None:
-            log.info(
-                "Gateway stream finalize complete: request_id=%s status=%d telemetry_recorded=true",
-                ctx.request_id,
-                status_code,
-            )
-            trace.mark("stream_finalize_complete", status_code=status_code)
-    finally:
-        try:
-            with trace.span("route_release"):
-                await router.on_release(target.route_model, is_stream=ctx.is_stream)
-        finally:
-            with trace.span("admission_release"):
-                await admission.release(ctx, binding, target)
-        trace.update_context(
-            final_status_code=status_code,
-            stream_chunk_count=chunk_count,
-            stream_output_bytes=output_bytes,
-        )
-        trace.emit_summary(
-            status=(
-                "client_cancelled"
-                if client_cancelled
-                else "upstream_failed"
-                if upstream_cancelled
-                else "success"
-                if ok
-                else "failed"
-            ),
-            status_code=status_code,
-            total_latency_ms=latency_ms,
-            upstream_open_latency_ms=upstream_latency_ms,
-            upstream_stream_total_ms=upstream_stream_total_ms,
-            ttft_ms=ttft_ms,
-        )
-        log.debug("Gateway stream resources released: request_id=%s", ctx.request_id)
-
-    if telemetry_error is not None:
-        raise telemetry_error
 
 
 async def _standard_stream_and_finalize(
