@@ -17,7 +17,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 RESULT_PREFIX = "SAFACTORY_RESULT_JSON "
 CANONICAL_SOURCE_ROOT = Path("/mnt/shared-storage-user/wangyixu/cyberrange")
+MILESTONES_ARTIFACT_NAME = "milestones.json"
+NATIVE_RESULT_ARTIFACT_NAME = "runtime-test-result.json"
 NATIVE_RESULT_FIELDS = (
+    "run_id",
     "run_outcome",
     "e2e_success",
     "platform_health",
@@ -126,6 +129,7 @@ def main() -> int:
             raise RuntimeError(f"cyberrange runtime-task exited with status {completed.returncode}")
 
         native_path, native_result = _load_and_seal_native_result(report_dir)
+        published_artifacts = _publish_native_artifacts(report_dir, native_path, native_result)
         e2e_success = native_result.get("e2e_success")
         _emit(
             {
@@ -153,6 +157,7 @@ def main() -> int:
                     "milestone_vector": native_result.get("milestone_vector") or [],
                     "native_metrics": native_result.get("metrics") or {},
                     "native_result_path": str(native_path),
+                    **published_artifacts,
                     "duration_ms": round((time.perf_counter() - started_at) * 1000, 3),
                 },
             }
@@ -247,7 +252,7 @@ def _validate_runtime_environment(source_root: Path, report_dir: Path) -> None:
 
 
 def _load_and_seal_native_result(report_dir: Path) -> tuple[Path, dict[str, Any]]:
-    native_path = report_dir / "runtime-test-result.json"
+    native_path = report_dir / NATIVE_RESULT_ARTIFACT_NAME
     if not native_path.is_file() or native_path.is_symlink():
         raise RuntimeError("deployment/evaluation did not produce runtime-test-result.json")
     native_result = json.loads(native_path.read_text(encoding="utf-8"))
@@ -263,6 +268,63 @@ def _load_and_seal_native_result(report_dir: Path) -> tuple[Path, dict[str, Any]
         flush=True,
     )
     return native_path, native_result
+
+
+def _publish_native_artifacts(
+    report_dir: Path,
+    native_path: Path,
+    native_result: dict[str, Any],
+) -> dict[str, str]:
+    """Copy final cyberrange evidence next to SAfactory's result artifact."""
+    result_artifact_path = _configured_result_artifact_path()
+    if result_artifact_path is None:
+        return {}
+
+    run_id = _required_text(native_result.get("run_id"), "runtime-test-result.run_id")
+    if run_id != _safe_component(run_id):
+        raise RuntimeError("cyberrange runtime-test-result.json contains an invalid run_id")
+    milestones_path = report_dir / "runs" / run_id / "current" / MILESTONES_ARTIFACT_NAME
+    milestones = _read_json_object(milestones_path, "cyberrange milestones.json")
+    if not isinstance(milestones.get("milestones"), list):
+        raise RuntimeError("cyberrange milestones.json must contain a milestones list")
+
+    result_dir = result_artifact_path.parent
+    result_dir.mkdir(parents=True, exist_ok=True)
+    _atomic_copy_readonly(native_path, result_dir / NATIVE_RESULT_ARTIFACT_NAME)
+    _atomic_copy_readonly(milestones_path, result_dir / MILESTONES_ARTIFACT_NAME)
+    print(
+        f"[safactory-cyberrange] published native artifacts={result_dir}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return {
+        "runtime_test_result_artifact": NATIVE_RESULT_ARTIFACT_NAME,
+        "milestones_artifact": MILESTONES_ARTIFACT_NAME,
+    }
+
+
+def _read_json_object(path: Path, description: str) -> dict[str, Any]:
+    if not path.is_file() or path.is_symlink():
+        raise RuntimeError(f"{description} is missing: {path}")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{description} must contain an object")
+    return value
+
+
+def _atomic_copy_readonly(source: Path, target: Path) -> None:
+    if not source.is_file() or source.is_symlink():
+        raise RuntimeError(f"native artifact is unavailable: {source}")
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_bytes(source.read_bytes())
+        temporary.replace(target)
+        target.chmod(0o444)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _safe_component(value: str) -> str:
@@ -294,10 +356,9 @@ def _emit(result: dict[str, Any]) -> None:
 
 def _write_result_artifact(result: dict[str, Any]) -> None:
     """Atomically persist the same SimulationStartResult used on stdout."""
-    raw_path = os.environ.get("SAFACTORY_RESULT_PATH", "").strip()
-    if not raw_path:
+    path = _configured_result_artifact_path()
+    if path is None:
         return
-    path = Path(raw_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
@@ -309,6 +370,11 @@ def _write_result_artifact(result: dict[str, Any]) -> None:
             temporary.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _configured_result_artifact_path() -> Path | None:
+    raw_path = os.environ.get("SAFACTORY_RESULT_PATH", "").strip()
+    return Path(raw_path) if raw_path else None
 
 
 if __name__ == "__main__":

@@ -117,8 +117,11 @@ historical path `/mnt/shared-storage-user/wangyixu/cyberrange`. It separately
 maps the `yxwang` shared root so release `base-images` symlinks resolve.
 `gpfs://gpfs1/evobox-share/chenxinquan/SAfactory/results` is mounted at
 `/app/results`; the runner atomically writes the same `SimulationStartResult`
-there that it emits on stdout. This gives SAfactory an artifact fallback if
-RJob log retrieval is empty or delayed.
+there that it emits on stdout. It also copies the sealed native
+`runtime-test-result.json` and the final `milestones.json` into the same
+per-session directory. This gives SAfactory an artifact fallback if RJob log
+retrieval is empty or delayed and exposes the native scoring evidence without
+requiring access to cyberrange's report tree.
 
 Keep RJob credentials and the cluster-visible Gateway address in the private
 file passed through `--rjob-config`; do not add them to environment files.
