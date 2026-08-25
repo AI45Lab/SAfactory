@@ -79,6 +79,10 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             app.state.gateway_draining = True
             app.state.gateway_admission.draining = True
             await _wait_for_drain(app, cfg.drain_timeout_s)
+            await _shutdown_stream_finalize_tasks(
+                app.state.gateway_stream_finalize_tasks,
+                cfg.drain_timeout_s,
+            )
             log.info("Gateway drain complete; stopping telemetry and clients")
             await app.state.gateway_telemetry.stop()
             await app.state.gateway_forwarder.close()
@@ -1442,6 +1446,26 @@ async def _wait_for_drain(app: FastAPI, drain_timeout_s: int) -> None:
             )
             next_log_at = now + 1.0
         await asyncio.sleep(0.05)
+
+
+async def _shutdown_stream_finalize_tasks(
+    finalize_tasks: set[asyncio.Task[None]],
+    timeout_s: float,
+) -> None:
+    tasks = set(finalize_tasks)
+    if not tasks:
+        return
+
+    log.info("Gateway waiting for stream finalization tasks: count=%d", len(tasks))
+    _, pending = await asyncio.wait(tasks, timeout=max(0.0, float(timeout_s)))
+    if pending:
+        log.error(
+            "Gateway stream finalization timed out; cancelling unfinished tasks: count=%d",
+            len(pending),
+        )
+        for task in pending:
+            task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _wait_for_session_drain(binding: GatewaySessionBinding, drain_timeout_s: int) -> bool:
