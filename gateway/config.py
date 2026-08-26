@@ -12,7 +12,7 @@ DEFAULT_SQLITE_DB_URL = "sqlite://env_trajs.db"
 @dataclass(frozen=True)
 class LLMRouteConfig:
     base_url: str
-    api_key: str | None = None
+    api_key: str | list[str] | None = None
     supports_stream: bool = True
     max_concurrency: int | None = None
     anthropic_interleaved_thinking: bool = True
