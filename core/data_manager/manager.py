@@ -61,15 +61,6 @@ class DataManager:
         """Diagnostic backend name without exposing the DAO instance."""
         return self._strategy.__class__.__name__
 
-    @property
-    def storage_identity(self) -> str:
-        """Stable identity used to scope cross-process initialization claims."""
-        return ":".join((
-            self.storage_type,
-            str(getattr(self._strategy, "db_url", "") or ""),
-            str(getattr(self._strategy, "env_config_table", "") or ""),
-        ))
-
     async def add_environment(
         self,
         env_name: str,
@@ -219,7 +210,6 @@ class DataManager:
         step_reward: float,
         request: Optional[str] = None,
         meta_json: Optional[Any] = None,
-        env_state: Optional[str] = None,
         terminated: bool = False,
         truncated: bool = False,
         is_trainable: bool = False,
@@ -233,7 +223,7 @@ class DataManager:
         For Cloud: images uploaded to S3, URLs stored in messages
         """
         session.total_reward += float(step_reward or 0.0)
-        metadata = _metadata_object(meta_json if meta_json is not None else env_state)
+        metadata = _metadata_object(meta_json)
         if dataset is not None:
             metadata["dataset"] = dataset
         record_ids = await self.insert_session_step_rows([{
@@ -268,7 +258,7 @@ class DataManager:
                 rows.append(dict(step))
                 continue
             session.total_reward += float(step.get("step_reward") or 0.0)
-            metadata = _metadata_object(step.get("meta_json", step.get("env_state")))
+            metadata = _metadata_object(step.get("meta_json"))
             if step.get("dataset") is not None:
                 metadata["dataset"] = step["dataset"]
             if isinstance(step.get("provider_meta"), dict):
@@ -360,36 +350,6 @@ class DataManager:
             ),
             dict(updates),
         )
-
-    async def record_evaluation_summary(
-        self,
-        session_id: str,
-        step_id: int,
-        reward: float,
-        env_state: str,
-        truncated: bool = False,
-    ) -> int:
-        """Compatibility wrapper; Evaluator now constructs summary rows directly."""
-        record_ids = await self.insert_session_step_rows([{
-            "session_id": session_id,
-            "env_id": session_id,
-            "step_id": step_id,
-            "env_name": "gateway",
-            "llm_model": "",
-            "group_id": "",
-            "job_id": self.job_id,
-            "messages": [],
-            "request": None,
-            "response": "",
-            "step_reward": reward,
-            "reward": reward,
-            "meta_json": _metadata_object(env_state),
-            "is_terminal": True,
-            "is_truncated": truncated,
-            "is_session_completed": True,
-            "is_trainable": False,
-        }])
-        return len(record_ids)
 
     async def update_session_step(
         self,
@@ -497,19 +457,10 @@ class DataManager:
 
 def _metadata_object(value: Any) -> Dict[str, Any]:
     if isinstance(value, dict):
-        metadata = dict(value)
-    elif not value:
-        metadata = {}
-    else:
-        try:
-            parsed = json.loads(value)
-        except Exception:
-            metadata = {"legacy_metadata": value}
-        else:
-            metadata = parsed if isinstance(parsed, dict) else {"legacy_metadata": parsed}
-    legacy_state = metadata.pop("env_state", None)
-    if legacy_state is None:
-        return metadata
-    legacy_metadata = _metadata_object(legacy_state)
-    legacy_metadata.update(metadata)
-    return legacy_metadata
+        return dict(value)
+    if not value:
+        return {}
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise ValueError("meta_json must contain a JSON object")
+    return parsed

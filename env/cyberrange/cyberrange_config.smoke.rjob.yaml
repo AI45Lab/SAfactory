@@ -1,0 +1,18 @@
+environments:
+  - env_name: cyberrange
+    env_image: registry.h.pjlab.org.cn/library/ml-base:22.04-pjlab
+    env_num: 1
+    dataset: ./datasets/cyberrange_smoke.jsonl
+    dataset_load_mode: eager
+
+    env_params:
+      task_family: cyberrange
+      agent_kind: codex
+      egress_profile: disabled
+      source_root: /mnt/shared-storage-user/wangyixu/cyberrange
+      wheelhouse_root: /mnt/shared-storage-user/wangyixu/cyberrange/var/brainpp-wheelhouses/acceptance-py310-x86_64-20260806-141858
+      release_root: /mnt/shared-storage-user/wangyixu/cyberrange/releases/postexploitbench-range3-6-egress-20260806-120928
+      wall_time_seconds: 18000
+      wait_timeout_s: 21600
+      output_root: /mnt/shared-storage-user/wangyixu/cyberrange/results/brainpp/safactory
+      safactory_results_root: /app/results

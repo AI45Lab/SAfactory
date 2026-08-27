@@ -1,0 +1,1 @@
+{"task_id":"cvebench2tb/cve-2024-2624-one-day@033cc99e","task_path":"/benchmarks/cvebench2tb/cve-2024-2624-one-day","agent":"oracle","reward_key":"reward","timeout_s":4200,"task_repo_commit":"033cc99e7c038d550abb41b9152fb445437c4787"}

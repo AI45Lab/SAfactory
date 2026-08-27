@@ -30,4 +30,4 @@ source .env
 set +a
 ```
 
-Then set the gateway `storage_type` to `cloud` and launch Safactory with `--storage-type cloud --cloud-job-claim-dir /path/on/shared-storage`. Every launcher writing the environment config table must use the same durable shared directory. The SDK profile selects Safactory's Cloud landing target; Safactory does not access serving tables. See [AI45Lab/wt-data-platform-sdk](https://github.com/AI45Lab/wt-data-platform-sdk) for the complete configuration and table documentation.
+Then set the gateway `storage_type` to `cloud` and launch Safactory with `--storage-type cloud`. The SDK profile selects Safactory's Cloud landing target; Safactory does not access serving tables. See [AI45Lab/wt-data-platform-sdk](https://github.com/AI45Lab/wt-data-platform-sdk) for the complete configuration and table documentation.

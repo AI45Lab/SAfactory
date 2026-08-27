@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import random
 from dataclasses import dataclass
 
 from gateway.config import GatewayConfig, LLMRouteConfig
 from gateway.models import GatewayRequestContext, GatewaySessionBinding
+
+
+def _pick_api_key(api_key: str | list[str] | None) -> str | None:
+    if isinstance(api_key, list):
+        return random.choice(api_key) if api_key else None
+    return api_key
 
 
 class ModelNotFoundError(Exception):
@@ -80,7 +87,7 @@ class LLMRouter:
         return LLMRouteTarget(
             route_model=requested_model,
             base_url=route.base_url,
-            api_key=route.api_key,
+            api_key=_pick_api_key(route.api_key),
             supports_stream=route.supports_stream,
             max_concurrency=max_concurrency,
             anthropic_interleaved_thinking=route.anthropic_interleaved_thinking,
