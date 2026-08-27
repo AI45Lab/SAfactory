@@ -116,38 +116,27 @@ class RewardCommitter:
             summary = _existing_eval_summary_row(rows, session_id)
             if summary is None:
                 reference = rows[-1] if rows else {}
-                insert_rows = getattr(self.data_manager, "insert_session_step_rows", None)
-                if callable(insert_rows):
-                    record_ids = await insert_rows([{
-                        "record_id": str(uuid.uuid4()),
-                        "session_id": session_id,
-                        "env_id": session_id,
-                        "step_id": _next_step_id(rows),
-                        "env_name": str(reference.get("env_name") or "gateway"),
-                        "llm_model": str(reference.get("llm_model") or ""),
-                        "group_id": str(reference.get("group_id") or ""),
-                        "job_id": str(reference.get("job_id") or self.data_manager.job_id or ""),
-                        "messages": [],
-                        "request": None,
-                        "response": "",
-                        "step_reward": eval_result.normalized_score_10,
-                        "reward": eval_result.normalized_score_10,
-                        "meta_json": _load_meta_json(summary_metadata),
-                        "is_terminal": True,
-                        "is_truncated": truncated,
-                        "is_session_completed": True,
-                        "is_trainable": False,
-                    }])
-                    recorded = len(record_ids)
-                else:
-                    # Compatibility for injected legacy test doubles.
-                    recorded = await self.data_manager.record_evaluation_summary(
-                        session_id=session_id,
-                        step_id=_next_step_id(rows),
-                        reward=eval_result.normalized_score_10,
-                        env_state=summary_metadata,
-                        truncated=truncated,
-                    )
+                record_ids = await self.data_manager.insert_session_step_rows([{
+                    "record_id": str(uuid.uuid4()),
+                    "session_id": session_id,
+                    "env_id": session_id,
+                    "step_id": _next_step_id(rows),
+                    "env_name": str(reference.get("env_name") or "gateway"),
+                    "llm_model": str(reference.get("llm_model") or ""),
+                    "group_id": str(reference.get("group_id") or ""),
+                    "job_id": str(reference.get("job_id") or self.data_manager.job_id or ""),
+                    "messages": [],
+                    "request": None,
+                    "response": "",
+                    "step_reward": eval_result.normalized_score_10,
+                    "reward": eval_result.normalized_score_10,
+                    "meta_json": _load_meta_json(summary_metadata),
+                    "is_terminal": True,
+                    "is_truncated": truncated,
+                    "is_session_completed": True,
+                    "is_trainable": False,
+                }])
+                recorded = len(record_ids)
             else:
                 recorded = await _update_persisted_row(
                     self.data_manager,
@@ -214,17 +203,8 @@ class RewardCommitter:
 
 
 def _merge_meta_json(existing: Any, new_metadata: str) -> str:
-    if isinstance(existing, dict):
-        existing_obj = dict(existing)
-    else:
-        try:
-            existing_obj = json.loads(existing) if existing else {}
-        except Exception:
-            existing_obj = {"legacy_meta_json": existing}
-    try:
-        new_obj = json.loads(new_metadata)
-    except Exception:
-        new_obj = {"eval": {"raw": new_metadata}}
+    existing_obj = _load_meta_json(existing)
+    new_obj = _load_meta_json(new_metadata)
     existing_obj.update(new_obj)
     return json.dumps(existing_obj, ensure_ascii=False)
 
@@ -255,11 +235,12 @@ def _as_eval_summary_metadata(metadata: str) -> str:
 def _load_meta_json(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
-    try:
-        parsed = json.loads(value) if value else {}
-    except Exception:
+    if not value:
         return {}
-    return parsed if isinstance(parsed, dict) else {}
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise ValueError("meta_json must contain a JSON object")
+    return parsed
 
 
 async def _update_persisted_row(

@@ -30,4 +30,4 @@ source .env
 set +a
 ```
 
-然后将 gateway 的 `storage_type` 设置为 `cloud`，并使用 `--storage-type cloud --cloud-job-claim-dir /共享存储路径` 启动 Safactory。所有会写环境配置表的 launcher 必须使用同一个持久共享目录。SDK profile 只负责选择 Safactory 的 Cloud landing 目标；Safactory 不访问 serving 表。完整配置和表说明请参阅 [AI45Lab/wt-data-platform-sdk](https://github.com/AI45Lab/wt-data-platform-sdk)。
+然后将 gateway 的 `storage_type` 设置为 `cloud`，并使用 `--storage-type cloud` 启动 Safactory。SDK profile 只负责选择 Safactory 的 Cloud landing 目标；Safactory 不访问 serving 表。完整配置和表说明请参阅 [AI45Lab/wt-data-platform-sdk](https://github.com/AI45Lab/wt-data-platform-sdk)。

@@ -1,0 +1,35 @@
+agent_name: cyberrange
+
+container:
+  workdir: /mnt/shared-storage-user/wangyixu/cyberrange
+  # The ml-base profile hooks use Bash-only file-descriptor syntax.
+  shell: /bin/bash
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-cyberrange-runner.py
+    command: "python3 /tmp/safactory-cyberrange-runner.py"
+
+  mounts:
+    # cyberrange source-bootstrap validates this historical canonical path.
+    - source: /mnt/shared-storage-user/evoagi-share/yxwang/cyberrange
+      target: /mnt/shared-storage-user/wangyixu/cyberrange
+      mode: ro
+    # Releases contain an absolute base-images symlink under this path.
+    - source: /mnt/shared-storage-user/evoagi-share/yxwang/cyberrange-images
+      target: /mnt/shared-storage-user/evoagi-share/cyberrange-images
+      mode: ro
+    - source: env/cyberrange/results
+      target: /workspace/Safactory/results
+      mode: rw
+
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
+    no_proxy: host.docker.internal,localhost,127.0.0.1,::1
+
+  extra_args:
+    - --privileged=true
+    - --entrypoint=
+    - --add-host=host.docker.internal:host-gateway
+
+  idle_command: "tail -f /dev/null"

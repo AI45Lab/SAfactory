@@ -79,6 +79,10 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             app.state.gateway_draining = True
             app.state.gateway_admission.draining = True
             await _wait_for_drain(app, cfg.drain_timeout_s)
+            await _shutdown_stream_finalize_tasks(
+                app.state.gateway_stream_finalize_tasks,
+                cfg.drain_timeout_s,
+            )
             log.info("Gateway drain complete; stopping telemetry and clients")
             await app.state.gateway_telemetry.stop()
             await app.state.gateway_forwarder.close()
@@ -1094,7 +1098,7 @@ async def _stream_and_finalize(
     client_cancelled = False
     upstream_cancelled = False
     stream_response_body: dict[str, Any] = {}
-    stream_metadata_buffer = ""
+    stream_metadata_buffer = b""
     stream_choice_states: dict[int, dict[str, Any]] = {}
     stream_text_parts: list[str] = []
     stream_total_bytes = 0
@@ -1113,7 +1117,8 @@ async def _stream_and_finalize(
             if chunk:
                 stream_capture.append(chunk)
                 stream_total_bytes += len(chunk)
-                stream_text_parts.append(chunk.decode("utf-8", errors="replace"))
+                if ctx.endpoint != "messages":
+                    stream_text_parts.append(chunk.decode("utf-8", errors="replace"))
                 if first_chunk_at is None:
                     first_chunk_at = time.perf_counter()
                     log.info(
@@ -1185,7 +1190,7 @@ async def _stream_and_finalize(
                 stream_body = stream_capture.snapshot()
                 stream_text = "".join(stream_text_parts)
                 telemetry_response_body = (
-                    None
+                    _anthropic_stream_response_body_for_telemetry(stream_response_body)
                     if ctx.endpoint == "messages"
                     else _stream_response_body_for_telemetry(
                         summary=stream_response_body,
@@ -1194,6 +1199,17 @@ async def _stream_and_finalize(
                         stream_total_bytes=stream_total_bytes,
                         stream_truncated=False,
                     )
+                )
+                # Anthropic stays provider-native both on the wire and in the
+                # trajectory; only the SSE event framing is removed.
+                trajectory_response_text = (
+                    json.dumps(
+                        telemetry_response_body,
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                    if ctx.endpoint == "messages"
+                    else None
                 )
 
                 if ok:
@@ -1208,7 +1224,7 @@ async def _stream_and_finalize(
                             upstream_latency_ms=upstream_stream_total_ms,
                             stream_stats=stats,
                             request_headers=request_headers,
-                            response_text=stream_text if ctx.endpoint == "messages" else None,
+                            response_text=trajectory_response_text,
                         )
                 else:
                     with trace.span("telemetry_enqueue_stream_failure"):
@@ -1224,7 +1240,7 @@ async def _stream_and_finalize(
                             stream_stats=stats,
                             response_body=telemetry_response_body,
                             request_headers=request_headers,
-                            response_text=stream_text if ctx.endpoint == "messages" else None,
+                            response_text=trajectory_response_text,
                         )
 
                 with trace.span("router_mark_stream_result"):
@@ -1432,6 +1448,26 @@ async def _wait_for_drain(app: FastAPI, drain_timeout_s: int) -> None:
         await asyncio.sleep(0.05)
 
 
+async def _shutdown_stream_finalize_tasks(
+    finalize_tasks: set[asyncio.Task[None]],
+    timeout_s: float,
+) -> None:
+    tasks = set(finalize_tasks)
+    if not tasks:
+        return
+
+    log.info("Gateway waiting for stream finalization tasks: count=%d", len(tasks))
+    _, pending = await asyncio.wait(tasks, timeout=max(0.0, float(timeout_s)))
+    if pending:
+        log.error(
+            "Gateway stream finalization timed out; cancelling unfinished tasks: count=%d",
+            len(pending),
+        )
+        for task in pending:
+            task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def _wait_for_session_drain(binding: GatewaySessionBinding, drain_timeout_s: int) -> bool:
     deadline = time.monotonic() + max(0, drain_timeout_s)
     next_log_at = 0.0
@@ -1471,18 +1507,18 @@ def _metric_label(value: str) -> str:
 
 def _collect_stream_metadata(
     chunk: bytes,
-    buffer: str,
+    buffer: bytes,
     summary: dict[str, Any],
     choice_states: dict[int, dict[str, Any]],
-) -> str:
-    buffer += chunk.decode("utf-8", errors="ignore")
-    while "\n" in buffer:
-        line, buffer = buffer.split("\n", 1)
+) -> bytes:
+    buffer += chunk
+    while b"\n" in buffer:
+        line, buffer = buffer.split(b"\n", 1)
         line = line.strip()
-        if not line or line.startswith(":") or not line.startswith("data:"):
+        if not line or line.startswith(b":") or not line.startswith(b"data:"):
             continue
         data = line[5:].strip()
-        if data == "[DONE]":
+        if data == b"[DONE]":
             summary.setdefault("status", "completed")
             continue
         try:
@@ -1501,6 +1537,16 @@ def _merge_stream_event(
     event: dict[str, Any],
     choice_states: dict[int, dict[str, Any]] | None = None,
 ) -> None:
+    event_type = event.get("type")
+    if event_type in {
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "message_delta",
+    }:
+        _merge_anthropic_stream_event(summary, event)
+        return
+
     for key in ("id", "object"):
         value = event.get(key)
         if value is not None:
@@ -1535,7 +1581,6 @@ def _merge_stream_event(
         if isinstance(response_usage, dict):
             summary["usage"] = response_usage
 
-    event_type = event.get("type")
     if event_type == "response.completed":
         summary["status"] = "completed"
     elif event_type == "response.failed":
@@ -1546,6 +1591,117 @@ def _merge_stream_event(
         summary.setdefault("output_text_parts", []).append(event["delta"])
     elif event_type == "response.reasoning_text.delta" and isinstance(event.get("delta"), str):
         summary.setdefault("reasoning_text_parts", []).append(event["delta"])
+
+
+def _merge_anthropic_stream_event(summary: dict[str, Any], event: dict[str, Any]) -> None:
+    event_type = event.get("type")
+    if event_type == "message_start":
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return
+        summary["anthropic_message"] = dict(message)
+        usage = message.get("usage")
+        if isinstance(usage, dict):
+            summary["usage"] = dict(usage)
+        return
+
+    if event_type == "content_block_start":
+        block = event.get("content_block")
+        if not isinstance(block, dict):
+            return
+        index = _safe_int(event.get("index"), 0)
+        state = summary.setdefault("anthropic_blocks", {}).setdefault(index, {})
+        state.update(block)
+        for key in ("text", "thinking", "signature"):
+            value = block.get(key)
+            if isinstance(value, str) and value:
+                state.setdefault(f"{key}_parts", []).append(value)
+        if "input" in block:
+            state["input"] = block["input"]
+        return
+
+    if event_type == "content_block_delta":
+        delta = event.get("delta")
+        if not isinstance(delta, dict):
+            return
+        index = _safe_int(event.get("index"), 0)
+        state = summary.setdefault("anthropic_blocks", {}).setdefault(index, {})
+        delta_type = delta.get("type")
+        if delta_type == "citations_delta" and isinstance(delta.get("citation"), dict):
+            state.setdefault("citations", []).append(delta["citation"])
+            return
+        field_by_delta_type = {
+            "text_delta": ("text", "text"),
+            "thinking_delta": ("thinking", "thinking"),
+            "signature_delta": ("signature", "signature"),
+            "input_json_delta": ("partial_json", "input_json"),
+        }
+        source_and_target = field_by_delta_type.get(delta_type)
+        if source_and_target is None:
+            return
+        source, target = source_and_target
+        state.setdefault(
+            "type",
+            {
+                "text_delta": "text",
+                "thinking_delta": "thinking",
+                "signature_delta": "thinking",
+                "input_json_delta": "tool_use",
+            }[delta_type],
+        )
+        value = delta.get(source)
+        if isinstance(value, str):
+            state.setdefault(f"{target}_parts", []).append(value)
+        return
+
+    if event_type == "message_delta":
+        delta = event.get("delta")
+        if isinstance(delta, dict):
+            summary.setdefault("anthropic_message", {}).update(delta)
+        usage = event.get("usage")
+        if isinstance(usage, dict):
+            summary.setdefault("usage", {}).update(usage)
+
+
+def _anthropic_stream_response_body_for_telemetry(summary: dict[str, Any]) -> dict[str, Any]:
+    message = dict(summary.get("anthropic_message") or {})
+    message.setdefault("type", "message")
+    message.setdefault("role", "assistant")
+    content: list[dict[str, Any]] = []
+    blocks = summary.get("anthropic_blocks")
+    if isinstance(blocks, dict):
+        for index in sorted(blocks):
+            block = blocks[index]
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            item = {
+                key: value
+                for key, value in block.items()
+                if not key.endswith("_parts")
+                and not (key == "input" and block_type == "tool_use")
+            }
+            if block_type == "text":
+                item["text"] = "".join(str(part) for part in block.get("text_parts", []))
+            elif block_type == "thinking":
+                item["thinking"] = "".join(
+                    str(part) for part in block.get("thinking_parts", [])
+                )
+                item["signature"] = "".join(
+                    str(part) for part in block.get("signature_parts", [])
+                )
+            elif block_type == "tool_use":
+                arguments = "".join(str(part) for part in block.get("input_json_parts", []))
+                try:
+                    item["input"] = json.loads(arguments) if arguments else block.get("input", {})
+                except json.JSONDecodeError:
+                    item["input"] = block.get("input", {})
+            content.append(item)
+    message["content"] = content
+    usage = summary.get("usage")
+    if isinstance(usage, dict):
+        message["usage"] = dict(usage)
+    return message
 
 
 def _merge_chat_completion_choice(choice_states: dict[int, dict[str, Any]], choice: dict[str, Any]) -> None:

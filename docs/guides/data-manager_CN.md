@@ -177,7 +177,7 @@ sqlite3 env_trajs.db "
 | `reward` | `session_steps.step_reward`。 |
 | `instance_id` | `session_steps.group_id`。 |
 | `extra_info.session_id` | `session_steps.session_id`。 |
-| `extra_info.weight_version` | 通过未修改的训练适配层从持久化的 `meta_json.weight_version` 解析。 |
+| `extra_info.weight_version` | 从持久化的 `meta_json.weight_version` 解析。 |
 | `extra_info.truncated` | `session_steps.is_truncated`。 |
 
 行会按 `group_id` 聚合。设置 `--rl-group-size` 或 `RL_GROUP_SIZE`，确保每个 prompt group 有预期数量的样本。
@@ -191,4 +191,4 @@ SQLite strategy 会创建运行时索引：
 
 已有 `job_id` 必须显式选择 `--resume` 或 `--rebuild-table`。前者会删除未完成环境的旧 landing 行，后者删除当前任务的环境配置和 landing 行；两个参数不能同时使用。
 
-所有 Cloud launcher 必须把 `--cloud-job-claim-dir` 指向同一个持久共享文件系统。文件租约会一直持有到首批及后台环境写入全部结束，避免并发触发 `max(id)+1` 分配。Cloud landing 删除默认关闭：必须用 `--confirm-cloud-delete-job-id` 精确确认任务，并输出解析后的 profile、DB URI、landing 表、过滤条件和预检行数。生产目标还必须提供 `--confirm-production`，并通过 `--cloud-delete-archive-dir` 生成且校验删除前归档。serving 的发布与撤回完全属于数据平台职责；该流程不会查询或修改 serving 表。
+Cloud landing 删除默认关闭：必须用 `--confirm-cloud-delete-job-id` 精确确认任务，并输出解析后的 profile、DB URI、landing 表、过滤条件和预检行数。生产目标还必须提供 `--confirm-production`。serving 的发布与撤回完全属于数据平台职责；该流程不会查询或修改 serving 表。

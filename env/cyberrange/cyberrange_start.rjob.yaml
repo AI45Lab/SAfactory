@@ -1,0 +1,41 @@
+agent_name: cyberrange
+
+container:
+  workdir: /mnt/shared-storage-user/wangyixu/cyberrange
+  shell: /bin/bash
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-cyberrange/runner.py
+    command: "python3 /tmp/safactory-cyberrange/runner.py"
+
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+
+rjob:
+  name_prefix: cyberrange
+  private_machine: Group
+  image_pull_policy: IfNotPresent
+  no_packaging: true
+  # Used by SAfactory to materialize the embedded runner before execution.
+  python_bin: python3
+  cleanup_on_finish: true
+  keep_failed_jobs: true
+  poll_interval_s: 10
+  termination_grace_period_seconds: 1800
+
+  # Matches cyberrange's native source-bootstrap RJob runtime contract.
+  privileged: true
+  host_network: false
+
+  resources:
+    cpu: 14
+    gpu: 0
+    memory_in_mb: 98304
+
+  # Cluster-visible GPFS mounts, not launcher-local Docker binds. Map the
+  # requested yxwang checkout to cyberrange's enforced historical canonical
+  # path. The second mount resolves the release's absolute base-images symlink.
+  mount_config:
+    - "gpfs://gpfs1/evoagi-share/yxwang/cyberrange:/mnt/shared-storage-user/wangyixu/cyberrange"
+    - "gpfs://gpfs1/evoagi-share/yxwang:/mnt/shared-storage-user/evoagi-share"
+    - "gpfs://gpfs1/evobox-share/chenxinquan/SAfactory/results:/app/results"

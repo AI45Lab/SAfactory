@@ -7,9 +7,8 @@ import logging
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Set, Union
+from typing import Any, Dict, List, Set, Union
 
-from .job_claim import acquire_job_initialization_claim
 from .load_yaml import load_yaml_configs
 
 log = logging.getLogger("yaml_aggregator")
@@ -34,15 +33,12 @@ def _schedule_insert_task(
     coro: Any,
     *,
     task_name: str,
-    finalizer: Callable[[], None] | None = None,
 ) -> asyncio.Task:
     async def _runner() -> None:
         try:
             await coro
         finally:
             set_job_db_processing_done(job_id, True)
-            if finalizer is not None:
-                finalizer()
 
     task = asyncio.create_task(_runner(), name=f"{task_name}:{job_id}")
     _insert_tasks.add(task)
@@ -133,7 +129,6 @@ async def sync_configs_to_db(
     *,
     rebuild_table: bool = False,
     resume: bool = False,
-    job_claim_dir: str = "",
 ) -> None:
     """Synchronize configs without leaking a connection or backend client."""
     if storage_type not in {"sqlite", "cloud"}:
@@ -143,12 +138,6 @@ async def sync_configs_to_db(
 
     await data_manager.init()
     job_id = data_manager.job_id
-    claim = acquire_job_initialization_claim(
-        job_id=job_id,
-        storage_type=storage_type,
-        storage_identity=str(getattr(data_manager, "storage_identity", storage_type)),
-        claim_dir=job_claim_dir,
-    )
     set_job_db_processing_done(job_id, False)
     try:
         existing = await data_manager.list_environment_rows(job_id=job_id)
@@ -186,9 +175,7 @@ async def sync_configs_to_db(
                 job_id,
                 _do_bulk_insert(data_manager, remaining, followup_batch),
                 task_name=f"{storage_type}-env-sync",
-                finalizer=claim.release,
             )
-            claim = None
         else:
             set_job_db_processing_done(job_id, True)
         log.debug(
@@ -200,9 +187,6 @@ async def sync_configs_to_db(
     except Exception:
         set_job_db_processing_done(job_id, True)
         raise
-    finally:
-        if claim is not None:
-            claim.release()
 
 
 def _expand_environment_rows(job_id: str, yaml_configs: List[Dict]) -> List[Dict[str, Any]]:
