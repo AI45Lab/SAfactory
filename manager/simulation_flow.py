@@ -6,7 +6,7 @@ import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import requests
 
@@ -50,6 +50,7 @@ class SimulationFlow:
         self.gateway_client: Optional[GatewayClient] = None
         self.evaluation_service: Optional[EvaluationService] = None
         self.reward_committer: Optional[RewardCommitter] = None
+        self.gateway_environment_row_target = 0
         self._shutdown_started = False
 
     async def run(self) -> SimulationRunSummary:
@@ -73,6 +74,8 @@ class SimulationFlow:
             if self.cfg.resume:
                 with trace.span("clear_gateway_session_cache"):
                     await self.clear_resume_gateway_session_cache()
+            with trace.span("wait_gateway_environment_rows"):
+                await self.wait_gateway_environment_rows()
             with trace.span("start_agent_scheduler"):
                 await self.start_agent_scheduler()
             with trace.span("run_workers"):
@@ -126,6 +129,20 @@ class SimulationFlow:
             rebuild_table=self.cfg.rebuild_table,
             resume=self.cfg.resume,
         )
+        if self.cfg.resume:
+            active_rows = await self.data_manager.list_environment_rows(
+                job_id=self.cfg.job_id,
+                finished=False,
+                is_deleted=False,
+                limit=self.cfg.startup_submit_count,
+            )
+            self.gateway_environment_row_target = len(active_rows)
+        else:
+            expected_row_count = sum(int(item.get("env_num", 1)) for item in yaml_config_list)
+            self.gateway_environment_row_target = min(
+                expected_row_count,
+                self.cfg.startup_submit_count,
+            )
         self.manager_cfg = build_manager_runtime_config(self.cfg)
         if self.cfg.resume and self.cfg.mode == "rjob":
             await cleanup_resume_artifacts(
@@ -160,6 +177,51 @@ class SimulationFlow:
         self._validate_gateway_storage(body, ready_url)
         await self.check_gateway_model_route()
         log.info("gateway ready: %s", ready_url)
+
+    async def wait_gateway_environment_rows(self) -> None:
+        target = self.gateway_environment_row_target
+        if target <= 0:
+            log.info("gateway environment row wait skipped: job_id=%s target=%d", self.cfg.job_id, target)
+            return
+
+        job_id = quote(self.cfg.job_id, safe="")
+        count_url = self._gateway_origin() + f"/internal/jobs/{job_id}/environment-row-count"
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(1.0, float(self.cfg.row_wait_timeout_s))
+        last_error = "no response"
+
+        def _fetch_count() -> tuple[int, str]:
+            response = requests.get(count_url, timeout=5.0)
+            return response.status_code, response.text
+
+        while True:
+            try:
+                status_code, body = await asyncio.to_thread(_fetch_count)
+                if status_code != 200:
+                    raise RuntimeError(f"status={status_code} body={body[:500]}")
+                payload = json.loads(body)
+                row_count = int(payload["row_count"])
+                if row_count < 0:
+                    raise ValueError("row_count must be non-negative")
+                if row_count >= target:
+                    log.info(
+                        "gateway environment rows visible: job_id=%s row_count=%d target=%d",
+                        self.cfg.job_id,
+                        row_count,
+                        target,
+                    )
+                    return
+                last_error = f"row_count={row_count} target={target}"
+            except Exception as exc:
+                last_error = str(exc)
+
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise RuntimeError(
+                    "gateway environment row wait timed out: "
+                    f"job_id={self.cfg.job_id} target={target} last_result={last_error}"
+                )
+            await asyncio.sleep(min(1.0, remaining))
 
     async def clear_resume_gateway_session_cache(self) -> None:
         if self.data_manager is None:
