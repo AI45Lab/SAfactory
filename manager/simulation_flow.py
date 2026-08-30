@@ -37,6 +37,9 @@ from .types import SimulationRunConfig, SimulationRunSummary
 
 log = logging.getLogger("manager.simulation_flow")
 
+_GATEWAY_ENV_ROW_POLL_INTERVAL_S = 30.0
+_GATEWAY_ENV_ROW_MAX_ATTEMPTS = 10
+
 
 class SimulationFlow:
     def __init__(self, cfg: SimulationRunConfig) -> None:
@@ -50,7 +53,6 @@ class SimulationFlow:
         self.gateway_client: Optional[GatewayClient] = None
         self.evaluation_service: Optional[EvaluationService] = None
         self.reward_committer: Optional[RewardCommitter] = None
-        self.gateway_environment_row_target = 0
         self._shutdown_started = False
 
     async def run(self) -> SimulationRunSummary:
@@ -129,20 +131,6 @@ class SimulationFlow:
             rebuild_table=self.cfg.rebuild_table,
             resume=self.cfg.resume,
         )
-        if self.cfg.resume:
-            active_rows = await self.data_manager.list_environment_rows(
-                job_id=self.cfg.job_id,
-                finished=False,
-                is_deleted=False,
-                limit=self.cfg.startup_submit_count,
-            )
-            self.gateway_environment_row_target = len(active_rows)
-        else:
-            expected_row_count = sum(int(item.get("env_num", 1)) for item in yaml_config_list)
-            self.gateway_environment_row_target = min(
-                expected_row_count,
-                self.cfg.startup_submit_count,
-            )
         self.manager_cfg = build_manager_runtime_config(self.cfg)
         if self.cfg.resume and self.cfg.mode == "rjob":
             await cleanup_resume_artifacts(
@@ -179,22 +167,16 @@ class SimulationFlow:
         log.info("gateway ready: %s", ready_url)
 
     async def wait_gateway_environment_rows(self) -> None:
-        target = self.gateway_environment_row_target
-        if target <= 0:
-            log.info("gateway environment row wait skipped: job_id=%s target=%d", self.cfg.job_id, target)
-            return
-
+        target = int(self.cfg.warm_pool_size)
         job_id = quote(self.cfg.job_id, safe="")
         count_url = self._gateway_origin() + f"/internal/jobs/{job_id}/environment-row-count"
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + max(1.0, float(self.cfg.row_wait_timeout_s))
         last_error = "no response"
 
         def _fetch_count() -> tuple[int, str]:
             response = requests.get(count_url, timeout=5.0)
             return response.status_code, response.text
 
-        while True:
+        for attempt in range(1, _GATEWAY_ENV_ROW_MAX_ATTEMPTS + 1):
             try:
                 status_code, body = await asyncio.to_thread(_fetch_count)
                 if status_code != 200:
@@ -215,13 +197,23 @@ class SimulationFlow:
             except Exception as exc:
                 last_error = str(exc)
 
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                raise RuntimeError(
-                    "gateway environment row wait timed out: "
-                    f"job_id={self.cfg.job_id} target={target} last_result={last_error}"
+            if attempt < _GATEWAY_ENV_ROW_MAX_ATTEMPTS:
+                log.info(
+                    "gateway environment rows not ready: job_id=%s attempt=%d/%d "
+                    "last_result=%s retry_in_s=%.0f",
+                    self.cfg.job_id,
+                    attempt,
+                    _GATEWAY_ENV_ROW_MAX_ATTEMPTS,
+                    last_error,
+                    _GATEWAY_ENV_ROW_POLL_INTERVAL_S,
                 )
-            await asyncio.sleep(min(1.0, remaining))
+                await asyncio.sleep(_GATEWAY_ENV_ROW_POLL_INTERVAL_S)
+
+        raise RuntimeError(
+            "gateway environment rows are not visible after "
+            f"{_GATEWAY_ENV_ROW_MAX_ATTEMPTS} attempts: "
+            f"job_id={self.cfg.job_id} target={target} last_result={last_error}"
+        )
 
     async def clear_resume_gateway_session_cache(self) -> None:
         if self.data_manager is None:

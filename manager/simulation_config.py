@@ -36,15 +36,6 @@ _RJOB_DEFAULT_CONFIG: Dict[str, Any] = {
     "resume_cleanup_poll_interval_s": 1.0,
 }
 
-_RJOB_ENVIRONMENT_OVERRIDES = {
-    "cluster_entry": "RJOB_CLUSTER_ENTRY",
-    "namespace": "RJOB_NAMESPACE",
-    "access_key": "RJOB_ACCESS_KEY",
-    "secret_key": "RJOB_SECRET_KEY",
-    "charged_group": "RJOB_CHARGED_GROUP",
-    "gateway_base_url": "RJOB_GATEWAY_BASE_URL",
-}
-
 _SANDBOX_DEFAULT_CONFIG: Dict[str, Any] = {
     "domain": "https://h.pjlab.org.cn/brainbox",
     "protocol": "https",
@@ -68,20 +59,10 @@ _SANDBOX_DEFAULT_CONFIG: Dict[str, Any] = {
 def load_rjob_global_config(path: str) -> Dict[str, Any]:
     path = str(path or "").strip()
     if not path:
-        normalized = _normalize_rjob_config({})
-    else:
-        cfg_path = _resolve_config_path(path)
-        cfg = load_yaml_file(str(cfg_path))
-        normalized = _normalize_rjob_config(_rjob_config_section(cfg))
-
-    # create_safactory_rjob.py passes the outer job's connection/auth settings
-    # through these variables so its nested launcher can submit episode RJobs
-    # without baking credentials into the image or mounted YAML.
-    for key, env_name in _RJOB_ENVIRONMENT_OVERRIDES.items():
-        value = str(os.getenv(env_name) or "").strip()
-        if value:
-            normalized[key] = value
-    return normalized
+        return _normalize_rjob_config({})
+    cfg_path = _resolve_config_path(path)
+    cfg = load_yaml_file(str(cfg_path))
+    return _normalize_rjob_config(_rjob_config_section(cfg))
 
 
 def _resolve_config_path(path: str) -> Path:
