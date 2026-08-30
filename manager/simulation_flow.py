@@ -167,7 +167,6 @@ class SimulationFlow:
         log.info("gateway ready: %s", ready_url)
 
     async def wait_gateway_environment_rows(self) -> None:
-        target = int(self.cfg.warm_pool_size)
         job_id = quote(self.cfg.job_id, safe="")
         count_url = self._gateway_origin() + f"/internal/jobs/{job_id}/environment-row-count"
         last_error = "no response"
@@ -185,15 +184,14 @@ class SimulationFlow:
                 row_count = int(payload["row_count"])
                 if row_count < 0:
                     raise ValueError("row_count must be non-negative")
-                if row_count >= target:
+                if row_count > 0:
                     log.info(
-                        "gateway environment rows visible: job_id=%s row_count=%d target=%d",
+                        "gateway environment rows visible: job_id=%s row_count=%d",
                         self.cfg.job_id,
                         row_count,
-                        target,
                     )
                     return
-                last_error = f"row_count={row_count} target={target}"
+                last_error = f"row_count={row_count}"
             except Exception as exc:
                 last_error = str(exc)
 
@@ -212,7 +210,7 @@ class SimulationFlow:
         raise RuntimeError(
             "gateway environment rows are not visible after "
             f"{_GATEWAY_ENV_ROW_MAX_ATTEMPTS} attempts: "
-            f"job_id={self.cfg.job_id} target={target} last_result={last_error}"
+            f"job_id={self.cfg.job_id} last_result={last_error}"
         )
 
     async def clear_resume_gateway_session_cache(self) -> None:
