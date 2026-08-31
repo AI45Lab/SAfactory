@@ -8,10 +8,14 @@ CANONICAL_SOURCE_ROOT='/mnt/shared-storage-user/evoagi-share/cyberrange'
 NATIVE_RESULT_NAME='runtime-test-result.json'
 MILESTONES_NAME='milestones.json'
 RUNTIME_LOG_NAME='runtime-task.log'
+ARTIFACT_SYNC_FAST_INTERVAL_SECONDS=60
+ARTIFACT_SYNC_FAST_DURATION_SECONDS=600
+ARTIFACT_SYNC_SLOW_INTERVAL_SECONDS=600
 
 result_emitted=0
 model_key=''
 job_log=''
+artifact_sync_pid=''
 
 json_escape() {
   local value="${1:-}"
@@ -67,10 +71,57 @@ publish_artifact() {
   local source="$1"
   local name="$2"
   local target="$result_dir/$name"
-  local temporary="$result_dir/.$name.$$.tmp"
+  local temporary="$result_dir/.$name.${BASHPID:-$$}.tmp"
   cp -f -- "$source" "$temporary"
   mv -f -- "$temporary" "$target"
   chmod 0444 "$target"
+}
+
+publish_current_artifacts() {
+  local native_path milestones_path
+  if [[ -n "$job_log" && -f "$job_log" && ! -L "$job_log" ]]; then
+    publish_artifact "$job_log" "$RUNTIME_LOG_NAME"
+  fi
+
+  native_path="$(find "$report_dir" -type f -name "$NATIVE_RESULT_NAME" -print | sort | tail -n 1)"
+  if [[ -n "$native_path" && -f "$native_path" && ! -L "$native_path" ]]; then
+    publish_artifact "$native_path" "$NATIVE_RESULT_NAME"
+  fi
+
+  milestones_path="$(find "$report_dir" -type f -name "$MILESTONES_NAME" -print | sort | tail -n 1)"
+  if [[ -n "$milestones_path" && -f "$milestones_path" && ! -L "$milestones_path" ]]; then
+    publish_artifact "$milestones_path" "$MILESTONES_NAME"
+  fi
+}
+
+artifact_sync_loop() {
+  local elapsed=0
+  # This subshell must not run the parent's error/exit handlers.
+  trap - ERR EXIT
+  set +Ee
+
+  while (( elapsed < ARTIFACT_SYNC_FAST_DURATION_SECONDS )); do
+    sleep "$ARTIFACT_SYNC_FAST_INTERVAL_SECONDS" || return 0
+    publish_current_artifacts
+    elapsed=$((elapsed + ARTIFACT_SYNC_FAST_INTERVAL_SECONDS))
+  done
+
+  while sleep "$ARTIFACT_SYNC_SLOW_INTERVAL_SECONDS"; do
+    publish_current_artifacts
+  done
+}
+
+start_artifact_sync() {
+  artifact_sync_loop &
+  artifact_sync_pid=$!
+}
+
+stop_artifact_sync() {
+  local pid="${artifact_sync_pid:-}"
+  [[ -n "$pid" ]] || return 0
+  artifact_sync_pid=''
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
 }
 
 emit_failure() {
@@ -78,6 +129,7 @@ emit_failure() {
   local truncated="${2:-false}"
   local now duration log_artifact payload
   set +e
+  stop_artifact_sync
   now="$(date +%s)"
   duration="$(( (now - started_at) * 1000 ))"
   log_artifact=''
@@ -105,6 +157,7 @@ fail() {
 
 cleanup() {
   set +e
+  stop_artifact_sync
   if [[ -n "$model_key" ]]; then
     rm -f -- "$model_key"
   fi
@@ -166,7 +219,7 @@ wall_time="$CYBERRANGE_WALL_TIME_SECONDS"
 [[ -r /dev/kvm && -w /dev/kvm ]] || fail '/dev/kvm is unavailable'
 [[ -r /dev/net/tun && -w /dev/net/tun ]] || fail '/dev/net/tun is unavailable'
 
-for command in bash chmod cp date dirname find mkdir mv rm sed sort tail; do
+for command in bash chmod cp date dirname find mkdir mv rm sed sleep sort tail; do
   command -v "$command" >/dev/null 2>&1 || fail "missing runtime command $command"
 done
 
@@ -204,10 +257,12 @@ export AGENT_RANGE_BRAINPP_RUNTIME_WALL_TIME_SECONDS="$wall_time"
 printf '[safactory-cyberrange] starting runtime-task scenario=%s model=%s run_root=%s\n' \
   "$scenario_id" "$SAFACTORY_ROUTE_MODEL" "$run_root" >&2
 
+start_artifact_sync
 set +e
 /bin/bash "$bootstrap" >>"$job_log" 2>&1
 runtime_status=$?
 set -e
+stop_artifact_sync
 if (( runtime_status != 0 )); then
   fail "CyberRange runtime-task exited with status $runtime_status" "$([[ "$runtime_status" == 124 ]] && printf true || printf false)"
 fi
