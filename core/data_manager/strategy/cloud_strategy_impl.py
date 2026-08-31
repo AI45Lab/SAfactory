@@ -488,6 +488,7 @@ class CloudStrategy(StorageStrategy):
                 limit=1,
                 offset=0,
                 filter_query=query,
+                checkout_latest=True,
             )
         except Exception as e:
             log.warning("Failed to fetch cloud env config env_id=%s: %s", env_id, e)
@@ -524,6 +525,7 @@ class CloudStrategy(StorageStrategy):
                 limit=page_size,
                 offset=effective_offset + scanned,
                 filter_query=filter_query,
+                checkout_latest=True,
             )
             if not page:
                 break
