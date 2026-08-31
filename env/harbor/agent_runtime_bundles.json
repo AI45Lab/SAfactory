@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "bundles": [
+    {
+      "agent": "codex",
+      "version": "0.147.0",
+      "platform": "linux-amd64",
+      "entrypoint": "codex",
+      "version_output": "codex-cli 0.147.0",
+      "source_url": "https://registry.npmjs.org/@openai/codex/-/codex-0.147.0-linux-x64.tgz",
+      "source_sha256": "c969740cf8297e4c31905cd551efeb2c99af5080c12c236bdf825598b250139a",
+      "archive_entry": "package/vendor/x86_64-unknown-linux-musl/bin/codex",
+      "sha256": "cb0a15567e9a60a5820d54b0f6ae86d504dc3805c1eab21a47f70e3eb7b73a40"
+    },
+    {
+      "agent": "claude-code",
+      "version": "2.1.228",
+      "platform": "linux-amd64",
+      "entrypoint": "claude",
+      "version_output": "2.1.228 (Claude Code)",
+      "source_url": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.228.tgz",
+      "source_sha256": "0c304edad9753e2efeb88ddb76c5a13c06160d67c980b9d849ad65bfadde3fd8",
+      "archive_entry": "package/claude",
+      "sha256": "d535985e6941a3eb00179ccd7f52ceb0c6623a0305a518ebc4e6514f84a94c99"
+    }
+  ]
+}

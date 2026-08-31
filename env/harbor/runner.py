@@ -8,12 +8,13 @@ import math
 import os
 import signal
 import subprocess
-import sys
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from bundle_materializer import BundleSpec, materialize_bundle, parse_bundle_spec
 
 REQUEST_ENV = "SAFACTORY_START_REQUEST_JSON"
 RESULT_PATH_ENV = "SAFACTORY_RESULT_PATH"
@@ -31,24 +32,45 @@ MODEL_ENV_NAMES = {
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
 }
+AGENT_RUNTIME_TARGETS = {
+    "codex": "/usr/local/bin/codex",
+    "claude-code": "/usr/local/bin/claude",
+}
+REASONING_EFFORT_AGENTS = {"codex", "claude-code", "opencode"}
+CLAUDE_CODE_REASONING_EFFORTS = {
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultracode",
+}
+
+
+@dataclass(frozen=True)
+class AgentRuntime:
+    agent: str
+    source: Path
+    version: str
+    target: str
 
 
 @dataclass(frozen=True)
 class RunSpec:
     session_id: str
     task_id: str
-    task_path: Path
+    task_path: Path | None
     gateway_url: str
     agent: str
     model: str | None
+    reasoning_effort: str | None
     reward_key: str
     timeout_s: int
     result_path: Path
     jobs_root: Path
     harbor_job_name: str
-    bundle_package_dir: Path | None = None
-    bundle_task: str | None = None
-    bundle_variant: str | None = None
+    bundle: BundleSpec | None = None
+    agent_runtime: AgentRuntime | None = None
 
     @property
     def episode_dir(self) -> Path:
@@ -132,32 +154,16 @@ class NestedDocker:
             )
         return driver
 
-    def materialize_bundle(self, spec: RunSpec) -> RunSpec:
-        if spec.bundle_package_dir is None:
+    def materialize_task(self, spec: RunSpec) -> RunSpec:
+        if spec.bundle is None:
             return spec
         output_dir = RUNTIME_DIR / f"bundle-{_safe_name(spec.session_id)}"
-        subprocess.run(
-            [
-                sys.executable,
-                str(spec.bundle_package_dir / "bin" / "vulhub_task.py"),
-                "--package-dir",
-                str(spec.bundle_package_dir),
-                "materialize",
-                "--output-dir",
-                str(output_dir),
-                "--task",
-                str(spec.bundle_task),
-                "--variant",
-                str(spec.bundle_variant),
-                "--load-images",
-            ],
+        task_path = materialize_bundle(
+            spec.bundle,
+            output_dir=output_dir,
             env=self.env,
-            check=True,
         )
-        return replace(
-            spec,
-            task_path=output_dir / f"{spec.bundle_task}-{spec.bundle_variant}",
-        )
+        return replace(spec, task_path=task_path)
 
     def run_harbor(self, spec: RunSpec) -> tuple[int, bool]:
         spec.harbor_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -266,14 +272,17 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
     dataset = dataset if isinstance(dataset, dict) else {}
 
     session_id = _required_text(request.get("session_id"), "session_id")
-    task_path = Path(
-        _required_text(
-            _param(dataset, params, "task_path", "/tmp/safactory-harbor-task"),
-            "task_path",
-        )
-    ).resolve()
-    if not task_path.is_dir():
-        raise RuntimeError(f"Harbor task directory does not exist: {task_path}")
+    bundle = parse_bundle_spec(dataset, params)
+    task_path: Path | None = None
+    if bundle is None:
+        task_path = Path(
+            _required_text(
+                _param(dataset, params, "task_path", "/tmp/safactory-harbor-task"),
+                "task_path",
+            )
+        ).resolve()
+        if not task_path.is_dir():
+            raise RuntimeError(f"Harbor task directory does not exist: {task_path}")
 
     gateway_url = (
         os.environ.get("SAFACTORY_GATEWAY_SESSION_URL_CONTAINER")
@@ -284,7 +293,16 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
     if parsed_gateway.scheme not in {"http", "https"} or not parsed_gateway.hostname:
         raise RuntimeError(f"invalid SAfactory gateway URL: {gateway_url!r}")
 
-    agent = _required_text(_param(dataset, params, "agent", "oracle"), "agent")
+    agent_runtime_config = params.get("agent_runtime")
+    reasoning_effort_config = params.get("reasoning_effort")
+    agent = _required_text(
+        params.get("agent")
+        if agent_runtime_config is not None or reasoning_effort_config is not None
+        else _param(dataset, params, "agent", "oracle"),
+        "agent",
+    )
+    agent_runtime = _parse_agent_runtime(agent_runtime_config, agent)
+    reasoning_effort = _parse_reasoning_effort(reasoning_effort_config, agent)
     model = str(
         _param(dataset, params, "model", request.get("model") or "") or ""
     ).strip()
@@ -296,46 +314,33 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
     timeout_s = int(_param(dataset, params, "timeout_s", 900))
     if timeout_s <= 0:
         raise RuntimeError("timeout_s must be positive")
-    bundle_package_dir_text = str(
-        _param(dataset, params, "bundle_package_dir", "") or ""
-    ).strip()
-    bundle_package_dir = (
-        Path(bundle_package_dir_text).resolve() if bundle_package_dir_text else None
-    )
-    bundle_task = str(_param(dataset, params, "bundle_task", "") or "").strip()
-    bundle_variant = str(
-        _param(dataset, params, "bundle_variant", "") or ""
-    ).strip()
-    if bundle_package_dir is not None:
-        if not bundle_task or bundle_variant not in {"zero-day", "one-day"}:
-            raise RuntimeError(
-                "bundle_task and bundle_variant=zero-day|one-day are required "
-                "when bundle_package_dir is set"
-            )
     result_path_text = os.environ.get(RESULT_PATH_ENV, "").strip()
     if not result_path_text:
         raise RuntimeError(f"{RESULT_PATH_ENV} is required")
     result_path = Path(result_path_text)
     job_name = ("safactory-" + _safe_name(session_id).lower())[:63].strip("-")
+    default_task_id = bundle.task if bundle is not None else task_path.name
     return RunSpec(
         session_id=session_id,
-        task_id=str(dataset.get("task_id") or task_path.name).strip() or task_path.name,
+        task_id=_required_text(dataset.get("task_id") or default_task_id, "task_id"),
         task_path=task_path,
         gateway_url=gateway_url,
         agent=agent,
         model=model or None,
+        reasoning_effort=reasoning_effort,
         reward_key=reward_key,
         timeout_s=timeout_s,
         result_path=result_path,
         jobs_root=result_path.parent / "harbor" / "jobs",
         harbor_job_name=job_name,
-        bundle_package_dir=bundle_package_dir,
-        bundle_task=bundle_task or None,
-        bundle_variant=bundle_variant or None,
+        bundle=bundle,
+        agent_runtime=agent_runtime,
     )
 
 
 def harbor_command(spec: RunSpec) -> list[str]:
+    if spec.task_path is None:
+        raise RuntimeError("Harbor task has not been materialized")
     command = [
         HARBOR_BIN,
         "run",
@@ -346,6 +351,35 @@ def harbor_command(spec: RunSpec) -> list[str]:
     ]
     if spec.model:
         command.extend(["--model", spec.model])
+    if spec.reasoning_effort is not None:
+        if spec.agent == "opencode":
+            opencode_config = _opencode_reasoning_config(
+                spec.model, spec.reasoning_effort
+            )
+            command.extend(
+                [
+                    "--ak",
+                    "opencode_config="
+                    + json.dumps(opencode_config, separators=(",", ":")),
+                ]
+            )
+        else:
+            command.extend(["--ak", f"reasoning_effort={spec.reasoning_effort}"])
+    if spec.agent_runtime is not None:
+        mount = {
+            "type": "bind",
+            "source": str(spec.agent_runtime.source),
+            "target": spec.agent_runtime.target,
+            "read_only": True,
+        }
+        command.extend(
+            [
+                "--mounts",
+                json.dumps([mount], separators=(",", ":")),
+                "--ak",
+                f"version={spec.agent_runtime.version}",
+            ]
+        )
     command.extend(
         [
             "--env",
@@ -520,6 +554,8 @@ def parse_harbor_result(
         "task_path": str(spec.task_path),
         "harbor_agent": spec.agent,
         "harbor_model": spec.model,
+        "agent_reasoning_effort": spec.reasoning_effort,
+        "agent_runtime": _agent_runtime_metric(spec.agent_runtime),
         "reward_key": spec.reward_key,
         "harbor_reward": reward,
         "harbor_rewards": rewards,
@@ -568,7 +604,9 @@ def _trial_errors(trial: dict[str, Any]) -> tuple[list[str], bool]:
     if isinstance(steps, list):
         for index, step in enumerate(steps):
             if isinstance(step, dict):
-                add(step.get("exception_info"), f"step {step.get('step_name') or index}")
+                add(
+                    step.get("exception_info"), f"step {step.get('step_name') or index}"
+                )
     return errors, agent_timed_out
 
 
@@ -592,6 +630,8 @@ def _failure(
                 "task_path": str(spec.task_path),
                 "harbor_agent": spec.agent,
                 "harbor_model": spec.model,
+                "agent_reasoning_effort": spec.reasoning_effort,
+                "agent_runtime": _agent_runtime_metric(spec.agent_runtime),
                 "reward_key": spec.reward_key,
                 "harbor_job_result_path": str(spec.harbor_job_dir / "result.json"),
                 "harbor_log_path": str(spec.harbor_log_path),
@@ -611,12 +651,94 @@ def _failure(
     }
 
 
-def _param(dataset: dict[str, Any], params: dict[str, Any], name: str, default: Any) -> Any:
+def _param(
+    dataset: dict[str, Any], params: dict[str, Any], name: str, default: Any
+) -> Any:
     if dataset.get(name) is not None:
         return dataset[name]
     if params.get(name) is not None:
         return params[name]
     return default
+
+
+def _parse_agent_runtime(value: Any, agent: str) -> AgentRuntime | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise TypeError("agent_runtime must be an object")
+    target = AGENT_RUNTIME_TARGETS.get(agent)
+    if target is None:
+        raise RuntimeError(f"agent_runtime does not support agent {agent!r}")
+    source = Path(_required_text(value.get("source"), "agent_runtime.source"))
+    if not source.is_absolute():
+        raise RuntimeError("agent_runtime.source must be absolute")
+    if not source.is_file():
+        raise RuntimeError(f"agent_runtime.source is not a regular file: {source}")
+    if not os.access(source, os.X_OK):
+        raise RuntimeError(f"agent_runtime.source is not executable: {source}")
+    return AgentRuntime(
+        agent=agent,
+        source=source,
+        version=_required_text(value.get("version"), "agent_runtime.version"),
+        target=target,
+    )
+
+
+def _parse_reasoning_effort(value: Any, agent: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError("reasoning_effort must be a string")
+    effort = _required_text(value, "reasoning_effort").lower()
+    if agent not in REASONING_EFFORT_AGENTS:
+        raise RuntimeError(
+            f"reasoning_effort does not support agent {agent!r}; "
+            "expected codex, claude-code, or opencode"
+        )
+    if agent == "claude-code" and effort not in CLAUDE_CODE_REASONING_EFFORTS:
+        choices = ", ".join(sorted(CLAUDE_CODE_REASONING_EFFORTS))
+        raise RuntimeError(
+            f"invalid reasoning_effort {effort!r} for agent {agent!r}; "
+            f"expected one of: {choices}"
+        )
+    return effort
+
+
+def _opencode_reasoning_config(
+    model: str | None, reasoning_effort: str
+) -> dict[str, Any]:
+    model_name = str(model or "").strip()
+    if "/" not in model_name:
+        raise RuntimeError(
+            "opencode reasoning_effort requires model in provider/model form"
+        )
+    provider, model_id = model_name.split("/", 1)
+    if not provider or not model_id:
+        raise RuntimeError(
+            "opencode reasoning_effort requires model in provider/model form"
+        )
+    return {
+        "small_model": model_name,
+        "provider": {
+            provider: {
+                "models": {
+                    model_id: {
+                        "options": {"reasoningEffort": reasoning_effort},
+                    }
+                }
+            }
+        }
+    }
+
+
+def _agent_runtime_metric(runtime: AgentRuntime | None) -> dict[str, str] | None:
+    if runtime is None:
+        return None
+    return {
+        "agent": runtime.agent,
+        "version": runtime.version,
+        "target": runtime.target,
+    }
 
 
 def _required_text(value: Any, name: str) -> str:
@@ -685,7 +807,7 @@ def main() -> int:
         result_path = spec.result_path
         spec.episode_dir.mkdir(parents=True, exist_ok=True)
         docker_driver = nested.start(spec)
-        spec = nested.materialize_bundle(spec)
+        spec = nested.materialize_task(spec)
         return_code, timed_out = nested.run_harbor(spec)
         if timed_out:
             wait_for_cancellation_cleanup(spec)
