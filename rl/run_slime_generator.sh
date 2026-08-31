@@ -180,12 +180,9 @@ MEGATRON_ARGS=(
 
 TRAIN_ARGS=(
   --max-tokens-per-gpu "${MAX_TOKENS_PER_GPU}"
-  --qkv-format "${QKV_FORMAT:-thd}"
 )
 if is_true "${USE_DYNAMIC_BATCH_SIZE}"; then
   TRAIN_ARGS+=(--use-dynamic-batch-size)
-else
-  TRAIN_ARGS+=(--micro-batch-size "${MICRO_BATCH_SIZE:-1}")
 fi
 if is_true "${USE_DYNAMIC_GLOBAL_BATCH_SIZE}"; then
   TRAIN_ARGS+=(--use-dynamic-global-batch-size)

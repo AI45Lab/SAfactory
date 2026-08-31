@@ -139,14 +139,11 @@ export RECOMPUTE_METHOD="${RECOMPUTE_METHOD:-uniform}"
 export RECOMPUTE_NUM_LAYERS="${RECOMPUTE_NUM_LAYERS:-1}"
 export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flash}"
 export MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-5000}"
-# bshd (padding) instead of thd (packing): Megatron GDN does not support packed
-# sequences (NotImplementedError). bshd pads sequences in a micro-batch to equal
-# length instead of packing them into one stream, so packed_seq_params is None
-# and GDN's forward never hits the raise. Requires fixed micro-batch-size (no
-# dynamic batch size). Costs some compute on padding tokens.
-export USE_DYNAMIC_BATCH_SIZE="${USE_DYNAMIC_BATCH_SIZE:-false}"
-export MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-1}"
-export QKV_FORMAT="${QKV_FORMAT:-bshd}"
+# GDN packed-seq monkey-patch: patches Megatron GDN forward to pass cu_seqlens
+# to chunk_gated_delta_rule, enabling thd (packing) mode without NotImplementedError.
+# See rl/patches/gdn_packed_seq.py for details.
+export PYTHONPATH="${REPO_ROOT}/rl/patches${PYTHONPATH:+:${PYTHONPATH}}"
+export USE_DYNAMIC_BATCH_SIZE="${USE_DYNAMIC_BATCH_SIZE:-true}"
 export CALCULATE_PER_TOKEN_LOSS="${CALCULATE_PER_TOKEN_LOSS:-true}"
 export ADVANTAGE_ESTIMATOR="${ADVANTAGE_ESTIMATOR:-grpo}"
 # DAPO group filter: drop groups where all samples share the same reward

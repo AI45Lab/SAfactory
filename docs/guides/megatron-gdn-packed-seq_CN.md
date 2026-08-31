@@ -59,81 +59,63 @@ actor.train_actor → compute_log_prob → forward_only
               → megatron.core.ssm.gated_delta_net.forward  ← raise NotImplementedError
 ```
 
-## 修复方案：禁用 packed sequence（改用 bshd / padding）
+## 修复方案：运行时 monkey-patch（已采用）
 
 ### 原理
 
-把 `--qkv-format` 从 `thd` 改成 `bshd`：
-- micro-batch 里的多条序列 **堆叠成 batch 维度**（padding 到等长）
-- `packed_seq_params = None`
-- GDN 的 `forward` 不会进入 `if packed_seq_params is not None` 分支，不触发 raise
+Megatron GDN 的 `forward` 调用的 `chunk_gated_delta_rule`（来自 fla）**本身已支持
+`cu_seqlens` 参数**——slime 的 `qwen3_5.py` 就是这么用的。GDN forward 只是在入口处
+`raise NotImplementedError` 拦住了 packed_seq_params，没有把 cu_seqlens 传进去。
 
-### 约束
+修复方法：在 GPFS 上放一个 Python 文件，monkey-patch `GatedDeltaNet.forward`，
+删掉 raise，把 `packed_seq_params.cu_seqlens_q` 提取出来传给 `chunk_gated_delta_rule`
+和 `causal_conv1d_fn`。通过 `sitecustomize.py` + `PYTHONPATH` 在 Python 启动时自动加载。
 
-slime `arguments.py` 第 1764-1768 行的断言：
+**不需要重打镜像**，不需要改 Megatron 核心代码，不需要改 slime 代码。
 
-```python
-if args.qkv_format == "bshd":
-    assert args.train_backend == "megatron"
-    assert args.use_dynamic_batch_size is False, \
-        "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
-```
+### 为什么不用 bshd（padding）
 
-即 `bshd` 模式：
-- 必须是 megatron backend（当前已是）
-- **不能用 dynamic batch size**，必须指定 `--micro-batch-size`
+bshd 模式下 `packed_seq_params=None`，GDN 不崩，但 padding 导致激活内存增大，
+27B 模型 TP=4 在 140GB 卡上 OOM（差 822 MiB）。
+thd（packing）模式内存更省，是正确选择。
 
-### 改动
+### 为什么 bridge 模式忽略了 --spec
 
-#### `rl/examples/patcheval/env.rjob.sh`
+slime `model_provider.py` 第 82-119 行：bridge 模式下直接返回
+`bridge.to_megatron_provider().provide`，用 bridge 自带的 spec 构建模型，
+`--spec` 参数（slime 的 `qwen3_5.py`，有 cu_seqlens GDN）被完全忽略。
+所以不能靠 `--spec` 解决，只能 patch GDN 本身。
 
-```bash
-export MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-5000}"
-# bshd (padding) instead of thd (packing): Megatron GDN does not support packed
-# sequences (NotImplementedError). bshd pads sequences in a micro-batch to equal
-# length instead of packing them into one stream, so packed_seq_params is None
-# and GDN's forward never hits the raise. Requires fixed micro-batch-size (no
-# dynamic batch size). Costs some compute on padding tokens.
-export USE_DYNAMIC_BATCH_SIZE="${USE_DYNAMIC_BATCH_SIZE:-false}"
-export MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-1}"
-export QKV_FORMAT="${QKV_FORMAT:-bshd}"
-```
+### 文件
 
-#### `rl/run_slime_generator.sh`
+| 文件 | 作用 |
+|------|------|
+| `rl/patches/gdn_packed_seq.py` | monkey-patch GatedDeltaNet.forward，支持 cu_seqlens |
+| `rl/patches/sitecustomize.py` | Python 启动时自动加载 gdn_packed_seq |
+
+### env.rjob.sh 改动
 
 ```bash
-TRAIN_ARGS=(
-  --max-tokens-per-gpu "${MAX_TOKENS_PER_GPU}"
-  --qkv-format "${QKV_FORMAT:-thd}"
-)
-if is_true "${USE_DYNAMIC_BATCH_SIZE}"; then
-  TRAIN_ARGS+=(--use-dynamic-batch-size)
-else
-  TRAIN_ARGS+=(--micro-batch-size "${MICRO_BATCH_SIZE:-1}")
-fi
+# GDN packed-seq monkey-patch: patches Megatron GDN forward to pass cu_seqlens
+# to chunk_gated_delta_rule, enabling thd (packing) mode without NotImplementedError.
+# See rl/patches/gdn_packed_seq.py for details.
+export PYTHONPATH="${REPO_ROOT}/rl/patches${PYTHONPATH:+:${PYTHONPATH}}"
+export USE_DYNAMIC_BATCH_SIZE="${USE_DYNAMIC_BATCH_SIZE:-true}"
 ```
 
-### 代价
+`USE_DYNAMIC_BATCH_SIZE` 保持 `true`（thd packing + dynamic batch size），
+`--qkv-format` 用默认 `thd`。
 
-| 项目 | thd（packing） | bshd（padding） |
-|------|----------------|-----------------|
-| 算力浪费 | 无（无 padding） | 有（短序列被 pad 到等长） |
-| batch 调度 | dynamic（自动平衡） | 固定 micro-batch-size |
-| GDN 兼容 | ❌ 崩 | ✅ 不崩 |
+### patch 做了什么
 
-- `MICRO_BATCH_SIZE=1`：无 padding，但每步只处理 1 条序列，吞吐最低
-- `MICRO_BATCH_SIZE=2~4`：吞吐提高，但 padding 浪费增加
-- 建议先用 `1` 验证训练能跑通，再调大找效率甜点
+1. 删掉 `raise NotImplementedError("GDN does not support packed sequence for now.")`
+2. 从 `packed_seq_params.cu_seqlens_q` 提取 `cu_seqlens`
+3. 把 `cu_seqlens` 传给 `chunk_gated_delta_rule(cu_seqlens=...)`（fla 已支持）
+4. 把 `cu_seqlens` 转成 `seq_idx` 传给 `causal_conv1d_fn(seq_idx=...)`（避免卷积跨序列边界）
 
 ### 回退
 
-如果以后 Megatron GDN 实现了 packed sequence 支持，或 megatron-bridge 修复了
-spec 替换问题，可以改回 thd 模式恢复 packing 效率：
-
-```bash
-export QKV_FORMAT=thd
-export USE_DYNAMIC_BATCH_SIZE=true
-```
+删掉 `PYTHONPATH` 那行即可禁用 patch，回到原始 GDN（会 raise）。
 
 ## 其他可选方案（未采用）
 
