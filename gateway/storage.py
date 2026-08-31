@@ -218,6 +218,15 @@ class GatewayStorage:
                 return environment
         return None
 
+    async def count_environment_rows(self, job_id: str) -> int:
+        """Return the number of unfinished, active environment rows for a job."""
+        rows = await self.data_manager.list_environment_rows(
+            job_id=job_id,
+            finished=False,
+            is_deleted=False,
+        )
+        return len(rows)
+
     @staticmethod
     def _environment_from_mapping(environment: dict[str, Any] | None) -> _SessionEnvironment | None:
         if not environment:
