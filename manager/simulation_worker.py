@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
 import time
 from collections import deque
 from typing import Any, Dict, Optional
@@ -20,6 +21,21 @@ from evaluator.reward_committer import RewardCommitter
 from evaluator.rule_evaluator import discover_rule_eval_spec
 from evaluator.service import EvaluationService
 
+# Structured timing log (rl/timing_log.py). The launcher subprocess does not
+# have rl/ on PYTHONPATH (only AIEVOBOX_ROOT), so add it defensively.
+try:
+    from timing_log import emit as _timing_emit  # type: ignore
+except Exception:  # pragma: no cover - import path fixup
+    import os as _os
+    import sys as _sys
+    _rl_dir = _os.path.join(_os.environ.get("AIEVOBOX_ROOT", ""), "rl")
+    if _rl_dir and _rl_dir not in _sys.path:
+        _sys.path.insert(0, _rl_dir)
+    try:
+        from timing_log import emit as _timing_emit  # type: ignore
+    except Exception:
+        _timing_emit = None  # type: ignore
+
 from .agent_start_client import AgentStartClient
 from .session_lifecycle import complete_latest_session_step
 from .simulation_lease_pool import SimulationLeasePool
@@ -32,6 +48,18 @@ from .types import (
 )
 
 log = logging.getLogger("manager.simulation_worker")
+
+
+def _iso_to_epoch(s: str | None) -> float | None:
+    """Parse an ISO-8601 timestamp (from gateway session status) to epoch seconds."""
+    if not s:
+        return None
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
 
 
 class _SimulationCircuitBreaker:
@@ -148,6 +176,10 @@ class SimulationWorkerGroup:
         self._results: Dict[str, SimulationStartResult] = {}
         self._results_lock = asyncio.Lock()
         self._circuit_breaker = _SimulationCircuitBreaker(cfg)
+        # Number of episodes currently running (acquired a lease, not yet
+        # released). Used for the periodic active_envs timing snapshot.
+        self._active_episodes = 0
+        self._active_lock = asyncio.Lock()
 
     async def run_all(self) -> SimulationRunSummary:
         log.info(
@@ -159,6 +191,10 @@ class SimulationWorkerGroup:
             asyncio.create_task(self._worker_loop(worker_id), name=f"simulation-worker-{worker_id}")
             for worker_id in range(self.worker_count)
         ]
+        # Periodic snapshot of concurrent active episodes for capacity /
+        # GPU-ratio analysis (env pods vs inference GPUs).
+        snapshot_task = asyncio.create_task(self._active_snapshot_loop(), name="active-envs-snapshot")
+        tasks.append(snapshot_task)
         cancelled = False
         try:
             await asyncio.gather(*tasks)
@@ -211,6 +247,24 @@ class SimulationWorkerGroup:
             results={key: result.total_reward for key, result in results.items()},
         )
 
+    async def _active_snapshot_loop(self) -> None:
+        """Emit periodic active-env snapshots for capacity / GPU-ratio analysis."""
+        interval = float(os.environ.get("SAFACTORY_ACTIVE_SNAPSHOT_INTERVAL_S", "10") or 10)
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                async with self._active_lock:
+                    active = self._active_episodes
+                if _timing_emit is not None:
+                    _timing_emit(
+                        "active_envs",
+                        active_episodes=active,
+                        pool_size=self.lease_pool.pool_size,
+                        worker_count=self.worker_count,
+                    )
+        except asyncio.CancelledError:
+            return
+
     async def _worker_loop(self, worker_id: int) -> None:
         while True:
             trace = PerfTrace(
@@ -233,6 +287,8 @@ class SimulationWorkerGroup:
                 return
 
             agent_key = f"{lease.agent_name}_{lease.agent_id}"
+            async with self._active_lock:
+                self._active_episodes += 1
             trace.update_context(
                 agent_key=agent_key,
                 agent_name=lease.agent_name,
@@ -323,11 +379,17 @@ class SimulationWorkerGroup:
                     release_reusable = False
                 elif self.evaluation_service is not None and self.reward_committer is not None:
                     with trace.span("eval_discover_rule"):
-                        public_env_params = strip_internal_env_params(lease.env_params)
+                        public_env_params = materialize_dataset_env_params(
+                            strip_internal_env_params(lease.env_params)
+                        )
                         eval_spec = discover_rule_eval_spec(
                             agent_name=lease.agent_name,
                             env_root=self.cfg.agent_root,
                         )
+                    if eval_spec is not None:
+                        _eval_timeout = float(lease.env_params.get("rule_evaluator_timeout_s") or 0)
+                        if _eval_timeout > 0:
+                            eval_spec.timeout_s = _eval_timeout
                     trace.mark("eval_spec_resolved", eval_spec_found=eval_spec is not None)
                     if eval_spec is not None:
                         log.debug(
@@ -348,12 +410,39 @@ class SimulationWorkerGroup:
                             env_params=public_env_params,
                             eval_spec=eval_spec,
                         )
+                        _eval_started = time.perf_counter()
                         with trace.span("evaluation_service"):
                             eval_result = await self.evaluation_service.evaluate(eval_request)
+                        _eval_elapsed = time.perf_counter() - _eval_started
                         trace.update_context(
                             eval_status=eval_result.status,
                             eval_score=eval_result.normalized_score_10,
                         )
+                        # Rule-evaluator timing: for PatchEval this is the
+                        # apply-patch + PoC + unit-test cost, which for
+                        # compiled CVE projects can dominate the episode.
+                        if _timing_emit is not None:
+                            _eval_artifacts = eval_result.artifacts if isinstance(eval_result.artifacts, dict) else {}
+                            _patch = _eval_artifacts.get("patch") or ""
+                            _patch_lines = _patch.count("\n") + 1 if _patch else 0
+                            _timing_emit(
+                                "eval",
+                                session_id=result.session_id,
+                                env_name=lease.agent_name,
+                                group_id=lease.group_id,
+                                cve_id=_eval_artifacts.get("cve_id"),
+                                eval_status=eval_result.status,
+                                score=eval_result.normalized_score_10,
+                                raw_score=eval_result.raw_score,
+                                reason=eval_result.reason,
+                                eval_elapsed_s=round(_eval_elapsed, 3),
+                                strict_success=_eval_artifacts.get("strict_success"),
+                                poc_passed=_eval_artifacts.get("poc_passed"),
+                                unit_tests_passed=_eval_artifacts.get("unit_tests_passed"),
+                                validation_type=_eval_artifacts.get("validation_type"),
+                                patch_produced=bool(_patch),
+                                patch_lines=_patch_lines or None,
+                            )
                         if eval_result.status == "succeeded":
                             with trace.span("reward_commit"):
                                 await self.reward_committer.commit(
@@ -422,6 +511,9 @@ class SimulationWorkerGroup:
                 except Exception as exc:
                     trace.update_context(release_error_type=type(exc).__name__, release_error=str(exc))
                     log.exception("worker=%d agent=%s critical error in lease_pool.done()", worker_id, agent_key)
+                finally:
+                    async with self._active_lock:
+                        self._active_episodes = max(0, self._active_episodes - 1)
                 if cancelled:
                     trace.update_context(final_status="cancelled")
                     trace.emit_summary(status="cancelled")
@@ -442,6 +534,68 @@ class SimulationWorkerGroup:
                 result.total_reward,
                 elapsed,
             )
+
+            # Structured per-episode timing record for offline analysis.
+            # rjob_*_ms come from RJobEpisodeRunner._attach_timing_metrics.
+            # gw_first_seen_ts / gw_closed_ts come from the gateway session
+            # status captured during _finalize_gateway_session. Together with
+            # rjob_submit_ts they yield:
+            #   env_startup_s   = first LLM call - rjob submit  (pod boot + agent init)
+            #   env_active_s    = session close - first LLM call (active rollout)
+            #   env_lifecycle_s = session close - rjob submit   (full env lifetime)
+            if _timing_emit is not None and result is not None:
+                ep_metrics = result.metrics if isinstance(result.metrics, dict) else {}
+                _rjob_submit_ts = ep_metrics.get("rjob_submit_ts")
+                _gw_first_ts = ep_metrics.get("gw_first_seen_ts")
+                _gw_closed_ts = ep_metrics.get("gw_closed_ts")
+                _env_startup = (
+                    round(_gw_first_ts - _rjob_submit_ts, 3)
+                    if _gw_first_ts is not None and _rjob_submit_ts is not None
+                    else None
+                )
+                _env_active = (
+                    round(_gw_closed_ts - _gw_first_ts, 3)
+                    if _gw_closed_ts is not None and _gw_first_ts is not None
+                    else None
+                )
+                _env_lifecycle = (
+                    round(_gw_closed_ts - _rjob_submit_ts, 3)
+                    if _gw_closed_ts is not None and _rjob_submit_ts is not None
+                    else None
+                )
+                _timing_emit(
+                    "episode",
+                    worker_id=worker_id,
+                    env_name=lease.agent_name,
+                    agent_id=lease.agent_id,
+                    group_id=lease.group_id,
+                    session_id=session.session_id if session is not None else lease.agent_id,
+                    runtime=lease.runtime,
+                    status=result.status,
+                    reward=result.total_reward,
+                    step_count=result.step_count,
+                    truncated=bool(result.truncated),
+                    episode_elapsed_s=round(elapsed, 3),
+                    rjob_submit_ms=ep_metrics.get("rjob_submit_ms"),
+                    rjob_wait_terminal_ms=ep_metrics.get("rjob_wait_terminal_ms"),
+                    rjob_fetch_logs_ms=ep_metrics.get("rjob_fetch_logs_ms"),
+                    rjob_parse_result_ms=ep_metrics.get("rjob_parse_result_ms"),
+                    rjob_cleanup_ms=ep_metrics.get("rjob_cleanup_ms"),
+                    rjob_total_ms=ep_metrics.get("rjob_total_ms"),
+                    rjob_status=ep_metrics.get("rjob_status"),
+                    rjob_name=ep_metrics.get("rjob_name"),
+                    # Absolute epoch seconds at RJob submit; join with the
+                    # gateway's first llm_step ts (same session_id) to derive
+                    # env-startup time = first_llm_call - rjob_submit.
+                    rjob_submit_ts=ep_metrics.get("rjob_submit_ts"),
+                    # Per-env startup / active / lifecycle durations (seconds),
+                    # derived from gateway session timing + rjob_submit_ts.
+                    env_startup_s=_env_startup,
+                    env_active_s=_env_active,
+                    env_lifecycle_s=_env_lifecycle,
+                    gw_first_seen_ts=_gw_first_ts,
+                    gw_closed_ts=_gw_closed_ts,
+                )
 
     async def _acquire_lease_or_stop(self, worker_id: int) -> SimulationAgentLease | None:
         del worker_id
@@ -498,14 +652,20 @@ class SimulationWorkerGroup:
             )
 
         if result.status != "succeeded":
+            logs_tail = ""
+            metrics = result.metrics if isinstance(result.metrics, dict) else {}
+            if metrics.get("logs_tail"):
+                logs_tail = self._tail(str(metrics.get("logs_tail")))
             log.warning(
-                "worker=%d runtime=%s env=%s agent_id=%s returned status=%s error=%s",
+                "worker=%d runtime=%s env=%s agent_id=%s returned status=%s error=%s | rjob=%s | LOGS_TAIL:\n%s\n[/LOGS_TAIL]",
                 worker_id,
                 lease.runtime,
                 lease.agent_name,
                 lease.agent_id,
                 result.status,
                 self._tail(result.error_text or ""),
+                metrics.get("rjob_name", ""),
+                logs_tail,
             )
 
         return result
@@ -543,6 +703,26 @@ class SimulationWorkerGroup:
                     )
                 with trace.span("gateway_wait_telemetry_flush"):
                     await self.gateway_client.wait_telemetry_flush(result.session_id)
+            # Capture gateway-side session timing for per-env startup /
+            # lifecycle analysis. first_seen_at = wall-clock of the FIRST LLM
+            # call reaching the gateway (= env ready / agent started making
+            # requests); closed_at = when we closed the session. Joined with
+            # the worker's rjob_submit_ts (in result.metrics) to derive
+            # env_startup_s / env_active_s / env_lifecycle_s in the episode
+            # record. Best-effort: a failure here must not fail finalization.
+            try:
+                status = await self.gateway_client.get_session_status(result.session_id)
+                if isinstance(status, dict):
+                    result.metrics = dict(result.metrics or {})
+                    result.metrics["gw_first_seen_ts"] = _iso_to_epoch(status.get("first_seen_at"))
+                    result.metrics["gw_closed_ts"] = _iso_to_epoch(status.get("closed_at"))
+            except Exception as exc:
+                log.debug(
+                    "worker=%d agent=%s gateway session status fetch failed: %s",
+                    worker_id,
+                    agent_key,
+                    exc,
+                )
             return True
         except httpx.HTTPError as exc:
             log.warning(

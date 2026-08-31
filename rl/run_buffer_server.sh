@@ -36,6 +36,27 @@ elif [[ -z "${AIEVOBOX_ROOT:-}" ]]; then
   exit 1
 fi
 
+is_true() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if is_true "${AIEVOBOX_RESET_SQLITE_DB:-false}"; then
+  case "${AIEVOBOX_DB_URL:-}" in
+    sqlite:///*)
+      db_path="${AIEVOBOX_DB_URL#sqlite:///}"
+      rm -f -- "${db_path}" "${db_path}-wal" "${db_path}-shm"
+      echo "Removed SQLite DB for fresh rollout: ${db_path}"
+      ;;
+    *)
+      echo "AIEVOBOX_RESET_SQLITE_DB requires a sqlite:/// DB URL" >&2
+      exit 1
+      ;;
+  esac
+fi
+
 require_dir() {
   local path="$1"
   local label="$2"
