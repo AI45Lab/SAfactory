@@ -76,11 +76,13 @@ class EvaluationService:
             final_result.session_id = request.session_id
 
             log.info(
-                "EVAL complete: session=%s status=%s score=%.4f elapsed=%.2fs",
+                "EVAL complete: session=%s status=%s score=%.4f elapsed=%.2fs reason=%s error_text=%s",
                 request.session_id,
                 final_result.status,
                 final_result.normalized_score_10,
                 time.perf_counter() - started_at,
+                final_result.reason,
+                final_result.error_text,
             )
             trace.emit_summary(
                 status=final_result.status,

@@ -180,9 +180,12 @@ MEGATRON_ARGS=(
 
 TRAIN_ARGS=(
   --max-tokens-per-gpu "${MAX_TOKENS_PER_GPU}"
+  --qkv-format "${QKV_FORMAT:-thd}"
 )
 if is_true "${USE_DYNAMIC_BATCH_SIZE}"; then
   TRAIN_ARGS+=(--use-dynamic-batch-size)
+else
+  TRAIN_ARGS+=(--micro-batch-size "${MICRO_BATCH_SIZE:-1}")
 fi
 if is_true "${USE_DYNAMIC_GLOBAL_BATCH_SIZE}"; then
   TRAIN_ARGS+=(--use-dynamic-global-batch-size)
@@ -254,6 +257,45 @@ fi
 if is_true "${SGLANG_ENABLE_MIXED_CHUNK:-false}"; then
   SGLANG_ARGS+=(--sglang-enable-mixed-chunk)
 fi
+# Prefix (RadixAttention) caching: reuse KV cache for shared prompt prefixes
+# (system prompt, task template, conversation history across multi-turn agent
+# steps). Big win for PatchEval where every episode shares the same system
+# prompt and the same task description across GRPO samples. Without this the
+# SGLang log shows #cached-token: 0 on every prefill. Default on; disable via
+# SGLANG_ENABLE_PREFIX_CACHING=false.
+if is_true "${SGLANG_ENABLE_PREFIX_CACHING:-true}"; then
+  SGLANG_ARGS+=(--sglang-enable-prefix-caching)
+fi
+
+# Router policy: how the SGLang router distributes requests across engines.
+#   cache_aware (sglang default) — greedy per-request prefix match; under high
+#                     concurrency it scatters one session's turns across
+#                     engines, so ~78% of prefills recompute the full prompt
+#                     (cached-token=0). Wastes the multi-engine capacity.
+#   manual (chosen here) — sticky-session routing via the X-SMG-Routing-Key
+#                     header that llm_proxy now sends. Each session_id is pinned
+#                     to one worker and stays there (only remaps if that worker
+#                     dies). Stronger stickiness than consistent_hashing, ideal
+#                     for fixed-engine RL rollouts. Supported since SGLang Model
+#                     Gateway v0.3.1 (PR #15907, 2025-12-27); the installed
+#                     sglang_router 0.3.2 has it. `consistent_hashing` is a
+#                     newer CLI choice (PR #17972, 2026-02-15) NOT in 0.3.2, so do
+#                     NOT set SGLANG_ROUTER_POLICY=consistent_hashing on this
+#                     build (argparse will reject it and crash startup).
+#                     Override via SGLANG_ROUTER_POLICY if needed.
+SGLANG_ARGS+=(--router-policy "${SGLANG_ROUTER_POLICY:-manual}")
+
+# Colocate mode: training (Megatron) and inference (SGLang) share the SAME GPUs.
+# Required for big models on few GPUs (e.g. 27B on a single 8-card node): the
+# dedicated-pool split (actor + rollout = NUM_GPUS) would need ~16 cards for 27B,
+# but colocate time-shares 8 cards via CPU offload between rollout/train phases.
+# When on, --rollout-num-gpus is ignored (auto = actor GPUs) and --offload is
+# forced by the trainer. Set SLIME_COLOCATE=1 to enable.
+COLOCATE_ARGS=()
+if is_true "${SLIME_COLOCATE:-false}"; then
+  COLOCATE_ARGS=(--colocate)
+  echo "  Colocate: ON (train+rollout share ${ACTOR_NUM_GPUS_PER_NODE} GPUs)"
+fi
 
 RAY_RUNTIME_PYTHONPATH="${SLIME_HOME}:${AIEVOBOX_ROOT}/rl:${AIEVOBOX_ROOT}:${MEGATRON_HOME}"
 if [[ -n "${PYTHONPATH:-}" ]]; then
@@ -310,7 +352,15 @@ RAY_START_ARGS=(start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "${NU
 if [[ -n "${RAY_PORT:-}" ]]; then
   RAY_START_ARGS+=(--port "${RAY_PORT}")
 fi
-"${RAY_BIN}" "${RAY_START_ARGS[@]}"
+# Multi-node: pre-build the Ray cluster manually (head + `ray start --address`
+# on workers), then run with SKIP_RAY_START=1 so this script reuses the existing
+# cluster instead of `ray start --head` (which would restart Ray and drop the
+# workers). Also set CLEANUP_BEFORE_RUN=false so the pre-started cluster survives.
+if is_true "${SKIP_RAY_START:-false}"; then
+  echo "SKIP_RAY_START=1: reusing existing Ray cluster at ${RAY_ADDRESS} (multi-node)"
+else
+  "${RAY_BIN}" "${RAY_START_ARGS[@]}"
+fi
 
 "${RAY_BIN}" job submit --address="${RAY_ADDRESS}" \
   --runtime-env-json="${RUNTIME_ENV_JSON}" \
@@ -327,5 +377,6 @@ fi
   "${WANDB_ARGS[@]}" \
   "${TRAIN_ARGS[@]}" \
   "${SGLANG_ARGS[@]}" \
+  "${COLOCATE_ARGS[@]}" \
   "${TEACHER_ARGS[@]}" \
   2>&1 | tee "${AIEVOBOX_RUN_DIR}/slime.log"

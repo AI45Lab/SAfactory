@@ -138,7 +138,14 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
         "--gateway-close-timeout-s",
         type=float,
         default=120.0,
-        help="Total timeout for polling gateway session close completion.",
+        help=(
+            "HTTP timeout for gateway session close requests. Must exceed the"
+            " gateway's drain_timeout_s (default 30s): the close endpoint blocks"
+            " up to drain_timeout_s waiting for in-flight LLM requests to finish,"
+            " so a runner timeout shorter than drain_timeout_s abandons the close"
+            " before the gateway responds, leaving the session unsealed"
+            " (is_terminal=0) and orphaning the rollout group."
+        ),
     )
     parser.add_argument(
         "--gateway-close-retries",

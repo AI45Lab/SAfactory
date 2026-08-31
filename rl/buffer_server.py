@@ -22,6 +22,7 @@ if _SCRIPT_DIR not in sys.path:
 
 from utils import get_env
 import gateway_autostart
+from timing_log import emit as timing_emit
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -34,10 +35,21 @@ if AIEVOBOX_ROOT not in sys.path:
 
 from core.data_manager.manager import DataManager
 
-# Setup logging
-LOG_DIR = os.path.join(AIEVOBOX_ROOT, "logs")
+# Setup logging — write into the per-run directory (same place as slime.log,
+# e.g. logs/patcheval_qwen3_8_27b/20260825-221716/) so each run's logs are
+# co-located instead of appending to a flat cross-run file. run_buffer_server.sh
+# exports AIEVOBOX_RUN_DIR (from .current_run or a fresh timestamp) before
+# launching us; fall back to the flat logs/ dir if it isn't set.
+_RUN_DIR = os.environ.get("AIEVOBOX_RUN_DIR", "").strip()
+LOG_DIR = _RUN_DIR or os.path.join(AIEVOBOX_ROOT, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "buffer_server.log")
+# Co-locate the gateway's own log in the run dir too. The gateway subprocess
+# (launched below via gateway_autostart) inherits this env and reads
+# SAFACTORY_GATEWAY_LOG_PATH at startup (gateway/__main__.py). Only override
+# when running per-run (don't clobber an explicit user override).
+if _RUN_DIR and not os.environ.get("SAFACTORY_GATEWAY_LOG_PATH"):
+    os.environ["SAFACTORY_GATEWAY_LOG_PATH"] = os.path.join(LOG_DIR, "gateway.log")
 
 logger = logging.getLogger("buffer_server")
 logger.setLevel(logging.DEBUG)
@@ -75,6 +87,17 @@ data_manager: Optional[DataManager] = None
 
 # Track last served step ID for cursor-based pagination
 last_served_id: int = 0
+
+# Served step primary keys within the lookback window, used to dedup rows that
+# the lookback re-scan returns again. Bounded by the window size (see below):
+# rows older than (last_served_id - FETCH_LOOKBACK) are never re-scanned, so
+# their pks are pruned from this set. See docs/guides/buffer-cursor-deadlock_CN.md
+served_pks: set = set()
+# How many id units below the cursor to re-scan each poll, to catch terminal
+# rows whose is_terminal was flipped via UPDATE after the cursor passed their
+# id. Must exceed the max eval latency expressed in step-insert count (eval
+# runs right after the episode, so a large default is safe).
+FETCH_LOOKBACK = int(os.environ.get("BUFFER_FETCH_LOOKBACK", "100000"))
 
 # Pending items by instance_id (for grouping)
 pending_items_by_instance: Dict[str, List[Dict[str, Any]]] = {}
@@ -214,7 +237,7 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
 
 async def fetch_new_items_from_db(limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """Fetch new completed steps from the database using cursor-based pagination."""
-    global data_manager, last_served_id
+    global data_manager, last_served_id, served_pks
 
     if data_manager is None:
         return []
@@ -223,7 +246,8 @@ async def fetch_new_items_from_db(limit: Optional[int] = None) -> List[Dict[str,
     try:
         rows = await data_manager.fetch_done_steps_with_context(
             after_id=last_served_id,
-            limit=limit or 100
+            limit=limit or 100,
+            lookback=FETCH_LOOKBACK,
         )
     except Exception as e:
         logger.error(f"fetch_done_steps_with_context error: {e}")
@@ -231,15 +255,28 @@ async def fetch_new_items_from_db(limit: Optional[int] = None) -> List[Dict[str,
 
     for row in rows:
         step_pk = row.get("step_pk")
+        if step_pk is None:
+            continue
+        # The lookback window re-returns rows we have already served; skip them.
+        if step_pk in served_pks:
+            continue
         try:
             item = _build_item_from_row(row)
             items.append(item)
-            # Update cursor to the latest processed id
+            served_pks.add(step_pk)
+            # Update cursor to the latest processed id (high watermark)
             if not last_served_id or step_pk > last_served_id:
                 last_served_id = step_pk
         except Exception as e:
             logger.error(f"Error building item from row: {e}")
             continue
+
+    # Prune served pks that have aged out of the lookback window: the strategy
+    # only re-scans id > (last_served_id - FETCH_LOOKBACK), so any pk below that
+    # floor will never be returned again and is safe to forget (bounded memory).
+    if FETCH_LOOKBACK > 0 and len(served_pks) > 4096:
+        floor = last_served_id - FETCH_LOOKBACK
+        served_pks = {pk for pk in served_pks if pk > floor}
 
     return items
 
@@ -338,7 +375,7 @@ async def get_rollout_data(request: Request):
 
 async def init_data_manager(job_session: str, storage_type: str, db_url: str, restart_training: bool = False):
     """Initialize the DataManager for querying the database."""
-    global data_manager, last_served_id
+    global data_manager, last_served_id, served_pks
     data_manager = DataManager(job_id=job_session, storage_type=storage_type, db_url=db_url)
     await data_manager.init()
     logger.info(f"DataManager initialized with {storage_type} DB: {db_url}, job_session: {job_session}")
@@ -346,6 +383,7 @@ async def init_data_manager(job_session: str, storage_type: str, db_url: str, re
     # Initialize cursor based on restart_training flag
     if restart_training:
         last_served_id = await data_manager.get_max_step_id()
+        served_pks = set()
         logger.info(f"restart_training=True, initialized last_served_id={last_served_id}")
 
 
@@ -395,6 +433,7 @@ def start_aievobox_process(data: dict):
     agent_root = get_env("AIEVOBOX_AGENT_ROOT") or "env"
     agent_config = os.environ.get("AIEVOBOX_AGENT_CONFIG")
     agent_start_config = os.environ.get("AIEVOBOX_AGENT_START_CONFIG")
+    rjob_config = str(get_env("AIEVOBOX_RJOB_CONFIG") or "").strip()
     # v2 docker/rjob runs need the container startup definition (env_types). When
     # not set explicitly, derive it from the agent config path:
     # env/<name>/<name>_config.yaml -> env/<name>/<name>_start.yaml.
@@ -408,15 +447,46 @@ def start_aievobox_process(data: dict):
     llm_temperature = float(get_env("LLM_TEMPERATURE") or 1.0)
     pool_size = int(get_env("AIEVOBOX_POOL_SIZE") or 16)
     rl_epoch = int(get_env("RL_EPOCH") or 1)
+    docker_image_archive_dir = str(
+        get_env("AIEVOBOX_DOCKER_IMAGE_ARCHIVE_DIR") or ""
+    ).strip()
+    docker_pull_policy = str(
+        get_env("AIEVOBOX_DOCKER_PULL_POLICY") or "never"
+    ).strip()
+    agent_start_timeout_s = str(
+        get_env("AIEVOBOX_AGENT_START_TIMEOUT_S") or ""
+    ).strip()
     evaluation_flag = str(os.environ.get("AIEVOBOX_ENABLE_EVALUATION") or "").strip().lower()
     evaluation_enabled = evaluation_flag in {"1", "true", "yes", "on"}
+
+    # Circuit breaker: tolerate a large batch of failures before tripping. The
+    # breaker's min_samples is capped at window (simulation_worker.py), so both
+    # must be raised together. Default 240 lets the first 240 episodes fail
+    # without stopping scheduling (useful while the model is weak / during
+    # bring-up). The consecutive-timeout limit must also be raised: the default
+    # of 5 trips as soon as 5 episodes eval-timeout in a row, which is normal
+    # during bring-up (e.g. npm/network flakiness in rule evaluators). Override
+    # via AIEVOBOX_CIRCUIT_BREAKER_WINDOW / AIEVOBOX_CIRCUIT_BREAKER_MIN_SAMPLES /
+    # AIEVOBOX_CIRCUIT_BREAKER_CONSECUTIVE_TIMEOUTS; set 0 to fall back to
+    # launcher defaults (window=50, min_samples=20, consecutive=5).
+    cb_window = int(get_env("AIEVOBOX_CIRCUIT_BREAKER_WINDOW") or 240)
+    cb_min_samples = int(get_env("AIEVOBOX_CIRCUIT_BREAKER_MIN_SAMPLES") or 240)
+    cb_consecutive_timeouts = int(get_env("AIEVOBOX_CIRCUIT_BREAKER_CONSECUTIVE_TIMEOUTS") or 240)
+
+    # Gateway close timeout: must exceed the gateway's drain_timeout_s (30s) or
+    # the runner abandons the close before the gateway finishes draining in-flight
+    # LLM requests, leaving sessions unsealed (is_terminal=0) and orphaning rollout
+    # groups. Default 45s > 30s drain. Override via AIEVOBOX_GATEWAY_CLOSE_TIMEOUT_S.
+    gateway_close_timeout_s = float(get_env("AIEVOBOX_GATEWAY_CLOSE_TIMEOUT_S") or 45.0)
 
     cmd = [
         "python3", launcher_script,
         "--mode", mode,
+        *(["--rjob-config", rjob_config] if rjob_config else []),
         "--db-path", db_url,
         "--storage-type", storage_type,
-        *(["--agent-config", agent_config] if agent_config else ["--agent-root", agent_root]),
+        "--agent-root", agent_root,
+        *(["--agent-config", agent_config] if agent_config else []),
         *(["--agent-start-config", agent_start_config] if agent_start_config else []),
         *(["--enable-evaluation"] if evaluation_enabled else []),
         "--gateway-base-url", gateway_base_url,
@@ -428,6 +498,33 @@ def start_aievobox_process(data: dict):
         "--no-rebuild-table",
         "--rl-group-size", str(group_size),
         "--rl-epoch", str(rl_epoch),
+        "--docker-pull-policy", docker_pull_policy,
+        *(
+            ["--agent-start-timeout-s", agent_start_timeout_s]
+            if agent_start_timeout_s
+            else []
+        ),
+        *(
+            ["--docker-image-archive-dir", docker_image_archive_dir]
+            if docker_image_archive_dir
+            else []
+        ),
+        *(
+            ["--circuit-breaker-window", str(cb_window)]
+            if cb_window > 0
+            else []
+        ),
+        *(
+            ["--circuit-breaker-min-samples", str(cb_min_samples)]
+            if cb_min_samples > 0
+            else []
+        ),
+        *(
+            ["--circuit-breaker-consecutive-timeouts", str(cb_consecutive_timeouts)]
+            if cb_consecutive_timeouts > 0
+            else []
+        ),
+        "--gateway-close-timeout-s", str(gateway_close_timeout_s),
     ]
 
     logger.info(f"Starting launcher.py: {' '.join(cmd)}")
@@ -442,6 +539,31 @@ def start_aievobox_process(data: dict):
             stderr=None,  # Inherit stderr
         )
         logger.info(f"launcher.py started with PID: {aievobox_process.pid}")
+
+        # Record the RL capacity / GPU-ratio config once per rollout start so
+        # the timing log is self-describing for offline capacity analysis.
+        timing_emit(
+            "rl_config",
+            mode=get_env("AIEVOBOX_MODE") or "docker",
+            pool_size=pool_size,
+            group_size=group_size,
+            max_steps=max_steps,
+            rollout_num_gpus=int(get_env("ROLLOUT_NUM_GPUS") or 0),
+            rollout_num_gpus_per_engine=int(get_env("ROLLOUT_NUM_GPUS_PER_ENGINE") or 0),
+            num_gpus=int(get_env("NUM_GPUS") or 0),
+            actor_num_gpus_per_node=int(get_env("ACTOR_NUM_GPUS_PER_NODE") or 0),
+            global_batch_size=int(get_env("RL_GLOBAL_BATCH_SIZE") or 0),
+            rollout_batch_size=int(get_env("SLIME_ROLLOUT_BATCH_SIZE") or 0),
+            num_rollout=int(get_env("NUM_ROLLOUT") or 0),
+            rl_epoch=int(get_env("RL_EPOCH") or 0),
+            gateway_max_steps=int(get_env("AIEVOBOX_GATEWAY_MAX_STEPS") or -1),
+            # Ratio of concurrent env pods to inference GPUs (envs per GPU).
+            envs_per_inference_gpu=(
+                pool_size / int(get_env("ROLLOUT_NUM_GPUS") or 1)
+                if int(get_env("ROLLOUT_NUM_GPUS") or 0) > 0
+                else None
+            ),
+        )
     except Exception as e:
         logger.error(f"Failed to start launcher.py: {e}")
         raise

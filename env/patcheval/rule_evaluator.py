@@ -65,6 +65,17 @@ async def evaluate_rule(
             [],
         )
     except Exception as exc:
+        # In rjob mode the runner already runs the official PatchEval evaluation
+        # (PoC + unit tests) inside the RJob pod using the real CVE image, and
+        # records strict_success/poc_passed/unit_tests_passed in its metrics.
+        # The launcher-side re-evaluation here needs a local Docker daemon,
+        # which rjob coordinator hosts typically lack (k8s worker nodes run
+        # containerd, not dockerd). When Docker is unavailable, fall back to the
+        # runner's authoritative in-pod result instead of failing the episode.
+        if _is_docker_unavailable(exc):
+            fallback = _fallback_from_runner_metrics(request, spec, metrics, exc)
+            if fallback is not None:
+                return fallback
         return EvalResult.failed(
             session_id=request.session_id,
             eval_id=spec.eval_id,
@@ -129,6 +140,74 @@ def _start_metrics(request: EvalRequest) -> dict[str, Any]:
 
 def _trim_log(value: Any) -> str:
     return str(value or "")[-_MAX_LOG_CHARS:]
+
+
+def _is_docker_unavailable(exc: BaseException) -> bool:
+    """True when the exception indicates the Docker daemon is not reachable."""
+    text = str(exc).lower()
+    if "fetching server api version" in text:
+        return True
+    if "no such file or directory" in text and "docker" in text:
+        return True
+    walked = exc
+    while walked is not None:
+        cls = type(walked)
+        if cls.__module__ == "docker.errors" or cls.__name__ == "DockerException":
+            return True
+        walked = walked.__cause__ or walked.__context__
+    return False
+
+
+def _fallback_from_runner_metrics(
+    request: EvalRequest,
+    spec: EvalSpec,
+    metrics: dict[str, Any],
+    exc: BaseException,
+) -> EvalResult | None:
+    """Build an EvalResult from the runner's in-pod official evaluation.
+
+    The runner runs the official CVE evaluation (PoC + unit tests) inside the
+    RJob pod with the real CVE image; its metrics carry strict_success,
+    poc_passed, unit_tests_passed, etc. When the launcher cannot re-run that
+    evaluation (no local Docker daemon), those metrics are the authoritative
+    result.
+    """
+    if not isinstance(metrics, dict):
+        return None
+    if "strict_success" not in metrics or "poc_passed" not in metrics:
+        return None
+    strict_success = bool(metrics.get("strict_success"))
+    score = 1.0 if strict_success else 0.0
+    failure_stage = metrics.get("failure_stage")
+    return EvalResult(
+        session_id=request.session_id,
+        eval_id=spec.eval_id,
+        method=spec.method.value,
+        status=EvalStatus.SUCCEEDED.value,
+        raw_score=score,
+        normalized_score_10=10.0 if strict_success else 0.0,
+        reason=(
+            "runner in-pod evaluation passed (launcher Docker unavailable)"
+            if strict_success
+            else f"runner in-pod evaluation did not pass: {failure_stage or 'patch not fixed'}"
+        ),
+        error_text=str(exc),
+        artifacts={
+            "bench": "patcheval",
+            "cve_id": metrics.get("cve_id") or None,
+            "setting": metrics.get("setting"),
+            "eval_source": "runner_in_pod_fallback",
+            "strict_success": strict_success,
+            "poc_passed": metrics.get("poc_passed") is True,
+            "unit_test_present": metrics.get("unit_test_present") is True,
+            "unit_tests_passed": metrics.get("unit_tests_passed") is True,
+            "failure_stage": failure_stage,
+            "poc_log": _trim_log(metrics.get("poc_log")),
+            "unit_test_log": _trim_log(metrics.get("unit_test_log")),
+            "patch": metrics.get("patch"),
+            "launcher_docker_error": str(exc),
+        },
+    )
 
 
 def _load_official_evaluation(env_params: dict[str, Any]) -> type[Any]:

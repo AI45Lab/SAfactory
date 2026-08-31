@@ -3,3 +3,5 @@ export_core_trajectories.py
 PATCHEVAL_DB_FIELDS.md
 *.jsonl
 *.json
+
+wandb_logs/
