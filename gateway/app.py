@@ -752,10 +752,20 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         log.info("Gateway session cache cleared: sessions=%d removed=%d", len(session_ids), removed)
         return {"session_ids": session_ids, "removed": removed}
 
+    async def get_environment_row_count(job_id: str) -> dict[str, Any]:
+        storage: GatewayStorage = app.state.gateway_storage
+        row_count = await storage.count_environment_rows(job_id)
+        return {"job_id": job_id, "row_count": row_count}
+
     app.add_api_route(
         f"{session_root}/cache/cleanup",
         clear_session_cache,
         methods=["POST"],
+    )
+    app.add_api_route(
+        "/internal/jobs/{job_id:path}/environment-row-count",
+        get_environment_row_count,
+        methods=["GET"],
     )
     app.add_api_route(
         f"{session_root}/{{session_id}}/chat/completions",
