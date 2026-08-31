@@ -4,17 +4,27 @@
 rjob:
   cluster_entry: "https://h.pjlab.org.cn"
   namespace: "ailab-evobox"
-  access_key: ""
-  secret_key: ""
+  access_key: "c9ff6efef0670c5a3f820bbb45e1669d"
+  secret_key: "51e860eea7cba83eefc6751b7a9b8e22"
   verifyssl: true
   retries: 3
 
   # Optional but commonly shared across RJob submissions.
   charged_group: "evobox_proxy"
+  # NOTE: intentionally NOT set. rjob_cluster.resolve_gateway_base_url does
+  # `cfg.get("gateway_base_url") or request.gateway_base_url`; if we hardcode an
+  # IP here it goes stale the moment the training pod restarts (the runner then
+  # gets a dead gateway URL and LLM calls hang). Leave this unset so it falls
+  # back to request.gateway_base_url, which the buffer server fills from
+  # AIEVOBOX_GATEWAY_BASE_URL (env.rjob.sh: hostname -I of THIS pod).
+  # gateway_base_url: "http://100.104.143.233:8000/v1/sessions"
   name_prefix: safactory
   poll_interval_s: 5
-  cleanup_on_finish: true
-  keep_failed_jobs: false
+  # Set to false temporarily so succeeded-but-empty pods are kept for log inspection.
+  cleanup_on_finish: false
+  keep_failed_jobs: true
   no_packaging: true
   auto_delete_duration: 12h
-  submit_concurrency: 1
+  # Raised from 1 so multiple rollout episodes can be submitted in parallel
+  # (must be >= AIEVOBOX_POOL_SIZE to actually parallelize).
+  submit_concurrency: 8

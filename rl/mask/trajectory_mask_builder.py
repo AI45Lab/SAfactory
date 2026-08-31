@@ -15,6 +15,11 @@ BASE_CHAT_HISTORY = [
     {"role": "user", "content": "I am a user."},
 ]
 
+# 用于渲染 system 消息片段的 user-only 基底（不含 system，避免触发 Qwen3.5/3.6
+# 模板的 "system must be at the beginning" 检查；同时提供 user 消息，避免触发
+# "No user query found in messages." 检查）。
+_USER_ONLY_BASE = [{"role": "user", "content": "I am a user."}]
+
 
 @dataclass
 class MessageNode:
@@ -43,6 +48,7 @@ class TrajectoryMaskBuilder:
         self.tokenizer = tokenizer
         self.processor = processor
         self.session_roots: Dict[str, MessageNode] = {}
+        self._user_suffix_str: Optional[str] = None
         self.base_messages_str = self.tokenizer.apply_chat_template(
             BASE_CHAT_HISTORY,
             add_generation_prompt=False,
@@ -75,6 +81,16 @@ class TrajectoryMaskBuilder:
             add_generation_prompt=False,
             tokenize=True,
         )
+        # Some tokenizer versions return BatchEncoding (or a batched tensor)
+        # here instead of a flat list of token IDs.
+        if hasattr(test_tokens, "input_ids"):
+            test_tokens = test_tokens.input_ids
+        elif isinstance(test_tokens, dict):
+            test_tokens = test_tokens["input_ids"]
+        if hasattr(test_tokens, "tolist"):
+            test_tokens = test_tokens.tolist()
+        if test_tokens and isinstance(test_tokens[0], (list, tuple)):
+            test_tokens = test_tokens[0]
         for idx in range(len(test_tokens) - 1, -1, -1):
             if test_tokens[idx] == eos_id:
                 return list(test_tokens[idx + 1 :])
@@ -213,7 +229,71 @@ class TrajectoryMaskBuilder:
         }
         return list(input_ids), mm_train_inputs
 
+    def _get_user_suffix_str(self) -> str:
+        # The rendered form of a single user message "I am a user." as it
+        # appears AFTER a system message, i.e. `<|im_start|>user\nI am a user.<|im_end|>\n`.
+        # Used to strip the trailing user message when rendering a standalone
+        # system message (Qwen's template guards require a user message to be
+        # present, so we render [system, user] and strip the user suffix).
+        # NB: render([user]) alone injects a synthetic default system block
+        # (with reasoning instructions) before the user, so it is NOT a clean
+        # suffix — compute it from BASE_CHAT_HISTORY + [user] instead.
+        if self._user_suffix_str is None:
+            full = self.tokenizer.apply_chat_template(
+                BASE_CHAT_HISTORY + [{"role": "user", "content": "I am a user."}],
+                add_generation_prompt=False,
+                tokenize=False,
+            )
+            if not full.startswith(self.base_messages_str):
+                raise ValueError("failed to extract user-suffix template fragment")
+            self._user_suffix_str = full[len(self.base_messages_str):]
+        return self._user_suffix_str
+
+    def _render_first_system_delta_str(
+        self,
+        model_input_message: Dict[str, Any],
+        tools: List[Dict[str, Any]],
+    ) -> str:
+        # Render the session's first system message WITH tools so the template's
+        # `<tools>...</tools>` system block (and reasoning instructions) land in
+        # the recorded input_ids, matching what sglang renders for the rollout
+        # prompt. Used only for the first system message of a session; other
+        # messages use _render_message_delta_str.
+        #
+        # Qwen3.5/3.8 template guards require a user message, so we render
+        # [system_msg, user_base] with tools and strip the clean user suffix
+        # (see _get_user_suffix_str).
+        user_suffix = self._get_user_suffix_str()
+        with_msg = self.tokenizer.apply_chat_template(
+            [model_input_message] + _USER_ONLY_BASE,
+            tools=tools,
+            add_generation_prompt=False,
+            tokenize=False,
+        )
+        if not with_msg.endswith(user_suffix):
+            raise ValueError("failed to extract first-system-message template fragment")
+        return with_msg[: len(with_msg) - len(user_suffix)]
+
     def _render_message_delta_str(self, model_input_message: Dict[str, Any]) -> str:
+        # Qwen3.5/3.6 chat template 有两个硬检查：
+        #   1) system 消息必须在 index 0，否则 "System message must be at the beginning."
+        #   2) 必须存在 user 消息，否则 "No user query found in messages."
+        # BASE_CHAT_HISTORY 本身以 system 开头，若把 agent 发来的 system 消息
+        # 再拼到 BASE_CHAT_HISTORY 后面会得到 [system, user, system] 触发 (1)；
+        # 而单独渲染 [system] 又会触发 (2)。
+        # 因此对 system 消息，渲染 [system, user_base] 再裁掉 user_base 部分，
+        # 得到 system 片段（system 在 index 0，且有 user，两个检查都满足）。
+        if model_input_message.get("role") == "system":
+            user_suffix = self._get_user_suffix_str()
+            with_msg = self.tokenizer.apply_chat_template(
+                [model_input_message] + _USER_ONLY_BASE,
+                add_generation_prompt=False,
+                tokenize=False,
+            )
+            if not with_msg.endswith(user_suffix):
+                raise ValueError("failed to extract system-message template fragment")
+            return with_msg[: len(with_msg) - len(user_suffix)]
+
         single_message_chat_template_str = self.tokenizer.apply_chat_template(
             BASE_CHAT_HISTORY + [model_input_message],
             add_generation_prompt=False,
@@ -352,6 +432,7 @@ class TrajectoryMaskBuilder:
         tokens: List[int],
         images: List[Any],
         image_data: List[str],
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[MessageNode, List[Dict[str, Any]], str, List[int], List[Any], List[str]]:
         model_input_message = self._message_for_model_input(raw_message)
         next_model_input_messages = list(model_input_messages)
@@ -366,7 +447,10 @@ class TrajectoryMaskBuilder:
         next_image_data.extend(new_image_data)
         delta_mm_train_inputs = self._build_mm_train_inputs_for_images(new_images)
 
-        delta_message_str = self._render_message_delta_str(model_input_message)
+        if tools is not None:
+            delta_message_str = self._render_first_system_delta_str(model_input_message, tools)
+        else:
+            delta_message_str = self._render_message_delta_str(model_input_message)
         next_messages_str = messages_str + delta_message_str
         delta_tokens, _ = self._build_mm_inputs(delta_message_str, new_images)
         delta_tokens = list(delta_tokens)
@@ -400,16 +484,24 @@ class TrajectoryMaskBuilder:
         output_ids: List[int],
         assistant_text: str,
         finish_reason: Optional[str],
+        assistant_message: Optional[Dict[str, Any]] = None,
     ) -> MessageNode:
         del finish_reason
-        assistant_message = {"role": "assistant", "content": assistant_text}
-        model_input_message = self._message_for_model_input(assistant_message)
+        # If caller provides a pre-parsed assistant_message (OpenAI format with
+        # tool_calls, list content), use it as raw_message so _message_matches
+        # can compare it against DB messages during get_training_info. The
+        # raw assistant_text is still used for token/mask computation.
+        if assistant_message is not None:
+            raw_message = assistant_message
+        else:
+            raw_message = {"role": "assistant", "content": assistant_text}
+        model_input_message = self._message_for_model_input(raw_message)
         delta_message_str = self._render_message_delta_str(model_input_message)
         delta_tokens = list(self.generation_tokens) + list(output_ids) + list(self.suffix)
         delta_response_mask = [0] * len(self.generation_tokens) + [1] * len(output_ids) + [0] * len(self.suffix)
 
         node = MessageNode(
-            raw_message=assistant_message,
+            raw_message=raw_message,
             model_input_message=model_input_message,
             delta_message_str=delta_message_str,
             delta_tokens=delta_tokens,
@@ -425,12 +517,21 @@ class TrajectoryMaskBuilder:
         self,
         session_id: str,
         messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[MessageNode, List[Dict[str, Any]], str, List[int], List[Any], List[str]]:
         node, matched, model_input_messages, messages_str, tokens, _response_mask, images, image_data, _mm_train_inputs = self._match_prefix(
             session_id,
             messages,
         )
-        for message in messages[matched:]:
+        # Qwen3.5/3.8 chat template injects a `<tools>...</tools>` system block
+        # only into the FIRST system message of the rendered prompt. To get it
+        # into the recorded input_ids (so the training mask aligns with what
+        # sglang actually rendered), render the session's first system message
+        # standalone WITH tools; every other message uses the normal delta
+        # (deltas are identical with/without tools — verified empirically).
+        first_tools = tools if (matched == 0 and not node.children) else None
+        for idx, message in enumerate(messages[matched:]):
+            msg_tools = first_tools if (idx == 0 and first_tools is not None and message.get("role") == "system") else None
             node, model_input_messages, messages_str, tokens, images, image_data = self._add_prompt_message(
                 node,
                 message,
@@ -439,6 +540,7 @@ class TrajectoryMaskBuilder:
                 tokens,
                 images,
                 image_data,
+                tools=msg_tools,
             )
         return node, model_input_messages, messages_str, tokens, images, image_data
 
@@ -446,10 +548,12 @@ class TrajectoryMaskBuilder:
         self,
         session_id: str,
         messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> PreparedPrompt:
         node, model_input_messages, messages_str, tokens, _images, image_data = self._ensure_path(
             session_id,
             messages,
+            tools=tools,
         )
         input_ids = list(tokens)
         input_ids.extend(self.generation_tokens)
@@ -468,6 +572,7 @@ class TrajectoryMaskBuilder:
         output_logprobs: List[List[Any]],
         assistant_text: str,
         finish_reason: Optional[str] = None,
+        assistant_message: Optional[Dict[str, Any]] = None,
     ) -> MessageNode:
         del output_logprobs
         return self._append_assistant_message(
@@ -475,6 +580,7 @@ class TrajectoryMaskBuilder:
             output_ids=list(output_ids),
             assistant_text=assistant_text,
             finish_reason=finish_reason,
+            assistant_message=assistant_message,
         )
 
     def get_training_info(

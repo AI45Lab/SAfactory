@@ -73,6 +73,79 @@ def parse_args() -> argparse.Namespace:
         "--no-proxy",
         default="host.docker.internal,localhost,127.0.0.1,::1",
     )
+    # --- RJob mode ---
+    parser.add_argument(
+        "--mode",
+        choices=["docker", "rjob"],
+        default="docker",
+        help="docker: CVE containers on one Docker host. rjob: each episode "
+        "submitted as a cluster RJob pod pulling images from the registry.",
+    )
+    parser.add_argument(
+        "--rjob-name-prefix",
+        default="patcheval",
+        help="RJob name_prefix (RJob pod name component).",
+    )
+    parser.add_argument(
+        "--rjob-registry",
+        default="registry.h.pjlab.org.cn",
+        help="RJob image registry host. In rjob mode, env_image is rewritten from "
+        "the dataset's ghcr.io path to <registry>/<ns>/<repo>:<cve>-latest (the "
+        "tag pushed by push_patcheval_images.sh).",
+    )
+    parser.add_argument(
+        "--rjob-registry-ns",
+        default="ailab-evobox-evobox_proxy",
+        help="RJob image registry namespace.",
+    )
+    parser.add_argument(
+        "--rjob-repo",
+        default="patcheval",
+        help="RJob image repository name.",
+    )
+    parser.add_argument(
+        "--rjob-openhands-bin",
+        default="/mnt/shared-storage-user/evobox-share/leishanzhe/openhands-install/openhands",
+        help="Pre-downloaded openhands binary on shared storage; embedded into "
+        "the RJob pod so the curl installer (flaky from pods) is skipped.",
+    )
+    parser.add_argument(
+        "--rjob-results-root",
+        default="",
+        help="safactory_results_root written into rjob env_params. Defaults to "
+        "<repo>/results when empty.",
+    )
+    parser.add_argument(
+        "--rjob-no-proxy",
+        default="localhost,127.0.0.1,::1,10.0.0.0/8,100.96.0.0/12,.pjlab.org.cn",
+        help="no_proxy for RJob pods (drops docker-only host.docker.internal "
+        "and the docker-mode pod IP; 100.x gateway IPs are covered by "
+        "100.96.0.0/12).",
+    )
+    parser.add_argument(
+        "--rjob-mount-config",
+        nargs="+",
+        default=[
+            "gpfs://gpfs1/leishanzhe:/mnt/shared-storage-user/leishanzhe",
+            "gpfs://gpfs1/evobox-share:/mnt/shared-storage-user/evobox-share",
+        ],
+        help="Cluster gpfs mounts for the RJob pod (gpfs://<vol>/<path>:<target>).",
+    )
+    parser.add_argument("--rjob-cpu", type=int, default=2)
+    parser.add_argument("--rjob-memory-mb", type=int, default=5120)
+    parser.add_argument(
+        "--rjob-custom-resources",
+        nargs="+",
+        default=["brainpp.cn/fuse=1"],
+        help="RJob resources.custom_resources (resource=value).",
+    )
+    parser.add_argument(
+        "--rjob-gateway-base-url",
+        default="",
+        help="If set, written uncommented as PATCHEVAL_OPENHANDS_GATEWAY_BASE_URL. "
+        "If empty (default), left commented out — the runner uses the dynamic "
+        "SAFACTORY_GATEWAY_BASE_URL injected by the launcher.",
+    )
     return parser.parse_args()
 
 
@@ -152,6 +225,19 @@ def write_configs(
     claude_model: str,
     claude_max_thinking_tokens: int,
     openhands_install_timeout_s: float,
+        mode: str = "docker",
+        rjob_name_prefix: str = "patcheval",
+        rjob_registry: str = "registry.h.pjlab.org.cn",
+        rjob_registry_ns: str = "ailab-evobox-evobox_proxy",
+        rjob_repo: str = "patcheval",
+        rjob_openhands_bin: str = "",
+    rjob_results_root: str = "",
+    rjob_no_proxy: str = "localhost,127.0.0.1,::1,10.0.0.0/8,100.96.0.0/12,.pjlab.org.cn",
+    rjob_mount_config: list[str] | None = None,
+    rjob_cpu: int = 2,
+    rjob_memory_mb: int = 5120,
+    rjob_custom_resources: list[str] | None = None,
+    rjob_gateway_base_url: str = "",
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     dataset_dir = output_dir / "datasets"
@@ -213,27 +299,113 @@ def write_configs(
             }
         )
 
-    common_agent = {
-        "container": {
-            "workdir": "/workspace",
-            "runner_entrypoint": {
-                "source": str(runner_path),
-                "target": "/tmp/safactory-patcheval-runner.py",
-                "command": "python /tmp/safactory-patcheval-runner.py",
-            },
-            "install_runner_script": True,
-            "env": container_env,
-            "extra_args": ["--add-host=host.docker.internal:host-gateway"],
-            "volumes": [
+    common_agent: dict[str, Any]
+    if mode == "rjob":
+        # RJob pods cannot reach the k8s-internal docker proxy, and the
+        # docker-only host.docker.internal / pod IP are not meaningful from a
+        # cluster pod. Proxy clearing + rjob no_proxy apply to ALL baselines.
+        # The runner is embedded via base64 for every baseline (rjob mode does
+        # not add install_runner_script outputs to volumes).
+        rjob_container_env = dict(container_env)
+        # RJob does not apply Docker bind-mount volumes (only mount_config/gpfs),
+        # so /opt/patcheval would be empty. Point the runner at the official
+        # source via its gpfs-accessible path instead.
+        rjob_container_env["PATCHEVAL_OFFICIAL_ROOT"] = str(official_runtime_dir)
+        rjob_container_env.update(
+            {
+                "NO_PROXY": rjob_no_proxy,
+                "no_proxy": rjob_no_proxy,
+                "HTTP_PROXY": "",
+                "HTTPS_PROXY": "",
+                "http_proxy": "",
+                "https_proxy": "",
+            }
+        )
+        if baseline == "openhands":
+            # OpenHands runs DinD inside the pod to load CVE images and uses a
+            # pre-downloaded openhands binary on shared storage (the curl
+            # installer is flaky from pods). The LLM baseline needs neither.
+            rjob_container_env.update(
                 {
-                    "source": str(official_runtime_dir),
-                    "target": "/opt/patcheval",
-                    "read_only": True,
+                    "DOCKER_HOST": "unix:///var/run/docker.sock",
+                    "DOCKER_TLS_CERTDIR": "",
+                    "PATCHEVAL_OPENHANDS_BIN": rjob_openhands_bin,
+                }
+            )
+            # PATCHEVAL_OPENHANDS_GATEWAY_BASE_URL: left commented out by default
+            # (the runner prefers the dynamic SAFACTORY_GATEWAY_BASE_URL injected
+            # by the launcher). Write it uncommented only if explicitly provided.
+            if rjob_gateway_base_url:
+                rjob_container_env["PATCHEVAL_OPENHANDS_GATEWAY_BASE_URL"] = rjob_gateway_base_url
+
+        rjob_block: dict[str, Any] = {
+            "name_prefix": rjob_name_prefix,
+            "private_machine": "group",
+            "image_pull_policy": "IfNotPresent",
+            "no_packaging": True,
+            "cleanup_on_finish": False,
+            "keep_failed_jobs": True,
+            # NOTE: do NOT set preemptible: false — the rjob SDK stringifies the
+            # Python bool to "False", which the cluster admission webhook
+            # rejects. Omitting the key uses the SDK default (preemptible).
+            "privileged": True,
+            "resources": {
+                "cpu": rjob_cpu,
+                "gpu": 0,
+                "memory_in_mb": rjob_memory_mb,
+                "custom_resources": list(rjob_custom_resources or []),
+            },
+            "mount_config": list(rjob_mount_config or []),
+            "embedded_files": [
+                {
+                    "source": str(runner_path),
+                    "target": "/tmp/safactory-patcheval-runner.py",
                 }
             ],
-            "idle_command": "tail -f /dev/null",
         }
-    }
+        common_agent = {
+            "container": {
+                "workdir": "/workspace",
+                "runner_entrypoint": {
+                    "source": str(runner_path),
+                    "target": "/tmp/safactory-patcheval-runner.py",
+                    "command": "python /tmp/safactory-patcheval-runner.py",
+                },
+                "install_runner_script": True,
+                "env": rjob_container_env,
+                "volumes": [
+                    {
+                        "source": str(official_runtime_dir),
+                        "target": "/opt/patcheval",
+                        "read_only": True,
+                    }
+                ],
+                "idle_command": "tail -f /dev/null",
+            },
+            "rjob": rjob_block,
+        }
+    else:
+        common_agent = {
+            "container": {
+                "workdir": "/workspace",
+                "runner_entrypoint": {
+                    "source": str(runner_path),
+                    "target": "/tmp/safactory-patcheval-runner.py",
+                    "command": "python /tmp/safactory-patcheval-runner.py",
+                },
+                "install_runner_script": True,
+                "env": container_env,
+                "extra_args": ["--add-host=host.docker.internal:host-gateway"],
+                "volumes": [
+                    {
+                        "source": str(official_runtime_dir),
+                        "target": "/opt/patcheval",
+                        "read_only": True,
+                    }
+                ],
+                "idle_command": "tail -f /dev/null",
+            }
+        }
 
     missing_archives: list[str] = []
     for record in records:
@@ -262,23 +434,44 @@ def write_configs(
             task.update({"setting": setting, "prompt_template": prompt_template})
         dataset_path.write_text(json.dumps(task, ensure_ascii=False) + "\n", encoding="utf-8")
 
+        env_params: dict[str, Any] = {
+            "task_family": "patcheval",
+            "rule_evaluator_timeout_s": evaluation_timeout_s,
+            "patcheval_official_root": str(official_root),
+            "patcheval_docker_adapter": str(docker_adapter_path),
+            "patcheval_image_archive_dir": str(archive_dir or ""),
+            "patcheval_http_proxy": http_proxy,
+            "patcheval_no_proxy": no_proxy,
+            "patcheval_shared_tmp": shared_tmp,
+        }
+        if mode == "rjob":
+            # RJob pods cannot reach the k8s-internal docker proxy, and the
+            # docker-only host.docker.internal / pod IP are not meaningful
+            # from a cluster pod. Mirror the hand-written rjob sample.
+            env_params["patcheval_http_proxy"] = ""
+            env_params["patcheval_no_proxy"] = rjob_no_proxy
+            if rjob_results_root:
+                env_params["safactory_results_root"] = rjob_results_root
+            else:
+                # Default to the SAfactory repo's results dir (this file lives at
+                # <repo>/env/patcheval/generate_full_config.py).
+                repo_root = Path(__file__).resolve().parents[2]
+                env_params["safactory_results_root"] = str(repo_root / "results")
         environments.append(
             {
                 "env_name": name,
-                "env_image": image,
+                "env_image": (
+                    # RJob pods pull from the internal registry (the tag pushed by
+                    # push_patcheval_images.sh), not the ghcr.io path the docker
+                    # mode loads from the local tar archive.
+                    f"{rjob_registry}/{rjob_registry_ns}/{rjob_repo}:{cve_id.lower()}-latest"
+                    if mode == "rjob"
+                    else image
+                ),
                 "env_num": 1,
                 "dataset": f"./datasets/{dataset_filename}",
                 "dataset_load_mode": "eager",
-                "env_params": {
-                    "task_family": "patcheval",
-                    "rule_evaluator_timeout_s": evaluation_timeout_s,
-                    "patcheval_official_root": str(official_root),
-                    "patcheval_docker_adapter": str(docker_adapter_path),
-                    "patcheval_image_archive_dir": str(archive_dir or ""),
-                    "patcheval_http_proxy": http_proxy,
-                    "patcheval_no_proxy": no_proxy,
-                    "patcheval_shared_tmp": shared_tmp,
-                },
+                "env_params": env_params,
             }
         )
         agents[name] = common_agent
@@ -297,9 +490,11 @@ def write_configs(
         suffix = "" if len(missing_archives) <= 10 else f"\n  ... and {len(missing_archives) - 10} more"
         raise FileNotFoundError(f"Missing {len(missing_archives)} image archive(s):\n{sample}{suffix}")
 
-    with (output_dir / "patcheval_config.yaml").open("w", encoding="utf-8") as handle:
+    config_name = "patcheval_config.rjob.yaml" if mode == "rjob" else "patcheval_config.yaml"
+    start_name = "patcheval_start.rjob.yaml" if mode == "rjob" else "patcheval_start.yaml"
+    with (output_dir / config_name).open("w", encoding="utf-8") as handle:
         yaml.safe_dump({"environments": environments}, handle, sort_keys=False, allow_unicode=True)
-    with (output_dir / "patcheval_start.yaml").open("w", encoding="utf-8") as handle:
+    with (output_dir / start_name).open("w", encoding="utf-8") as handle:
         yaml.safe_dump({"agents": agents}, handle, sort_keys=False, allow_unicode=True)
 def main() -> None:
     args = parse_args()
@@ -373,9 +568,22 @@ def main() -> None:
         str(args.claude_model).strip(),
         int(args.claude_max_thinking_tokens),
         float(args.openhands_install_timeout_s),
+        mode=str(args.mode),
+        rjob_name_prefix=str(args.rjob_name_prefix),
+        rjob_registry=str(args.rjob_registry),
+        rjob_registry_ns=str(args.rjob_registry_ns),
+        rjob_repo=str(args.rjob_repo),
+        rjob_openhands_bin=str(args.rjob_openhands_bin),
+        rjob_results_root=str(args.rjob_results_root).strip(),
+        rjob_no_proxy=str(args.rjob_no_proxy).strip(),
+        rjob_mount_config=list(args.rjob_mount_config or []),
+        rjob_cpu=int(args.rjob_cpu),
+        rjob_memory_mb=int(args.rjob_memory_mb),
+        rjob_custom_resources=list(args.rjob_custom_resources or []),
+        rjob_gateway_base_url=str(args.rjob_gateway_base_url).strip(),
     )
     print(
-        f"Generated PatchEval {args.baseline} configuration "
+        f"Generated PatchEval {args.baseline} ({args.mode}) configuration "
         f"for {len(records)} task(s) in {output_dir}"
     )
 

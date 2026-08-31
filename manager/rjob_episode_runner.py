@@ -70,10 +70,12 @@ class RJobEpisodeRunner:
         logs_error = ""
         result: SimulationStartResult | None = None
         timings_ms: Dict[str, float] = {}
+        timings_abs: Dict[str, float] = {}
         status_poll_count = 0
         summary_status = "failed"
         summary_extra: Dict[str, Any] = {}
         episode_started = time.perf_counter()
+        episode_started_ts = time.time()
         try:
             if not lease.image:
                 raise RuntimeError(f"RJob lease missing image: {lease.agent_name}/{lease.agent_id}")
@@ -135,6 +137,7 @@ class RJobEpisodeRunner:
             with trace.span("submit_job", requested_rjob_name=rjob_name):
                 submitted = await self._cluster.submit_job(client, job, submit_kwargs)
             timings_ms["rjob_submit_ms"] = _elapsed_ms(started)
+            timings_abs["rjob_submit_ts"] = time.time()
             trace.update_context(rjob_submit_ms=timings_ms["rjob_submit_ms"])
             submitted_name = str(submitted or rjob_name).strip()
             trace.update_context(submitted_rjob_name=submitted_name)
@@ -264,6 +267,7 @@ class RJobEpisodeRunner:
                     result,
                     trace=trace,
                     timings_ms=timings_ms,
+                    timings_abs=timings_abs,
                     submitted_name=submitted_name,
                     terminal_status=terminal_status,
                     status_poll_count=status_poll_count,
@@ -389,6 +393,7 @@ class RJobEpisodeRunner:
         *,
         trace: PerfTrace,
         timings_ms: Dict[str, float],
+        timings_abs: Dict[str, float],
         submitted_name: str,
         terminal_status: str,
         status_poll_count: int,
@@ -403,6 +408,7 @@ class RJobEpisodeRunner:
                 "rjob_status": terminal_status,
                 "rjob_status_poll_count": status_poll_count,
                 **timings_ms,
+                **timings_abs,
             }
         )
 

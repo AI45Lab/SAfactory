@@ -13,11 +13,51 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
+
+
+_RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
+_GATEWAY_MAX_RETRIES = 3
+_GATEWAY_BACKOFF_S = (5.0, 10.0, 20.0)
+
+
+def _post_json(url: str, payload: bytes, timeout_s: float) -> dict[str, Any]:
+    """POST JSON with bounded retry on transient upstream errors.
+
+    The opus-5 upstream proxy intermittently returns 503 ("upstream load
+    saturated") under load; without retry a single transient failure kills the
+    whole episode. Retry idempotent chat requests on 429/5xx and connection
+    errors so the LLM baseline survives flaky upstreams.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(_GATEWAY_MAX_RETRIES + 1):
+        try:
+            request = Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(request, timeout=timeout_s) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            last_exc = exc
+            if exc.code not in _RETRY_STATUS_CODES or attempt >= _GATEWAY_MAX_RETRIES:
+                raise
+            time.sleep(_GATEWAY_BACKOFF_S[attempt])
+        except URLError as exc:
+            last_exc = exc
+            if attempt >= _GATEWAY_MAX_RETRIES:
+                raise
+            time.sleep(_GATEWAY_BACKOFF_S[attempt])
+    raise last_exc  # type: ignore[misc]
 
 
 DEFAULT_TIMEOUT_S = 900.0
 MAX_LOG_CHARS = 16_000
 SETTING_EPOCHS = {"s1.1": 1, "s1.2": 1, "s1.3": 1, "s1.4": 5}
+RESULT_JSON_PREFIX = "SAFACTORY_RESULT_JSON "
+RESULT_PATH_ENV = "SAFACTORY_RESULT_PATH"
 LANGUAGE_COMMENT_MAP = {
     "py": ("Python", "#"),
     "js": ("JavaScript", "//"),
@@ -366,28 +406,59 @@ def _evaluate_official_scripts(patch: str, timeout_s: float) -> dict[str, Any]:
     return result
 
 
+def _is_claude_model(model: str) -> bool:
+    return model.lower().startswith("claude")
+
+
 def _call_gateway(*, base_url: str, model: str, prompt: str, timeout_s: float) -> str:
-    payload = json.dumps(
-        {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant"},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0,
-            "max_tokens": 16384,
-            "stream": False,
-        }
-    ).encode("utf-8")
-    request = Request(
-        f"{base_url}/chat/completions",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    if _is_claude_model(model):
+        return _call_gateway_anthropic(
+            base_url=base_url, model=model, prompt=prompt, timeout_s=timeout_s
+        )
+    return _call_gateway_openai(
+        base_url=base_url, model=model, prompt=prompt, timeout_s=timeout_s
     )
-    with urlopen(request, timeout=timeout_s) as response:
-        body = json.loads(response.read().decode("utf-8"))
-    return str(body["choices"][0]["message"]["content"])
+
+
+def _call_gateway_anthropic(*, base_url: str, model: str, prompt: str, timeout_s: float) -> str:
+    # Native Anthropic Messages API. The gateway injects the upstream api key
+    # and anthropic-version, so the runner only sends the body. `temperature`
+    # is deprecated for claude-opus-5 and rejected by the upstream proxy, so it
+    # is omitted entirely.
+    body: dict[str, Any] = {
+        "model": model,
+        "max_tokens": 16384,
+        "system": "You are a helpful assistant",
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+    }
+    payload = json.dumps(body).encode("utf-8")
+    data = _post_json(f"{base_url}/v1/messages", payload, timeout_s)
+    # content is a list of blocks (e.g. thinking + text); concatenate text parts.
+    parts = [
+        str(block.get("text") or "")
+        for block in (data.get("content") or [])
+        if isinstance(block, dict) and block.get("type") == "text"
+    ]
+    if not parts:
+        raise RuntimeError(f"anthropic response had no text content: {data!r}")
+    return "".join(parts)
+
+
+def _call_gateway_openai(*, base_url: str, model: str, prompt: str, timeout_s: float) -> str:
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant"},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0,
+        "max_tokens": 16384,
+        "stream": False,
+    }
+    payload = json.dumps(body).encode("utf-8")
+    data = _post_json(f"{base_url}/chat/completions", payload, timeout_s)
+    return str(data["choices"][0]["message"]["content"])
 
 
 def _read_request() -> dict[str, Any]:
@@ -401,7 +472,18 @@ def _read_request() -> dict[str, Any]:
 
 
 def _write_result(value: dict[str, Any]) -> None:
-    print(json.dumps(value, ensure_ascii=False))
+    payload = json.dumps(value, ensure_ascii=False)
+    result_path = os.environ.get(RESULT_PATH_ENV, "").strip()
+    if result_path:
+        try:
+            path = Path(result_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+            temporary.write_text(payload + "\n", encoding="utf-8")
+            temporary.replace(path)
+        except OSError:
+            pass
+    print(RESULT_JSON_PREFIX + payload, flush=True)
 
 
 def _required_text(value: Any, name: str) -> str:

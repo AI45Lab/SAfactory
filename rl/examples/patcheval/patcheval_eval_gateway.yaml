@@ -1,0 +1,13 @@
+listen_host: 0.0.0.0
+listen_port: 18000
+base_session_path: /v1/sessions
+max_steps: -1
+storage_type: sqlite
+storage_config:
+  db_url: sqlite:////mnt/shared-storage-user/leishanzhe/repo/SAfactory/rl/examples/patcheval/patcheval_eval_gateway.db
+llm_routes:
+  bailian/deepseek-v4-flash:
+    base_url: http://35.220.164.252:3888/v1/
+    api_key: sk-bKmUXMzvJtt6lYqeN4UJ9DrpjxS5DIBe0ZYHTM0LquWjwVxY
+    supports_stream: true
+    max_concurrency: 64

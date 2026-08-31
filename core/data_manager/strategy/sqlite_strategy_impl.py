@@ -540,11 +540,24 @@ class SqliteStrategy(StorageStrategy):
         self,
         job_id: str,
         after_id: int = 0,
-        limit: int = 100
+        limit: int = 100,
+        lookback: int = 0,
     ) -> List[Dict]:
-        """
-        Fetch completed steps for training data collection.
-        Uses cursor-based pagination.
+        """Fetch completed steps for training data collection.
+
+        Uses cursor-based pagination on the auto-increment ``id``. Because
+        ``reward_committer`` flips ``is_terminal`` on EXISTING rows via UPDATE
+        (not INSERT), a row's ``id`` is assigned at step-creation time, not at
+        eval-commit time. A pure ``id > after_id`` cursor therefore skips any
+        row whose ``is_terminal`` is flipped AFTER the cursor already advanced
+        past its id (a "late flip"), permanently starving the buffer.
+
+        When ``lookback > 0`` we re-scan a bounded window
+        ``(after_id - lookback, after_id]`` in addition to new rows
+        ``(after_id, +inf)`` so late flips are caught. The caller dedups
+        re-scanned rows with a served-pk set and advances ``after_id`` as a high
+        watermark; rows older than the window are never re-scanned again, so
+        the served set stays bounded by the window size.
         """
         await self.init()
 
@@ -557,37 +570,58 @@ class SqliteStrategy(StorageStrategy):
                 "job_id": job_id,
                 "after_id": after_id,
                 "limit": limit,
+                "lookback": lookback,
             },
         )
         try:
             with trace.span("db_read.fetch_done_steps", limit=limit):
-                steps = await SessionStep.filter(
+                # NOTE: is_trainable is never flipped to True by the sqlite
+                # reward-commit path (reward_committer only sets is_terminal /
+                # is_session_completed), so filtering on is_trainable=True
+                # yields zero rows and no training data ever flows. We select
+                # terminal rows instead. evaluation_summary rows are terminal
+                # but carry empty messages ("[]"); the caller skips them so
+                # the trainer never receives degenerate empty-prompt items.
+                cursor_floor = max(0, after_id - lookback) if lookback > 0 else after_id
+                query = SessionStep.filter(
                     job_id=job_id,
-                    is_trainable=True,
-                    id__gt=after_id
-                ).order_by("id").limit(limit)
+                    is_terminal=True,
+                    id__gt=cursor_floor,
+                ).order_by("id")
+                # When re-scanning the lookback window the result is bounded by
+                # the window size; do not apply the (small) limit, otherwise the
+                # window's already-served rows would crowd out genuinely new
+                # rows and the caller would see new_items=0 forever.
+                if lookback <= 0:
+                    query = query.limit(limit)
+                steps = await query
 
-            rows = [
-                {
-                    "step_pk": s.id,
-                    "step_id": s.step_id,
-                    "env_name": s.env_name,
-                    "env_id": s.session_id,
-                    "meta_json": s.meta_json,
-                    "prompt": s.messages,
-                    "request": s.request,
-                    "response": s.response,
-                    "reward": s.step_reward,
-                    "step_reward": s.step_reward,
-                    "total_reward": s.reward,
-                    "session_id": s.session_id,
-                    "session_end_time": s.created_at.isoformat() if s.created_at else None,
-                    "group_id": s.group_id,
-                    "truncated": s.is_truncated,
-                    "is_session_completed": s.is_session_completed,
-                }
-                for s in steps
-            ]
+            rows = []
+            for s in steps:
+                if not s.messages or s.messages in ("[]", "null", ""):
+                    continue
+                rows.append(
+                    {
+                        "step_pk": s.id,
+                        "step_id": s.step_id,
+                        "env_name": s.env_name,
+                        "env_id": s.session_id,
+                        # Kept as a derived compatibility key because rl/buffer_server.py
+                        # intentionally remains unchanged in this refactor.
+                        "env_state": s.meta_json,
+                        "prompt": s.messages,
+                        "request": s.request,
+                        "response": s.response,
+                        "reward": s.step_reward,
+                        "step_reward": s.step_reward,
+                        "total_reward": s.reward,
+                        "session_id": s.session_id,
+                        "session_end_time": s.created_at.isoformat() if s.created_at else None,
+                        "group_id": s.group_id,
+                        "truncated": s.is_truncated,
+                        "is_session_completed": s.is_session_completed,
+                    }
+                )
             trace.emit_summary(status="success", row_count=len(rows))
             return rows
         except Exception as exc:
