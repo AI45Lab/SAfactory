@@ -1,11 +1,14 @@
 # Global RJob connection/auth settings shared by all RJob environments.
 # Override with: python launcher.py --mode rjob --rjob-config path/to/config.yaml
+#
+# Copy this file to config.yaml and fill in your own credentials.
+# Do NOT commit config.yaml (it is gitignored).
 
 rjob:
   cluster_entry: "https://h.pjlab.org.cn"
   namespace: "ailab-evobox"
-  access_key: "c9ff6efef0670c5a3f820bbb45e1669d"
-  secret_key: "51e860eea7cba83eefc6751b7a9b8e22"
+  access_key: "<YOUR_ACCESS_KEY>"
+  secret_key: "<YOUR_SECRET_KEY>"
   verifyssl: true
   retries: 3
 
@@ -17,7 +20,7 @@ rjob:
   # gets a dead gateway URL and LLM calls hang). Leave this unset so it falls
   # back to request.gateway_base_url, which the buffer server fills from
   # AIEVOBOX_GATEWAY_BASE_URL (env.rjob.sh: hostname -I of THIS pod).
-  # gateway_base_url: "http://100.104.143.233:8000/v1/sessions"
+  # gateway_base_url: "http://<gateway_ip>:8000/v1/sessions"
   name_prefix: safactory
   poll_interval_s: 5
   # Set to false temporarily so succeeded-but-empty pods are kept for log inspection.
