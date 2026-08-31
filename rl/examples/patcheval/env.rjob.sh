@@ -136,9 +136,9 @@ export MEGATRON_TO_HF_MODE="${MEGATRON_TO_HF_MODE:-bridge}"
 export TP_SIZE="${PATCHEVAL_TP_SIZE:-4}" PP_SIZE="${PATCHEVAL_PP_SIZE:-1}" CP_SIZE=1 EP_SIZE=1 ETP_SIZE=1
 export RECOMPUTE_GRANULARITY="${RECOMPUTE_GRANULARITY:-full}"
 export RECOMPUTE_METHOD="${RECOMPUTE_METHOD:-uniform}"
-export RECOMPUTE_NUM_LAYERS="${RECOMPUTE_NUM_LAYERS:-1}"
+export RECOMPUTE_NUM_LAYERS="${RECOMPUTE_NUM_LAYERS:-64}"
 export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flash}"
-export MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-5000}"
+export MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-4096}"
 # GDN packed-seq monkey-patch: patches Megatron GDN forward to pass cu_seqlens
 # to chunk_gated_delta_rule, enabling thd (packing) mode without NotImplementedError.
 # See rl/patches/gdn_packed_seq.py for details.

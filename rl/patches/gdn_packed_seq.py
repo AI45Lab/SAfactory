@@ -23,8 +23,7 @@ from megatron.core.ssm.gated_delta_net import (
     causal_conv1d_fn,
     l2norm,
 )
-from megatron.core.transformer.utils import deprecate_inference_params
-from megatron.core.utils import nvtx_range_push, nvtx_range_pop
+from megatron.core.utils import deprecate_inference_params, nvtx_range_push, nvtx_range_pop
 
 _original_forward = GatedDeltaNet.forward
 
