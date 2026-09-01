@@ -132,7 +132,16 @@ def _install_mock_wt_sdk_fallbacks() -> None:
             self,
             db_uri: str = "",
             landing_table: str = "",
+            profile: Optional[str] = None,
         ):
+            raw_profile = str(
+                profile or os.environ.get("WT_SDK_PROFILE") or "test"
+            ).strip().lower()
+            self.profile = (
+                "production"
+                if raw_profile in {"prod", "production"}
+                else "test"
+            )
             self.db_uri = db_uri
             self.landing_table = landing_table
 
@@ -297,7 +306,7 @@ class CloudStrategy(StorageStrategy):
         buffer_size: int = 1,
         flush_interval: float = 1.0,
         landing_table: Optional[str] = None,
-        env_config_table: str = "evaluation_env_config",
+        env_config_table: Optional[str] = None,
         dldb_model: Optional[str] = None,
         enable_dldb_timing_logs: bool = False,
         dldb_metrics_log_path: Optional[str] = None,
@@ -308,7 +317,7 @@ class CloudStrategy(StorageStrategy):
         self.job_id = job_id
         self.initialized = False
         self.landing_table = str(landing_table or "").strip() or None
-        self.env_config_table = env_config_table
+        self.env_config_table = str(env_config_table or "").strip() or None
         self.dldb_model = dldb_model
         self.enable_dldb_timing_logs = enable_dldb_timing_logs
         self.dldb_metrics_log_path = dldb_metrics_log_path
@@ -378,6 +387,13 @@ class CloudStrategy(StorageStrategy):
                 dldb_model=self.dldb_model,
                 enable_dldb_timing_logs=self.enable_dldb_timing_logs,
                 dldb_metrics_log_path=self.dldb_metrics_log_path,
+                profile=config.tables.profile,
+            )
+            self.env_config_table = self.env_manager.table_name
+            log.debug(
+                "CloudStrategy initialized with env_config_table=%s profile=%s",
+                self.env_config_table,
+                config.tables.profile,
             )
         except Exception as e:
             log.error(f"Failed to initialize EnvConfigManager: {e}")

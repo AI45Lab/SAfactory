@@ -133,6 +133,27 @@ Check readiness from another terminal:
 curl http://127.0.0.1:8000/readyz
 ```
 
+When using Cloud storage, the recommended configuration is to omit
+`landing_table` and `env_config_table` from the Gateway YAML and set only one
+profile in `.env`:
+
+```bash
+WT_SDK_PROFILE=test
+```
+
+or:
+
+```bash
+WT_SDK_PROFILE=production
+```
+
+The `test` profile selects `landing_test` and `env_config_test`; the
+`production`/`prod` profile selects `wind_tunnel_landing` and
+`evaluation_env_config`. This keeps trajectory and environment-config writes
+in the same environment. Explicit table names in `storage_config` override the
+profile and should be used only for intentional special cases. SAfactory does
+not access the serving table.
+
 ### 2. Minimal Evaluation With Geo3K
 
 Run a minimal Geo3K evaluation in Docker mode:
