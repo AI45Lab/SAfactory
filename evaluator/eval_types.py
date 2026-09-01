@@ -56,6 +56,8 @@ class EvalResult:
     error_text: str | None = None
     eval_id: str | None = None
     method: str | None = None
+    ground_truth_answer: str | None = None
+    evaluation_context: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def failed(

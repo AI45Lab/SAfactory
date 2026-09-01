@@ -122,6 +122,8 @@ class SqliteStrategy(StorageStrategy):
                     or "meta_json" not in columns
                     or "env_state" in columns
                     or "request" not in columns
+                    or "ground_truth_answer" not in columns
+                    or "reference_answer" not in columns
                     or reward_column is None
                     or bool(reward_column[3])
                     or reward_column[4] is not None
@@ -147,6 +149,8 @@ class SqliteStrategy(StorageStrategy):
                         response TEXT NOT NULL,
                         step_reward REAL NOT NULL DEFAULT 0,
                         reward REAL,
+                        ground_truth_answer TEXT,
+                        reference_answer TEXT,
                         meta_json TEXT,
                         is_terminal INT NOT NULL DEFAULT 0,
                         is_truncated INT NOT NULL DEFAULT 0,
@@ -160,7 +164,8 @@ class SqliteStrategy(StorageStrategy):
                 target_columns = (
                     "id", "record_id", "session_id", "step_id", "env_name",
                     "llm_model", "group_id", "job_id", "messages", "request",
-                    "response", "step_reward", "reward", "meta_json", "is_terminal",
+                    "response", "step_reward", "reward", "ground_truth_answer",
+                    "reference_answer", "meta_json", "is_terminal",
                     "is_truncated", "is_session_completed", "is_trainable", "created_at",
                 )
                 missing_defaults = {
@@ -176,6 +181,8 @@ class SqliteStrategy(StorageStrategy):
                     "response": "''",
                     "step_reward": "0",
                     "reward": "NULL",
+                    "ground_truth_answer": "NULL",
+                    "reference_answer": "NULL",
                     "is_terminal": "0",
                     "is_truncated": "0",
                     "is_session_completed": "0",
@@ -514,6 +521,8 @@ class SqliteStrategy(StorageStrategy):
                 ),
                 step_reward=float(row.get("step_reward") or 0.0),
                 reward=row.get("reward"),
+                ground_truth_answer=row.get("ground_truth_answer"),
+                reference_answer=row.get("reference_answer"),
                 meta_json=json.dumps(meta_json, ensure_ascii=False, default=str),
                 is_terminal=bool(row.get("is_terminal", False)),
                 is_truncated=bool(row.get("is_truncated", False)),
@@ -647,6 +656,8 @@ class SqliteStrategy(StorageStrategy):
             "response": step.response,
             "step_reward": step.step_reward,
             "reward": step.reward,
+            "ground_truth_answer": step.ground_truth_answer,
+            "reference_answer": step.reference_answer,
             "meta_json": _json_object(step.meta_json),
             "is_terminal": step.is_terminal,
             "is_truncated": step.is_truncated,

@@ -118,7 +118,7 @@ class RewardCommitter:
                 reference = rows[-1] if rows else {}
                 insert_rows = getattr(self.data_manager, "insert_session_step_rows", None)
                 if callable(insert_rows):
-                    record_ids = await insert_rows([{
+                    summary_row = {
                         "record_id": str(uuid.uuid4()),
                         "session_id": session_id,
                         "env_id": session_id,
@@ -137,7 +137,10 @@ class RewardCommitter:
                         "is_truncated": truncated,
                         "is_session_completed": True,
                         "is_trainable": False,
-                    }])
+                    }
+                    if eval_result.ground_truth_answer is not None:
+                        summary_row["ground_truth_answer"] = eval_result.ground_truth_answer
+                    record_ids = await insert_rows([summary_row])
                     recorded = len(record_ids)
                 else:
                     # Compatibility for injected legacy test doubles.
@@ -149,20 +152,20 @@ class RewardCommitter:
                         truncated=truncated,
                     )
             else:
+                summary_updates = {
+                    "step_reward": eval_result.normalized_score_10,
+                    "reward": eval_result.normalized_score_10,
+                    "meta_json": _merge_meta_json(summary.get("meta_json"), summary_metadata),
+                    "is_terminal": True,
+                    **({"is_truncated": True} if truncated else {}),
+                    "is_session_completed": True,
+                }
+                if eval_result.ground_truth_answer is not None:
+                    summary_updates["ground_truth_answer"] = eval_result.ground_truth_answer
                 recorded = await _update_persisted_row(
                     self.data_manager,
                     summary,
-                    {
-                        "step_reward": eval_result.normalized_score_10,
-                        "reward": eval_result.normalized_score_10,
-                        "meta_json": _merge_meta_json(
-                            summary.get("meta_json"),
-                            summary_metadata,
-                        ),
-                        "is_terminal": True,
-                        **({"is_truncated": True} if truncated else {}),
-                        "is_session_completed": True,
-                    },
+                    summary_updates,
                 )
             if recorded <= 0:
                 raise RuntimeError(
@@ -181,17 +184,20 @@ class RewardCommitter:
             eval_result=eval_result,
         )
         meta_json = _merge_meta_json(terminal.get("meta_json"), metadata)
+        terminal_updates = {
+            "step_reward": eval_result.normalized_score_10,
+            "reward": eval_result.normalized_score_10,
+            "meta_json": meta_json,
+            "is_terminal": True,
+            **({"is_truncated": True} if truncated else {}),
+            "is_session_completed": True,
+        }
+        if eval_result.ground_truth_answer is not None:
+            terminal_updates["ground_truth_answer"] = eval_result.ground_truth_answer
         updated = await _update_persisted_row(
             self.data_manager,
             terminal,
-            {
-                "step_reward": eval_result.normalized_score_10,
-                "reward": eval_result.normalized_score_10,
-                "meta_json": meta_json,
-                "is_terminal": True,
-                **({"is_truncated": True} if truncated else {}),
-                "is_session_completed": True,
-            },
+            terminal_updates,
         )
         if updated <= 0:
             raise RuntimeError(
@@ -207,6 +213,7 @@ class RewardCommitter:
                     "normalized_score_10": eval_result.normalized_score_10,
                     "reason": eval_result.reason,
                     "result": to_jsonable(eval_result),
+                    "context": to_jsonable(eval_result.evaluation_context),
                 }
             },
             ensure_ascii=False,
@@ -225,8 +232,15 @@ def _merge_meta_json(existing: Any, new_metadata: str) -> str:
         new_obj = json.loads(new_metadata)
     except Exception:
         new_obj = {"eval": {"raw": new_metadata}}
-    existing_obj.update(new_obj)
-    return json.dumps(existing_obj, ensure_ascii=False)
+    return json.dumps(_deep_merge(existing_obj, new_obj), ensure_ascii=False)
+
+
+def _deep_merge(existing: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(existing)
+    for key, value in updates.items():
+        current = merged.get(key)
+        merged[key] = _deep_merge(current, value) if isinstance(current, dict) and isinstance(value, dict) else value
+    return merged
 
 
 def _existing_eval_summary_row(rows: list[dict[str, Any]], session_id: str) -> dict[str, Any] | None:

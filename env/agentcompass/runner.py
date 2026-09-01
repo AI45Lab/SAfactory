@@ -515,13 +515,30 @@ def _normalize_frontierscience(detail: dict[str, Any], attempt: dict[str, Any]) 
 
 
 def _normalize_sgi(detail: dict[str, Any], attempt: dict[str, Any]) -> dict[str, Any]:
+    attempts = detail.get("attempts")
+    if not isinstance(attempts, dict) or not isinstance(attempts.get("1"), dict):
+        raise RuntimeError("AgentCompass sgi_deep_research attempts['1'] must be an object")
+    attempt = attempts["1"]
     status, error = _successful_attempt("sgi_deep_research", detail, attempt)
     correct = _consistent_bool(detail, attempt, "correct")
     scoring = _scoring(attempt, "sgi_deep_research")
     if scoring.get("evaluation_type") != "llm_judge" or scoring.get("correct") is not correct:
         raise RuntimeError("AgentCompass sgi_deep_research scoring fields were inconsistent")
-    if not all(isinstance(scoring.get(key), str) for key in ("model_answer", "ground_truth")):
-        raise RuntimeError("AgentCompass sgi_deep_research judge answers must be strings")
+    ground_truth = scoring.get("ground_truth")
+    model_answer = scoring.get("model_answer")
+    scoring_correct = scoring.get("correct")
+    if not isinstance(ground_truth, str) or not ground_truth.strip():
+        raise RuntimeError("AgentCompass sgi_deep_research ground truth is required")
+    if not isinstance(model_answer, str) or not model_answer.strip():
+        raise RuntimeError("AgentCompass sgi_deep_research model answer is required")
+    if not isinstance(scoring_correct, bool):
+        raise RuntimeError("AgentCompass sgi_deep_research judge correct must be boolean")
+    judge_verdict = scoring.get("judge_verdict")
+    judge_reason = scoring.get("judge_reason")
+    if judge_verdict is not None and not isinstance(judge_verdict, str):
+        raise RuntimeError("AgentCompass sgi_deep_research judge verdict must be a string")
+    if judge_reason is not None and not isinstance(judge_reason, str):
+        raise RuntimeError("AgentCompass sgi_deep_research judge reason must be a string")
     return _normalized_result(
         correct=correct,
         reward=10.0 if correct else 0.0,
@@ -529,6 +546,13 @@ def _normalize_sgi(detail: dict[str, Any], attempt: dict[str, Any]) -> dict[str,
         status=status,
         error=error,
         strategy="sgi_binary_judge",
+        ground_truth_answer=ground_truth,
+        evaluation_context={
+            "model_answer": model_answer,
+            "correct": scoring_correct,
+            "judge_verdict": judge_verdict,
+            "judge_reason": judge_reason,
+        },
     )
 
 
