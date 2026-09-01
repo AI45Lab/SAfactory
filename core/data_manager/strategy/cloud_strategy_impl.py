@@ -132,7 +132,16 @@ def _install_mock_wt_sdk_fallbacks() -> None:
             self,
             db_uri: str = "",
             landing_table: str = "",
+            profile: Optional[str] = None,
         ):
+            raw_profile = str(
+                profile or os.environ.get("WT_SDK_PROFILE") or "test"
+            ).strip().lower()
+            self.profile = (
+                "production"
+                if raw_profile in {"prod", "production"}
+                else "test"
+            )
             self.db_uri = db_uri
             self.landing_table = landing_table
 
@@ -297,25 +306,23 @@ class CloudStrategy(StorageStrategy):
         buffer_size: int = 1,
         flush_interval: float = 1.0,
         landing_table: Optional[str] = None,
-        env_config_table: str = "evaluation_env_config",
+        env_config_table: Optional[str] = None,
         dldb_model: Optional[str] = None,
         enable_dldb_timing_logs: bool = False,
         dldb_metrics_log_path: Optional[str] = None,
         confirm_cloud_delete_job_id: str = "",
         confirm_production: bool = False,
-        cloud_delete_archive_dir: str = "",
     ):
         self.db_url = str(db_url or "").strip()
         self.job_id = job_id
         self.initialized = False
         self.landing_table = str(landing_table or "").strip() or None
-        self.env_config_table = env_config_table
+        self.env_config_table = str(env_config_table or "").strip() or None
         self.dldb_model = dldb_model
         self.enable_dldb_timing_logs = enable_dldb_timing_logs
         self.dldb_metrics_log_path = dldb_metrics_log_path
         self.confirm_cloud_delete_job_id = str(confirm_cloud_delete_job_id or "").strip()
         self.confirm_production = bool(confirm_production)
-        self.cloud_delete_archive_dir = str(cloud_delete_archive_dir or "").strip()
 
         self.client: Any = None
         self.env_manager: Any = None
@@ -380,6 +387,13 @@ class CloudStrategy(StorageStrategy):
                 dldb_model=self.dldb_model,
                 enable_dldb_timing_logs=self.enable_dldb_timing_logs,
                 dldb_metrics_log_path=self.dldb_metrics_log_path,
+                profile=config.tables.profile,
+            )
+            self.env_config_table = self.env_manager.table_name
+            log.debug(
+                "CloudStrategy initialized with env_config_table=%s profile=%s",
+                self.env_config_table,
+                config.tables.profile,
             )
         except Exception as e:
             log.error(f"Failed to initialize EnvConfigManager: {e}")
@@ -490,6 +504,7 @@ class CloudStrategy(StorageStrategy):
                 limit=1,
                 offset=0,
                 filter_query=query,
+                checkout_latest=True,
             )
         except Exception as e:
             log.warning("Failed to fetch cloud env config env_id=%s: %s", env_id, e)
@@ -526,6 +541,7 @@ class CloudStrategy(StorageStrategy):
                 limit=page_size,
                 offset=effective_offset + scanned,
                 filter_query=filter_query,
+                checkout_latest=True,
             )
             if not page:
                 break
@@ -602,7 +618,6 @@ class CloudStrategy(StorageStrategy):
         operation: str,
         job_id: str,
         landing_filter: str,
-        environment_rows: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         guard = CloudDeleteGuard(
             client=self.client,
@@ -610,13 +625,11 @@ class CloudStrategy(StorageStrategy):
             landing_table=str(self.landing_table or ""),
             confirmed_job_id=self.confirm_cloud_delete_job_id,
             confirm_production=self.confirm_production,
-            archive_dir=self.cloud_delete_archive_dir,
         )
         return await guard.preflight(
             operation=operation,
             job_id=job_id,
             landing_filter=landing_filter,
-            environment_rows=environment_rows,
         )
 
     async def delete_session_step_rows(self, query: SessionStepQuery) -> int:
@@ -671,7 +684,6 @@ class CloudStrategy(StorageStrategy):
             operation="delete_job_rows",
             job_id=job_id,
             landing_filter=landing_filter,
-            environment_rows=rows,
         )
         await asyncio.to_thread(
             self.client.delete_landing,
@@ -1164,8 +1176,7 @@ class CloudStrategy(StorageStrategy):
                     "step_id": row["step_id"],
                     "env_name": row["env_name"],
                     "env_id": row["session_id"],
-                    # Derived compatibility key for the unchanged RL buffer contract.
-                    "env_state": json.dumps(meta, ensure_ascii=False, default=str),
+                    "meta_json": json.dumps(meta, ensure_ascii=False, default=str),
                     "prompt": self.normalize_messages(messages),
                     "request": meta.get("request"),
                     "response": _response_text(response),

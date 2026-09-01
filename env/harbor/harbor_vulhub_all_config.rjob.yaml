@@ -1,0 +1,14 @@
+environments:
+  - env_name: harbor
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:safactory-harbor-runtime-v0.21.0
+    env_num: 1
+    dataset: ./datasets/harbor_vulhub_all.jsonl
+    dataset_load_mode: eager
+
+    env_params:
+      task_family: harbor
+      agent: claude-code
+      task_path: /mnt/shared-storage-gpfs2/trustcyberdata/public/forTrain/forRL/Vulhub-Exploit/runtime-profiles/openhands-harbor/tasks
+      bundle_package_dir: /mnt/shared-storage-gpfs2/trustcyberdata/public/forTrain/forRL/Vulhub-Exploit
+      reward_key: reward
+      timeout_s: 9000

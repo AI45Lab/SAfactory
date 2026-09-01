@@ -1,0 +1,28 @@
+agent_name: cyberrange
+
+container:
+  workdir: /mnt/shared-storage-user/evoagi-share/cyberrange
+  shell: /bin/bash
+  runner_entrypoint:
+    source: ./runner.sh
+    target: /opt/safactory-cyberrange/runner.sh
+    command: "/bin/bash /opt/safactory-cyberrange/runner.sh < /dev/null"
+
+  mounts:
+    - source: /mnt/shared-storage-user/evoagi-share/yxwang
+      target: /mnt/shared-storage-user/evoagi-share
+      mode: rw
+    - source: ./results
+      target: /app/results
+      mode: rw
+
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    PYTHONUNBUFFERED: "1"
+
+  extra_args:
+    - --privileged
+    - --device=/dev/kvm:/dev/kvm
+    - --device=/dev/net/tun:/dev/net/tun
+
+  idle_command: "tail -f /dev/null"

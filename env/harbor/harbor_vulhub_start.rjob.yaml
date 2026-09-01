@@ -1,0 +1,48 @@
+agent_name: harbor
+
+container:
+  workdir: /work
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-harbor/runner.py
+    command: "/opt/harbor-env/bin/python /tmp/safactory-harbor/runner.py"
+
+  env:
+    HARBOR_TELEMETRY: "0"
+    PYTHONDONTWRITEBYTECODE: "1"
+    PYTHONUNBUFFERED: "1"
+    DOCKER_CONFIG: /root/.docker
+    PIP_INDEX_URL: http://mirrors.i.h.pjlab.org.cn/pypi/simple/
+    PIP_EXTRA_INDEX_URL: http://pypi.i.h.pjlab.org.cn/brain/dev/+simple
+    PIP_TRUSTED_HOST: mirrors.i.h.pjlab.org.cn pypi.i.h.pjlab.org.cn
+    HTTP_PROXY: http://httpproxy-headless.kubebrain.svc.pjlab.local:3128
+    HTTPS_PROXY: http://httpproxy-headless.kubebrain.svc.pjlab.local:3128
+    http_proxy: http://httpproxy-headless.kubebrain.svc.pjlab.local:3128
+    https_proxy: http://httpproxy-headless.kubebrain.svc.pjlab.local:3128
+    NO_PROXY: 127.0.0.1,localhost,10.0.0.0/8,100.96.0.0/12,172.16.0.0/12,192.168.0.0/16,.pjlab.org.cn,.pjlab.local,.pjh-service.org.cn
+    no_proxy: 127.0.0.1,localhost,10.0.0.0/8,100.96.0.0/12,172.16.0.0/12,192.168.0.0/16,.pjlab.org.cn,.pjlab.local,.pjh-service.org.cn
+
+rjob:
+  charged_group: evobox_gpu
+  private_machine: Group
+  name_prefix: harbor-vulhub
+  image_pull_policy: Always
+  no_packaging: true
+  privileged: true
+  cleanup_on_finish: true
+  cleanup_on_failure: true
+  keep_failed_jobs: true
+  poll_interval_s: 5
+  termination_grace_period_seconds: 120
+
+  resources:
+    cpu: 4
+    gpu: 0
+    memory_in_mb: 16384
+    custom_resources:
+      - brainpp.cn/fuse=1
+
+  mount_config:
+    - "gpfs://gpfs2/trustcyberdata/public/forTrain/forRL:/mnt/shared-storage-gpfs2/trustcyberdata/public/forTrain/forRL"
+    - "gpfs://gpfs1/limeilin/.docker-cvebench:/root/.docker"
+    - "gpfs://gpfs1/limeilin/Projects/worktrees/safactory-exploitgym-v2/results:/app/results"

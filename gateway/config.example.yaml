@@ -8,10 +8,13 @@ storage_type: sqlite
 storage_config:
   db_url: sqlite://env_trajs.db
   # Cloud mode uses wt-data-gateway default database URIs.
-  # Development writes trajectory rows to wt-data-gateway test tables by default.
+  # Best practice: omit table names here and set only WT_SDK_PROFILE in .env.
+  # WT_SDK_PROFILE=test selects landing_test and env_config_test;
+  # WT_SDK_PROFILE=production/prod selects wind_tunnel_landing and
+  # evaluation_env_config. Explicit table names override the profile and can
+  # accidentally mix test and production data; use them only when intentional.
   # landing_table: landing_test
-  # serving_table: serving_test
-  # env_config_table: evaluation_env_config
+  # env_config_table: env_config_test
 
 max_inflight_requests: 2048
 max_active_streams: 1024

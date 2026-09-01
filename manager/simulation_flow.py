@@ -6,7 +6,7 @@ import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import requests
 
@@ -36,6 +36,9 @@ from .simulation_worker import SimulationWorkerGroup
 from .types import SimulationRunConfig, SimulationRunSummary
 
 log = logging.getLogger("manager.simulation_flow")
+
+_GATEWAY_ENV_ROW_POLL_INTERVAL_S = 30.0
+_GATEWAY_ENV_ROW_MAX_ATTEMPTS = 10
 
 
 class SimulationFlow:
@@ -73,6 +76,8 @@ class SimulationFlow:
             if self.cfg.resume:
                 with trace.span("clear_gateway_session_cache"):
                     await self.clear_resume_gateway_session_cache()
+            with trace.span("wait_gateway_environment_rows"):
+                await self.wait_gateway_environment_rows()
             with trace.span("start_agent_scheduler"):
                 await self.start_agent_scheduler()
             with trace.span("run_workers"):
@@ -105,7 +110,6 @@ class SimulationFlow:
             storage_config.update({
                 "confirm_cloud_delete_job_id": self.cfg.confirm_cloud_delete_job_id,
                 "confirm_production": self.cfg.confirm_production,
-                "cloud_delete_archive_dir": self.cfg.cloud_delete_archive_dir,
             })
 
         self.data_manager = DataManager(
@@ -126,7 +130,6 @@ class SimulationFlow:
             self.cfg.followup_submit_batch,
             rebuild_table=self.cfg.rebuild_table,
             resume=self.cfg.resume,
-            job_claim_dir=self.cfg.cloud_job_claim_dir,
         )
         self.manager_cfg = build_manager_runtime_config(self.cfg)
         if self.cfg.resume and self.cfg.mode == "rjob":
@@ -162,6 +165,53 @@ class SimulationFlow:
         self._validate_gateway_storage(body, ready_url)
         await self.check_gateway_model_route()
         log.info("gateway ready: %s", ready_url)
+
+    async def wait_gateway_environment_rows(self) -> None:
+        job_id = quote(self.cfg.job_id, safe="")
+        count_url = self._gateway_origin() + f"/internal/jobs/{job_id}/environment-row-count"
+        last_error = "no response"
+
+        def _fetch_count() -> tuple[int, str]:
+            response = requests.get(count_url, timeout=5.0)
+            return response.status_code, response.text
+
+        for attempt in range(1, _GATEWAY_ENV_ROW_MAX_ATTEMPTS + 1):
+            try:
+                status_code, body = await asyncio.to_thread(_fetch_count)
+                if status_code != 200:
+                    raise RuntimeError(f"status={status_code} body={body[:500]}")
+                payload = json.loads(body)
+                row_count = int(payload["row_count"])
+                if row_count < 0:
+                    raise ValueError("row_count must be non-negative")
+                if row_count > 0:
+                    log.info(
+                        "gateway environment rows visible: job_id=%s row_count=%d",
+                        self.cfg.job_id,
+                        row_count,
+                    )
+                    return
+                last_error = f"row_count={row_count}"
+            except Exception as exc:
+                last_error = str(exc)
+
+            if attempt < _GATEWAY_ENV_ROW_MAX_ATTEMPTS:
+                log.info(
+                    "gateway environment rows not ready: job_id=%s attempt=%d/%d "
+                    "last_result=%s retry_in_s=%.0f",
+                    self.cfg.job_id,
+                    attempt,
+                    _GATEWAY_ENV_ROW_MAX_ATTEMPTS,
+                    last_error,
+                    _GATEWAY_ENV_ROW_POLL_INTERVAL_S,
+                )
+                await asyncio.sleep(_GATEWAY_ENV_ROW_POLL_INTERVAL_S)
+
+        raise RuntimeError(
+            "gateway environment rows are not visible after "
+            f"{_GATEWAY_ENV_ROW_MAX_ATTEMPTS} attempts: "
+            f"job_id={self.cfg.job_id} last_result={last_error}"
+        )
 
     async def clear_resume_gateway_session_cache(self) -> None:
         if self.data_manager is None:

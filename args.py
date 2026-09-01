@@ -43,8 +43,8 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
         default=False,
         help=(
             "Delete this job's environment and landing rows before rebuilding. "
-            "Cloud mode requires exact deletion confirmation and applies "
-            "production archive safeguards."
+            "Cloud mode requires exact deletion confirmation and explicit "
+            "production acknowledgement."
         ),
     )
     parser.add_argument(
@@ -69,22 +69,6 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
         action="store_true",
         help=(
             "Acknowledge that the resolved Cloud landing target is production."
-        ),
-    )
-    parser.add_argument(
-        "--cloud-delete-archive-dir",
-        default="",
-        help=(
-            "Durable directory for verified pre-delete Cloud archives; required "
-            "for production landing deletes"
-        ),
-    )
-    parser.add_argument(
-        "--cloud-job-claim-dir",
-        default="",
-        help=(
-            "Durable shared filesystem directory used for the Cloud environment-"
-            "initialization lease; required in Cloud mode"
         ),
     )
     parser.add_argument("--disable-buffer", dest="enable_buffer", action="store_false", default=True)
