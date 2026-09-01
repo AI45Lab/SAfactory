@@ -11,6 +11,8 @@ storage_config:
   # Development writes trajectory rows to wt-data-gateway test tables by default.
   # landing_table: landing_test
   # serving_table: serving_test
+  # Normally omit env_config_table so WT_SDK_PROFILE selects env_config_test
+  # or evaluation_env_config. Set it only as an explicit override.
   # env_config_table: evaluation_env_config
 
 max_inflight_requests: 2048

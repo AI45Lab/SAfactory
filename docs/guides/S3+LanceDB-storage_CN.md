@@ -30,4 +30,4 @@ source .env
 set +a
 ```
 
-然后将 gateway 的 `storage_type` 设置为 `cloud`，并使用 `--storage-type cloud` 启动 Safactory。SDK profile 只负责选择 Safactory 的 Cloud landing 目标；Safactory 不访问 serving 表。完整配置和表说明请参阅 [AI45Lab/wt-data-platform-sdk](https://github.com/AI45Lab/wt-data-platform-sdk)。
+然后将 gateway 的 `storage_type` 设置为 `cloud`，并使用 `--storage-type cloud` 启动 Safactory。SDK profile 会同时选择 Cloud landing 表和 env-config 表：`test` 使用 `landing_test` 与 `env_config_test`，`production`/`prod` 使用 `wind_tunnel_landing` 与 `evaluation_env_config`。Safactory 不访问 serving 表。仍可通过 `storage_config.env_config_table` 显式覆盖表名，但通常应省略。完整配置和表说明请参阅 [AI45Lab/wt-data-platform-sdk](https://github.com/AI45Lab/wt-data-platform-sdk)。

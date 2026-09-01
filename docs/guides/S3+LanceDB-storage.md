@@ -30,4 +30,4 @@ source .env
 set +a
 ```
 
-Then set the gateway `storage_type` to `cloud` and launch Safactory with `--storage-type cloud`. The SDK profile selects Safactory's Cloud landing target; Safactory does not access serving tables. See [AI45Lab/wt-data-platform-sdk](https://github.com/AI45Lab/wt-data-platform-sdk) for the complete configuration and table documentation.
+Then set the gateway `storage_type` to `cloud` and launch Safactory with `--storage-type cloud`. The SDK profile selects both the Cloud landing table and environment-config table: `test` uses `landing_test` and `env_config_test`, while `production`/`prod` uses `wind_tunnel_landing` and `evaluation_env_config`. Safactory does not access serving tables. An explicit `storage_config.env_config_table` remains available as an override, but should normally be omitted. See [AI45Lab/wt-data-platform-sdk](https://github.com/AI45Lab/wt-data-platform-sdk) for the complete configuration and table documentation.
