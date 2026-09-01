@@ -133,6 +133,24 @@ python -m gateway --config gateway/config.local.yaml
 curl http://127.0.0.1:8000/readyz
 ```
 
+使用 Cloud 存储时，推荐不要在 Gateway YAML 中配置 `landing_table` 和
+`env_config_table`，只在 `.env` 中设置一个 profile：
+
+```bash
+WT_SDK_PROFILE=test
+```
+
+或：
+
+```bash
+WT_SDK_PROFILE=production
+```
+
+`test` 会选择 `landing_test` 和 `env_config_test`；`production`/`prod`
+会选择 `wind_tunnel_landing` 和 `evaluation_env_config`，从而保证轨迹数据和
+环境配置数据位于同一个环境。`storage_config` 中的显式表名会覆盖 profile，
+仅应在有意指定特殊表时使用。SAfactory 不访问 serving 表。
+
 ### 2. 用 Geo3K 完成最小评测
 
 通过 Docker 模式运行一个最小 Geo3K 评测：
