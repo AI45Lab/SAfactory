@@ -23,6 +23,8 @@ NATIVE_OUTPUT="${CYBERGYM_RUNNER_TMP}/agent.log"
 VERIFY_OUTPUT="${CYBERGYM_RUNNER_TMP}/verify.log"
 SERVER_PID=""
 RESULT_EMITTED=0
+RUNNER_PHASE="bootstrap"
+DEBUG_DIR=""
 
 cleanup() {
   terminate_process "${SERVER_PID:-}"
@@ -34,9 +36,16 @@ emit_unexpected_failure() {
   local returncode=$?
   local command="${BASH_COMMAND:-unknown command}"
   trap - ERR
+  if [[ -n "${DEBUG_DIR:-}" ]]; then
+    {
+      printf 'phase: %s\n' "${RUNNER_PHASE:-unknown}"
+      printf 'returncode: %s\n' "$returncode"
+      printf 'command: %s\n' "$command"
+    } >"${DEBUG_DIR}/runner-failure.log" || true
+  fi
   if [[ "$RESULT_EMITTED" != "1" ]]; then
     python3.12 "${CYBERGYM_RUNNER_ROOT}/result_writer.py" failure \
-      --reason "CyberGym runner command failed with code ${returncode}: ${command}" \
+      --reason "CyberGym runner failed in phase ${RUNNER_PHASE:-unknown} with code ${returncode}: ${command}" \
       --request "$REQUEST_JSON" \
       --episode "$EPISODE_JSON" || true
     RESULT_EMITTED=1
@@ -57,12 +66,40 @@ if [[ -z "${request_payload//[[:space:]]/}" ]]; then
 fi
 printf '%s\n' "$request_payload" >"$REQUEST_JSON"
 
+RUNNER_PHASE="episode_prepare"
 python3.12 "${CYBERGYM_RUNNER_ROOT}/episode_prepare.py" \
   --request "$REQUEST_JSON" \
   --output "$EPISODE_JSON" \
   --env-out "$EPISODE_ENV"
 # shellcheck disable=SC1090
 source "$EPISODE_ENV"
+
+DEBUG_DIR="${EPISODE_RESULTS_DIR}/debug"
+mkdir -p "$DEBUG_DIR"
+cp "$REQUEST_JSON" "${DEBUG_DIR}/request.json"
+python3.12 - "$EPISODE_JSON" "${DEBUG_DIR}/episode.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source, destination = map(Path, sys.argv[1:])
+payload = json.loads(source.read_text(encoding="utf-8"))
+for key in ("gateway_api_key", "cybergym_api_key"):
+    if key in payload:
+        payload[key] = "<redacted>"
+destination.write_text(
+    json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+DOCKER_JSON="${DEBUG_DIR}/docker.json"
+DOCKER_ENV="${DEBUG_DIR}/docker.env"
+NATIVE_JSON="${DEBUG_DIR}/native.json"
+NATIVE_ENV="${DEBUG_DIR}/native.env"
+NATIVE_OUTPUT="${DEBUG_DIR}/agent.log"
+VERIFY_OUTPUT="${DEBUG_DIR}/verify.log"
+export CYBERGYM_DEBUG_DIR="$DEBUG_DIR"
+export CYBERGYM_DOCKER_LOG="${DEBUG_DIR}/dockerd.log"
 
 export PYTHONPATH="${EPISODE_CYBERGYM_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 export DOCKER_HOST="${DOCKER_HOST:-unix:///var/run/docker.sock}"
@@ -78,6 +115,7 @@ case "${CYBERGYM_DOCKER_MODE:-host}" in
   host)
     ;;
   dind)
+    RUNNER_PHASE="dind_start"
     prepare_rjob_docker
     ;;
   *)
@@ -87,6 +125,7 @@ case "${CYBERGYM_DOCKER_MODE:-host}" in
 esac
 
 image_timeout_s="$(phase_timeout "$EPISODE_IMAGE_LOAD_TIMEOUT_S" 240 60)"
+RUNNER_PHASE="docker_assets"
 prepare_docker_assets "$DOCKER_JSON" "$DOCKER_ENV" "$image_timeout_s"
 # shellcheck disable=SC1090
 source "$DOCKER_ENV"
@@ -100,11 +139,12 @@ server_command=(
   --log_dir "$EPISODE_SERVER_DIR"
   --db_path "$EPISODE_DB_PATH"
 )
-if [[ -n "$EPISODE_MASK_MAP_PATH" ]]; then
+if [[ -n "${EPISODE_MASK_MAP_PATH:-}" ]]; then
   server_command+=(--mask_map_path "$EPISODE_MASK_MAP_PATH")
 fi
+RUNNER_PHASE="server_start"
 CYBERGYM_API_KEY="$EPISODE_CYBERGYM_API_KEY" \
-  "${server_command[@]}" >/dev/null 2>&1 &
+  "${server_command[@]}" >"${DEBUG_DIR}/server.log" 2>&1 &
 SERVER_PID=$!
 server_wait_s="$(phase_timeout 60 120 10)"
 wait_for_cybergym_server "$EPISODE_SERVER_URL" "$SERVER_PID" "$server_wait_s"
@@ -131,13 +171,13 @@ agent_command=(
 printf 'command:' >"$NATIVE_OUTPUT"
 printf ' %q' "${agent_command[@]}" >>"$NATIVE_OUTPUT"
 printf '\n' >>"$NATIVE_OUTPUT"
+set +e
+RUNNER_PHASE="agent_run"
 agent_started_s=$SECONDS
-if timeout --signal=TERM --kill-after=30 "${process_timeout_s}s" \
-  "${agent_command[@]}" >>"$NATIVE_OUTPUT" 2>&1; then
-  native_returncode=0
-else
-  native_returncode=$?
-fi
+timeout --signal=TERM --kill-after=30 "${process_timeout_s}s" \
+  "${agent_command[@]}" >>"$NATIVE_OUTPUT" 2>&1
+native_returncode=$?
+set -e
 agent_elapsed_s=$((SECONDS - agent_started_s))
 if (( native_returncode == 124 || \
       (native_returncode != 0 && agent_elapsed_s >= agent_timeout_s) )); then
@@ -158,6 +198,7 @@ source "$NATIVE_ENV"
 verification_returncode=""
 verification_error=""
 if [[ -n "$EPISODE_AGENT_ID" ]]; then
+  RUNNER_PHASE="verification"
   verify_timeout_s="$(phase_timeout "$EPISODE_VERIFY_TIMEOUT_S" 30 30)"
   verify_command=(
     "$EPISODE_PYTHON_BIN"
@@ -197,4 +238,5 @@ python3.12 "${CYBERGYM_RUNNER_ROOT}/result_writer.py" final \
   --verification-returncode "$verification_returncode" \
   --verification-error "$verification_error" \
   --verification-output "$VERIFY_OUTPUT"
+RUNNER_PHASE="complete"
 RESULT_EMITTED=1

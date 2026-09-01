@@ -16,7 +16,9 @@ container:
 
     CYBERGYM_DOCKER_MODE: dind
     CYBERGYM_DOCKER_ROOT: /docker-data
-    CYBERGYM_RUNNER_ROOT: /workspace/cybergym
+    # Helpers are baked into the controller image; only runner.sh itself is
+    # embedded so local edits can be exercised without rebuilding it.
+    CYBERGYM_RUNNER_ROOT: /opt/safactory/cybergym
 
     DOCKER_HOST: unix:///var/run/docker.sock
     DOCKER_TLS_CERTDIR: ""
@@ -58,4 +60,8 @@ rjob:
   mount_config:
     - "gpfs://gpfs2/trustcyberdata/public/forEval/forMining/cybergym/cybergym-data:/workspace/cybergym/cybergym_data"
     - "gpfs://gpfs2/trustcyberdata/public/forEval/forMining/cybergym/cybergym-registry-v2-image-cache:/workspace/cybergym/images"
-    - "gpfs://gpfs2/trustcyberdata/bindev/level2/Safactory/results:/workspace/cybergym/results"
+    - "gpfs://gpfs2/adpc-share/chenxinquan/SAfactory/results:/workspace/cybergym/results"
+
+  embedded_files:
+    - source: ./result_writer.py
+      target: /workspace/cybergym/result_writer.py
