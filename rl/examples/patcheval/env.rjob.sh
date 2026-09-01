@@ -120,11 +120,18 @@ export MODEL_ARGS_ROTARY_BASE=10000000
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 export NUM_GPUS="${PATCHEVAL_NUM_GPUS:-8}"
+
+# Multi-node NCCL: disable InfiniBand (ibv_modify_qp fails across some node
+# pairs) and force TCP socket transport. Also set the network interface to
+# ensure NCCL binds to the correct IP. Override via NCCL_* env vars if needed.
+export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
+export NCCL_NET="${NCCL_NET:-Socket}"
+export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-bond0}"
 export ACTOR_NUM_NODES=1
-export ACTOR_NUM_GPUS_PER_NODE="${PATCHEVAL_ACTOR_NUM_GPUS_PER_NODE:-4}"
+export ACTOR_NUM_GPUS_PER_NODE="${PATCHEVAL_ACTOR_NUM_GPUS_PER_NODE:-8}"
 # Inference GPUs for sglang. Make overridable so the capacity experiment can
 # sweep env/pool vs inference-GPU ratios. Must be <= NUM_GPUS.
-export ROLLOUT_NUM_GPUS="${PATCHEVAL_ROLLOUT_NUM_GPUS:-4}"
+export ROLLOUT_NUM_GPUS="${PATCHEVAL_ROLLOUT_NUM_GPUS:-8}"
 export ROLLOUT_NUM_GPUS_PER_ENGINE=1
 export TRAIN_ENTRYPOINT="${TRAIN_ENTRYPOINT:-${SLIME_HOME}/train.py}"
 export ROLLOUT_FUNCTION_PATH="${ROLLOUT_FUNCTION_PATH:-rl.slime_generator.generate_rollout}"
@@ -138,7 +145,13 @@ export RECOMPUTE_GRANULARITY="${RECOMPUTE_GRANULARITY:-full}"
 export RECOMPUTE_METHOD="${RECOMPUTE_METHOD:-uniform}"
 export RECOMPUTE_NUM_LAYERS="${RECOMPUTE_NUM_LAYERS:-64}"
 export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flash}"
-export MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-4096}"
+export MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-2048}"
+# Trajectory truncation for training: long agent trajectories (40-step CVE
+# patcheval) can exceed 50k tokens, which OOMs the training GPU. This
+# truncates each trajectory to the last N tokens for training only — the
+# full trajectory is still used for reward/advantage computation during
+# rollout. Set to 0 to disable.
+export TRAJ_TRUNCATION_MAX_SEQ_LEN="${TRAJ_TRUNCATION_MAX_SEQ_LEN:-8192}"
 # GDN packed-seq monkey-patch: patches Megatron GDN forward to pass cu_seqlens
 # to chunk_gated_delta_rule, enabling thd (packing) mode without NotImplementedError.
 # See rl/patches/gdn_packed_seq.py for details.
@@ -156,6 +169,18 @@ export OPTIMIZER="${OPTIMIZER:-adam}"
 export WEIGHT_DECAY="${WEIGHT_DECAY:-0.1}"
 export ADAM_BETA1="${ADAM_BETA1:-0.9}"
 export ADAM_BETA2="${ADAM_BETA2:-0.98}"
+# Colocate: training (Megatron TP=8) and inference (sglang) share all 8 GPUs.
+# During rollout, all 8 GPUs run sglang; during training, sglang is CPU-offloaded
+# and all 8 GPUs run Megatron TP=8. This avoids the OOM that occurs with a
+# dedicated 4+4 split where TP=4 cannot fit 27B model + optimizer states.
+export SLIME_COLOCATE="${SLIME_COLOCATE:-false}"
+# CPU offload optimizer: moves fp32 master weights + Adam states (~41GB at
+# TP=4/DP=2) to CPU, leaving only bf16 weights + bf16 grad on GPU. Critical
+# for 27B model on 140GB GPUs where weights+optimizer would otherwise OOM.
+# The env.rjob.sh default was false because of an earlier AssertionError, but
+# run_slime_generator.sh now passes both --optimizer-cpu-offload and
+# --use-precision-aware-optimizer, which resolves the assertion.
+export OPTIMIZER_CPU_OFFLOAD="${OPTIMIZER_CPU_OFFLOAD:-true}"
 export USE_WANDB="${USE_WANDB:-true}"
 export WANDB_MODE="${WANDB_MODE:-offline}"
 export WANDB_PROJECT="${WANDB_PROJECT:-slime}"
@@ -252,4 +277,14 @@ export AIEVOBOX_MESSAGE_CUT="${AIEVOBOX_MESSAGE_CUT:-0}"
 export AIEVOBOC_MULTIPLIER="${AIEVOBOC_MULTIPLIER:-1.2}"
 
 # --- Runtime ---
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+# NOTE: expandable_segments:True is incompatible with torch_memory_saver
+# (used in colocate mode). Disable it when colocate is on.
+if [[ "${SLIME_COLOCATE:-false}" == "true" || "${SLIME_COLOCATE:-false}" == "1" ]]; then
+  export PYTORCH_CUDA_ALLOC_CONF=""
+  export PYTORCH_ALLOC_CONF=""
+else
+  # PyTorch >= 2.5 renamed PYTORCH_CUDA_ALLOC_CONF → PYTORCH_ALLOC_CONF.
+  # Set both so old and new versions pick up expandable_segments.
+  export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+  export PYTORCH_ALLOC_CONF="${PYTORCH_ALLOC_CONF:-expandable_segments:True}"
+fi

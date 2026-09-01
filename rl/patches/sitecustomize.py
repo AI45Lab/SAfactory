@@ -16,3 +16,9 @@ try:
 except Exception as _e:
     import sys
     print(f"[sitecustomize] WARNING: gdn_packed_seq failed to load: {_e}", file=sys.stderr)
+
+try:
+    import traj_truncation  # noqa: F401  — truncates long trajectories for training
+except Exception as _e:
+    import sys
+    print(f"[sitecustomize] WARNING: traj_truncation failed to load: {_e}", file=sys.stderr)
