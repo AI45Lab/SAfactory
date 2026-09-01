@@ -1,0 +1,26 @@
+environments:
+  - env_name: cybergym
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:cybergym-codex-netfix-20260827-1
+    env_num: 1
+    dataset: ./datasets/cybergym_tasks_full.jsonl
+    dataset_load_mode: eager
+
+    env_params:
+      task_family: cybergym
+      cybergym_root: /workspace/cybergym
+      data_dir: /workspace/cybergym/cybergym_data/data
+      image_archive_dir: /workspace/cybergym/images
+      results_root: /workspace/cybergym/results
+
+      route_model: kimi-k3
+      model_ref: openai/kimi-k3
+      image_load_timeout_s: 1800
+
+      agent_type: codex
+      agent_runner: /workspace/cybergym/examples/agents/codex/run.py
+      agent_image: cybergym/codex:latest
+      agent_image_archive: codex.tar
+
+      max_iter: 100
+      timeout_s: 7200
+      verify_timeout_s: 1200
