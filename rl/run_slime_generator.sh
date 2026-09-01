@@ -112,6 +112,8 @@ export ROLLOUT_BUFFER_URL LLM_PROXY_URL
 export WANDB_MODE
 export PYTHONUNBUFFERED
 export PYTORCH_CUDA_ALLOC_CONF
+export PYTORCH_ALLOC_CONF
+export TRAJ_TRUNCATION_MAX_SEQ_LEN
 export MODEL_ARGS_ROTARY_BASE
 
 source "${MODEL_SCRIPT}"
@@ -177,6 +179,13 @@ MEGATRON_ARGS=(
   --attention-softmax-in-fp32
   --attention-backend "${ATTENTION_BACKEND}"
 )
+# CPU offload optimizer: moves fp32 master weights + Adam states (~81GB at TP=4)
+# to CPU, leaving only bf16 weights + bf16 grad (~27GB) on GPU. Critical for
+# 27B model on 140GB GPUs where weights+optimizer would otherwise OOM.
+# Toggle via OPTIMIZER_CPU_OFFLOAD (default: true for 27B on 8-card TP=4).
+if is_true "${OPTIMIZER_CPU_OFFLOAD:-true}"; then
+  MEGATRON_ARGS+=(--optimizer-cpu-offload --use-precision-aware-optimizer)
+fi
 
 TRAIN_ARGS=(
   --max-tokens-per-gpu "${MAX_TOKENS_PER_GPU}"
@@ -299,6 +308,24 @@ if [[ -n "${PYTHONPATH:-}" ]]; then
   RAY_RUNTIME_PYTHONPATH="${RAY_RUNTIME_PYTHONPATH}:${PYTHONPATH}"
 fi
 
+# Colocate mode requires torch_memory_saver for both training and rollout engines.
+# The training actor sets LD_PRELOAD in actor_group.py, but the sglang rollout
+# engine does NOT — without it, torch_memory_saver fails to initialize
+# (_TorchMemorySaverImpl crashes). Compute the .so path and inject it into the
+# Ray runtime env so sglang engines also get the hook.
+TMS_HOOK_SO=""
+if is_true "${SLIME_COLOCATE:-false}"; then
+  TMS_HOOK_SO=$(python3 -c "
+import torch_memory_saver, os
+p = os.path.join(os.path.dirname(os.path.dirname(torch_memory_saver.__file__)),
+                 'torch_memory_saver_hook_mode_preload.abi3.so')
+print(p if os.path.exists(p) else '')
+" 2>/dev/null || echo "")
+  if [[ -z "${TMS_HOOK_SO}" ]]; then
+    echo "WARNING: torch_memory_saver_hook_mode_preload.abi3.so not found; colocate may fail"
+  fi
+fi
+
 RUNTIME_ENV_JSON="{\
   \"env_vars\": {\
     \"AIEVOBOX_ROOT\": \"${AIEVOBOX_ROOT}\",\
@@ -323,7 +350,13 @@ RUNTIME_ENV_JSON="{\
     \"OPD_TEACHER_MAX_CONCURRENCY\": \"${OPD_TEACHER_MAX_CONCURRENCY:-}\",\
     \"OPD_TEACHER_TIMEOUT_SECONDS\": \"${OPD_TEACHER_TIMEOUT_SECONDS:-}\",\
     \"WANDB_MODE\": \"${WANDB_MODE}\",\
-    \"WANDB_DIR\": \"${WANDB_DIR}\"\
+    \"WANDB_DIR\": \"${WANDB_DIR}\",\
+    \"NCCL_IB_DISABLE\": \"${NCCL_IB_DISABLE:-1}\",\
+    \"NCCL_NET\": \"${NCCL_NET:-Socket}\",\
+    \"NCCL_SOCKET_IFNAME\": \"${NCCL_SOCKET_IFNAME:-bond0}\",\
+    \"PYTORCH_CUDA_ALLOC_CONF\": \"${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}\",\
+    \"PYTORCH_ALLOC_CONF\": \"${PYTORCH_ALLOC_CONF:-expandable_segments:True}\",\
+    \"TRAJ_TRUNCATION_MAX_SEQ_LEN\": \"${TRAJ_TRUNCATION_MAX_SEQ_LEN:-8192}\"\
   }\
 }"
 
