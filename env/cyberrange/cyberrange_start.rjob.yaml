@@ -1,41 +1,48 @@
 agent_name: cyberrange
 
 container:
-  workdir: /mnt/shared-storage-user/wangyixu/cyberrange
+  workdir: /mnt/shared-storage-user/evoagi-share/cyberrange
   shell: /bin/bash
+  # The runner is supplied by the cluster-visible SAfactory mount below. The
+  # request is consumed through explicit SAFACTORY_*/CYBERRANGE_* variables.
   runner_entrypoint:
-    source: ./runner.py
-    target: /tmp/safactory-cyberrange/runner.py
-    command: "python3 /tmp/safactory-cyberrange/runner.py"
+    command: "/bin/bash /opt/safactory-cyberrange/runner.sh < /dev/null"
 
   env:
     PYTHONDONTWRITEBYTECODE: "1"
+    PYTHONUNBUFFERED: "1"
+    # Fixed deployment inputs are repeated here so the RJob remains runnable
+    # while manager and worker deployments are upgraded independently.
+    CYBERRANGE_SOURCE_ROOT: /mnt/shared-storage-user/evoagi-share/cyberrange
+    CYBERRANGE_WHEELHOUSE_ROOT: /mnt/shared-storage-user/evoagi-share/cyberrange/var/brainpp-wheelhouses/acceptance-py310-x86_64-20260806-141858
+    CYBERRANGE_RELEASE_ROOT: /mnt/shared-storage-user/evoagi-share/cyberrange/releases/postexploitbench-range3-toolkit-20260820-140500
+    CYBERRANGE_REPORT_ROOT: /mnt/shared-storage-user/evoagi-share/cyberrange/results/chengzikai
+    CYBERRANGE_OUTPUT_ROOT: /mnt/shared-storage-user/evoagi-share/cyberrange/results/chengzikai
+    CYBERRANGE_WALL_TIME_SECONDS: "18000"
 
 rjob:
   name_prefix: cyberrange
+  charged_group: evobox_proxy
   private_machine: Group
   image_pull_policy: IfNotPresent
   no_packaging: true
-  # Used by SAfactory to materialize the embedded runner before execution.
-  python_bin: python3
+  replicas: 1
   cleanup_on_finish: true
   keep_failed_jobs: true
   poll_interval_s: 10
   termination_grace_period_seconds: 1800
 
-  # Matches cyberrange's native source-bootstrap RJob runtime contract.
   privileged: true
   host_network: false
 
   resources:
-    cpu: 14
+    cpu: 32
     gpu: 0
     memory_in_mb: 98304
 
-  # Cluster-visible GPFS mounts, not launcher-local Docker binds. Map the
-  # requested yxwang checkout to cyberrange's enforced historical canonical
-  # path. The second mount resolves the release's absolute base-images symlink.
   mount_config:
-    - "gpfs://gpfs1/evoagi-share/yxwang/cyberrange:/mnt/shared-storage-user/wangyixu/cyberrange"
+    # Mount yxwang's project subtree so it appears at the canonical worker path
+    # /mnt/shared-storage-user/evoagi-share/cyberrange.
     - "gpfs://gpfs1/evoagi-share/yxwang:/mnt/shared-storage-user/evoagi-share"
-    - "gpfs://gpfs1/evobox-share/chenxinquan/SAfactory/results:/app/results"
+    - "gpfs://gpfs2/trustcyberdata/bindev/level2/SAfactory/env/cyberrange:/opt/safactory-cyberrange"
+    - "gpfs://gpfs2/trustcyberdata/bindev/level2/SAfactory/results:/app/results"
