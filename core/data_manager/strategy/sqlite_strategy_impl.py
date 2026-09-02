@@ -77,7 +77,6 @@ class SqliteStrategy(StorageStrategy):
             modules={"models": ["core.data_manager.models"]}
         )
         await Tortoise.generate_schemas()
-        await self._ensure_answer_columns()
         await self._ensure_runtime_indexes()
         self.initialized = True
 
@@ -91,27 +90,6 @@ class SqliteStrategy(StorageStrategy):
             )
 
         log.debug("SQLite strategy initialized: %s", self.db_url)
-
-    async def _ensure_answer_columns(self) -> None:
-        if not self.db_url.startswith("sqlite://"):
-            raise ValueError("Only sqlite:// protocol is supported")
-
-        file_path = self.db_url[9:].split("?", 1)[0]
-
-        def ensure_columns() -> None:
-            conn = sqlite3.connect(file_path)
-            try:
-                conn.execute("PRAGMA busy_timeout=30000")
-                table_info = list(conn.execute("PRAGMA table_info(session_steps)"))
-                columns = {str(row[1]) for row in table_info}
-                for column in ("ground_truth_answer", "reference_answer"):
-                    if column not in columns:
-                        conn.execute(f'ALTER TABLE session_steps ADD COLUMN "{column}" TEXT')
-                conn.commit()
-            finally:
-                conn.close()
-
-        await asyncio.to_thread(ensure_columns)
 
     async def _ensure_runtime_indexes(self) -> None:
         if not self.db_url.startswith("sqlite://"):
@@ -401,8 +379,6 @@ class SqliteStrategy(StorageStrategy):
                 ),
                 step_reward=float(row.get("step_reward") or 0.0),
                 reward=row.get("reward"),
-                ground_truth_answer=row.get("ground_truth_answer"),
-                reference_answer=row.get("reference_answer"),
                 meta_json=json.dumps(meta_json, ensure_ascii=False, default=str),
                 is_terminal=bool(row.get("is_terminal", False)),
                 is_truncated=bool(row.get("is_truncated", False)),
@@ -536,8 +512,6 @@ class SqliteStrategy(StorageStrategy):
             "response": step.response,
             "step_reward": step.step_reward,
             "reward": step.reward,
-            "ground_truth_answer": step.ground_truth_answer,
-            "reference_answer": step.reference_answer,
             "meta_json": _json_object(step.meta_json),
             "is_terminal": step.is_terminal,
             "is_truncated": step.is_truncated,

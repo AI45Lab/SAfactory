@@ -85,8 +85,6 @@ class SessionStep(Model):
         default=None,
         description="Final or cumulative reward; null until evaluated",
     )
-    ground_truth_answer = fields.TextField(null=True)
-    reference_answer = fields.TextField(null=True)
 
     # State tracking
     meta_json = fields.TextField(

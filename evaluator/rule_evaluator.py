@@ -177,11 +177,6 @@ class RuleEvaluatorBackend:
                 reason=str(value.get("reason") or "rule evaluator score"),
                 artifacts=dict(value.get("artifacts") or {}),
                 error_text=None if value.get("error_text") is None else str(value.get("error_text")),
-                ground_truth_answer=(
-                    None if value.get("ground_truth_answer") is None
-                    else str(value.get("ground_truth_answer"))
-                ),
-                evaluation_context=dict(value.get("evaluation_context") or {}),
             )
 
         score = _float_or_none(value)

@@ -124,11 +124,6 @@ def evaluate(request: Any, spec: Any, trajectory: Any) -> dict[str, Any]:
         "score": score,
         "raw_score": raw_score,
         "reason": reason,
-        "ground_truth_answer": metrics.get("ground_truth_answer"),
-        "evaluation_context": (
-            dict(metrics["evaluation_context"])
-            if isinstance(metrics.get("evaluation_context"), dict) else {}
-        ),
         "artifacts": {
             "bench": "agentcompass",
             "benchmark": benchmark,
@@ -136,6 +131,7 @@ def evaluate(request: Any, spec: Any, trajectory: Any) -> dict[str, Any]:
             "sample_id": metrics.get("sample_id"),
             "correct": correct,
             "normalization_strategy": metrics.get("normalization_strategy", normalizer),
+            "detail_path": metrics.get("detail_path"),
             "contract_only": bool(metrics.get("contract_only", False)),
         },
     }

@@ -721,8 +721,8 @@ class CloudStrategy(StorageStrategy):
             reward=row.get("reward"),
             messages=self._messages_to_landing_value(row.get("messages", [])),
             response=self._response_to_landing_value(row.get("response", "")),
-            ground_truth_answer=row.get("ground_truth_answer"),
-            reference_answer=row.get("reference_answer"),
+            ground_truth_answer=None,
+            reference_answer=None,
             agent_model=str(row.get("llm_model") or ""),
             env_name=str(row.get("env_name") or ""),
             is_terminal=bool(row.get("is_terminal", False)),
@@ -794,8 +794,7 @@ class CloudStrategy(StorageStrategy):
 
         columns = [
             "id", "session_id", "step_id", "env_id", "env_name", "agent_model",
-            "job_id", "messages", "response", "ground_truth_answer", "reference_answer",
-            "step_reward", "reward", "meta_json",
+            "job_id", "messages", "response", "step_reward", "reward", "meta_json",
             "is_terminal", "is_truncated", "is_session_completed", "is_trainable",
             "created_at",
         ]
@@ -959,8 +958,6 @@ class CloudStrategy(StorageStrategy):
             "step_reward": "step_reward",
             "reward": "reward",
             "total_reward": "reward",
-            "ground_truth_answer": "ground_truth_answer",
-            "reference_answer": "reference_answer",
             "is_terminal": "is_terminal",
             "is_truncated": "is_truncated",
             "truncated": "is_truncated",
