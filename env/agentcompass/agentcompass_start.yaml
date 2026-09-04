@@ -1,0 +1,24 @@
+agent_name: agentcompass
+
+container:
+  workdir: /opt/AgentCompass
+  network: host
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-agentcompass/runner.py
+    command: "python /tmp/safactory-agentcompass/runner.py"
+  mounts:
+    - source: ./datasets/special_pattern_check
+      target: /app/data/special_pattern_check
+      mode: ro
+    - source: ./results
+      target: /app/results
+      mode: rw
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    PYTHONUNBUFFERED: "1"
+    AGENTCOMPASS_ALLOWED_ENVIRONMENTS: host_process
+  extra_args:
+    - --add-host=host.docker.internal:127.0.0.1
+  idle_command: "tail -f /dev/null"
+  reuse_container: false

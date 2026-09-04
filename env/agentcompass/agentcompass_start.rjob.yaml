@@ -1,0 +1,31 @@
+agent_name: agentcompass
+
+container:
+  workdir: /opt/AgentCompass
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-agentcompass/runner.py
+    command: "/opt/venv/bin/python /tmp/safactory-agentcompass/runner.py"
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    PYTHONUNBUFFERED: "1"
+    AGENTCOMPASS_ALLOWED_ENVIRONMENTS: host_process
+    AGENTCOMPASS_REQUIRE_RESULTS_MOUNT: "1"
+
+rjob:
+  image_pull_policy: IfNotPresent
+  no_packaging: true
+  privileged: false
+  cleanup_on_finish: true
+  keep_failed_jobs: true
+  poll_interval_s: 5
+  termination_grace_period_seconds: 30
+
+  resources:
+    cpu: 2
+    gpu: 0
+    memory_in_mb: 4096
+
+  embedded_files:
+    - source: ./datasets/special_pattern_check/gate4.jsonl
+      target: /app/data/special_pattern_check/gate4.jsonl
