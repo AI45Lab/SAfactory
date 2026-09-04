@@ -1134,11 +1134,16 @@ class CloudStrategy(StorageStrategy):
         self,
         job_id: str,
         after_id: int = 0,
-        limit: int = 100
+        limit: int = 100,
+        lookback: int = 0,
     ) -> List[Dict]:
         """
         Fetch completed steps for training data collection.
         Uses cursor-based pagination.
+
+        NOTE: ``lookback`` is accepted for signature parity with the sqlite
+        strategy but not yet applied here. The cloud cursor is created_at-based
+        and may need its own late-flip handling; left as a follow-up.
         """
         await self.init()
         

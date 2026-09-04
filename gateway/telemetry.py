@@ -17,6 +17,21 @@ from gateway.llm_router import LLMRouteTarget
 from gateway.models import GatewayRequestContext, GatewaySessionBinding, GatewayTelemetryRecord
 from gateway.storage import GatewayStorage
 
+# Structured timing log (rl/timing_log.py). The gateway process does not have
+# rl/ on PYTHONPATH (only AIEVOBOX_ROOT), so add it defensively.
+try:
+    from timing_log import emit as _timing_emit  # type: ignore
+except Exception:  # pragma: no cover - import path fixup
+    import os as _os
+    import sys as _sys
+    _rl_dir = _os.path.join(_os.environ.get("AIEVOBOX_ROOT", ""), "rl")
+    if _rl_dir and _rl_dir not in _sys.path:
+        _sys.path.insert(0, _rl_dir)
+    try:
+        from timing_log import emit as _timing_emit  # type: ignore
+    except Exception:
+        _timing_emit = None  # type: ignore
+
 log = logging.getLogger("gateway.telemetry")
 
 SENSITIVE_KEY_PARTS = (
@@ -142,6 +157,29 @@ class TelemetryRecorder:
         )
         await self._enqueue(binding, record)
 
+        # Per-LLM-step timing for offline analysis. upstream_latency_ms is the
+        # actual LLM inference time (gateway -> llm_proxy -> sglang); latency_ms
+        # is the end-to-end step time. Joined with the worker's episode record
+        # (same session_id) to split env-startup vs rollout vs llm-inference.
+        if _timing_emit is not None:
+            _usage = response_body.get("usage") if isinstance(response_body, dict) else None
+            _usage = _usage if isinstance(_usage, dict) else {}
+            _timing_emit(
+                "llm_step",
+                session_id=binding.session_id,
+                group_id=getattr(binding, "group_id", None),
+                env_name=getattr(binding, "env_name", None),
+                model=binding.model,
+                step_index=getattr(binding, "llm_step_count", None),
+                latency_ms=latency_ms,
+                upstream_latency_ms=upstream_latency_ms,
+                ttft_ms=getattr(stream_stats, "ttft_ms", None) if stream_stats else None,
+                status_code=200,
+                prompt_tokens=_usage_int(_usage, "prompt_tokens", "input_tokens"),
+                completion_tokens=_usage_int(_usage, "completion_tokens", "output_tokens"),
+                total_tokens=_usage_int(_usage, "total_tokens"),
+            )
+
     async def enqueue_failure(
         self,
         ctx: GatewayRequestContext,
@@ -174,6 +212,21 @@ class TelemetryRecorder:
             response_text=response_text,
         )
         await self._enqueue(binding, record)
+
+        if _timing_emit is not None:
+            _timing_emit(
+                "llm_step",
+                session_id=binding.session_id,
+                group_id=getattr(binding, "group_id", None),
+                env_name=getattr(binding, "env_name", None),
+                model=binding.model,
+                step_index=getattr(binding, "llm_step_count", None),
+                latency_ms=latency_ms,
+                upstream_latency_ms=upstream_latency_ms,
+                ttft_ms=getattr(stream_stats, "ttft_ms", None) if stream_stats else None,
+                status_code=status_code,
+                error=error_text,
+            )
 
     async def enqueue_session_close(
         self,

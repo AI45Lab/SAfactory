@@ -47,13 +47,23 @@ def build_gateway_config(*, aievobox_root: str) -> Dict[str, Any]:
         or os.environ.get("AIEVOBOX_POOL_SIZE")
         or 256
     )
+    # Per-session LLM step budget enforced by the gateway. -1 = unlimited
+    # (default: trust the agent / llm_proxy to bound rollout length). Set
+    # AIEVOBOX_GATEWAY_MAX_STEPS to a non-negative integer to hard-cap runaway
+    # rollouts; the gateway will inject a synthetic `max_steps_reached` stop
+    # once a session reaches that many LLM calls.
+    max_steps = int(os.environ.get("AIEVOBOX_GATEWAY_MAX_STEPS", "-1"))
+    if max_steps < -1:
+        raise ValueError("AIEVOBOX_GATEWAY_MAX_STEPS must be -1 or a non-negative integer")
     return {
         "listen_host": "0.0.0.0",
         "listen_port": port,
         "base_session_path": "/v1/sessions",
         # -1: never enforce a per-session step budget / inject synthetic stops,
         # so gateway does not truncate RL generations. llm_proxy owns rollout length.
-        "max_steps": -1,
+        # Set AIEVOBOX_GATEWAY_MAX_STEPS>=0 to hard-cap rollout steps as a fallback
+        # when the agent / llm_proxy fails to terminate on its own.
+        "max_steps": max_steps,
         "storage_type": storage_type,
         # Must match launcher --db-path (= AIEVOBOX_DB_URL) or launcher /readyz fails.
         "storage_config": {"db_url": db_url},

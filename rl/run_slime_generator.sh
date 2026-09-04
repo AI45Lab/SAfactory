@@ -112,6 +112,8 @@ export ROLLOUT_BUFFER_URL LLM_PROXY_URL
 export WANDB_MODE
 export PYTHONUNBUFFERED
 export PYTORCH_CUDA_ALLOC_CONF
+export PYTORCH_ALLOC_CONF
+export TRAJ_TRUNCATION_MAX_SEQ_LEN
 export MODEL_ARGS_ROTARY_BASE
 
 source "${MODEL_SCRIPT}"
@@ -177,6 +179,13 @@ MEGATRON_ARGS=(
   --attention-softmax-in-fp32
   --attention-backend "${ATTENTION_BACKEND}"
 )
+# CPU offload optimizer: moves fp32 master weights + Adam states (~81GB at TP=4)
+# to CPU, leaving only bf16 weights + bf16 grad (~27GB) on GPU. Critical for
+# 27B model on 140GB GPUs where weights+optimizer would otherwise OOM.
+# Toggle via OPTIMIZER_CPU_OFFLOAD (default: true for 27B on 8-card TP=4).
+if is_true "${OPTIMIZER_CPU_OFFLOAD:-true}"; then
+  MEGATRON_ARGS+=(--optimizer-cpu-offload --use-precision-aware-optimizer)
+fi
 
 TRAIN_ARGS=(
   --max-tokens-per-gpu "${MAX_TOKENS_PER_GPU}"
@@ -254,10 +263,67 @@ fi
 if is_true "${SGLANG_ENABLE_MIXED_CHUNK:-false}"; then
   SGLANG_ARGS+=(--sglang-enable-mixed-chunk)
 fi
+# Prefix (RadixAttention) caching: reuse KV cache for shared prompt prefixes
+# (system prompt, task template, conversation history across multi-turn agent
+# steps). Big win for PatchEval where every episode shares the same system
+# prompt and the same task description across GRPO samples. Without this the
+# SGLang log shows #cached-token: 0 on every prefill. Default on; disable via
+# SGLANG_ENABLE_PREFIX_CACHING=false.
+if is_true "${SGLANG_ENABLE_PREFIX_CACHING:-true}"; then
+  SGLANG_ARGS+=(--sglang-enable-prefix-caching)
+fi
+
+# Router policy: how the SGLang router distributes requests across engines.
+#   cache_aware (sglang default) — greedy per-request prefix match; under high
+#                     concurrency it scatters one session's turns across
+#                     engines, so ~78% of prefills recompute the full prompt
+#                     (cached-token=0). Wastes the multi-engine capacity.
+#   manual (chosen here) — sticky-session routing via the X-SMG-Routing-Key
+#                     header that llm_proxy now sends. Each session_id is pinned
+#                     to one worker and stays there (only remaps if that worker
+#                     dies). Stronger stickiness than consistent_hashing, ideal
+#                     for fixed-engine RL rollouts. Supported since SGLang Model
+#                     Gateway v0.3.1 (PR #15907, 2025-12-27); the installed
+#                     sglang_router 0.3.2 has it. `consistent_hashing` is a
+#                     newer CLI choice (PR #17972, 2026-02-15) NOT in 0.3.2, so do
+#                     NOT set SGLANG_ROUTER_POLICY=consistent_hashing on this
+#                     build (argparse will reject it and crash startup).
+#                     Override via SGLANG_ROUTER_POLICY if needed.
+SGLANG_ARGS+=(--router-policy "${SGLANG_ROUTER_POLICY:-manual}")
+
+# Colocate mode: training (Megatron) and inference (SGLang) share the SAME GPUs.
+# Required for big models on few GPUs (e.g. 27B on a single 8-card node): the
+# dedicated-pool split (actor + rollout = NUM_GPUS) would need ~16 cards for 27B,
+# but colocate time-shares 8 cards via CPU offload between rollout/train phases.
+# When on, --rollout-num-gpus is ignored (auto = actor GPUs) and --offload is
+# forced by the trainer. Set SLIME_COLOCATE=1 to enable.
+COLOCATE_ARGS=()
+if is_true "${SLIME_COLOCATE:-false}"; then
+  COLOCATE_ARGS=(--colocate)
+  echo "  Colocate: ON (train+rollout share ${ACTOR_NUM_GPUS_PER_NODE} GPUs)"
+fi
 
 RAY_RUNTIME_PYTHONPATH="${SLIME_HOME}:${AIEVOBOX_ROOT}/rl:${AIEVOBOX_ROOT}:${MEGATRON_HOME}"
 if [[ -n "${PYTHONPATH:-}" ]]; then
   RAY_RUNTIME_PYTHONPATH="${RAY_RUNTIME_PYTHONPATH}:${PYTHONPATH}"
+fi
+
+# Colocate mode requires torch_memory_saver for both training and rollout engines.
+# The training actor sets LD_PRELOAD in actor_group.py, but the sglang rollout
+# engine does NOT — without it, torch_memory_saver fails to initialize
+# (_TorchMemorySaverImpl crashes). Compute the .so path and inject it into the
+# Ray runtime env so sglang engines also get the hook.
+TMS_HOOK_SO=""
+if is_true "${SLIME_COLOCATE:-false}"; then
+  TMS_HOOK_SO=$(python3 -c "
+import torch_memory_saver, os
+p = os.path.join(os.path.dirname(os.path.dirname(torch_memory_saver.__file__)),
+                 'torch_memory_saver_hook_mode_preload.abi3.so')
+print(p if os.path.exists(p) else '')
+" 2>/dev/null || echo "")
+  if [[ -z "${TMS_HOOK_SO}" ]]; then
+    echo "WARNING: torch_memory_saver_hook_mode_preload.abi3.so not found; colocate may fail"
+  fi
 fi
 
 RUNTIME_ENV_JSON="{\
@@ -284,7 +350,13 @@ RUNTIME_ENV_JSON="{\
     \"OPD_TEACHER_MAX_CONCURRENCY\": \"${OPD_TEACHER_MAX_CONCURRENCY:-}\",\
     \"OPD_TEACHER_TIMEOUT_SECONDS\": \"${OPD_TEACHER_TIMEOUT_SECONDS:-}\",\
     \"WANDB_MODE\": \"${WANDB_MODE}\",\
-    \"WANDB_DIR\": \"${WANDB_DIR}\"\
+    \"WANDB_DIR\": \"${WANDB_DIR}\",\
+    \"NCCL_IB_DISABLE\": \"${NCCL_IB_DISABLE:-1}\",\
+    \"NCCL_NET\": \"${NCCL_NET:-Socket}\",\
+    \"NCCL_SOCKET_IFNAME\": \"${NCCL_SOCKET_IFNAME:-bond0}\",\
+    \"PYTORCH_CUDA_ALLOC_CONF\": \"${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}\",\
+    \"PYTORCH_ALLOC_CONF\": \"${PYTORCH_ALLOC_CONF:-expandable_segments:True}\",\
+    \"TRAJ_TRUNCATION_MAX_SEQ_LEN\": \"${TRAJ_TRUNCATION_MAX_SEQ_LEN:-8192}\"\
   }\
 }"
 
@@ -310,7 +382,15 @@ RAY_START_ARGS=(start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "${NU
 if [[ -n "${RAY_PORT:-}" ]]; then
   RAY_START_ARGS+=(--port "${RAY_PORT}")
 fi
-"${RAY_BIN}" "${RAY_START_ARGS[@]}"
+# Multi-node: pre-build the Ray cluster manually (head + `ray start --address`
+# on workers), then run with SKIP_RAY_START=1 so this script reuses the existing
+# cluster instead of `ray start --head` (which would restart Ray and drop the
+# workers). Also set CLEANUP_BEFORE_RUN=false so the pre-started cluster survives.
+if is_true "${SKIP_RAY_START:-false}"; then
+  echo "SKIP_RAY_START=1: reusing existing Ray cluster at ${RAY_ADDRESS} (multi-node)"
+else
+  "${RAY_BIN}" "${RAY_START_ARGS[@]}"
+fi
 
 "${RAY_BIN}" job submit --address="${RAY_ADDRESS}" \
   --runtime-env-json="${RUNTIME_ENV_JSON}" \
@@ -327,5 +407,6 @@ fi
   "${WANDB_ARGS[@]}" \
   "${TRAIN_ARGS[@]}" \
   "${SGLANG_ARGS[@]}" \
+  "${COLOCATE_ARGS[@]}" \
   "${TEACHER_ARGS[@]}" \
   2>&1 | tee "${AIEVOBOX_RUN_DIR}/slime.log"

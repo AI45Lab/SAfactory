@@ -194,6 +194,11 @@ if [[ "${PATCH_EVAL_STORAGE_TYPE}" == "sqlite" ]]; then
   launcher_storage_args+=(--db-path "sqlite:///${PATCH_EVAL_DB}")
 fi
 
+launcher_job_id_args=()
+if [[ -n "${PATCH_EVAL_JOB_ID:-}" ]]; then
+  launcher_job_id_args=(--job-id "${PATCH_EVAL_JOB_ID}")
+fi
+
 "${PYTHON_BIN}" launcher.py \
   --mode docker \
   --docker-pull-policy never \
@@ -212,6 +217,7 @@ fi
   --llm-model "${PATCH_EVAL_MODEL}" \
   --llm-temperature 0 \
   "${launcher_storage_args[@]}" \
+  "${launcher_job_id_args[@]}" \
   --pool-size "${PATCH_EVAL_POOL_SIZE}" \
   --max-workers "${PATCH_EVAL_POOL_SIZE}" \
   --max-steps 1 \

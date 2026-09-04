@@ -34,9 +34,24 @@ import llm_proxy as _llm_proxy_module
 from trajectory_mask_builder import TrajectoryMaskBuilder
 from opd.teacher_log_probs import attach_teacher_log_probs
 
+from timing_log import emit as _timing_emit, now_s as _timing_now
+
 __all__ = ["generate_rollout"]
 
 logger = logging.getLogger(__name__)
+
+# Timestamp (perf_counter) at the end of the previous rollout step, used to
+# derive the inter-step "train time" (time slime spends on the GRPO update +
+# checkpointing between two rollout calls). None before the first step.
+_prev_rollout_end: Optional[float] = None
+
+# Wall-clock epoch seconds (time.time()) of the previous rollout_step emission.
+# The weight update of step N completes during the train phase right after the
+# rollout_step N event, so the interval between two consecutive weight updates
+# equals the gap between two consecutive rollout_step emissions. We record
+# that gap as `weight_update_interval_s` so the real update-weight cadence is
+# directly readable from the log without post-processing timestamps.
+_prev_rollout_step_ts: Optional[float] = None
 
 # Global variables
 TOKENIZER = None
@@ -280,6 +295,16 @@ def build_loss_mask_from_response_mask(
 def _get_record_training_info(record: Dict[str, Any]) -> Dict[str, Any]:
     oai_messages = record["messages"]
     session_id = record["extra_info"].get("session_id", "")
+    # Re-apply the SAME normalization llm_proxy applied at generation time
+    # (tool_call.arguments: JSON string -> dict; content: None/missing -> "").
+    # The mask builder's in-memory session tree stores NORMALIZED messages
+    # (prepare_generate_input is called after _normalize_messages_for_qwen_template
+    # in llm_proxy.proxy_chat_completions). The DB, however, stores the raw OpenAI
+    # format (arguments as JSON string, content possibly null). Without
+    # re-normalizing here, _message_matches compares dict-arguments vs
+    # JSON-string-arguments (and "" vs None content) -> matched=0 for every
+    # session -> 0 trainable groups -> no training -> weight_version stuck at 1.
+    oai_messages = _llm_proxy_module._normalize_messages_for_qwen_template(oai_messages)
     tokens, response_mask, _image_data, messages_str, mm_train_inputs = TRAJECTORY_MASK_BUILDER.get_training_info(
         session_id,
         oai_messages,
@@ -674,7 +699,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
 
 def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
     """Generate rollout for both training and evaluation."""
-    global START_ROLLOUT
+    global START_ROLLOUT, _prev_rollout_end, _prev_rollout_step_ts
 
     # Initialize tokenizer + processor + llm_proxy HTTP server (once).
     # Must happen BEFORE start_rollout, because buffer_server will launch
@@ -688,7 +713,44 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
         print(f"start rollout id: {rollout_id}")
         START_ROLLOUT = False
 
+    rollout_start = _timing_now()
+    # train_time = time slime spent on the GRPO update + ckpt between the end
+    # of the previous rollout call and the start of this one (None for step 0).
+    train_time_s = (rollout_start - _prev_rollout_end) if _prev_rollout_end is not None else None
+
     sample_groups = run(generate_rollout_async(args, rollout_id, data_buffer, evaluation))
     if evaluation:
+        rollout_end = _timing_now()
+        _prev_rollout_end = rollout_end
+        _step_ts = time.time()
+        _wu_interval = round(_step_ts - _prev_rollout_step_ts, 3) if _prev_rollout_step_ts is not None else None
+        _timing_emit(
+            "rollout_step",
+            rollout_id=rollout_id,
+            evaluation=True,
+            rollout_time_s=round(rollout_end - rollout_start, 3),
+            train_time_s=round(train_time_s, 3) if train_time_s is not None else None,
+            weight_update_interval_s=_wu_interval,
+            global_batch_size=int(os.environ.get("RL_GLOBAL_BATCH_SIZE") or 0),
+            rollout_batch_size=int(os.environ.get("SLIME_ROLLOUT_BATCH_SIZE") or 0),
+            num_groups=len(sample_groups) if sample_groups is not None else None,
+        )
+        _prev_rollout_step_ts = _step_ts
         return sample_groups
-    return run(attach_teacher_log_probs(args, sample_groups))
+    sample_groups = run(attach_teacher_log_probs(args, sample_groups))
+    rollout_end = _timing_now()
+    _step_ts = time.time()
+    _wu_interval = round(_step_ts - _prev_rollout_step_ts, 3) if _prev_rollout_step_ts is not None else None
+    _timing_emit(
+        "rollout_step",
+        rollout_id=rollout_id,
+        rollout_time_s=round(rollout_end - rollout_start, 3),
+        train_time_s=round(train_time_s, 3) if train_time_s is not None else None,
+        weight_update_interval_s=_wu_interval,
+        global_batch_size=int(os.environ.get("RL_GLOBAL_BATCH_SIZE") or 0),
+        rollout_batch_size=int(os.environ.get("SLIME_ROLLOUT_BATCH_SIZE") or 0),
+        num_groups=len(sample_groups) if sample_groups is not None else None,
+    )
+    _prev_rollout_step_ts = _step_ts
+    _prev_rollout_end = rollout_end
+    return sample_groups
