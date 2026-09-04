@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -15,6 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 
 RESULT_PATH_ENV = "SAFACTORY_RESULT_PATH"
+REQUIRE_RESULTS_MOUNT_ENV = "AGENTCOMPASS_REQUIRE_RESULTS_MOUNT"
 DEFAULT_RESULTS_ROOT = "/app/results"
 DEFAULT_TIMEOUT_S = 1800.0
 TERMINATION_GRACE_S = 10.0
@@ -29,16 +31,16 @@ class AdapterError(RuntimeError):
 # These mappings describe result schemas verified at the pinned AgentCompass
 # revision. Unknown benchmark schemas are never silently normalized.
 RESULT_NORMALIZERS = {
-    "browsecomp": "binary_correct",
-    "deepsearchqa": "binary_correct",
+    "browsecomp": "llm_judge",
+    "deepsearchqa": "deepsearchqa_judge",
     "frontierscience": "frontierscience",
-    "hle": "binary_correct",
-    "hle_verified": "binary_correct",
+    "hle": "llm_judge",
+    "hle_verified": "llm_judge",
     "scicode": "scicode_fractional",
     "sealqa": "sealqa_judge",
-    "sgi_deep_research": "sgi_binary_judge",
-    "special_pattern_check": "binary_correct",
-    "swebench_verified": "binary_correct",
+    "sgi_deep_research": "llm_judge",
+    "special_pattern_check": "special_pattern_correct",
+    "swebench_verified": "swebench_resolved",
 }
 
 # AgentCompass harnesses use different names for their interaction budgets.
@@ -158,6 +160,7 @@ def _merge_params(
     model_params = _object(dataset.get("model_params"), "model_params")
 
     benchmark_params["sample_ids"] = [sample_id]
+    benchmark_params["k"] = 1
     # Episode step limits belong to SAfactory and verified harness mappings;
     # a dataset row cannot inject a competing model-level value.
     model_params.pop("max_steps", None)
@@ -326,24 +329,25 @@ def _run_command(
 def _find_detail(result_root: Path, sample_id: str) -> tuple[dict[str, Any], Path]:
     candidates = sorted(result_root.rglob("details/*.json"))
     if not candidates:
-        raise RuntimeError(f"AgentCompass produced no details JSON under {result_root}")
+        raise RuntimeError("AgentCompass produced no details JSON")
     matching = [path for path in candidates if _safe_part(sample_id) in path.name]
     selected = matching[0] if len(matching) == 1 else candidates[0] if len(candidates) == 1 else None
     if selected is None:
         raise RuntimeError(f"AgentCompass produced ambiguous details for sample {sample_id!r}")
     body = json.loads(selected.read_text(encoding="utf-8"))
     if not isinstance(body, dict):
-        raise RuntimeError(f"AgentCompass detail is not an object: {selected}")
+        raise RuntimeError("AgentCompass detail is not an object")
     return body, selected
 
 
 def _attempt(detail: dict[str, Any]) -> dict[str, Any]:
     attempts = detail.get("attempts")
-    if isinstance(attempts, dict) and attempts:
-        keys = sorted(attempts, key=lambda item: (not str(item).isdigit(), str(item)))
-        value = attempts.get(keys[0])
-        return value if isinstance(value, dict) else {}
-    return detail
+    if not isinstance(attempts, dict) or len(attempts) != 1:
+        raise RuntimeError("AgentCompass detail must contain exactly one attempt")
+    value = next(iter(attempts.values()))
+    if not isinstance(value, dict):
+        raise RuntimeError("AgentCompass detail attempt must be an object")
+    return value
 
 
 def _number(value: Any, name: str, *, lower: float, upper: float) -> float:
@@ -354,6 +358,15 @@ def _number(value: Any, name: str, *, lower: float, upper: float) -> float:
         raise RuntimeError(f"AgentCompass {name} contained a non-finite score")
     if rendered < lower or rendered > upper:
         raise RuntimeError(f"AgentCompass {name} must be between {lower:g} and {upper:g}")
+    return rendered
+
+
+def _finite_number(value: Any, name: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise RuntimeError(f"AgentCompass {name} must be numeric")
+    rendered = float(value)
+    if not math.isfinite(rendered):
+        raise RuntimeError(f"AgentCompass {name} contained a non-finite value")
     return rendered
 
 
@@ -381,6 +394,14 @@ def _object_field(parent: dict[str, Any], name: str, context: str) -> dict[str, 
     if not isinstance(value, dict):
         raise RuntimeError(f"AgentCompass {context}.{name} must be an object")
     return value
+
+
+def _validate_native_identity(
+    detail: dict[str, Any], *, sample_id: str
+) -> None:
+    task_id = detail.get("task_id")
+    if not isinstance(task_id, str) or task_id != sample_id:
+        raise RuntimeError("AgentCompass detail task_id did not match the selected sample_id")
 
 
 def _normalized_result(
@@ -418,8 +439,8 @@ def _normalize_scicode(detail: dict[str, Any], attempt: dict[str, Any]) -> dict[
         raise RuntimeError("AgentCompass scicode problem_correct must be integer 0 or 1")
     total_correct = evaluation.get("total_correct")
     total_steps = evaluation.get("total_steps")
-    if type(total_correct) is not int or type(total_steps) is not int or total_steps <= 0:
-        raise RuntimeError("AgentCompass scicode step counts must be integers with total_steps > 0")
+    if type(total_correct) is not int or type(total_steps) is not int or total_steps < 0:
+        raise RuntimeError("AgentCompass scicode step counts must be non-negative integers")
     if total_correct < 0 or total_correct > total_steps:
         raise RuntimeError("AgentCompass scicode total_correct was outside total_steps")
     subproblem_score = _number(
@@ -428,12 +449,13 @@ def _normalize_scicode(detail: dict[str, Any], attempt: dict[str, Any]) -> dict[
         lower=0.0,
         upper=1.0,
     )
-    expected_score = total_correct / total_steps
+    expected_score = total_correct / total_steps if total_steps else 0.0
     if not math.isclose(score, subproblem_score, abs_tol=1e-9) or not math.isclose(
         score, expected_score, abs_tol=1e-9
     ):
         raise RuntimeError("AgentCompass scicode score and step counts were inconsistent")
-    if correct is not bool(problem_correct) or correct is not (total_correct == total_steps):
+    expected_correct = bool(total_steps and total_correct == total_steps)
+    if correct is not bool(problem_correct) or correct is not expected_correct:
         raise RuntimeError("AgentCompass scicode correct and evaluation fields were inconsistent")
     if not isinstance(evaluation.get("steps"), list):
         raise RuntimeError("AgentCompass scicode evaluation.steps must be a list")
@@ -459,6 +481,38 @@ def _scoring(attempt: dict[str, Any], benchmark: str) -> dict[str, Any]:
     return scoring
 
 
+def _normalize_llm_judge(benchmark: str, detail: dict[str, Any], attempt: dict[str, Any]) -> dict[str, Any]:
+    status, error = _successful_attempt(benchmark, detail, attempt)
+    correct = _consistent_bool(detail, attempt, "correct")
+    scoring = _scoring(attempt, benchmark)
+    if scoring.get("evaluation_type") != "llm_judge" or scoring.get("correct") is not correct:
+        raise RuntimeError(f"AgentCompass {benchmark} LLM judge fields were inconsistent")
+    return _normalized_result(
+        correct=correct,
+        reward=10.0 if correct else 0.0,
+        raw_score=1.0 if correct else 0.0,
+        status=status,
+        error=error,
+        strategy="llm_judge",
+    )
+
+
+def _normalize_deepsearchqa(detail: dict[str, Any], attempt: dict[str, Any]) -> dict[str, Any]:
+    status, error = _successful_attempt("deepsearchqa", detail, attempt)
+    correct = _consistent_bool(detail, attempt, "correct")
+    scoring = _scoring(attempt, "deepsearchqa")
+    if scoring.get("evaluation_type") != "deepsearchqa_judge" or scoring.get("correct") is not correct:
+        raise RuntimeError("AgentCompass deepsearchqa judge fields were inconsistent")
+    return _normalized_result(
+        correct=correct,
+        reward=10.0 if correct else 0.0,
+        raw_score=1.0 if correct else 0.0,
+        status=status,
+        error=error,
+        strategy="deepsearchqa_judge",
+    )
+
+
 def _normalize_frontierscience(detail: dict[str, Any], attempt: dict[str, Any]) -> dict[str, Any]:
     status, error = _successful_attempt("frontierscience", detail, attempt)
     correct = _consistent_bool(detail, attempt, "correct")
@@ -467,8 +521,6 @@ def _normalize_frontierscience(detail: dict[str, Any], attempt: dict[str, Any]) 
         raise RuntimeError("AgentCompass frontierscience correct and scoring.correct were inconsistent")
     evaluation_type = scoring.get("evaluation_type")
     if evaluation_type == "frontierscience_olympiad_judge":
-        if not isinstance(scoring.get("reason"), str):
-            raise RuntimeError("AgentCompass frontierscience olympiad reason must be a string")
         return _normalized_result(
             correct=correct,
             reward=10.0 if correct else 0.0,
@@ -481,17 +533,17 @@ def _normalize_frontierscience(detail: dict[str, Any], attempt: dict[str, Any]) 
     if evaluation_type != "frontierscience_research_rubric":
         raise RuntimeError("AgentCompass frontierscience evaluation_type was not recognized")
     total_score = _number(scoring.get("total_score"), "frontierscience total_score", lower=0.0, upper=10.0)
-    threshold = _number(
-        scoring.get("passing_threshold"), "frontierscience passing_threshold", lower=0.0, upper=10.0
-    )
+    threshold = _finite_number(scoring.get("passing_threshold"), "frontierscience passing_threshold")
     items = scoring.get("rubric_items")
-    if not isinstance(items, list) or not items:
-        raise RuntimeError("AgentCompass frontierscience rubric_items must be a non-empty list")
+    if not isinstance(items, list):
+        raise RuntimeError("AgentCompass frontierscience rubric_items must be a list")
     awarded_sum = 0.0
     for item in items:
-        if not isinstance(item, dict) or not all(isinstance(item.get(key), str) for key in ("item", "reason")):
-            raise RuntimeError("AgentCompass frontierscience rubric item text fields were invalid")
-        max_points = _number(item.get("max_points"), "frontierscience rubric max_points", lower=0.0, upper=10.0)
+        if not isinstance(item, dict):
+            raise RuntimeError("AgentCompass frontierscience rubric item was invalid")
+        max_points = _finite_number(item.get("max_points"), "frontierscience rubric max_points")
+        if max_points < 0.0:
+            raise RuntimeError("AgentCompass frontierscience rubric max_points must be non-negative")
         awarded = _number(
             item.get("awarded_points"), "frontierscience rubric awarded_points", lower=0.0, upper=max_points
         )
@@ -500,8 +552,6 @@ def _normalize_frontierscience(detail: dict[str, Any], attempt: dict[str, Any]) 
         raise RuntimeError("AgentCompass frontierscience total_score did not match rubric items")
     if correct is not (total_score >= threshold):
         raise RuntimeError("AgentCompass frontierscience correct and threshold fields were inconsistent")
-    if not isinstance(scoring.get("summary"), str):
-        raise RuntimeError("AgentCompass frontierscience summary must be a string")
     return _normalized_result(
         correct=correct,
         reward=total_score,
@@ -511,24 +561,6 @@ def _normalize_frontierscience(detail: dict[str, Any], attempt: dict[str, Any]) 
         strategy="frontierscience_research",
         frontierscience_mode="research",
         passing_threshold=threshold,
-    )
-
-
-def _normalize_sgi(detail: dict[str, Any], attempt: dict[str, Any]) -> dict[str, Any]:
-    status, error = _successful_attempt("sgi_deep_research", detail, attempt)
-    correct = _consistent_bool(detail, attempt, "correct")
-    scoring = _scoring(attempt, "sgi_deep_research")
-    if scoring.get("evaluation_type") != "llm_judge" or scoring.get("correct") is not correct:
-        raise RuntimeError("AgentCompass sgi_deep_research scoring fields were inconsistent")
-    if not all(isinstance(scoring.get(key), str) for key in ("model_answer", "ground_truth")):
-        raise RuntimeError("AgentCompass sgi_deep_research judge answers must be strings")
-    return _normalized_result(
-        correct=correct,
-        reward=10.0 if correct else 0.0,
-        raw_score=1.0 if correct else 0.0,
-        status=status,
-        error=error,
-        strategy="sgi_binary_judge",
     )
 
 
@@ -544,9 +576,6 @@ def _normalize_sealqa(detail: dict[str, Any], attempt: dict[str, Any]) -> dict[s
         raise RuntimeError("AgentCompass sealqa grade and label were inconsistent")
     if scoring.get("correct") is not correct or correct is not (grade == "A"):
         raise RuntimeError("AgentCompass sealqa grade and correct fields were inconsistent")
-    for key in ("raw_response", "judge_model", "api_protocol"):
-        if not isinstance(scoring.get(key), str) or not scoring[key].strip():
-            raise RuntimeError(f"AgentCompass sealqa scoring.{key} must be a non-empty string")
     return _normalized_result(
         correct=correct,
         reward=10.0 if correct else 0.0,
@@ -555,6 +584,40 @@ def _normalize_sealqa(detail: dict[str, Any], attempt: dict[str, Any]) -> dict[s
         error=error,
         strategy="sealqa_judge",
         sealqa_grade=grade,
+        sealqa_label=scoring["label"],
+    )
+
+
+def _normalize_special_pattern(detail: dict[str, Any], attempt: dict[str, Any]) -> dict[str, Any]:
+    status, error = _successful_attempt("special_pattern_check", detail, attempt)
+    correct = _consistent_bool(detail, attempt, "correct")
+    extra = attempt.get("extra")
+    if extra is not None and not isinstance(extra, dict):
+        raise RuntimeError("AgentCompass special_pattern_check extra must be an object")
+    badcases = (extra or {}).get("badcase_analyzers")
+    if badcases is not None:
+        if not isinstance(badcases, dict):
+            raise RuntimeError("AgentCompass special_pattern_check badcase_analyzers must be an object")
+        if any(isinstance(item, dict) and item.get("error") for item in badcases.values()):
+            raise RuntimeError("AgentCompass special_pattern_check analyzer failed")
+    return _normalized_result(
+        correct=correct, reward=10.0 if correct else 0.0, raw_score=1.0 if correct else 0.0,
+        status=status, error=error, strategy="special_pattern_correct",
+    )
+
+
+def _normalize_swebench(detail: dict[str, Any], attempt: dict[str, Any]) -> dict[str, Any]:
+    status, error = _successful_attempt("swebench_verified", detail, attempt)
+    correct = _consistent_bool(detail, attempt, "correct")
+    extra = _object_field(attempt, "extra", "swebench_verified")
+    evaluation = _object_field(extra, "eval_raw_data", "swebench_verified.extra")
+    if extra.get("status") != "completed" or evaluation.get("completed") is not True:
+        raise RuntimeError("AgentCompass swebench_verified evaluation was not completed")
+    if evaluation.get("resolved") is not correct:
+        raise RuntimeError("AgentCompass swebench_verified resolved fields were inconsistent")
+    return _normalized_result(
+        correct=correct, reward=10.0 if correct else 0.0, raw_score=1.0 if correct else 0.0,
+        status=status, error=error, strategy="swebench_resolved",
     )
 
 
@@ -569,27 +632,16 @@ def _normalize_detail(benchmark: str, detail: dict[str, Any]) -> dict[str, Any]:
         return _normalize_scicode(detail, attempt)
     if normalizer == "frontierscience":
         return _normalize_frontierscience(detail, attempt)
-    if normalizer == "sgi_binary_judge":
-        return _normalize_sgi(detail, attempt)
+    if normalizer == "llm_judge":
+        return _normalize_llm_judge(benchmark, detail, attempt)
+    if normalizer == "deepsearchqa_judge":
+        return _normalize_deepsearchqa(detail, attempt)
     if normalizer == "sealqa_judge":
         return _normalize_sealqa(detail, attempt)
-    if normalizer == "binary_correct":
-        correct = _consistent_bool(detail, attempt, "correct")
-        agentcompass_score = detail.get("score", attempt.get("score"))
-        if isinstance(agentcompass_score, (int, float)) and not isinstance(agentcompass_score, bool):
-            if not math.isfinite(float(agentcompass_score)):
-                raise RuntimeError(f"AgentCompass {benchmark} detail contained a non-finite score")
-        status, error = _successful_attempt(benchmark, detail, attempt)
-        return {
-            "correct": correct,
-            "normalized_reward_10": 10.0 if correct else 0.0,
-            "raw_score": 1.0 if correct else 0.0,
-            "agentcompass_score": agentcompass_score,
-            "agentcompass_status": status,
-            "agentcompass_error": error,
-            "normalization_strategy": "binary_correct",
-            "schema_validated": True,
-        }
+    if normalizer == "special_pattern_correct":
+        return _normalize_special_pattern(detail, attempt)
+    if normalizer == "swebench_resolved":
+        return _normalize_swebench(detail, attempt)
     raise RuntimeError(f"unknown AgentCompass normalizer {normalizer!r} for benchmark {benchmark!r}")
 
 
@@ -601,11 +653,10 @@ def _result_from_detail(
     harness: str,
     environment: str,
     sample_id: str,
-    result_root: Path,
     detail: dict[str, Any],
-    detail_path: Path,
     duration_ms: float,
 ) -> dict[str, Any]:
+    _validate_native_identity(detail, sample_id=sample_id)
     normalized = _normalize_detail(benchmark, detail)
     return {
         "session_id": session_id,
@@ -622,8 +673,6 @@ def _result_from_detail(
             "harness": harness,
             "environment": environment,
             "sample_id": sample_id,
-            "result_dir": str(result_root),
-            "detail_path": str(detail_path),
             "duration_ms": round(duration_ms, 3),
             **normalized,
         },
@@ -688,9 +737,44 @@ def _write_result(result: dict[str, Any]) -> None:
     print(json.dumps(result, ensure_ascii=False), flush=True)
 
 
+def _rjob_results_preflight() -> None:
+    artifact_text = _text(os.environ.get(RESULT_PATH_ENV))
+    if not artifact_text:
+        raise RuntimeError(f"{RESULT_PATH_ENV} is required for AgentCompass RJob result handoff")
+    artifact = Path(artifact_text)
+    mount_root = Path(DEFAULT_RESULTS_ROOT)
+    if not artifact.is_absolute():
+        raise RuntimeError(f"{RESULT_PATH_ENV} must be an absolute path under {mount_root}")
+    try:
+        artifact.relative_to(mount_root)
+    except ValueError as exc:
+        raise RuntimeError(f"{RESULT_PATH_ENV} must be located under {mount_root}") from exc
+    if not os.path.ismount(mount_root):
+        raise RuntimeError(
+            f"AgentCompass RJob requires {mount_root} to be a real mount point; "
+            "provide mount_config through the private/global --rjob-config"
+        )
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", prefix=".safactory-write-probe-", dir=mount_root
+        ) as probe:
+            probe.write("write-probe\n")
+            probe.flush()
+    except OSError as exc:
+        raise RuntimeError(
+            f"results_mount_not_writable: AgentCompass RJob cannot write to {mount_root}: {exc}"
+        ) from exc
+
+
 def main() -> int:
     started_at = time.perf_counter()
     session_id = _text(os.environ.get("SAFACTORY_SESSION_ID"))
+    if _text(os.environ.get(REQUIRE_RESULTS_MOUNT_ENV)) == "1":
+        try:
+            _rjob_results_preflight()
+        except Exception as exc:
+            print(f"SAFACTORY_RUNNER_DIAGNOSTIC RJob result mount preflight failed: {exc}", file=sys.stderr)
+            return 2
     try:
         request = _read_request()
         session_id = _required(request.get("session_id"), "session_id")
@@ -735,7 +819,6 @@ def main() -> int:
                         "sample_id": sample_id,
                         "contract_only": True,
                         "offline_assets_ready": False,
-                        "result_dir": str(result_root),
                         **contract_score,
                     },
                 }
@@ -786,9 +869,6 @@ def main() -> int:
                         "benchmark": benchmark,
                         "harness": harness,
                         "sample_id": sample_id,
-                        "result_dir": str(result_root),
-                        "stdout_path": str(stdout_path),
-                        "stderr_path": str(stderr_path),
                     },
                 )
             )
@@ -799,7 +879,7 @@ def main() -> int:
                 f"AgentCompass {benchmark}/{harness}/{environment} exited with code {returncode}; see diagnostics artifact",
                 error_type=_subprocess_error_type(stderr_text),
             )
-        detail, detail_path = _find_detail(result_root, sample_id)
+        detail, _ = _find_detail(result_root, sample_id)
         _write_result(
             _result_from_detail(
                 session_id=session_id,
@@ -808,9 +888,7 @@ def main() -> int:
                 harness=harness,
                 environment=environment,
                 sample_id=sample_id,
-                result_root=result_root,
                 detail=detail,
-                detail_path=detail_path,
                 duration_ms=(time.perf_counter() - started_at) * 1000,
             )
         )

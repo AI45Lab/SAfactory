@@ -10,6 +10,7 @@ container:
     PYTHONDONTWRITEBYTECODE: "1"
     PYTHONUNBUFFERED: "1"
     AGENTCOMPASS_ALLOWED_ENVIRONMENTS: host_process
+    AGENTCOMPASS_REQUIRE_RESULTS_MOUNT: "1"
 
 rjob:
   image_pull_policy: IfNotPresent

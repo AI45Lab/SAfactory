@@ -5,16 +5,16 @@ from typing import Any
 
 
 NORMALIZATION_BY_BENCHMARK = {
-    "browsecomp": "binary_correct",
-    "deepsearchqa": "binary_correct",
+    "browsecomp": "llm_judge",
+    "deepsearchqa": "deepsearchqa_judge",
     "frontierscience": "frontierscience",
-    "hle": "binary_correct",
-    "hle_verified": "binary_correct",
+    "hle": "llm_judge",
+    "hle_verified": "llm_judge",
     "scicode": "scicode_fractional",
     "sealqa": "sealqa_judge",
-    "sgi_deep_research": "sgi_binary_judge",
-    "special_pattern_check": "binary_correct",
-    "swebench_verified": "binary_correct",
+    "sgi_deep_research": "llm_judge",
+    "special_pattern_check": "special_pattern_correct",
+    "swebench_verified": "swebench_resolved",
 }
 
 
@@ -37,36 +37,72 @@ def _number(value: Any, *, lower: float, upper: float) -> float | None:
     return rendered
 
 
+def _finite_number(value: Any) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    rendered = float(value)
+    return rendered if math.isfinite(rendered) else None
+
+
 def _validated_metrics(metrics: dict[str, Any], strategy: str) -> bool:
     return (
         metrics.get("schema_validated") is True
         and metrics.get("normalization_strategy") == strategy
         and isinstance(metrics.get("agentcompass_status"), str)
         and metrics["agentcompass_status"].strip().lower() == "completed"
-        and metrics.get("agentcompass_error") in (None, "")
+        and isinstance(metrics.get("agentcompass_error"), str)
+        and not metrics["agentcompass_error"].strip()
     )
 
 
 def evaluate(request: Any, spec: Any, trajectory: Any) -> dict[str, Any]:
     del trajectory
     start_result = getattr(request, "start_result", None)
+    request_session = getattr(request, "session_id", "")
+    result_session = getattr(start_result, "session_id", request_session)
+    if result_session != request_session:
+        return _failed("", "AgentCompass start result session identity was inconsistent")
+    if (
+        getattr(start_result, "status", "succeeded") != "succeeded"
+        or getattr(start_result, "terminated", True) is not True
+        or getattr(start_result, "truncated", False) is not False
+    ):
+        return _failed("", "AgentCompass episode was not successfully completed and terminal")
     metrics = getattr(start_result, "metrics", None)
     metrics = dict(metrics) if isinstance(metrics, dict) else {}
-    benchmark = str(metrics.get("benchmark") or "").strip()
+    benchmark_value = metrics.get("benchmark")
+    benchmark = benchmark_value.strip() if isinstance(benchmark_value, str) else ""
     normalizer = NORMALIZATION_BY_BENCHMARK.get(benchmark)
     if normalizer is None:
         return _failed(benchmark, f"unsupported AgentCompass score schema for benchmark {benchmark!r}")
 
+    strategy = metrics.get("normalization_strategy")
+    allowed_strategies = (
+        {"frontierscience_olympiad", "frontierscience_research"}
+        if normalizer == "frontierscience"
+        else {normalizer}
+    )
+    if strategy not in allowed_strategies or not _validated_metrics(metrics, strategy):
+        return _failed(benchmark, f"AgentCompass {benchmark} normalized metrics failed status/schema validation")
+    for name in ("task_id", "harness", "environment", "sample_id"):
+        if not isinstance(metrics.get(name), str) or not metrics[name].strip():
+            return _failed(benchmark, f"AgentCompass metrics did not contain valid {name} identity")
+
     correct = metrics.get("correct")
     if not isinstance(correct, bool):
         return _failed(benchmark, f"AgentCompass {benchmark} metrics did not contain boolean correct")
-    if normalizer == "binary_correct":
+    if normalizer in {
+        "llm_judge", "deepsearchqa_judge", "sealqa_judge",
+        "special_pattern_correct", "swebench_resolved",
+    }:
+        raw_score = _number(metrics.get("raw_score"), lower=0.0, upper=1.0)
+        normalized = _number(metrics.get("normalized_reward_10"), lower=0.0, upper=10.0)
+        expected = 1.0 if correct else 0.0
+        if raw_score != expected or normalized != expected * 10.0:
+            return _failed(benchmark, f"AgentCompass {benchmark} binary result fields were inconsistent")
         score = 10.0 if correct else 0.0
-        raw_score = 1.0 if correct else 0.0
-        reason = f"AgentCompass {benchmark} correctness mapped to SAfactory reward 10/0"
+        reason = f"AgentCompass {benchmark} native correctness mapped to SAfactory reward 10/0"
     elif normalizer == "scicode_fractional":
-        if not _validated_metrics(metrics, normalizer):
-            return _failed(benchmark, "AgentCompass scicode normalized metrics failed status/schema validation")
         raw_score = _number(metrics.get("raw_score"), lower=0.0, upper=1.0)
         normalized = _number(metrics.get("normalized_reward_10"), lower=0.0, upper=10.0)
         if (
@@ -79,11 +115,6 @@ def evaluate(request: Any, spec: Any, trajectory: Any) -> dict[str, Any]:
         score = normalized
         reason = "AgentCompass scicode subproblem correctness mapped to SAfactory reward 0-10"
     elif normalizer == "frontierscience":
-        strategy = metrics.get("normalization_strategy")
-        if strategy not in {"frontierscience_olympiad", "frontierscience_research"} or not _validated_metrics(
-            metrics, strategy
-        ):
-            return _failed(benchmark, "AgentCompass frontierscience normalized metrics failed status/schema validation")
         upper = 1.0 if strategy == "frontierscience_olympiad" else 10.0
         raw_score = _number(metrics.get("raw_score"), lower=0.0, upper=upper)
         normalized = _number(metrics.get("normalized_reward_10"), lower=0.0, upper=10.0)
@@ -95,7 +126,7 @@ def evaluate(request: Any, spec: Any, trajectory: Any) -> dict[str, Any]:
                 return _failed(benchmark, "AgentCompass frontierscience olympiad fields were inconsistent")
             reason = "AgentCompass FrontierScience olympiad correctness mapped to SAfactory reward 10/0"
         else:
-            threshold = _number(metrics.get("passing_threshold"), lower=0.0, upper=10.0)
+            threshold = _finite_number(metrics.get("passing_threshold"))
             if (
                 threshold is None
                 or not math.isclose(normalized, raw_score, abs_tol=1e-9)
@@ -104,16 +135,6 @@ def evaluate(request: Any, spec: Any, trajectory: Any) -> dict[str, Any]:
                 return _failed(benchmark, "AgentCompass frontierscience research fields were inconsistent")
             reason = "AgentCompass FrontierScience research rubric score preserved on SAfactory reward 0-10"
         score = normalized
-    elif normalizer in {"sgi_binary_judge", "sealqa_judge"}:
-        if not _validated_metrics(metrics, normalizer):
-            return _failed(benchmark, f"AgentCompass {benchmark} normalized metrics failed status/schema validation")
-        raw_score = _number(metrics.get("raw_score"), lower=0.0, upper=1.0)
-        normalized = _number(metrics.get("normalized_reward_10"), lower=0.0, upper=10.0)
-        expected = 1.0 if correct else 0.0
-        if raw_score != expected or normalized != expected * 10.0:
-            return _failed(benchmark, f"AgentCompass {benchmark} binary judge fields were inconsistent")
-        score = normalized
-        reason = f"AgentCompass {benchmark} judge correctness mapped to SAfactory reward 10/0"
     else:
         return _failed(benchmark, f"unknown normalization strategy {normalizer!r}")
 
@@ -128,10 +149,10 @@ def evaluate(request: Any, spec: Any, trajectory: Any) -> dict[str, Any]:
             "bench": "agentcompass",
             "benchmark": benchmark,
             "harness": metrics.get("harness"),
+            "environment": metrics.get("environment"),
+            "task_id": metrics.get("task_id"),
             "sample_id": metrics.get("sample_id"),
-            "correct": correct,
             "normalization_strategy": metrics.get("normalization_strategy", normalizer),
-            "detail_path": metrics.get("detail_path"),
             "contract_only": bool(metrics.get("contract_only", False)),
         },
     }
