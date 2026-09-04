@@ -65,3 +65,5 @@ rjob:
   embedded_files:
     - source: ./result_writer.py
       target: /workspace/cybergym/result_writer.py
+    - source: ../../cybergym/agent_dispatch.py
+      target: /workspace/cybergym/agent_dispatch.py

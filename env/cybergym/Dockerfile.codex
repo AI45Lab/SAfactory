@@ -1,4 +1,4 @@
-# CyberGym controller image for OpenHands, OpenCode, and Codex.
+# CyberGym controller image for OpenHands, OpenCode, Codex, and Claude Code.
 #
 # CyberGym and its example agents are cloned from their upstream repositories
 # during the image build. Safactory's small controller runtime is copied from
@@ -111,7 +111,7 @@ RUN mkdir -p /workspace \
 
 WORKDIR /workspace/cybergym
 
-# Codex/OpenCode adapters are copied from this checkout below. Only a combined
+# Agent adapters are copied from this checkout below. Only a combined
 # OpenHands image needs the large recursively nested example-agent submodule.
 RUN if [[ "${BUILD_OPENHANDS}" == "true" ]]; then \
         git submodule update --init --recursive examples/agents; \
@@ -120,16 +120,18 @@ RUN if [[ "${BUILD_OPENHANDS}" == "true" ]]; then \
     fi
 
 # Use the adapters from this Safactory checkout. The CyberGym revision can
-# point at an older examples/agents commit that predates OpenCode or Codex.
+# point at an older examples/agents commit that predates these adapters.
 COPY cybergym-agent-examples/codex/run.py /workspace/cybergym/examples/agents/codex/run.py
 COPY cybergym-agent-examples/opencode/run.py /workspace/cybergym/examples/agents/opencode/run.py
+COPY cybergym-agent-examples/claude_code/run.py /workspace/cybergym/examples/agents/claude_code/run.py
 
 # Codex is the default controller target and does not require the large nested
 # OpenHands repository. Enable BUILD_OPENHANDS only for a combined image.
 RUN test -f examples/agents/codex/run.py \
     && test -f examples/agents/opencode/run.py \
+    && test -f examples/agents/claude_code/run.py \
     || { \
-        echo "Codex/OpenCode CyberGym adapters are missing." >&2; \
+        echo "Codex/OpenCode/Claude Code CyberGym adapters are missing." >&2; \
         exit 1; \
     }; \
     if [[ "${BUILD_OPENHANDS}" == "true" ]]; then \

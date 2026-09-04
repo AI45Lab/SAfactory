@@ -34,9 +34,18 @@ CODEX_FAILURE_MARKERS = (
     "previous_response_not_found",
 )
 
+CLAUDE_CODE_FAILURE_MARKERS = (
+    "Invalid API key",
+    "authentication_error",
+    "permission_error",
+    "rate_limit_error",
+    "API Error:",
+)
+
 
 def trajectory_candidates(run_dir: Path, agent_type: str) -> list[Path]:
     patterns = {
+        "claude_code": ("trajectory.jsonl", "console.log"),
         "codex": ("logs/*.log", "console.log"),
         "cybench": ("app/template/**/*.json",),
         "enigma": ("trajectories/**/pwn_CyberGym.traj",),
@@ -141,6 +150,11 @@ def rollout_status(
         if marker:
             detail = tail(native_output_tail, 2000).strip()
             return "failed", f"Codex ended with an API error ({marker}): {detail}"
+    if agent_type.lower() == "claude_code":
+        marker = claude_code_failure_marker(native_output_tail)
+        if marker:
+            detail = tail(native_output_tail, 2000).strip()
+            return "failed", f"Claude Code ended with an API error ({marker}): {detail}"
     if agent_type.lower() == "openhands":
         marker = openhands_failure_marker(native_output_tail)
         if marker:
@@ -164,7 +178,13 @@ def codex_failure_marker(output: str) -> str | None:
     return next((item for item in CODEX_FAILURE_MARKERS if item in output), None)
 
 
+def claude_code_failure_marker(output: str) -> str | None:
+    return next((item for item in CLAUDE_CODE_FAILURE_MARKERS if item in output), None)
+
+
 def agent_failure_marker(agent_type: str, output: str) -> str | None:
+    if agent_type.lower() == "claude_code":
+        return claude_code_failure_marker(output)
     if agent_type.lower() == "codex":
         return codex_failure_marker(output)
     if agent_type.lower() == "openhands":
@@ -220,13 +240,40 @@ def write_final(
         has_submission=has_submission,
     )
     truncated = native_returncode == 124 or "timed out" in native_output_tail.lower()
+    # Claude Code may stop at its max-turns limit with exit code 1.  Do not
+    # infer turns from assistant-event counts because one event can contain
+    # multiple tool calls; only trust an explicit max-turns diagnostic.
+    max_turn_marker = any(marker in native_output_tail for marker in (
+        "error_max_turns",
+        "Reached maximum number of turns",
+        "maximum number of turns",
+    ))
+    if not max_turn_marker:
+        trajectory_path = first_text(native_result.get("trajectory_path"))
+        if trajectory_path:
+            try:
+                trajectory_tail = read_tail(Path(trajectory_path), 20000)
+                max_turn_marker = any(marker in trajectory_tail for marker in (
+                    "error_max_turns",
+                    "Reached maximum number of turns",
+                    "maximum number of turns",
+                ))
+            except (OSError, TypeError):
+                pass
+    if not truncated and max_turn_marker:
+        truncated = True
+        status = "truncated"
+        error_text = "CyberGym agent reached its maximum turn limit"
     if truncated:
         status = "truncated"
         error_text = f"CyberGym agent timed out: {tail(native_output_tail, 1000).strip()}"
     result = {
         "session_id": episode.get("session_id", ""),
         "status": status,
-        "total_reward": None,
+        # A runner/agent timeout is an interrupted trajectory.  It is still a
+        # terminal session for accounting purposes, with the benchmark's
+        # defined zero reward.
+        "total_reward": 0.0 if truncated else None,
         "step_count": max(1, int_value(native_result.get("step_count"), 1)),
         "terminated": True,
         "truncated": truncated,
