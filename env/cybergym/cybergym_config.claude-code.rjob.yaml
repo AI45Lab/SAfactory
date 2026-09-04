@@ -22,5 +22,5 @@ environments:
       agent_image_archive: claude-code.tar
 
       max_iter: 100
-      timeout_s: 600
-      verify_timeout_s: 120
+      timeout_s: 3600
+      verify_timeout_s: 1200

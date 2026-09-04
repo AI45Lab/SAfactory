@@ -3,25 +3,23 @@
 The controller supports `openhands`, `opencode`, `codex`, and `claude_code` through the same
 task server, PoC discovery, verification, and Safactory result protocol.
 
-Build the Codex/OpenCode/Claude Code controller from the repository root. It uses a
-dedicated Dockerfile so the original OpenHands controller build remains
-unchanged:
+Build the unified OpenHands/OpenCode/Codex/Claude Code controller from the
+repository root:
 
 ```bash
-docker build -f env/cybergym/Dockerfile.codex -t cybergym-safactory:codex .
+docker build -f env/cybergym/Dockerfile -t cybergym-safactory:controller .
 ```
 
-The Codex Dockerfile also contains the OpenCode adapter and intentionally skips
-the large OpenHands source build by default. To produce a combined controller
-that additionally embeds OpenHands, use:
+OpenHands support is included by default. For a smaller development-only image
+that omits OpenHands, use:
 
 ```bash
-docker build --build-arg BUILD_OPENHANDS=true \
-  -f env/cybergym/Dockerfile.codex -t cybergym-safactory:all .
+docker build --build-arg BUILD_OPENHANDS=false \
+  -f env/cybergym/Dockerfile -t cybergym-safactory:controller-no-openhands .
 ```
 
-The original `env/cybergym/Dockerfile` remains the legacy OpenHands-only
-controller and retains its original build context and behavior.
+Point every harness configuration at the same controller tag. The selected
+agent remains independent through `agent_image` and `agent_image_archive`.
 
 Build and archive the pinned CyberGym Codex agent image:
 
