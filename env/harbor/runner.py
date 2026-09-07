@@ -15,6 +15,11 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from bundle_materializer import BundleSpec, materialize_bundle, parse_bundle_spec
+from image_archive_loader import (
+    ImageArchive,
+    load_image_archives,
+    parse_image_archives,
+)
 
 REQUEST_ENV = "SAFACTORY_START_REQUEST_JSON"
 RESULT_PATH_ENV = "SAFACTORY_RESULT_PATH"
@@ -31,12 +36,18 @@ MODEL_ENV_NAMES = {
     "OPENAI_API_BASE",
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
+    "LLM_API_KEY",
+    "LLM_BASE_URL",
 }
 AGENT_RUNTIME_TARGETS = {
     "codex": "/usr/local/bin/codex",
     "claude-code": "/usr/local/bin/claude",
 }
-REASONING_EFFORT_AGENTS = {"codex", "claude-code", "opencode"}
+REASONING_EFFORT_AGENTS = {"codex", "claude-code", "opencode", "openhands"}
+OPENCODE_CHAT_AGENT_IMPORT_PATHS = {
+    "agents.offline_agents:OfflineOpenCode",
+    "agents.tracing_agents:TracingOfflineOpenCode",
+}
 CLAUDE_CODE_REASONING_EFFORTS = {
     "low",
     "medium",
@@ -69,8 +80,11 @@ class RunSpec:
     result_path: Path
     jobs_root: Path
     harbor_job_name: str
+    agent_import_path: str | None = None
+    capture_http: bool = False
     bundle: BundleSpec | None = None
     agent_runtime: AgentRuntime | None = None
+    image_archives: tuple[ImageArchive, ...] = ()
 
     @property
     def episode_dir(self) -> Path:
@@ -155,15 +169,16 @@ class NestedDocker:
         return driver
 
     def materialize_task(self, spec: RunSpec) -> RunSpec:
-        if spec.bundle is None:
-            return spec
-        output_dir = RUNTIME_DIR / f"bundle-{_safe_name(spec.session_id)}"
-        task_path = materialize_bundle(
-            spec.bundle,
-            output_dir=output_dir,
-            env=self.env,
-        )
-        return replace(spec, task_path=task_path)
+        if spec.bundle is not None:
+            output_dir = RUNTIME_DIR / f"bundle-{_safe_name(spec.session_id)}"
+            task_path = materialize_bundle(
+                spec.bundle,
+                output_dir=output_dir,
+                env=self.env,
+            )
+            spec = replace(spec, task_path=task_path)
+        load_image_archives(spec.image_archives, env=self.env)
+        return spec
 
     def run_harbor(self, spec: RunSpec) -> tuple[int, bool]:
         spec.harbor_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -294,7 +309,10 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
         raise RuntimeError(f"invalid SAfactory gateway URL: {gateway_url!r}")
 
     agent_runtime_config = params.get("agent_runtime")
+    image_archives_config = params.get("image_archives")
     reasoning_effort_config = params.get("reasoning_effort")
+    agent_import_path_config = params.get("agent_import_path")
+    capture_http_config = params.get("capture_http", False)
     agent = _required_text(
         params.get("agent")
         if agent_runtime_config is not None or reasoning_effort_config is not None
@@ -302,7 +320,19 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
         "agent",
     )
     agent_runtime = _parse_agent_runtime(agent_runtime_config, agent)
+    image_archives = parse_image_archives(image_archives_config)
     reasoning_effort = _parse_reasoning_effort(reasoning_effort_config, agent)
+    agent_import_path = _optional_text(agent_import_path_config)
+    if agent_import_path is not None and ":" not in agent_import_path:
+        raise RuntimeError(
+            "agent_import_path must use module.path:ClassName format"
+        )
+    capture_http = _parse_bool(capture_http_config, "capture_http")
+    if capture_http and agent_import_path != "agents.tracing_agents:TracingOfflineOpenCode":
+        raise RuntimeError(
+            "capture_http=true requires "
+            "agents.tracing_agents:TracingOfflineOpenCode"
+        )
     model = str(
         _param(dataset, params, "model", request.get("model") or "") or ""
     ).strip()
@@ -333,8 +363,11 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
         result_path=result_path,
         jobs_root=result_path.parent / "harbor" / "jobs",
         harbor_job_name=job_name,
+        agent_import_path=agent_import_path,
+        capture_http=capture_http,
         bundle=bundle,
         agent_runtime=agent_runtime,
+        image_archives=image_archives,
     )
 
 
@@ -347,14 +380,18 @@ def harbor_command(spec: RunSpec) -> list[str]:
         "--path",
         str(spec.task_path),
         "--agent",
-        spec.agent,
+        spec.agent_import_path or spec.agent,
     ]
     if spec.model:
         command.extend(["--model", spec.model])
     if spec.reasoning_effort is not None:
         if spec.agent == "opencode":
             opencode_config = _opencode_reasoning_config(
-                spec.model, spec.reasoning_effort
+                spec.model,
+                spec.reasoning_effort,
+                chat_compatible=(
+                    spec.agent_import_path in OPENCODE_CHAT_AGENT_IMPORT_PATHS
+                ),
             )
             command.extend(
                 [
@@ -380,6 +417,8 @@ def harbor_command(spec: RunSpec) -> list[str]:
                 f"version={spec.agent_runtime.version}",
             ]
         )
+    if spec.capture_http:
+        command.extend(["--ak", "capture_http=true"])
     command.extend(
         [
             "--env",
@@ -408,6 +447,11 @@ def model_connection_env(spec: RunSpec) -> dict[str, str]:
         return {
             "OPENAI_BASE_URL": spec.gateway_url,
             "OPENAI_API_KEY": "EMPTY",
+        }
+    if spec.agent == "openhands":
+        return {
+            "LLM_BASE_URL": spec.gateway_url,
+            "LLM_API_KEY": "EMPTY",
         }
     return {}
 
@@ -555,6 +599,7 @@ def parse_harbor_result(
         "harbor_agent": spec.agent,
         "harbor_model": spec.model,
         "agent_reasoning_effort": spec.reasoning_effort,
+        "agent_import_path": spec.agent_import_path,
         "agent_runtime": _agent_runtime_metric(spec.agent_runtime),
         "reward_key": spec.reward_key,
         "harbor_reward": reward,
@@ -631,6 +676,7 @@ def _failure(
                 "harbor_agent": spec.agent,
                 "harbor_model": spec.model,
                 "agent_reasoning_effort": spec.reasoning_effort,
+                "agent_import_path": spec.agent_import_path,
                 "agent_runtime": _agent_runtime_metric(spec.agent_runtime),
                 "reward_key": spec.reward_key,
                 "harbor_job_result_path": str(spec.harbor_job_dir / "result.json"),
@@ -693,7 +739,7 @@ def _parse_reasoning_effort(value: Any, agent: str) -> str | None:
     if agent not in REASONING_EFFORT_AGENTS:
         raise RuntimeError(
             f"reasoning_effort does not support agent {agent!r}; "
-            "expected codex, claude-code, or opencode"
+            "expected codex, claude-code, opencode, or openhands"
         )
     if agent == "claude-code" and effort not in CLAUDE_CODE_REASONING_EFFORTS:
         choices = ", ".join(sorted(CLAUDE_CODE_REASONING_EFFORTS))
@@ -705,7 +751,10 @@ def _parse_reasoning_effort(value: Any, agent: str) -> str | None:
 
 
 def _opencode_reasoning_config(
-    model: str | None, reasoning_effort: str
+    model: str | None,
+    reasoning_effort: str,
+    *,
+    chat_compatible: bool = False,
 ) -> dict[str, Any]:
     model_name = str(model or "").strip()
     if "/" not in model_name:
@@ -717,10 +766,12 @@ def _opencode_reasoning_config(
         raise RuntimeError(
             "opencode reasoning_effort requires model in provider/model form"
         )
+    config_provider = "openai-chat" if chat_compatible and provider == "openai" else provider
+    config_model = f"{config_provider}/{model_id}"
     return {
-        "small_model": model_name,
+        "small_model": config_model,
         "provider": {
-            provider: {
+            config_provider: {
                 "models": {
                     model_id: {
                         "options": {"reasoningEffort": reasoning_effort},
@@ -746,6 +797,25 @@ def _required_text(value: Any, name: str) -> str:
     if not text:
         raise RuntimeError(f"SimulationStartRequest missing {name}")
     return text
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _parse_bool(value: Any, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    raise TypeError(f"{name} must be a boolean")
 
 
 def _safe_name(value: str) -> str:
