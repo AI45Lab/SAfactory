@@ -5,6 +5,22 @@ CYBERGYM_RUNNER_ROOT="${CYBERGYM_RUNNER_ROOT:-/opt/safactory/cybergym}"
 CYBERGYM_RUNNER_TMP="$(mktemp -d /tmp/safactory-cybergym.XXXXXX)"
 export CYBERGYM_RUNNER_TMP
 
+# RJob embeds the editable result writer at this path. Prefer it so result
+# classification changes can be tested without rebuilding the controller;
+# Docker/local mode falls back to the baked-in helper.
+if [[ -f /workspace/cybergym/result_writer.py ]]; then
+  CYBERGYM_RESULT_WRITER=/workspace/cybergym/result_writer.py
+else
+  CYBERGYM_RESULT_WRITER="${CYBERGYM_RUNNER_ROOT}/result_writer.py"
+fi
+if [[ -f /workspace/cybergym/agent_dispatch.py ]]; then
+  CYBERGYM_AGENT_DISPATCH=/workspace/cybergym/agent_dispatch.py
+else
+  CYBERGYM_AGENT_DISPATCH="${CYBERGYM_RUNNER_ROOT}/agent_dispatch.py"
+fi
+export CYBERGYM_RESULT_WRITER
+export CYBERGYM_AGENT_DISPATCH
+
 # shellcheck source=runtime/common.sh
 source "${CYBERGYM_RUNNER_ROOT}/common.sh"
 # shellcheck source=runtime/docker_prepare.sh
@@ -44,7 +60,7 @@ emit_unexpected_failure() {
     } >"${DEBUG_DIR}/runner-failure.log" || true
   fi
   if [[ "$RESULT_EMITTED" != "1" ]]; then
-    python3.12 "${CYBERGYM_RUNNER_ROOT}/result_writer.py" failure \
+    python3.12 "$CYBERGYM_RESULT_WRITER" failure \
       --reason "CyberGym runner failed in phase ${RUNNER_PHASE:-unknown} with code ${returncode}: ${command}" \
       --request "$REQUEST_JSON" \
       --episode "$EPISODE_JSON" || true
@@ -160,7 +176,7 @@ process_timeout_s="$(phase_timeout \
 
 agent_command=(
   "$EPISODE_PYTHON_BIN"
-  "${CYBERGYM_RUNNER_ROOT}/agent_dispatch.py"
+  "$CYBERGYM_AGENT_DISPATCH"
   --episode "$EPISODE_JSON"
   --runner-tmp "$CYBERGYM_RUNNER_TMP"
   --runtime-host "$EPISODE_RUNTIME_HOST"
@@ -173,6 +189,7 @@ printf ' %q' "${agent_command[@]}" >>"$NATIVE_OUTPUT"
 printf '\n' >>"$NATIVE_OUTPUT"
 set +e
 RUNNER_PHASE="agent_run"
+agent_started_epoch="$(date +%s)"
 agent_started_s=$SECONDS
 timeout --signal=TERM --kill-after=30 "${process_timeout_s}s" \
   "${agent_command[@]}" >>"$NATIVE_OUTPUT" 2>&1
@@ -186,7 +203,40 @@ if (( native_returncode == 124 || \
 fi
 printf '\nreturncode: %s\n' "$native_returncode" >>"$NATIVE_OUTPUT"
 
-python3.12 "${CYBERGYM_RUNNER_ROOT}/result_writer.py" discover \
+# Preserve enough information to diagnose native-agent exits (especially when
+# the outer timeout returns 1/143 instead of 124).  These files are copied to
+# the result debug directory and survive controller cleanup.
+{
+  printf '\n--- agent execution diagnostics ---\n'
+  printf 'runner_phase=%s\n' "$RUNNER_PHASE"
+  printf 'agent_started_epoch=%s\n' "${agent_started_epoch:-unknown}"
+  printf 'agent_elapsed_s=%s\n' "$agent_elapsed_s"
+  printf 'agent_timeout_s=%s\n' "$agent_timeout_s"
+  printf 'process_timeout_s=%s\n' "$process_timeout_s"
+  printf 'native_returncode=%s\n' "$native_returncode"
+  case "$native_returncode" in
+    124) printf 'exit_class=outer_timeout\n' ;;
+    137) printf 'exit_class=SIGKILL\n' ;;
+    143) printf 'exit_class=SIGTERM\n' ;;
+    0) printf 'exit_class=success\n' ;;
+    *) printf 'exit_class=agent_or_dispatch_failure\n' ;;
+  esac
+  printf 'native_output_bytes=%s\n' "$(wc -c <"$NATIVE_OUTPUT")"
+  printf 'trajectory_files:\n'
+  find "$EPISODE_LOGS_DIR" -maxdepth 3 -type f \( -name 'trajectory.jsonl' -o -name 'console.log' -o -name 'docker-runtime.json' \) -printf '  %p %s bytes\n' 2>/dev/null || true
+  printf '%s\n' '--- native output tail ---'
+  tail -80 "$NATIVE_OUTPUT" || true
+  for f in $(find "$EPISODE_LOGS_DIR" -maxdepth 3 -type f -name 'console.log' 2>/dev/null); do
+    printf '%s\n' "--- console tail: $f ---"
+    tail -80 "$f" || true
+  done
+  for f in $(find "$EPISODE_LOGS_DIR" -maxdepth 3 -type f -name 'trajectory.jsonl' 2>/dev/null); do
+    printf '%s\n' "--- trajectory tail: $f ---"
+    tail -20 "$f" || true
+  done
+} >"${DEBUG_DIR}/agent-exit-diagnostics.log" 2>&1 || true
+
+python3.12 "$CYBERGYM_RESULT_WRITER" discover \
   --log-dir "$EPISODE_LOGS_DIR" \
   --task-id "$EPISODE_TASK_ID" \
   --agent-type "$EPISODE_AGENT_TYPE" \
@@ -229,7 +279,7 @@ else
   : >"$VERIFY_OUTPUT"
 fi
 
-python3.12 "${CYBERGYM_RUNNER_ROOT}/result_writer.py" final \
+python3.12 "$CYBERGYM_RESULT_WRITER" final \
   --episode "$EPISODE_JSON" \
   --docker "$DOCKER_JSON" \
   --native "$NATIVE_JSON" \
