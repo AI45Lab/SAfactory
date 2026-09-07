@@ -1,0 +1,26 @@
+environments:
+  - env_name: cybergym
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:cybergym-claude-code-20260903-fix
+    env_num: 1
+    dataset: ./datasets/cybergym_tasks_full.jsonl
+    dataset_load_mode: eager
+
+    env_params:
+      task_family: cybergym
+      cybergym_root: /workspace/cybergym
+      data_dir: /workspace/cybergym/cybergym_data/data
+      image_archive_dir: /workspace/cybergym/images
+      results_root: /workspace/cybergym/results
+
+      route_model: glm-5.3
+      model_ref: anthropic/glm-5.3
+      image_load_timeout_s: 1800
+
+      agent_type: claude_code
+      agent_runner: /workspace/cybergym/examples/agents/claude_code/run.py
+      agent_image: cybergym/claude-code:latest
+      agent_image_archive: claude-code.tar
+
+      max_iter: 100
+      timeout_s: 3600
+      verify_timeout_s: 1200

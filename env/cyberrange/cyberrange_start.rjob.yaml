@@ -18,7 +18,7 @@ container:
     CYBERRANGE_RELEASE_ROOT: /mnt/shared-storage-user/evoagi-share/cyberrange/releases/postexploitbench-range3-toolkit-20260820-140500
     CYBERRANGE_REPORT_ROOT: /mnt/shared-storage-user/evoagi-share/cyberrange/results/chengzikai
     CYBERRANGE_OUTPUT_ROOT: /mnt/shared-storage-user/evoagi-share/cyberrange/results/chengzikai
-    CYBERRANGE_WALL_TIME_SECONDS: "600"
+    CYBERRANGE_WALL_TIME_SECONDS: "18000"
 
 rjob:
   name_prefix: cyberrange
