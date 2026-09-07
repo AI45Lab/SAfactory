@@ -54,6 +54,7 @@ With the default `base_session_path: /v1/sessions`, the gateway exposes:
 | `GET /v1/sessions/{session_id}` | Gateway session status. |
 | `POST /v1/sessions/{session_id}/close` | Start or poll session close. A `closing` response includes `Retry-After`. |
 | `GET /v1/sessions/{session_id}/latest-success-step?model=...` | Largest HTTP-200 step ID observed for the session and model. |
+| `POST /v1/sessions/{session_id}/clean` | Idempotently clear a closed session from Gateway memory. |
 
 Session-scoped requests are what make trajectory rows attach to a Safactory `session_id`.
 
@@ -133,6 +134,7 @@ request_log:
 4. `launcher.py` calls `POST /v1/sessions/{session_id}/close`; Gateway marks the in-memory session `closing`, rejects new admission, and returns HTTP 200 with `Retry-After: 10`.
 5. Launcher polls with exponential backoff until Gateway drains in-flight requests and flushes telemetry (`closed`), or until the configured total timeout. Evaluation then continues in either case.
 6. Reward commit asks `latest-success-step` for the launcher model and reads that session/model/step from the DB. If the row is not yet visible, it retries three times at 10-second intervals, then falls back to the DB's largest step whose `meta_json.status_code` is 200.
+7. After reward commit and the successful `finished` update of the environment row, Manager calls `clean` to release the Resolver, Telemetry, and Storage caches for that session.
 
 Gateway-side close timing is controlled by `session_close_timeout_s` (default `90`) and `session_close_retry_after_s` (default `10`). Close coordination state is in memory only.
 

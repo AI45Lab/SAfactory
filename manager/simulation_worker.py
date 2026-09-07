@@ -319,7 +319,10 @@ class SimulationWorkerGroup:
                         )
                     result.total_reward = 0.0
                     with trace.span("mark_environment_finished"):
-                        await self.data_manager.mark_environment_finished(lease.agent_id)
+                        await self._mark_environment_finished_and_clean_gateway(
+                            lease.agent_id,
+                            result.session_id,
+                        )
                     release_reusable = False
                 elif self.evaluation_service is not None and self.reward_committer is not None:
                     with trace.span("eval_discover_rule"):
@@ -362,7 +365,10 @@ class SimulationWorkerGroup:
                                 )
                             result.total_reward = eval_result.normalized_score_10
                             with trace.span("mark_environment_finished"):
-                                await self.data_manager.mark_environment_finished(lease.agent_id)
+                                await self._mark_environment_finished_and_clean_gateway(
+                                    lease.agent_id,
+                                    result.session_id,
+                                )
                         else:
                             result.status = "failed"
                             result.error_text = eval_result.error_text or eval_result.reason
@@ -380,7 +386,10 @@ class SimulationWorkerGroup:
                         job_id=self.cfg.job_id,
                         llm_model=self.cfg.llm_model,
                     )
-                    await self.data_manager.mark_environment_finished(lease.agent_id)
+                    await self._mark_environment_finished_and_clean_gateway(
+                        lease.agent_id,
+                        result.session_id,
+                    )
                     release_reusable = None
 
                 with trace.span("store_result"):
@@ -552,6 +561,32 @@ class SimulationWorkerGroup:
                 exc,
             )
             return False
+
+    async def _mark_environment_finished_and_clean_gateway(
+        self,
+        env_id: str,
+        session_id: str,
+    ) -> None:
+        await self.data_manager.mark_environment_finished(env_id)
+        if self.gateway_client is None:
+            return
+        try:
+            cleaned = await self.gateway_client.clean_session(session_id)
+            log.info(
+                "gateway session cleaned after environment completion: "
+                "env_id=%s session_id=%s status=%s",
+                env_id,
+                session_id,
+                cleaned.get("status") if isinstance(cleaned, dict) else "cleaned",
+            )
+        except Exception as exc:
+            log.warning(
+                "gateway session clean failed after environment completion: "
+                "env_id=%s session_id=%s error=%s",
+                env_id,
+                session_id,
+                exc,
+            )
 
     @staticmethod
     def _gateway_completion_mode(result: SimulationStartResult) -> str:

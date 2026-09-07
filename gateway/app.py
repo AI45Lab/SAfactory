@@ -769,6 +769,33 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         telemetry: TelemetryRecorder = app.state.gateway_telemetry
         return {"step_id": await telemetry.latest_success_step_id(session_id, model)}
 
+    async def clear_session_state(session_ids: list[str]) -> dict[str, int]:
+        resolver: SessionResolver = app.state.gateway_resolver
+        telemetry: TelemetryRecorder = app.state.gateway_telemetry
+        storage: GatewayStorage = app.state.gateway_storage
+        telemetry_removed = await telemetry.clear_session_cache(session_ids)
+        clear_storage = getattr(storage, "clear_session_cache", None)
+        storage_removed = await clear_storage(session_ids) if callable(clear_storage) else 0
+        resolver_removed = await resolver.clear_session_cache(session_ids)
+        return {
+            "resolver": resolver_removed,
+            "telemetry": telemetry_removed,
+            "storage": storage_removed,
+        }
+
+    async def clean_session(session_id: str) -> Response:
+        resolver: SessionResolver = app.state.gateway_resolver
+        status = await resolver.get_status(session_id)
+        if status is not None and (
+            status.get("status") != "closed"
+            or int(status.get("active_request_count") or 0) > 0
+            or int(status.get("active_stream_count") or 0) > 0
+        ):
+            raise HTTPException(status_code=409, detail="session is not ready to clean")
+        removed = await clear_session_state([session_id])
+        log.info("Gateway session cleaned: session_id=%s removed=%s", session_id, removed)
+        return JSONResponse({"session_id": session_id, "status": "cleaned", "removed": removed})
+
     async def clear_session_cache(payload: dict[str, Any]) -> dict[str, Any]:
         raw_session_ids = payload.get("session_ids")
         if not isinstance(raw_session_ids, list):
@@ -781,16 +808,19 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         if not session_ids:
             raise HTTPException(status_code=400, detail="session_ids must be a non-empty list")
 
-        resolver: SessionResolver = app.state.gateway_resolver
         close_tasks: dict[str, asyncio.Task[None]] = app.state.gateway_session_close_tasks
         cancelled = [close_tasks.pop(session_id) for session_id in session_ids if session_id in close_tasks]
         for task in cancelled:
             task.cancel()
         if cancelled:
             await asyncio.gather(*cancelled, return_exceptions=True)
-        removed = await resolver.clear_session_cache(session_ids)
-        log.info("Gateway session cache cleared: sessions=%d removed=%d", len(session_ids), removed)
-        return {"session_ids": session_ids, "removed": removed}
+        removed = await clear_session_state(session_ids)
+        log.info("Gateway session cache cleared: sessions=%d removed=%s", len(session_ids), removed)
+        return {
+            "session_ids": session_ids,
+            "removed": removed["resolver"],
+            "removed_by_component": removed,
+        }
 
     async def get_environment_row_count(job_id: str) -> dict[str, Any]:
         storage: GatewayStorage = app.state.gateway_storage
@@ -836,6 +866,11 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         f"{session_root}/{{session_id}}/latest-success-step",
         get_latest_success_step,
         methods=["GET"],
+    )
+    app.add_api_route(
+        f"{session_root}/{{session_id}}/clean",
+        clean_session,
+        methods=["POST"],
     )
     app.add_api_route(
         f"{session_root}/{{session_id}}",

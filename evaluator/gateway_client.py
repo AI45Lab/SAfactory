@@ -109,6 +109,13 @@ class GatewayClient:
         response.raise_for_status()
         return response.json()
 
+    async def clean_session(self, session_id: str) -> dict[str, Any]:
+        response = await self._client.post(
+            f"{self.gateway_base_url}/{session_id}/clean",
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def aclose(self) -> None:
         await self._client.aclose()
 

@@ -208,6 +208,20 @@ class TelemetryRecorder:
         async with self._lock:
             return self._latest_success_step.get((session_id, model))
 
+    async def clear_session_cache(self, session_ids: list[str]) -> int:
+        targets = set(session_ids)
+        async with self._lock:
+            seq_keys = [key for key in self._seq_by_session_model if key[0] in targets]
+            latest_keys = [key for key in self._latest_success_step if key[0] in targets]
+            truncated_keys = [key for key in self._truncated_sessions if key[0] in targets]
+            for key in seq_keys:
+                self._seq_by_session_model.pop(key, None)
+            for key in latest_keys:
+                self._latest_success_step.pop(key, None)
+            for key in truncated_keys:
+                self._truncated_sessions.discard(key)
+            return len(seq_keys) + len(latest_keys) + len(truncated_keys)
+
     async def enqueue_session_close(
         self,
         binding: GatewaySessionBinding,

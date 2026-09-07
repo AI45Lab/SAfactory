@@ -523,6 +523,27 @@ class GatewayStorage:
             checkout_latest=True,
         )
 
+    async def clear_session_cache(self, session_ids: list[str]) -> int:
+        targets = set(session_ids)
+        async with self._lock:
+            session_keys = [key for key in self._sessions if key[0] in targets]
+            record_keys = [key for key in self._latest_record_ids if key[0] in targets]
+            environments = [session_id for session_id in targets if session_id in self._environments]
+            patched = [
+                session_id
+                for session_id in targets
+                if session_id in self._patched_environment_sessions
+            ]
+            for key in session_keys:
+                self._sessions.pop(key, None)
+            for key in record_keys:
+                self._latest_record_ids.pop(key, None)
+            for session_id in environments:
+                self._environments.pop(session_id, None)
+            for session_id in patched:
+                self._patched_environment_sessions.discard(session_id)
+            return len(session_keys) + len(record_keys) + len(environments) + len(patched)
+
     async def close(self) -> None:
         log.info("Gateway storage close begin")
         await self.data_manager.close()
