@@ -143,7 +143,11 @@ def _install_mock_wt_sdk_fallbacks() -> None:
                 else "test"
             )
             self.db_uri = db_uri
-            self.landing_table = landing_table
+            self.landing_table = landing_table or (
+                "wind_tunnel_landing"
+                if self.profile == "production"
+                else "v2_landing_test"
+            )
 
     class _S3Config:
         def to_storage_options(self) -> Dict[str, Any]:

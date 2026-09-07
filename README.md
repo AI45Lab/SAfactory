@@ -147,7 +147,7 @@ or:
 WT_SDK_PROFILE=production
 ```
 
-The `test` profile selects `landing_test` and `env_config_test`; the
+The `test` profile selects `v2_landing_test` and `env_config_test`; the
 `production`/`prod` profile selects `wind_tunnel_landing` and
 `evaluation_env_config`. This keeps trajectory and environment-config writes
 in the same environment. Explicit table names in `storage_config` override the

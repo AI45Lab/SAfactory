@@ -14,7 +14,9 @@ class _FakeGatewayConfig:
             profile=profile,
             db_uri="s3://trajectory-test",
             landing_table=(
-                "wind_tunnel_landing" if profile == "production" else "landing_test"
+                "wind_tunnel_landing"
+                if profile == "production"
+                else "v2_landing_test"
             ),
         )
         self.s3 = SimpleNamespace(to_storage_options=lambda: {})
@@ -57,7 +59,7 @@ def _install_cloud_fakes(monkeypatch):
 @pytest.mark.parametrize(
     ("profile", "expected_landing", "expected_env"),
     [
-        ("test", "landing_test", "env_config_test"),
+        ("test", "v2_landing_test", "env_config_test"),
         ("production", "wind_tunnel_landing", "evaluation_env_config"),
         ("prod", "wind_tunnel_landing", "evaluation_env_config"),
     ],
@@ -120,3 +122,6 @@ def test_mock_sdk_fallback_exposes_resolved_profile(monkeypatch, profile, expect
     cloud._install_mock_wt_sdk_fallbacks()
 
     assert cloud.GatewayConfig().tables.profile == expected
+    assert cloud.GatewayConfig().tables.landing_table == (
+        "wind_tunnel_landing" if expected == "production" else "v2_landing_test"
+    )
