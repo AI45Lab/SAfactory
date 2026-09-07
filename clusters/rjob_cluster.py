@@ -24,6 +24,9 @@ RJOB_FAILED_STATUSES = {"Failed", "Stopped", "Killed"}
 
 _DEFAULT_RUNNER_CONTAINER_PATH = "/tmp/safactory-openclaw-runner.mjs"
 _DEFAULT_RUN_COMMAND = f"node {_DEFAULT_RUNNER_CONTAINER_PATH}"
+# RJob task ids are "<job_name>-<task_name>" and must match the cluster regex
+# ^[a-zA-Z0-9][-a-zA-Z0-9]{1,61}[a-zA-Z0-9]$ — dots are NOT allowed, so strip them
+# (replace with "-") rather than only allowing alnum + "." + "-".
 _INVALID_NAME_CHARS = re.compile(r"[^a-z0-9-]+")
 _MAX_RJOB_NAME_LEN = 49
 _MAX_RJOB_AGENT_NAME_LEN = 12

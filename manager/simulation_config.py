@@ -905,10 +905,18 @@ def _normalize_embedded_file(item: Any, cfg_path: Path) -> Dict[str, str]:
 def expand_rl_group_size(yaml_config_list: List[Dict[str, Any]], group_size: int) -> List[Dict[str, Any]]:
     if int(group_size) <= 0:
         return yaml_config_list
+    # Oversample: launch more envs per prompt than group_size so the first
+    # group_size episodes to finish form a group, and long-tail episodes
+    # don't block the group. buffer_server still pops group_size at a time;
+    # the surplus stays in the bucket for the next group (or gets discarded
+    # at rollout end). Set RL_OVERSAMPLE=0 to disable.
+    oversample = int(os.environ.get("RL_OVERSAMPLE", "0"))
+    env_num = int(group_size) + oversample
     expanded = [dict(item) for item in yaml_config_list]
     for item in expanded:
-        item["env_num"] = int(group_size)
-    log.debug("Override agent parallelism env_num=%d for %d config(s)", int(group_size), len(expanded))
+        item["env_num"] = env_num
+    log.debug("Override agent parallelism env_num=%d (group_size=%d + oversample=%d) for %d config(s)",
+              env_num, int(group_size), oversample, len(expanded))
     return expanded
 
 
