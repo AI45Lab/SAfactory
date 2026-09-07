@@ -533,7 +533,6 @@ class SimulationWorkerGroup:
                     reason=reason,
                     completion_mode=completion_mode,
                 )
-                await self.gateway_client.wait_telemetry_flush(result.session_id)
             else:
                 with trace.span("gateway_close_session"):
                     await self.gateway_client.close_session(
@@ -541,8 +540,6 @@ class SimulationWorkerGroup:
                         reason=reason,
                         completion_mode=completion_mode,
                     )
-                with trace.span("gateway_wait_telemetry_flush"):
-                    await self.gateway_client.wait_telemetry_flush(result.session_id)
             return True
         except httpx.HTTPError as exc:
             log.warning(

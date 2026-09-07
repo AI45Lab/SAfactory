@@ -71,7 +71,13 @@ class SessionResolver:
                 binding.last_seen_at = now
         return binding
 
-    async def close_session(self, session_id: str, reason: str = "gateway_close") -> GatewaySessionBinding:
+    async def begin_close_session(
+        self,
+        session_id: str,
+        *,
+        reason: str = "gateway_close",
+        completion_mode: str = "complete",
+    ) -> tuple[GatewaySessionBinding, bool]:
         now = _utcnow()
         async with self._lock:
             binding = self._bindings.get(session_id)
@@ -80,15 +86,30 @@ class SessionResolver:
                     session_id=session_id,
                     model="",
                     upstream_base_url=None,
-                    status="closed",
+                    status="active",
                     last_seen_at=now,
                     first_seen_at=now,
-                    closed_at=now,
-                    close_reason=reason,
                 )
                 self._bindings[session_id] = binding
-            else:
-                binding.close(reason, now)
+            started = binding.begin_close(reason, completion_mode, now)
+            return binding, started
+
+    async def finish_close_session(
+        self,
+        session_id: str,
+        *,
+        drained: bool,
+        telemetry_status: str,
+    ) -> GatewaySessionBinding | None:
+        now = _utcnow()
+        async with self._lock:
+            binding = self._bindings.get(session_id)
+            if binding is not None:
+                binding.finish_close(
+                    drained=drained,
+                    telemetry_status=telemetry_status,
+                    closed_at=now,
+                )
             return binding
 
     async def clear_session_cache(self, session_ids: list[str]) -> int:
@@ -116,6 +137,9 @@ class SessionResolver:
                 "last_seen_at": binding.last_seen_at.isoformat(),
                 "closed_at": binding.closed_at.isoformat() if binding.closed_at else None,
                 "close_reason": binding.close_reason,
+                "close_completion_mode": binding.close_completion_mode,
+                "close_drained": binding.close_drained,
+                "close_telemetry_status": binding.close_telemetry_status,
                 "active_request_count": binding.active_request_count,
                 "active_stream_count": binding.active_stream_count,
                 "request_count": binding.request_count,

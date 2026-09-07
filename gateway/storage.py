@@ -438,7 +438,11 @@ class GatewayStorage:
             },
         )
         try:
-            terminal = record.is_session_completed or binding.close_reason == "rollout_sealed"
+            sealed = (
+                binding.close_completion_mode == "seal"
+                or binding.close_reason == "rollout_sealed"
+            )
+            terminal = record.is_session_completed or sealed
             with trace.span("models_for_session"):
                 models = await self._models_for_session(binding)
             trace.update_context(model_count=len(models), models=models)
@@ -477,12 +481,15 @@ class GatewayStorage:
                 trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_count=0)
                 return
 
-            updates: dict[str, Any] = {
-                "is_session_completed": bool(record.is_session_completed),
-                "is_terminal": bool(terminal),
-            }
-            if not record.is_session_completed:
-                updates.update(step_reward=0.0, reward=None)
+            updates: dict[str, Any] = {"is_terminal": bool(terminal)}
+            if record.is_session_completed:
+                updates["is_session_completed"] = True
+            elif not sealed:
+                updates.update(
+                    is_session_completed=False,
+                    step_reward=0.0,
+                    reward=None,
+                )
             with trace.span(
                 "storage.update_session_lifecycle",
                 table="session_steps",
@@ -507,6 +514,14 @@ class GatewayStorage:
         except Exception as exc:
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
+
+    async def flush_session(self, binding: GatewaySessionBinding) -> None:
+        """Flush any DAO buffer and force a latest-snapshot read for one session."""
+        await self.data_manager.list_session_steps(
+            binding.session_id,
+            job_id=binding.job_id,
+            checkout_latest=True,
+        )
 
     async def close(self) -> None:
         log.info("Gateway storage close begin")

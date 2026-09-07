@@ -66,6 +66,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         app.state.gateway_request_logger.start()
         app.state.gateway_telemetry = TelemetryRecorder(cfg, app.state.gateway_storage)
         app.state.gateway_stream_finalize_tasks: set[asyncio.Task[None]] = set()
+        app.state.gateway_session_close_tasks: dict[str, asyncio.Task[None]] = {}
         log.info("Gateway telemetry start begin")
         await app.state.gateway_telemetry.start()
         log.info("Gateway telemetry start complete")
@@ -82,6 +83,10 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             await _shutdown_stream_finalize_tasks(
                 app.state.gateway_stream_finalize_tasks,
                 cfg.drain_timeout_s,
+            )
+            await _shutdown_session_close_tasks(
+                app.state.gateway_session_close_tasks,
+                cfg.session_close_timeout_s,
             )
             log.info("Gateway drain complete; stopping telemetry and clients")
             await app.state.gateway_telemetry.stop()
@@ -181,8 +186,8 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 binding.active_request_count,
                 binding.active_stream_count,
             )
-            if binding.status == "closed":
-                if binding.is_model_truncated(ctx.requested_model):
+            if binding.status != "active":
+                if binding.status == "closed" and binding.is_model_truncated(ctx.requested_model):
                     ctx = replace(ctx, synthetic_stop=True)
                     reason = binding.model_truncate_reason(ctx.requested_model) or "max_steps_reached"
                     log.info(
@@ -406,6 +411,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     latency_ms,
                     upstream_latency_ms=result.upstream_latency_ms,
                     request_headers=headers,
+                    status_code=result.status_code,
                 )
             log.info(
                 "Gateway request complete: request_id=%s session_id=%s model=%s status=%d total_latency_ms=%.2f",
@@ -455,7 +461,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     binding=binding,
                     target=target,
                 )
-            if ctx is not None and binding is not None:
+            if ctx is not None and binding is not None and ctx.llm_step_index is not None:
                 with trace.span("telemetry_enqueue_failure"):
                     await telemetry.enqueue_failure(
                         ctx,
@@ -683,7 +689,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             return JSONResponse({"error": {"type": "not_found", "message": "session not found"}}, status_code=404)
         return JSONResponse(status)
 
-    async def close_session(session_id: str, request: Request) -> dict[str, Any]:
+    async def close_session(session_id: str, request: Request) -> Response:
         resolver: SessionResolver = app.state.gateway_resolver
         telemetry: TelemetryRecorder = app.state.gateway_telemetry
         reason = "gateway_close"
@@ -701,39 +707,67 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 status_code=400,
                 detail="completion_mode must be 'complete', 'seal', or 'abort'",
             )
-        binding = await resolver.close_session(session_id, reason=reason)
+        binding, started = await resolver.begin_close_session(
+            session_id,
+            reason=reason,
+            completion_mode=completion_mode,
+        )
         log.info(
-            "Gateway session close requested: session_id=%s reason=%s completion_mode=%s",
+            "Gateway session close requested: session_id=%s reason=%s completion_mode=%s started=%s status=%s",
             session_id,
             reason,
             completion_mode,
+            started,
+            binding.status,
         )
-        drained = True
-        if cfg.close_mode == "soft_close":
-            drained = await _wait_for_session_drain(binding, cfg.drain_timeout_s)
+        if started:
+            task = asyncio.create_task(
+                _finalize_session_close(
+                    binding=binding,
+                    completion_mode=completion_mode,
+                    resolver=resolver,
+                    telemetry=telemetry,
+                    cfg=cfg,
+                ),
+                name=f"gateway-session-close-{session_id}",
+            )
+            close_tasks: dict[str, asyncio.Task[None]] = app.state.gateway_session_close_tasks
+            close_tasks[session_id] = task
 
-        telemetry_status = "queued" if telemetry.async_writes_enabled else "flushed"
-        try:
-            await telemetry.enqueue_session_close(
-                binding,
-                is_session_completed=completion_mode == "complete",
+            def _remove_close_task(done: asyncio.Task[None]) -> None:
+                if close_tasks.get(session_id) is done:
+                    close_tasks.pop(session_id, None)
+                if not done.cancelled() and done.exception() is not None:
+                    log.error(
+                        "Gateway session close task failed: session_id=%s error=%s",
+                        session_id,
+                        done.exception(),
+                    )
+
+            task.add_done_callback(_remove_close_task)
+
+        if binding.status == "closing":
+            return JSONResponse(
+                {
+                    "session_id": session_id,
+                    "status": "closing",
+                    "completion_mode": binding.close_completion_mode or completion_mode,
+                },
+                headers={"Retry-After": str(cfg.session_close_retry_after_s)},
             )
-        except asyncio.TimeoutError:
-            telemetry_status = "timeout"
-            log.warning(
-                "Gateway session close telemetry timed out; returning closed status: "
-                "session_id=%s reason=%s timeout_s=%.1f",
-                session_id,
-                reason,
-                cfg.telemetry_write_timeout_s,
-            )
-        return {
-            "session_id": session_id,
-            "status": binding.status,
-            "drained": drained,
-            "telemetry_status": telemetry_status,
-            "completion_mode": completion_mode,
-        }
+        return JSONResponse(
+            {
+                "session_id": session_id,
+                "status": "closed",
+                "drained": binding.close_drained,
+                "telemetry_status": binding.close_telemetry_status or "flushed",
+                "completion_mode": binding.close_completion_mode or completion_mode,
+            }
+        )
+
+    async def get_latest_success_step(session_id: str, model: str) -> dict[str, int | None]:
+        telemetry: TelemetryRecorder = app.state.gateway_telemetry
+        return {"step_id": await telemetry.latest_success_step_id(session_id, model)}
 
     async def clear_session_cache(payload: dict[str, Any]) -> dict[str, Any]:
         raw_session_ids = payload.get("session_ids")
@@ -748,6 +782,12 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             raise HTTPException(status_code=400, detail="session_ids must be a non-empty list")
 
         resolver: SessionResolver = app.state.gateway_resolver
+        close_tasks: dict[str, asyncio.Task[None]] = app.state.gateway_session_close_tasks
+        cancelled = [close_tasks.pop(session_id) for session_id in session_ids if session_id in close_tasks]
+        for task in cancelled:
+            task.cancel()
+        if cancelled:
+            await asyncio.gather(*cancelled, return_exceptions=True)
         removed = await resolver.clear_session_cache(session_ids)
         log.info("Gateway session cache cleared: sessions=%d removed=%d", len(session_ids), removed)
         return {"session_ids": session_ids, "removed": removed}
@@ -791,6 +831,11 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         f"{standard_openai_root}/responses",
         handle_standard_responses,
         methods=["POST"],
+    )
+    app.add_api_route(
+        f"{session_root}/{{session_id}}/latest-success-step",
+        get_latest_success_step,
+        methods=["GET"],
     )
     app.add_api_route(
         f"{session_root}/{{session_id}}",
@@ -1235,6 +1280,7 @@ async def _stream_and_finalize(
                             stream_stats=stats,
                             request_headers=request_headers,
                             response_text=trajectory_response_text,
+                            status_code=status_code,
                         )
                 else:
                     with trace.span("telemetry_enqueue_stream_failure"):
@@ -1478,7 +1524,70 @@ async def _shutdown_stream_finalize_tasks(
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def _wait_for_session_drain(binding: GatewaySessionBinding, drain_timeout_s: int) -> bool:
+async def _finalize_session_close(
+    *,
+    binding: GatewaySessionBinding,
+    completion_mode: str,
+    resolver: SessionResolver,
+    telemetry: TelemetryRecorder,
+    cfg: GatewayConfig,
+) -> None:
+    drained = False
+    telemetry_status = "timeout"
+
+    async def finalize() -> bool:
+        session_drained = True
+        if cfg.close_mode == "soft_close":
+            session_drained = await _wait_for_session_drain(
+                binding,
+                cfg.session_close_timeout_s,
+            )
+        await telemetry.enqueue_session_close(
+            binding,
+            is_session_completed=completion_mode == "complete",
+        )
+        await telemetry.wait_for_session_flush(binding)
+        return session_drained
+
+    try:
+        drained = await asyncio.wait_for(
+            finalize(),
+            timeout=max(0.001, float(cfg.session_close_timeout_s)),
+        )
+        telemetry_status = "flushed" if drained else "timeout"
+    except asyncio.TimeoutError:
+        log.warning(
+            "Gateway session close timed out: session_id=%s timeout_s=%.1f",
+            binding.session_id,
+            cfg.session_close_timeout_s,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("Gateway session close finalization failed: session_id=%s", binding.session_id)
+    finally:
+        await resolver.finish_close_session(
+            binding.session_id,
+            drained=drained,
+            telemetry_status=telemetry_status,
+        )
+
+
+async def _shutdown_session_close_tasks(
+    tasks_by_session: dict[str, asyncio.Task[None]],
+    timeout_s: float,
+) -> None:
+    tasks = list(tasks_by_session.values())
+    if not tasks:
+        return
+    _, pending = await asyncio.wait(tasks, timeout=max(0.0, float(timeout_s)))
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    tasks_by_session.clear()
+
+
+async def _wait_for_session_drain(binding: GatewaySessionBinding, drain_timeout_s: float) -> bool:
     deadline = time.monotonic() + max(0, drain_timeout_s)
     next_log_at = 0.0
     while binding.active_request_count > 0 or binding.active_stream_count > 0:
