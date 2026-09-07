@@ -5,3 +5,5 @@ PATCHEVAL_DB_FIELDS.md
 *.json
 
 wandb_logs/
+
+generated_openhands_exp1_js77/

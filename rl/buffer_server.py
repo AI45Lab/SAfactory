@@ -591,6 +591,76 @@ async def start_rollout(request: Request):
     return {"message": "Rollout started"}
 
 
+@app.post("/stop_rollout")
+async def stop_rollout():
+    """Kill the AIEvoBox launcher process to stop all envs.
+
+    Called by slime_generator after collecting enough rollout data,
+    before the training step begins. This ensures no envs are still
+    sending LLM requests to SGLang, so flush_cache can succeed immediately.
+    """
+    global aievobox_process
+
+    if aievobox_process is None or aievobox_process.poll() is not None:
+        logger.info("[stop_rollout] AIEvoBox not running, nothing to stop")
+        return {"message": "AIEvoBox not running"}
+
+    pid = aievobox_process.pid
+    logger.info(f"[stop_rollout] Killing AIEvoBox process tree (pid={pid})")
+
+    try:
+        import signal
+        import os
+        import subprocess
+
+        # Kill only the launcher.py process and its children, NOT the entire
+        # process group (which would also kill the buffer server itself).
+        # Use ps to find all descendant PIDs, then kill them individually.
+        try:
+            # Find all child/descendant processes of the launcher
+            result = subprocess.run(
+                ["ps", "--ppid", str(pid), "-o", "pid=", "--no-header"],
+                capture_output=True, text=True, timeout=5,
+            )
+            child_pids = [int(p.strip()) for p in result.stdout.split() if p.strip()]
+
+            # Recursively find grandchildren
+            all_pids = list(child_pids)
+            for child_pid in child_pids:
+                try:
+                    result2 = subprocess.run(
+                        ["ps", "--ppid", str(child_pid), "-o", "pid=", "--no-header"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    all_pids.extend(int(p.strip()) for p in result2.stdout.split() if p.strip())
+                except Exception:
+                    pass
+
+            # Kill children first (bottom-up), then the launcher itself
+            for kill_pid in all_pids:
+                try:
+                    os.kill(kill_pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+
+            # Finally kill the launcher process itself
+            aievobox_process.kill()
+        except (ProcessLookupError, PermissionError):
+            aievobox_process.kill()
+
+        aievobox_process.wait(timeout=10)
+        logger.info(f"[stop_rollout] AIEvoBox process {pid} killed successfully")
+    except Exception as e:
+        logger.warning(f"[stop_rollout] Error killing AIEvoBox: {e}")
+        try:
+            aievobox_process.kill()
+        except Exception:
+            pass
+
+    aievobox_process = None
+    return {"message": "AIEvoBox stopped", "pid": pid}
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""

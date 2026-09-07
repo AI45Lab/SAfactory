@@ -78,14 +78,20 @@ require_file() {
 export PYTHONPATH="${AIEVOBOX_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
 mkdir -p "${LOG_ROOT}"
-if [[ -z "${AIEVOBOX_RUN_DIR:-}" && -f "${LOG_ROOT}/.current_run" ]]; then
+# Always follow .current_run (the single source of truth, refreshed by
+# run_slime_generator.sh on each launch). A stale AIEVOBOX_RUN_DIR exported
+# into the shell from a previous run must NOT override the latest run dir,
+# otherwise restarting only buffer_server (in the same terminal) writes logs
+# into the previous run's directory. The env var is kept only as a fallback
+# for the very first launch when no .current_run exists yet.
+if [[ -f "${LOG_ROOT}/.current_run" ]]; then
   export AIEVOBOX_RUN_DIR="$(cat "${LOG_ROOT}/.current_run")"
-fi
-if [[ -z "${AIEVOBOX_RUN_DIR:-}" ]]; then
+elif [[ -z "${AIEVOBOX_RUN_DIR:-}" ]]; then
   export AIEVOBOX_RUN_DIR="${LOG_ROOT}/$(date +%Y%m%d-%H%M%S)"
   printf '%s\n' "${AIEVOBOX_RUN_DIR}" > "${LOG_ROOT}/.current_run"
 fi
 mkdir -p "${AIEVOBOX_RUN_DIR}"
+export SAFACTORY_TIMING_LOG="${AIEVOBOX_RUN_DIR}/timing.jsonl"
 
 require_dir "${AIEVOBOX_ROOT}" "AIEVOBOX_ROOT"
 require_file "${AIEVOBOX_ROOT}/rl/buffer_server.py" "buffer server entrypoint"

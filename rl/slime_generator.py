@@ -694,6 +694,90 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
     metrics.record("used/count", float(sum(len(g) for g in final_return_results)), AggType.SUM)
     metrics.push(step=rollout_id)
 
+    # In colocate mode, training and inference share the same GPUs, so before
+    # the training step begins we must kill all env processes (so no env keeps
+    # sending LLM requests to SGLang) and abort residual SGLang requests (so
+    # flush_cache during release/resume succeeds immediately). This whole
+    # block is colocate-only.
+    #
+    # In non-colocate mode, training and inference use SEPARATE GPUs — there is
+    # no release/resume memory cycle and no flush_cache. Killing the launcher
+    # here is actively harmful: START_ROLLOUT is only True on the first rollout,
+    # so once the launcher is killed it is never restarted, and subsequent
+    # rollout rounds have no envs producing data → buffer never fills → the
+    # pipeline stalls forever (the run gets stuck on step 2). Therefore in
+    # non-colocate mode we keep the launcher alive so it keeps producing
+    # trajectories across rollout rounds.
+    colocate = os.environ.get("SLIME_COLOCATE", "false").lower() in ("true", "1")
+    if colocate:
+        try:
+            stop_url = f"{base_url}/stop_rollout"
+            resp = requests.post(stop_url, timeout=15)
+            if resp.status_code == 200:
+                logger.info(f"[generate_rollout] Stopped all envs (kill launcher.py)")
+                print(f"[generate_rollout] Stopped all envs before returning data")
+            else:
+                logger.warning(f"[generate_rollout] stop_rollout returned HTTP {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"[generate_rollout] Failed to stop envs: {e}")
+
+        # Abort residual pending requests on all SGLang workers.
+        # Even though envs are killed, there may be requests that envs sent
+        # just before being killed, still sitting in SGLang's queue. These
+        # residual requests (especially long generations with max_tokens=32768)
+        # would keep the scheduler busy for minutes, causing flush_cache to
+        # time out. Aborting them ensures the scheduler becomes idle quickly.
+        # This mirrors slime's original abort() in sglang_rollout.py.
+        try:
+            router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+            # Try /workers first (sglang_router > 0.2.1), fall back to /list_workers
+            worker_urls = None
+            try:
+                resp = requests.get(f"{router_url}/workers", timeout=10)
+                if resp.status_code == 200:
+                    worker_urls = [w["url"] for w in resp.json().get("workers", [])]
+            except Exception:
+                pass
+            if not worker_urls:
+                resp = requests.get(f"{router_url}/list_workers", timeout=10)
+                if resp.status_code == 200:
+                    worker_urls = resp.json().get("urls", [])
+
+            if worker_urls:
+                for url in worker_urls:
+                    try:
+                        requests.post(
+                            f"{url}/abort_request",
+                            json={"abort_all": True},
+                            timeout=10,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[generate_rollout] abort failed for {url}: {e}")
+                logger.info(
+                    f"[generate_rollout] Aborted residual requests on "
+                    f"{len(worker_urls)} SGLang workers"
+                )
+                print(f"[generate_rollout] Aborted residual requests on {len(worker_urls)} workers")
+            else:
+                logger.warning("[generate_rollout] No SGLang worker URLs found to abort")
+        except Exception as e:
+            logger.warning(f"[generate_rollout] Failed to abort SGLang workers: {e}")
+
+        # Give SGLang a moment to process the abort and clean up
+        time.sleep(3)
+    else:
+        # Non-colocate: stop launcher so the next rollout_id can restart it
+        # with current weights. The launcher starts a fixed batch (pool_size)
+        # and does NOT replenish, so keeping it alive means no new data after
+        # the batch finishes. The next generate_rollout call will start_rollout
+        # a fresh launcher with the updated weight version.
+        try:
+            requests.post(f"{base_url}/stop_rollout", timeout=15)
+            logger.info(f"[generate_rollout] Non-colocate: stopped launcher (will restart next rollout)")
+            print(f"[generate_rollout] Non-colocate: launcher stopped")
+        except Exception as e:
+            logger.warning(f"[generate_rollout] stop_rollout failed: {e}")
+
     return final_return_results
 
 
@@ -712,6 +796,21 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
         print(f"start rollout with payload: {start_inform}")
         print(f"start rollout id: {rollout_id}")
         START_ROLLOUT = False
+    elif not evaluation:
+        # rollout_id > 1: restart launcher so new envs use current weights.
+        # The old launcher's envs were started with a stale weight_version and
+        # their data would be filtered out by weight_version check; worse, the
+        # launcher starts a fixed batch (pool_size) and does NOT replenish, so
+        # once those envs finish there is no new data at all. Stop the old
+        # launcher and start a fresh one each rollout round.
+        try:
+            requests.post(f"{args.rollout_buffer_url}/stop_rollout", timeout=15)
+            logger.info(f"[generate_rollout] Stopped old launcher before rollout_id={rollout_id}")
+        except Exception as e:
+            logger.warning(f"[generate_rollout] stop_rollout before restart failed: {e}")
+        metadata = data_buffer.get_metadata()
+        start_inform = start_rollout(args.rollout_buffer_url, args, metadata)
+        print(f"restart rollout for rollout_id={rollout_id}: {start_inform}")
 
     rollout_start = _timing_now()
     # train_time = time slime spent on the GRPO update + ckpt between the end

@@ -67,7 +67,7 @@ export AIEVOBOX_ENABLE_EVALUATION="${AIEVOBOX_ENABLE_EVALUATION:-1}"
 # Override via PATCHEVAL_POOL_SIZE if cluster capacity is tight.
 # NOTE: 实验扫 POOL_SIZE=8/16/24/32 找效率甜点。当前测试值=16。
 export AIEVOBOX_POOL_SIZE="${PATCHEVAL_POOL_SIZE:-16}"
-export AIEVOBOX_AGENT_START_TIMEOUT_S="${PATCHEVAL_AGENT_START_TIMEOUT_S:-2400}"
+export AIEVOBOX_AGENT_START_TIMEOUT_S="${PATCHEVAL_AGENT_START_TIMEOUT_S:-1200}"
 # Hard cap on LLM steps per episode, enforced by the RL gateway
 # (see rl/gateway_autostart.py). -1 = unlimited. Set >=0 to stop runaway
 # agent rollouts (e.g. OpenHands looping 200+ steps without finishing).
@@ -96,7 +96,11 @@ export BUFFER_SERVER_HOST="${BUFFER_SERVER_HOST:-127.0.0.1}"
 export BUFFER_SERVER_PORT="${BUFFER_SERVER_PORT:-18889}"
 export LLM_PROXY_HOST="${LLM_PROXY_HOST:-127.0.0.1}"
 export LLM_PROXY_PORT="${LLM_PROXY_PORT:-18890}"
-export LLM_MAX_LENGTH="${LLM_MAX_LENGTH:-131072}"
+export LLM_MAX_LENGTH="${LLM_MAX_LENGTH:-65536}"
+# Single-turn generation limit (per LLM call). Keep separate from LLM_MAX_LENGTH
+# (trajectory cap) to avoid long-tail requests blocking offload. Official
+# Qwen3.5-27B uses 32768.
+export ROLLOUT_MAX_RESPONSE_LEN="${ROLLOUT_MAX_RESPONSE_LEN:-32768}"
 export LLM_TEMPERATURE="${LLM_TEMPERATURE:-1.0}"
 # Gateway runs on THIS training pod (started by the buffer server via
 # gateway_autostart). Default to this pod's IP so it always points at the live
@@ -110,7 +114,9 @@ export MEGATRON_HOME="${MEGATRON_HOME:-/root/Megatron-LM}"
 # Model: Qwen3.8-27B (same architecture as Qwen3.5-27B, uses qwen3.5-27B.sh spec).
 # Override via QWEN3_8_27B_CKPT_DIR / PATCHEVAL_* if needed.
 export HF_CKPT_DIR="${QWEN3_8_27B_CKPT_DIR:-/mnt/shared-storage-gpfs2/gpfs2-shared-public/huggingface/hub/models--Qwen--Qwen3.8-27B/snapshots/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0}"
-export LOAD_DIR="${QWEN3_8_27B_LOAD_DIR:-${HF_CKPT_DIR}}"
+# --load must point to Megatron format checkpoint (not HF), matching official script.
+# We converted HF→Megatron to qwen3_8_27b_megatron/.
+export LOAD_DIR="${QWEN3_8_27B_LOAD_DIR:-/mnt/shared-storage-user/evobox-share-gpfs2/leishanzhe/model/qwen3_8_27b_megatron}"
 # Override geo3k defaults unconditionally (geo3k sets these to its own paths).
 export SAVE_DIR="${PATCHEVAL_SAVE_DIR:-${AIEVOBOX_ROOT}/rl/examples/patcheval/checkpoints/Qwen3.8-27B_megatron}"
 export WANDB_DIR="${PATCHEVAL_WANDB_DIR:-${AIEVOBOX_ROOT}/rl/examples/patcheval/wandb_logs}"
@@ -127,31 +133,31 @@ export NUM_GPUS="${PATCHEVAL_NUM_GPUS:-8}"
 export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
 export NCCL_NET="${NCCL_NET:-Socket}"
 export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-bond0}"
-export ACTOR_NUM_NODES=1
+export ACTOR_NUM_NODES="${PATCHEVAL_ACTOR_NUM_NODES:-4}"
 export ACTOR_NUM_GPUS_PER_NODE="${PATCHEVAL_ACTOR_NUM_GPUS_PER_NODE:-8}"
-# Inference GPUs for sglang. Make overridable so the capacity experiment can
-# sweep env/pool vs inference-GPU ratios. Must be <= NUM_GPUS.
+# Inference GPUs for sglang. In non-colocate mode, this is the dedicated
+# rollout GPU count (separate from training GPUs).
+# Total: 32 training + 8 rollout = 40 GPUs (5 machines).
 export ROLLOUT_NUM_GPUS="${PATCHEVAL_ROLLOUT_NUM_GPUS:-8}"
-export ROLLOUT_NUM_GPUS_PER_ENGINE=1
+export ROLLOUT_NUM_GPUS_PER_ENGINE="${PATCHEVAL_ROLLOUT_NUM_GPUS_PER_ENGINE:-2}"
 export TRAIN_ENTRYPOINT="${TRAIN_ENTRYPOINT:-${SLIME_HOME}/train.py}"
 export ROLLOUT_FUNCTION_PATH="${ROLLOUT_FUNCTION_PATH:-rl.slime_generator.generate_rollout}"
 # Debug-friendly: 300 rollout iterations is too many for a debug run.
 export NUM_ROLLOUT="${NUM_ROLLOUT:-10}"
 export LOSS_MASK_TYPE="qwen3_5"
 export TRAIN_BACKEND="${TRAIN_BACKEND:-megatron}"
-export MEGATRON_TO_HF_MODE="${MEGATRON_TO_HF_MODE:-bridge}"
-export TP_SIZE="${PATCHEVAL_TP_SIZE:-4}" PP_SIZE="${PATCHEVAL_PP_SIZE:-1}" CP_SIZE=1 EP_SIZE=1 ETP_SIZE=1
+export MEGATRON_TO_HF_MODE="${MEGATRON_TO_HF_MODE:-raw}"
+export TP_SIZE="${PATCHEVAL_TP_SIZE:-4}" PP_SIZE="${PATCHEVAL_PP_SIZE:-2}" CP_SIZE=4 EP_SIZE=1 ETP_SIZE=1
 export RECOMPUTE_GRANULARITY="${RECOMPUTE_GRANULARITY:-full}"
 export RECOMPUTE_METHOD="${RECOMPUTE_METHOD:-uniform}"
-export RECOMPUTE_NUM_LAYERS="${RECOMPUTE_NUM_LAYERS:-64}"
+export RECOMPUTE_NUM_LAYERS="${RECOMPUTE_NUM_LAYERS:-1}"
+export DECODER_LAST_PIPELINE_NUM_LAYERS="${DECODER_LAST_PIPELINE_NUM_LAYERS:-30}"
 export ATTENTION_BACKEND="${ATTENTION_BACKEND:-flash}"
-export MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-2048}"
-# Trajectory truncation for training: long agent trajectories (40-step CVE
-# patcheval) can exceed 50k tokens, which OOMs the training GPU. This
-# truncates each trajectory to the last N tokens for training only — the
-# full trajectory is still used for reward/advantage computation during
-# rollout. Set to 0 to disable.
-export TRAJ_TRUNCATION_MAX_SEQ_LEN="${TRAJ_TRUNCATION_MAX_SEQ_LEN:-8192}"
+export MAX_TOKENS_PER_GPU="${MAX_TOKENS_PER_GPU:-8192}"
+# PP=2 halves both weights and activations per GPU (32 of 64 layers each).
+# This provides enough memory headroom to disable truncation entirely —
+# full long trajectories (50k+ tokens) can be trained without losing context.
+export TRAJ_TRUNCATION_MAX_SEQ_LEN="${TRAJ_TRUNCATION_MAX_SEQ_LEN:-0}"
 # GDN packed-seq monkey-patch: patches Megatron GDN forward to pass cu_seqlens
 # to chunk_gated_delta_rule, enabling thd (packing) mode without NotImplementedError.
 # See rl/patches/gdn_packed_seq.py for details.
@@ -169,10 +175,10 @@ export OPTIMIZER="${OPTIMIZER:-adam}"
 export WEIGHT_DECAY="${WEIGHT_DECAY:-0.1}"
 export ADAM_BETA1="${ADAM_BETA1:-0.9}"
 export ADAM_BETA2="${ADAM_BETA2:-0.98}"
-# Colocate: training (Megatron TP=8) and inference (sglang) share all 8 GPUs.
-# During rollout, all 8 GPUs run sglang; during training, sglang is CPU-offloaded
-# and all 8 GPUs run Megatron TP=8. This avoids the OOM that occurs with a
-# dedicated 4+4 split where TP=4 cannot fit 27B model + optimizer states.
+# Non-colocate mode: training (Megatron) and inference (SGLang) use SEPARATE GPUs.
+# Training: 24 GPUs (3 machines, TP=4 × PP=2 × CP=3)
+# Rollout: 8 GPUs (1 machine, 4 engines × 2 GPUs each)
+# No release/resume memory cycle → no mamba state corruption → no flush_cache_fix needed.
 export SLIME_COLOCATE="${SLIME_COLOCATE:-false}"
 # CPU offload optimizer: moves fp32 master weights + Adam states (~41GB at
 # TP=4/DP=2) to CPU, leaving only bf16 weights + bf16 grad on GPU. Critical
@@ -194,8 +200,20 @@ export WANDB_GROUP="${WANDB_GROUP:-patcheval_qwen3_5_9b}"
 # capacity, enough to hold 4 sessions/engine without eviction so all 4 decode
 # in parallel — no queue, ~100% prefix reuse. Safe on H200 141GB: 27B weights
 # ~54GB + KV 0.6*~87GB-free ≈ 52GB ≈ 106GB < 141GB. Override via env var.
-export SGLANG_MEM_FRACTION_STATIC="${SGLANG_MEM_FRACTION_STATIC:-0.7}"
+# Non-colocate mode: SGLang has dedicated GPUs (no sharing with training).
+# Can use much higher mem_fraction_static since no need to reserve memory
+# for Megatron training weights/activations.
+export SGLANG_MEM_FRACTION_STATIC="${SGLANG_MEM_FRACTION_STATIC:-0.9}"
 export SGLANG_ATTENTION_BACKEND="${SGLANG_ATTENTION_BACKEND:-fa3}"
+export SGLANG_MAMBA_SCHEDULER_STRATEGY="${SGLANG_MAMBA_SCHEDULER_STRATEGY:-extra_buffer}"
+# EAGLE speculative decoding (official Qwen3.5-27B config).
+# NOTE: Previously disabled due to mamba_pool CUDA illegal memory access, but that
+# was actually caused by flush_cache_fix.py's abort_request corrupting mamba state.
+# With flush_cache_fix removed, EAGLE should work in raw mode (as in official script).
+export SGLANG_SPECULATIVE_ALGORITHM="${SGLANG_SPECULATIVE_ALGORITHM:-EAGLE}"
+export SGLANG_SPECULATIVE_NUM_STEPS="${SGLANG_SPECULATIVE_NUM_STEPS:-3}"
+export SGLANG_SPECULATIVE_EAGLE_TOPK="${SGLANG_SPECULATIVE_EAGLE_TOPK:-1}"
+export SGLANG_SPECULATIVE_NUM_DRAFT_TOKENS="${SGLANG_SPECULATIVE_NUM_DRAFT_TOKENS:-4}"
 export SGLANG_LOG_LEVEL="${SGLANG_LOG_LEVEL:-info}"
 export SGLANG_LOG_LEVEL_HTTP="${SGLANG_LOG_LEVEL_HTTP:-error}"
 export CLEANUP_BEFORE_RUN="${CLEANUP_BEFORE_RUN:-true}"
@@ -222,7 +240,7 @@ export KILL_PYTHON_BEFORE_RUN="${KILL_PYTHON_BEFORE_RUN:-false}"
 # --- Slime train / checkpoint args ---
 export SAVE_INTERVAL="${SAVE_INTERVAL:-20}"
 export MODEL_ARGS_EXTRA="${MODEL_ARGS_EXTRA:-}"
-export REF_LOAD_DIR="${REF_LOAD_DIR:-}"
+export REF_LOAD_DIR="${REF_LOAD_DIR:-/mnt/shared-storage-user/evobox-share-gpfs2/leishanzhe/model/qwen3_8_27b_megatron}"
 export CUSTOM_REWARD_POST_PROCESS_PATH="${CUSTOM_REWARD_POST_PROCESS_PATH:-}"
 export SGLANG_LOGGING_CONFIG_PATH="${SGLANG_LOGGING_CONFIG_PATH:-}"
 
@@ -270,7 +288,12 @@ export ROLLBUF_PORT="${ROLLBUF_PORT:-${BUFFER_SERVER_PORT}}"
 # --- Slime rollout-buffer / GRPO filter ---
 export SLIME_ROLLBUF_RESTART_TRAINING="${SLIME_ROLLBUF_RESTART_TRAINING:-True}"
 export SLIME_N_SAMPLES_PER_PROMPT="${SLIME_N_SAMPLES_PER_PROMPT:-${RL_GROUP_SIZE}}"
-export RL_OFF_BY_N="${RL_OFF_BY_N:-0}"
+export RL_OFF_BY_N="${RL_OFF_BY_N:-3}"
+# Oversample: launch extra envs per prompt beyond group_size so the first
+# group_size episodes to finish form a group; long-tail episodes don't block.
+# buffer_server still pops group_size at a time; surplus stays in the bucket.
+# E.g. group_size=8 + oversample=4 = 12 envs per prompt, first 8 done = 1 group.
+export RL_OVERSAMPLE="${PATCHEVAL_OVERSAMPLE:-4}"
 
 # --- AIEVOBOX env extras ---
 export AIEVOBOX_MESSAGE_CUT="${AIEVOBOX_MESSAGE_CUT:-0}"

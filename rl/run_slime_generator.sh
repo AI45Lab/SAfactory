@@ -104,6 +104,7 @@ if [[ -z "${AIEVOBOX_RUN_DIR:-}" ]]; then
 fi
 mkdir -p "${AIEVOBOX_RUN_DIR}"
 printf '%s\n' "${AIEVOBOX_RUN_DIR}" > "${LOG_ROOT}/.current_run"
+export SAFACTORY_TIMING_LOG="${AIEVOBOX_RUN_DIR}/timing.jsonl"
 
 ROLLOUT_BUFFER_URL="http://${BUFFER_SERVER_HOST}:${BUFFER_SERVER_PORT}"
 LLM_PROXY_URL="http://${LLM_PROXY_HOST}:${LLM_PROXY_PORT}"
@@ -153,7 +154,8 @@ ROLLOUT_ARGS=(
   --num-rollout "${NUM_ROLLOUT}"
   --rollout-batch-size "${RL_ROLLOUT_GROUP_BATCH_SIZE}"
   --n-samples-per-prompt "${RL_GROUP_SIZE}"
-  --rollout-max-response-len "${LLM_MAX_LENGTH}"
+  --rollout-num-process "${ROLLOUT_NUM_PROCESS:-${RL_GLOBAL_BATCH_SIZE}}"
+  --rollout-max-response-len "${ROLLOUT_MAX_RESPONSE_LEN:-32768}"
   --rollout-temperature "${LLM_TEMPERATURE}"
   --global-batch-size "${RL_GLOBAL_BATCH_SIZE}"
   --loss-mask-type "${LOSS_MASK_TYPE}"
@@ -168,6 +170,7 @@ MEGATRON_ARGS=(
   --tensor-model-parallel-size "${TP_SIZE}"
   --pipeline-model-parallel-size "${PP_SIZE}"
   --context-parallel-size "${CP_SIZE}"
+  --sequence-parallel
   --expert-model-parallel-size "${EP_SIZE}"
   --expert-tensor-parallel-size "${ETP_SIZE}"
   --recompute-granularity "${RECOMPUTE_GRANULARITY}"
@@ -179,6 +182,9 @@ MEGATRON_ARGS=(
   --attention-softmax-in-fp32
   --attention-backend "${ATTENTION_BACKEND}"
 )
+if [[ -n "${DECODER_LAST_PIPELINE_NUM_LAYERS:-}" ]]; then
+  MEGATRON_ARGS+=(--decoder-last-pipeline-num-layers "${DECODER_LAST_PIPELINE_NUM_LAYERS}")
+fi
 # CPU offload optimizer: moves fp32 master weights + Adam states (~81GB at TP=4)
 # to CPU, leaving only bf16 weights + bf16 grad (~27GB) on GPU. Critical for
 # 27B model on 140GB GPUs where weights+optimizer would otherwise OOM.
@@ -204,8 +210,13 @@ GRPO_ARGS=(
   --advantage-estimator "${ADVANTAGE_ESTIMATOR}"
   --entropy-coef "${ENTROPY_COEF}"
   --eps-clip "${EPS_CLIP}"
-  --eps-clip-high "${EPS_CLIP_HIGH}"
+  --kl-loss-coef "${KL_LOSS_COEF:-0.00}"
+  --kl-loss-type "${KL_LOSS_TYPE:-low_var_kl}"
+  --kl-coef "${KL_COEF:-0.00}"
 )
+if [[ -n "${EPS_CLIP_HIGH:-}" ]]; then
+  GRPO_ARGS+=(--eps-clip-high "${EPS_CLIP_HIGH}")
+fi
 if is_true "${USE_OPD:-false}"; then
   GRPO_ARGS+=(--use-opd --opd-type "${OPD_TYPE:-sglang}" --opd-kl-coef "${OPD_KL_COEF:-1.0}")
 fi
@@ -273,6 +284,20 @@ if is_true "${SGLANG_ENABLE_PREFIX_CACHING:-true}"; then
   SGLANG_ARGS+=(--sglang-enable-prefix-caching)
 fi
 
+# Mamba/GDN scheduler strategy: official Qwen3.5-27B uses extra_buffer to
+# avoid illegal memory access in mamba_pool allocation.
+SGLANG_ARGS+=(--sglang-mamba-scheduler-strategy "${SGLANG_MAMBA_SCHEDULER_STRATEGY:-extra_buffer}")
+
+# EAGLE speculative decoding: official Qwen3.5-27B uses EAGLE for faster decode.
+if [[ -n "${SGLANG_SPECULATIVE_ALGORITHM:-}" ]]; then
+  SGLANG_ARGS+=(
+    --sglang-speculative-algorithm "${SGLANG_SPECULATIVE_ALGORITHM}"
+    --sglang-speculative-num-steps "${SGLANG_SPECULATIVE_NUM_STEPS:-3}"
+    --sglang-speculative-eagle-topk "${SGLANG_SPECULATIVE_EAGLE_TOPK:-1}"
+    --sglang-speculative-num-draft-tokens "${SGLANG_SPECULATIVE_NUM_DRAFT_TOKENS:-4}"
+  )
+fi
+
 # Router policy: how the SGLang router distributes requests across engines.
 #   cache_aware (sglang default) — greedy per-request prefix match; under high
 #                     concurrency it scatters one session's turns across
@@ -298,9 +323,14 @@ SGLANG_ARGS+=(--router-policy "${SGLANG_ROUTER_POLICY:-manual}")
 # When on, --rollout-num-gpus is ignored (auto = actor GPUs) and --offload is
 # forced by the trainer. Set SLIME_COLOCATE=1 to enable.
 COLOCATE_ARGS=()
+ROLLOUT_NUM_GPUS_ARG=""
 if is_true "${SLIME_COLOCATE:-false}"; then
   COLOCATE_ARGS=(--colocate)
-  echo "  Colocate: ON (train+rollout share ${ACTOR_NUM_GPUS_PER_NODE} GPUs)"
+  # In colocate mode, --rollout-num-gpus is auto-set to actor GPUs.
+  # Don't pass it (matches official Qwen3.5-27B script).
+  echo "  Colocate: ON (train+rollout share all actor GPUs)"
+else
+  ROLLOUT_NUM_GPUS_ARG="--rollout-num-gpus ${ROLLOUT_NUM_GPUS}"
 fi
 
 RAY_RUNTIME_PYTHONPATH="${SLIME_HOME}:${AIEVOBOX_ROOT}/rl:${AIEVOBOX_ROOT}:${MEGATRON_HOME}"
@@ -354,8 +384,8 @@ RUNTIME_ENV_JSON="{\
     \"NCCL_IB_DISABLE\": \"${NCCL_IB_DISABLE:-1}\",\
     \"NCCL_NET\": \"${NCCL_NET:-Socket}\",\
     \"NCCL_SOCKET_IFNAME\": \"${NCCL_SOCKET_IFNAME:-bond0}\",\
-    \"PYTORCH_CUDA_ALLOC_CONF\": \"${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}\",\
-    \"PYTORCH_ALLOC_CONF\": \"${PYTORCH_ALLOC_CONF:-expandable_segments:True}\",\
+    \"PYTORCH_CUDA_ALLOC_CONF\": \"${PYTORCH_CUDA_ALLOC_CONF}\",\
+    \"PYTORCH_ALLOC_CONF\": \"${PYTORCH_ALLOC_CONF}\",\
     \"TRAJ_TRUNCATION_MAX_SEQ_LEN\": \"${TRAJ_TRUNCATION_MAX_SEQ_LEN:-8192}\"\
   }\
 }"
@@ -397,7 +427,7 @@ fi
   -- "${PYTHON_BIN}" "${TRAIN_ENTRYPOINT}" \
   --actor-num-nodes "${ACTOR_NUM_NODES}" \
   --actor-num-gpus-per-node "${ACTOR_NUM_GPUS_PER_NODE}" \
-  --rollout-num-gpus "${ROLLOUT_NUM_GPUS}" \
+  ${ROLLOUT_NUM_GPUS_ARG} \
   "${MODEL_ARGS[@]}" \
   "${MEGATRON_ARGS[@]}" \
   "${CKPT_ARGS[@]}" \

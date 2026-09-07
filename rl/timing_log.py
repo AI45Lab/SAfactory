@@ -28,6 +28,17 @@ def _resolve_path() -> str:
     if override:
         return override
     log_root = os.environ.get("LOG_ROOT", "").strip() or "/tmp"
+    # Prefer the current run directory (written by run_slime_generator.sh /
+    # run_buffer_server.sh) so timing events are per-run instead of
+    # accumulating in a single root-level file.
+    current_run_file = os.path.join(log_root, ".current_run")
+    try:
+        with open(current_run_file, "r") as f:
+            run_dir = f.read().strip()
+        if run_dir and os.path.isdir(run_dir):
+            return os.path.join(run_dir, _DEFAULT_LOG_NAME)
+    except Exception:
+        pass
     return os.path.join(log_root, _DEFAULT_LOG_NAME)
 
 
