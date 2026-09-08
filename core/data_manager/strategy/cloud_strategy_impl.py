@@ -298,8 +298,8 @@ class CloudStrategy(StorageStrategy):
     """
     Cloud DAO for environment config rows and LandingTable session-step rows.
 
-    Callers provide complete logical rows. Image externalization is deliberately
-    kept at the surrounding data-manager boundary, before rows reach this DAO.
+    Callers provide complete logical rows. Message content, including inline
+    image data, is persisted without image-specific preprocessing.
     """
 
     def __init__(
@@ -1283,6 +1283,8 @@ class CloudStrategy(StorageStrategy):
                 if item.get("type") == "image_url":
                     image_path = self.extract_image_path(item)
                     if image_path:
+                        if isinstance(image_path, str) and image_path.startswith("data:image/"):
+                            continue
                         try:
                             image_base64, media_type = self.download_image_as_base64(image_path)
                             item.clear()
