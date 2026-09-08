@@ -32,6 +32,7 @@ from slime.utils.types import Sample
 
 import llm_proxy as _llm_proxy_module
 from trajectory_mask_builder import TrajectoryMaskBuilder
+from chat_template_adapter import create_adapter
 from opd.teacher_log_probs import attach_teacher_log_probs
 
 from timing_log import emit as _timing_emit, now_s as _timing_now
@@ -212,14 +213,19 @@ def _init_llm_proxy_server(args):
     except Exception:
         processor = None
 
-    # 3. TrajectoryMaskBuilder
-    TRAJECTORY_MASK_BUILDER = TrajectoryMaskBuilder(TOKENIZER, processor)
+    # 3. Chat template adapter (model-specific normalization / tool-call parsing)
+    adapter_type = os.environ.get("LOSS_MASK_TYPE", "")
+    _chat_adapter = create_adapter(adapter_type, TOKENIZER, processor)
 
-    # 4. Wire into llm_proxy module STATE (shared in-process)
+    # 4. TrajectoryMaskBuilder (uses the adapter for message rendering)
+    TRAJECTORY_MASK_BUILDER = TrajectoryMaskBuilder(TOKENIZER, processor, adapter=_chat_adapter)
+
+    # 5. Wire into llm_proxy module STATE (shared in-process)
     state = _llm_proxy_module.STATE
     state.tokenizer = TOKENIZER
     state.processor = processor
     state.trajectory_mask_builder = TRAJECTORY_MASK_BUILDER
+    state.chat_template_adapter = _chat_adapter
 
     remote_engine_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     state.remote_engine_url = remote_engine_url
@@ -296,15 +302,15 @@ def _get_record_training_info(record: Dict[str, Any]) -> Dict[str, Any]:
     oai_messages = record["messages"]
     session_id = record["extra_info"].get("session_id", "")
     # Re-apply the SAME normalization llm_proxy applied at generation time
-    # (tool_call.arguments: JSON string -> dict; content: None/missing -> "").
+    # (e.g. Qwen: tool_call.arguments JSON string -> dict; content None -> "").
     # The mask builder's in-memory session tree stores NORMALIZED messages
-    # (prepare_generate_input is called after _normalize_messages_for_qwen_template
-    # in llm_proxy.proxy_chat_completions). The DB, however, stores the raw OpenAI
-    # format (arguments as JSON string, content possibly null). Without
+    # (prepare_generate_input is called after adapter.normalize_messages
+    # in llm_proxy.proxy_chat_completions). The DB, however, stores the raw
+    # OpenAI format (arguments as JSON string, content possibly null). Without
     # re-normalizing here, _message_matches compares dict-arguments vs
     # JSON-string-arguments (and "" vs None content) -> matched=0 for every
     # session -> 0 trainable groups -> no training -> weight_version stuck at 1.
-    oai_messages = _llm_proxy_module._normalize_messages_for_qwen_template(oai_messages)
+    oai_messages = _llm_proxy_module.STATE.chat_template_adapter.normalize_messages(oai_messages)
     tokens, response_mask, _image_data, messages_str, mm_train_inputs = TRAJECTORY_MASK_BUILDER.get_training_info(
         session_id,
         oai_messages,

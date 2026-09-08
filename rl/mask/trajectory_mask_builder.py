@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -6,19 +7,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from qwen_vl_utils import process_vision_info
 from slime.utils.processing_utils import encode_image_for_rollout_engine
 
+from chat_template_adapter import BASE_CHAT_HISTORY, ChatTemplateAdapter, create_adapter
+
 
 logger = logging.getLogger(__name__)
 THINK_BLOCK_RE = re.compile(r"\s*<think>.*?</think>\s*", re.DOTALL)
-
-BASE_CHAT_HISTORY = [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "I am a user."},
-]
-
-# 用于渲染 system 消息片段的 user-only 基底（不含 system，避免触发 Qwen3.5/3.6
-# 模板的 "system must be at the beginning" 检查；同时提供 user 消息，避免触发
-# "No user query found in messages." 检查）。
-_USER_ONLY_BASE = [{"role": "user", "content": "I am a user."}]
 
 
 @dataclass
@@ -44,16 +37,14 @@ class PreparedPrompt:
 
 
 class TrajectoryMaskBuilder:
-    def __init__(self, tokenizer, processor: Any = None) -> None:
+    def __init__(self, tokenizer, processor: Any = None, adapter: Optional[ChatTemplateAdapter] = None) -> None:
         self.tokenizer = tokenizer
         self.processor = processor
         self.session_roots: Dict[str, MessageNode] = {}
-        self._user_suffix_str: Optional[str] = None
-        self.base_messages_str = self.tokenizer.apply_chat_template(
-            BASE_CHAT_HISTORY,
-            add_generation_prompt=False,
-            tokenize=False,
+        self.adapter = adapter or create_adapter(
+            os.environ.get("LOSS_MASK_TYPE", ""), tokenizer, processor
         )
+        self.base_messages_str = self.adapter.base_messages_str
         self.generation_tokens = self._init_generation_tokens()
         self.suffix = self._init_suffix_tokens()
 
@@ -229,79 +220,17 @@ class TrajectoryMaskBuilder:
         }
         return list(input_ids), mm_train_inputs
 
-    def _get_user_suffix_str(self) -> str:
-        # The rendered form of a single user message "I am a user." as it
-        # appears AFTER a system message, i.e. `<|im_start|>user\nI am a user.<|im_end|>\n`.
-        # Used to strip the trailing user message when rendering a standalone
-        # system message (Qwen's template guards require a user message to be
-        # present, so we render [system, user] and strip the user suffix).
-        # NB: render([user]) alone injects a synthetic default system block
-        # (with reasoning instructions) before the user, so it is NOT a clean
-        # suffix — compute it from BASE_CHAT_HISTORY + [user] instead.
-        if self._user_suffix_str is None:
-            full = self.tokenizer.apply_chat_template(
-                BASE_CHAT_HISTORY + [{"role": "user", "content": "I am a user."}],
-                add_generation_prompt=False,
-                tokenize=False,
-            )
-            if not full.startswith(self.base_messages_str):
-                raise ValueError("failed to extract user-suffix template fragment")
-            self._user_suffix_str = full[len(self.base_messages_str):]
-        return self._user_suffix_str
+    def _render_message_delta_str(self, model_input_message: Dict[str, Any]) -> str:
+        """Render a single message's template fragment via the adapter."""
+        return self.adapter.render_message_delta(model_input_message)
 
     def _render_first_system_delta_str(
         self,
         model_input_message: Dict[str, Any],
         tools: List[Dict[str, Any]],
     ) -> str:
-        # Render the session's first system message WITH tools so the template's
-        # `<tools>...</tools>` system block (and reasoning instructions) land in
-        # the recorded input_ids, matching what sglang renders for the rollout
-        # prompt. Used only for the first system message of a session; other
-        # messages use _render_message_delta_str.
-        #
-        # Qwen3.5/3.8 template guards require a user message, so we render
-        # [system_msg, user_base] with tools and strip the clean user suffix
-        # (see _get_user_suffix_str).
-        user_suffix = self._get_user_suffix_str()
-        with_msg = self.tokenizer.apply_chat_template(
-            [model_input_message] + _USER_ONLY_BASE,
-            tools=tools,
-            add_generation_prompt=False,
-            tokenize=False,
-        )
-        if not with_msg.endswith(user_suffix):
-            raise ValueError("failed to extract first-system-message template fragment")
-        return with_msg[: len(with_msg) - len(user_suffix)]
-
-    def _render_message_delta_str(self, model_input_message: Dict[str, Any]) -> str:
-        # Qwen3.5/3.6 chat template 有两个硬检查：
-        #   1) system 消息必须在 index 0，否则 "System message must be at the beginning."
-        #   2) 必须存在 user 消息，否则 "No user query found in messages."
-        # BASE_CHAT_HISTORY 本身以 system 开头，若把 agent 发来的 system 消息
-        # 再拼到 BASE_CHAT_HISTORY 后面会得到 [system, user, system] 触发 (1)；
-        # 而单独渲染 [system] 又会触发 (2)。
-        # 因此对 system 消息，渲染 [system, user_base] 再裁掉 user_base 部分，
-        # 得到 system 片段（system 在 index 0，且有 user，两个检查都满足）。
-        if model_input_message.get("role") == "system":
-            user_suffix = self._get_user_suffix_str()
-            with_msg = self.tokenizer.apply_chat_template(
-                [model_input_message] + _USER_ONLY_BASE,
-                add_generation_prompt=False,
-                tokenize=False,
-            )
-            if not with_msg.endswith(user_suffix):
-                raise ValueError("failed to extract system-message template fragment")
-            return with_msg[: len(with_msg) - len(user_suffix)]
-
-        single_message_chat_template_str = self.tokenizer.apply_chat_template(
-            BASE_CHAT_HISTORY + [model_input_message],
-            add_generation_prompt=False,
-            tokenize=False,
-        )
-        if not single_message_chat_template_str.startswith(self.base_messages_str):
-            raise ValueError("failed to extract single-message template fragment")
-        return single_message_chat_template_str[len(self.base_messages_str) :]
+        """Render the first system message WITH tools via the adapter."""
+        return self.adapter.render_first_system_delta(model_input_message, tools)
 
     def _build_mm_train_inputs_for_images(self, images: List[Any]) -> Optional[Dict[str, Any]]:
         if self.processor is None or not images:
@@ -523,13 +452,12 @@ class TrajectoryMaskBuilder:
             session_id,
             messages,
         )
-        # Qwen3.5/3.8 chat template injects a `<tools>...</tools>` system block
+        # Some models (e.g. Qwen) inject a `<tools>...</tools>` system block
         # only into the FIRST system message of the rendered prompt. To get it
         # into the recorded input_ids (so the training mask aligns with what
         # sglang actually rendered), render the session's first system message
-        # standalone WITH tools; every other message uses the normal delta
-        # (deltas are identical with/without tools — verified empirically).
-        first_tools = tools if (matched == 0 and not node.children) else None
+        # standalone WITH tools; every other message uses the normal delta.
+        first_tools = tools if (matched == 0 and not node.children and self.adapter.needs_tools_on_first_system_only()) else None
         for idx, message in enumerate(messages[matched:]):
             msg_tools = first_tools if (idx == 0 and first_tools is not None and message.get("role") == "system") else None
             node, model_input_messages, messages_str, tokens, images, image_data = self._add_prompt_message(
