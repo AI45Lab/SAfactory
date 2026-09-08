@@ -305,6 +305,8 @@ class SimulationFlow:
             db_url=self.cfg.db_url,
             storage_type=self.cfg.storage_type,
             data_manager=self.data_manager,
+            gateway_client=self.gateway_client,
+            llm_model=self.cfg.llm_model,
         )
         evaluation_service = None
         if self.cfg.evaluation_enabled:

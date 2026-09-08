@@ -137,20 +137,20 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
     parser.add_argument(
         "--gateway-close-timeout-s",
         type=float,
-        default=15.0,
-        help="HTTP timeout for gateway session close requests.",
+        default=120.0,
+        help="Total timeout for polling gateway session close completion.",
     )
     parser.add_argument(
         "--gateway-close-retries",
         type=int,
         default=1,
-        help="Retry count for gateway session close requests.",
+        help="Deprecated compatibility option; close polling is bounded by --gateway-close-timeout-s.",
     )
     parser.add_argument(
         "--gateway-close-retry-backoff-s",
         type=float,
-        default=1.0,
-        help="Backoff between gateway session close retries.",
+        default=10.0,
+        help="Initial backoff for gateway session close retries (capped at 40 seconds).",
     )
     parser.add_argument(
         "--shutdown-timeout-s",

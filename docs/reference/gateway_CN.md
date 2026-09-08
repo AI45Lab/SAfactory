@@ -52,7 +52,9 @@ Gateway 默认将服务日志写入 `logs/gateway.log`。可以用 `SAFACTORY_GA
 | `POST /v1/sessions/{session_id}/chat/completions` | Session 级 chat completions，是 agent runtime 主要使用的端点。 |
 | `POST /v1/sessions/{session_id}/responses` | Session 级 responses 端点。 |
 | `GET /v1/sessions/{session_id}` | 查看 gateway session 状态。 |
-| `POST /v1/sessions/{session_id}/close` | soft-close session，并写入 close telemetry。 |
+| `POST /v1/sessions/{session_id}/close` | 发起或轮询 session close；`closing` 响应包含 `Retry-After`。 |
+| `GET /v1/sessions/{session_id}/latest-success-step?model=...` | 返回该 session/model 已观测到的最大 HTTP 200 step ID。 |
+| `POST /v1/sessions/{session_id}/clean` | 幂等清理 closed session 的 Gateway 内存状态。 |
 
 Session 级请求会把轨迹行关联到 Safactory 的 `session_id`。
 
@@ -129,8 +131,12 @@ request_log:
 1. Agent runtime 从 `launcher.py` 收到 `SimulationStartRequest`。
 2. Runtime 调用 `POST /v1/sessions/{session_id}/chat/completions` 或 `/responses`。
 3. Gateway 解析 session，尽量绑定到环境行，路由请求并写入 telemetry。
-4. Rollout 结束后，`launcher.py` 调用 `POST /v1/sessions/{session_id}/close` 关闭 gateway session。
-5. Gateway 将最新轨迹行标记完成，并写入 close event。
+4. Rollout 结束后，`launcher.py` 调用 `POST /v1/sessions/{session_id}/close`；Gateway 在内存中把 session 标为 `closing`，拒绝新的 admission，并返回 HTTP 200 和 `Retry-After: 10`。
+5. Launcher 按指数退避轮询，直到 Gateway 排空在途请求并刷新 telemetry 后返回 `closed`，或达到总超时；两种情况都会继续 evaluation。
+6. Reward commit 使用 launcher 的 model 查询 `latest-success-step`，按 session/model/step 读取 DB；目标行不可见时按 10 秒间隔重试三次，之后降级为只选 `meta_json.status_code` 为 200 的最大 step。
+7. Reward commit 完成且环境行 `finished` 更新成功后，Manager 调用 `clean`，释放该 session 在 Resolver、Telemetry 和 Storage 中的缓存。
+
+Gateway 侧由 `session_close_timeout_s`（默认 `90`）和 `session_close_retry_after_s`（默认 `10`）控制关闭时序。Close 协调状态只保存在内存中。
 
 如果 `max_steps` 为非负数，模型在该 session 中达到步数上限后，gateway 会返回 synthetic stop。
 
