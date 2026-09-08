@@ -22,6 +22,9 @@ class GatewaySessionBinding:
     first_seen_at: datetime | None = None
     closed_at: datetime | None = None
     close_reason: str | None = None
+    close_completion_mode: str | None = None
+    close_drained: bool | None = None
+    close_telemetry_status: str | None = None
     llm_step_count: int = 0
     truncated: bool = False
     truncate_reason: str | None = None
@@ -34,6 +37,23 @@ class GatewaySessionBinding:
         self.status = "closed"
         self.closed_at = closed_at
         self.close_reason = reason
+        self.last_seen_at = closed_at
+
+    def begin_close(self, reason: str, completion_mode: str, started_at: datetime) -> bool:
+        if self.status != "active":
+            return False
+        self.status = "closing"
+        self.close_reason = reason
+        self.close_completion_mode = completion_mode
+        self.close_telemetry_status = "pending"
+        self.last_seen_at = started_at
+        return True
+
+    def finish_close(self, *, drained: bool, telemetry_status: str, closed_at: datetime) -> None:
+        self.status = "closed"
+        self.closed_at = closed_at
+        self.close_drained = drained
+        self.close_telemetry_status = telemetry_status
         self.last_seen_at = closed_at
 
     def mark_truncated(self, reason: str, closed_at: datetime) -> None:

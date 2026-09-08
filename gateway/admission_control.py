@@ -44,6 +44,9 @@ class AdmissionController:
         target: LLMRouteTarget | None = None,
     ) -> AdmissionDecision:
         async with self._lock:
+            if binding.status != "active":
+                self.rejected_total += 1
+                raise AdmissionRejected(f"session is {binding.status}", 409)
             if self.draining:
                 self.rejected_total += 1
                 raise AdmissionRejected("gateway is draining", 503)

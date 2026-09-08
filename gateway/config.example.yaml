@@ -26,6 +26,10 @@ upstream_no_proxy:
   - localhost
 per_llm_route_max_concurrency: 256
 per_session_max_inflight: 64
+close_mode: soft_close
+# Close stays in memory as "closing" until telemetry is flushed or this deadline expires.
+session_close_timeout_s: 90
+session_close_retry_after_s: 10
 
 telemetry:
   mode: strict

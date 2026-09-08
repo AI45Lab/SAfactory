@@ -62,9 +62,9 @@ class SimulationRunConfig:
     container_refill_timeout_s: float = 300.0
     row_wait_timeout_s: float = 60.0
     row_fetch_timeout_s: float = 30.0
-    gateway_close_timeout_s: float = 15.0
+    gateway_close_timeout_s: float = 120.0
     gateway_close_retries: int = 1
-    gateway_close_retry_backoff_s: float = 1.0
+    gateway_close_retry_backoff_s: float = 10.0
     shutdown_timeout_s: float = 120.0
     docker_command_timeout_s: float = 300.0
     docker_start_timeout_s: float = 300.0

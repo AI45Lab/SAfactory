@@ -47,8 +47,21 @@ def is_trajectory_step(row: Dict[str, Any]) -> bool:
     return bool(_has_messages(row.get("messages")) or row.get("response"))
 
 
-def select_reward_target(rows: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    candidates = [row for row in rows if is_trajectory_step(row)]
+def select_reward_target(
+    rows: Iterable[Dict[str, Any]],
+    *,
+    step_id: int | None = None,
+    llm_model: str | None = None,
+    require_http_200: bool = False,
+) -> Optional[Dict[str, Any]]:
+    candidates = [
+        row
+        for row in rows
+        if is_trajectory_step(row)
+        and (step_id is None or int(row.get("step_id") or 0) == step_id)
+        and (not llm_model or str(row.get("llm_model") or "") == llm_model)
+        and (not require_http_200 or _status_code(row) == 200)
+    ]
     if not candidates:
         return None
     return max(candidates, key=lambda row: (
@@ -56,6 +69,14 @@ def select_reward_target(rows: Iterable[Dict[str, Any]]) -> Optional[Dict[str, A
         str(row.get("created_at") or ""),
         str(row.get("record_id") or row.get("id") or ""),
     ))
+
+
+def _status_code(row: Dict[str, Any]) -> int | None:
+    try:
+        value = metadata_from_row(row).get("status_code")
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _has_messages(value: Any) -> bool:

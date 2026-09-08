@@ -82,9 +82,9 @@ For the first smoke test, use `env/geo3k/datasets/geo3k_sample.jsonl` in a local
 | Timeout | `--container-refill-timeout-s` | `300.0` | Max time to release and replace one runtime resource. |
 | Timeout | `--row-wait-timeout-s` | `60.0` | Max time to wait for new DB rows while refilling. |
 | Timeout | `--row-fetch-timeout-s` | `30.0` | Max time for one scheduler DB fetch. |
-| Timeout | `--gateway-close-timeout-s` | `15.0` | HTTP timeout for gateway close calls. |
-| Timeout | `--gateway-close-retries` | `1` | Retry count for gateway close calls. |
-| Timeout | `--gateway-close-retry-backoff-s` | `1.0` | Backoff between gateway close retries. |
+| Timeout | `--gateway-close-timeout-s` | `120.0` | Total timeout for polling gateway close completion. |
+| Timeout | `--gateway-close-retries` | `1` | Deprecated compatibility option; close polling is bounded by its total timeout. |
+| Timeout | `--gateway-close-retry-backoff-s` | `10.0` | Initial gateway close retry backoff (capped at 40 seconds). |
 | Timeout | `--shutdown-timeout-s` | `120.0` | Max launcher shutdown time. |
 | Docker timeout | `--docker-command-timeout-s` | `300.0` | Default Docker lifecycle command timeout. |
 | Docker timeout | `--docker-start-timeout-s` | `300.0` | Docker run/copy startup timeout. |
@@ -118,6 +118,8 @@ See [Gateway](gateway.md) for full details. The fields most often changed are:
 listen_port: 8000
 base_session_path: /v1/sessions
 max_steps: -1
+session_close_timeout_s: 90
+session_close_retry_after_s: 10
 storage_type: sqlite
 storage_config:
   db_url: sqlite://env_trajs.db

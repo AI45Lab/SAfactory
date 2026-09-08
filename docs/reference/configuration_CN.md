@@ -82,9 +82,9 @@ python launcher.py \
 | Timeout | `--container-refill-timeout-s` | `300.0` | 释放并补充一个运行时资源的最大时间。 |
 | Timeout | `--row-wait-timeout-s` | `60.0` | refill 时等待新增 DB 行的最大时间。 |
 | Timeout | `--row-fetch-timeout-s` | `30.0` | 单次 scheduler DB fetch 最大时间。 |
-| Timeout | `--gateway-close-timeout-s` | `15.0` | Gateway close 调用 HTTP 超时。 |
-| Timeout | `--gateway-close-retries` | `1` | Gateway close 重试次数。 |
-| Timeout | `--gateway-close-retry-backoff-s` | `1.0` | Gateway close 重试间隔。 |
+| Timeout | `--gateway-close-timeout-s` | `120.0` | 轮询 Gateway close 完成状态的总超时。 |
+| Timeout | `--gateway-close-retries` | `1` | 已弃用的兼容参数；close 轮询由总超时控制。 |
+| Timeout | `--gateway-close-retry-backoff-s` | `10.0` | Gateway close 初始重试退避（最高 40 秒）。 |
 | Timeout | `--shutdown-timeout-s` | `120.0` | Launcher shutdown 最大时间。 |
 | Docker timeout | `--docker-command-timeout-s` | `300.0` | 默认 Docker 生命周期命令超时。 |
 | Docker timeout | `--docker-start-timeout-s` | `300.0` | Docker run/copy 启动超时。 |
@@ -118,6 +118,8 @@ python launcher.py \
 listen_port: 8000
 base_session_path: /v1/sessions
 max_steps: -1
+session_close_timeout_s: 90
+session_close_retry_after_s: 10
 storage_type: sqlite
 storage_config:
   db_url: sqlite://env_trajs.db

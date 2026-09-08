@@ -4,7 +4,6 @@ import time
 from typing import Optional, List, Dict, Any
 
 from core.data_manager.contracts import EnvironmentQuery, SessionContext, SessionStepQuery
-from core.data_manager.image_processing import MessageImageProcessor
 from core.data_manager.strategy.base_strategy import StorageStrategy
 from core.data_manager.strategy_factory import StorageFactory
 
@@ -25,7 +24,6 @@ class DataManager:
         self.job_id = job_id
         self.storage_type = storage_type
         self._strategy: StorageStrategy
-        self._image_processor: Optional[MessageImageProcessor] = None
 
         try:
             log.debug("Initializing DataManager with strategy: %r", storage_type)
@@ -50,11 +48,6 @@ class DataManager:
     async def init(self) -> None:
         """Initialize the storage strategy"""
         await self._strategy.init()
-        if self.storage_type == "cloud" and self._image_processor is None:
-            self._image_processor = MessageImageProcessor(
-                job_id=self.job_id,
-                uploader=getattr(self._strategy, "s3_uploader", None),
-            )
 
     @property
     def backend_name(self) -> str:
@@ -292,16 +285,12 @@ class DataManager:
         rows: List[Dict[str, Any]],
     ) -> List[str]:
         """Insert fully constructed logical rows through the configured DAO."""
-        if self.storage_type == "cloud" and self._image_processor is None:
-            await self.init()
         normalized: List[Dict[str, Any]] = []
         for row in rows:
             item = dict(row)
             item["job_id"] = str(item.get("job_id") or self.job_id)
             item["meta_json"] = _metadata_object(item.get("meta_json"))
             normalized.append(item)
-        if self._image_processor is not None:
-            normalized = await self._image_processor.process_rows(normalized)
         return await self._strategy.insert_session_step_rows(normalized)
 
     async def mark_records_completed(self, record_ids: List[str]) -> int:
@@ -429,7 +418,6 @@ class DataManager:
     async def close(self) -> None:
         """Close the storage strategy"""
         await self._strategy.close()
-        self._image_processor = None
     
     async def fetch_done_steps_with_context(
         self,

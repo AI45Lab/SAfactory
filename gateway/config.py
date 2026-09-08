@@ -54,6 +54,8 @@ class GatewayConfig:
     session_cache_ttl_s: int = 1800
     close_mode: str = "soft_close"
     drain_timeout_s: int = 30
+    session_close_timeout_s: float = 90.0
+    session_close_retry_after_s: int = 10
     storage_type: str = "sqlite"
     storage_config: dict[str, Any] | None = None
     llm_routes: dict[str, LLMRouteConfig] | None = None
@@ -95,6 +97,10 @@ class GatewayConfig:
             raise ValueError("request_log_backup_count must be non-negative")
         if self.request_log_body_limit_bytes < 0:
             raise ValueError("request_log_body_limit_bytes must be non-negative")
+        if self.session_close_timeout_s <= 0:
+            raise ValueError("session_close_timeout_s must be positive")
+        if self.session_close_retry_after_s <= 0:
+            raise ValueError("session_close_retry_after_s must be positive")
 def load_gateway_config(path: str | None = None) -> GatewayConfig:
     file_data = _load_file(path) if path else {}
     cfg = _dict_to_config(file_data)

@@ -1,0 +1,10 @@
+environments:
+  - env_name: agentcompass
+    env_image: safactory-agentcompass:h-dev
+    env_num: 1
+    dataset: ./datasets/agentcompass_diagnostic.jsonl
+    dataset_load_mode: eager
+
+    env_params:
+      task_family: agentcompass
+      results_root: /app/results
