@@ -17,7 +17,6 @@ import copy
 import json
 import logging
 import os
-import re
 import sys
 import time
 from logging.handlers import RotatingFileHandler
@@ -74,105 +73,10 @@ if MASK_DIR not in sys.path:
     sys.path.insert(0, MASK_DIR)
 
 from trajectory_mask_builder import PreparedPrompt, TrajectoryMaskBuilder
+from chat_template_adapter import create_adapter
 
 app = FastAPI(title="LLM Proxy Server", debug=True)
 
-
-# Qwen3.5/3.8 emit tool calls as *text* using the chat-template's
-# `<function=NAME>...<parameter=KEY>VALUE</parameter>...</function>` format,
-# wrapped in special tool-call delimiter tokens (e.g. `<|tool_call_begin|>`/
-# `<|tool_call_end|>`). OpenHands, however, goes through litellm's `openai/`
-# provider and only executes a tool when the response carries a structured
-# OpenAI `tool_calls` field. Without conversion the agent emits one tool
-# call as plain text, OpenHands ignores it, and the agent stops after a
-# single turn (no patch, reward 0).
-#
-# This parser extracts `<function=...>` blocks from the raw model text and
-# converts them into OpenAI `tool_calls` so OpenHands can execute them. The
-# raw `assistant_text` is still what gets recorded into the training
-# trajectory (see record_generation call below), so RL training data is
-# unaffected — this conversion only shapes the response handed back to the
-# agent.
-_FUNCTION_BLOCK_RE = re.compile(r"<function=(\w+)>(.*?)</function>", re.DOTALL)
-_PARAM_BLOCK_RE = re.compile(r"<parameter=(\w+)>(.*?)</parameter>", re.DOTALL)
-# Trailing tool-call delimiter token (a `<...>` tag) right before the first
-# `<function=` — stripped from the reasoning content we return.
-_TRAILING_TAG_RE = re.compile(r"\s*<[^>]*>\s*$")
-
-
-def _parse_qwen_tool_calls(assistant_text: str):
-    """Convert Qwen text-format tool calls in `assistant_text` into OpenAI
-    `tool_calls`. Returns (content, tool_calls, finish_reason):
-      - content: reasoning text with tool-call blocks removed (None if empty)
-      - tool_calls: list of OpenAI tool_call dicts, or None if none found
-      - finish_reason: "tool_calls" if any, else unchanged (caller decides)
-    """
-    blocks = list(_FUNCTION_BLOCK_RE.finditer(assistant_text))
-    if not blocks:
-        return assistant_text, None, None
-
-    tool_calls = []
-    for idx, blk in enumerate(blocks):
-        name = blk.group(1)
-        args = {}
-        for p in _PARAM_BLOCK_RE.finditer(blk.group(2)):
-            args[p.group(1)] = p.group(2).strip("\n")
-        tool_calls.append({
-            "id": f"call_{idx}",
-            "type": "function",
-            "function": {
-                "name": name,
-                "arguments": json.dumps(args, ensure_ascii=False),
-            },
-        })
-
-    # Content = text before the first tool-call block, with the trailing
-    # tool-call delimiter tag stripped. Text between/after blocks is just
-    # delimiter noise, discard it.
-    content = assistant_text[: blocks[0].start()]
-    content = _TRAILING_TAG_RE.sub("", content).strip()
-    return (content or None), tool_calls, "tool_calls"
-
-
-def _normalize_messages_for_qwen_template(messages):
-    """Normalize OpenAI-format messages so the Qwen3.5/3.8 chat template can
-    render them. The template iterates tool_call.arguments via the `items`
-    filter, so each tool_call's arguments must be a dict; litellm/openai send
-    arguments as a JSON string, which makes `items` raise "Can only get item
-    pairs from a mapping". Parse it back to a dict. Also coerces non-string
-    `content` to a string (the template calls content.startswith/endswith).
-    Mutates messages in place and returns them.
-    """
-    for msg in messages or []:
-        if not isinstance(msg, dict):
-            continue
-        tool_calls = msg.get("tool_calls")
-        if isinstance(tool_calls, list):
-            for tc in tool_calls:
-                if not isinstance(tc, dict):
-                    continue
-                fn = tc.get("function")
-                if not isinstance(fn, dict):
-                    continue
-                args = fn.get("arguments")
-                if isinstance(args, str):
-                    try:
-                        fn["arguments"] = json.loads(args) if args else {}
-                    except (json.JSONDecodeError, ValueError):
-                        fn["arguments"] = {"_raw": args}
-        content = msg.get("content")
-        if content is None:
-            # OpenAI allows assistant messages with tool_calls to omit content
-            # (or set it to null). The Qwen chat template and qwen_vl_utils'
-            # extract_vision_info both access message["content"] directly
-            # (not .get), so a missing key raises KeyError. Default to "".
-            msg["content"] = ""
-        elif not isinstance(content, str):
-            try:
-                msg["content"] = json.dumps(content, ensure_ascii=False)
-            except Exception:
-                msg["content"] = str(content)
-    return messages
 
 
 def _resolve_proxy_workers() -> int:
@@ -209,6 +113,7 @@ class ProxyState:
         self.tokenizer = None
         self.processor: Optional[Any] = None
         self.trajectory_mask_builder: Optional[TrajectoryMaskBuilder] = None
+        self.chat_template_adapter = None  # type: ignore[type-arg]
         self.remote_engine_url: Optional[str] = None  # Base URL without /v1
         self._http_client: Optional[httpx.AsyncClient] = None
         self._builder_executor: Optional[ThreadPoolExecutor] = None
@@ -292,10 +197,9 @@ async def proxy_chat_completions(request: Request):
     # a patch. Forward them to the mask builder so the prompt (and thus the
     # recorded trajectory) includes the tools system block.
     tools = payload.get("tools")
-    # Normalize OpenAI tool_calls (arguments as JSON string) and non-string
-    # content so the Qwen chat template can render them; otherwise the
-    # template's `items` filter raises "Can only get item pairs from a mapping".
-    messages = _normalize_messages_for_qwen_template(messages)
+    # Normalize messages via the chat template adapter (e.g. Qwen needs
+    # tool_calls.arguments as dict and content as string).
+    messages = STATE.chat_template_adapter.normalize_messages(messages)
 
     # Get sampling params from payload or use defaults
     temperature = payload.get("temperature", STATE.temperature)
@@ -404,10 +308,9 @@ async def proxy_chat_completions(request: Request):
     # Get assistant_text from generate API response (already decoded)
     assistant_text = resp_json.get("text", "")
 
-    # Convert Qwen text-format tool calls into OpenAI `tool_calls` so OpenHands
-    # executes them. Without this the agent stops after one turn (see
-    # _parse_qwen_tool_calls docstring).
-    msg_content, tool_calls, tool_finish = _parse_qwen_tool_calls(assistant_text)
+    # Convert model text-format tool calls into OpenAI `tool_calls` so
+    # OpenHands executes them (e.g. Qwen emits <function=...> as text).
+    msg_content, tool_calls, tool_finish = STATE.chat_template_adapter.parse_tool_calls(assistant_text)
     if tool_calls:
         message_obj = {"role": "assistant", "content": msg_content, "tool_calls": tool_calls}
         resp_finish_reason = tool_finish
@@ -415,15 +318,13 @@ async def proxy_chat_completions(request: Request):
         message_obj = {"role": "assistant", "content": assistant_text}
         resp_finish_reason = finish_reason
 
-    # Save trajectory. Pass a NORMALIZED copy of message_obj (tool_calls
-    # arguments as dict, content as string) so the trie stores the same
-    # message format as the DB after _normalize_messages_for_qwen_template.
-    # The raw assistant_text is still used for token/mask computation.
-    # We normalize a COPY so the response sent to OpenHands keeps string
-    # arguments (OpenAI spec requires JSON string, not dict).
+    # Save trajectory. Pass a NORMALIZED copy of message_obj so the trie
+    # stores the same message format as the DB after normalization. The raw
+    # assistant_text is still used for token/mask computation. We normalize a
+    # COPY so the response sent to OpenHands keeps the original format.
     if STATE.trajectory_mask_builder is not None:
         try:
-            trie_msg = _normalize_messages_for_qwen_template(
+            trie_msg = STATE.chat_template_adapter.normalize_messages(
                 [copy.deepcopy(message_obj)]
             )[0]
             await loop.run_in_executor(
