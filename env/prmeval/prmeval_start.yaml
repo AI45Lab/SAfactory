@@ -1,0 +1,29 @@
+agent_name: prmeval
+
+container:
+  # No Dockerfile is kept in SAfactory. env_image must be an externally built
+  # Python image with the prmeval wheel already installed.
+  workdir: /workspace
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-prmeval-runner.py
+    command: "python /tmp/safactory-prmeval-runner.py"
+
+  mounts:
+    - source: ./results
+      target: /workspace/Safactory/results
+      mode: rw
+    # For production datasets whose `frames` fields are paths, add a read-only
+    # media mount here and set env_params.media_root in the agent config.
+
+  env:
+    # The Gateway accepts this placeholder; do not put a provider key here.
+    OPENAI_API_KEY: EMPTY
+    PYTHONDONTWRITEBYTECODE: "1"
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
+    no_proxy: host.docker.internal,localhost,127.0.0.1,::1
+
+  extra_args:
+    - --add-host=host.docker.internal:host-gateway
+
+  idle_command: "tail -f /dev/null"

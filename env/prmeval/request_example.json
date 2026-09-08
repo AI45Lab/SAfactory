@@ -1,0 +1,32 @@
+{
+  "job_id": "prmeval-request-smoke",
+  "session_id": "local-session-001",
+  "agent_name": "prmeval",
+  "agent_id": "local-agent-001",
+  "group_id": "",
+  "gateway_base_url": "http://127.0.0.1:8000/v1/sessions",
+  "model": "YOUR_ROUTE_KEY",
+  "temperature": 0.0,
+  "max_steps": 10,
+  "agent_start_timeout_s": 600.0,
+  "storage_type": "sqlite",
+  "storage_config": {"db_url": "sqlite://env_trajs.db"},
+  "record_mode": "agent_runtime",
+  "env_params": {
+    "task_family": "prmeval",
+    "dataset": {
+      "id": "trajectory-001",
+      "task": "Move the object.",
+      "frames": [[[[0, 0, 0]]], [[[127, 127, 127]]], [[[255, 255, 255]]]],
+      "quality_label": "successful",
+      "partial_success": 1.0,
+      "target_progress": [0.0, 0.5, 1.0]
+    },
+    "prmeval": {
+      "command": "prmeval",
+      "sampling": {"base_frames": 3},
+      "infer": {"name": "openai_compatible", "options": {"keep_base_url": true}}
+    }
+  },
+  "metadata": {}
+}

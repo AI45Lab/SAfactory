@@ -1,0 +1,29 @@
+environments:
+  - env_name: prmeval
+    # This image is built outside SAfactory and must already contain the
+    # published prmeval wheel plus its runtime dependencies.
+    env_image: safactory-prmeval:0.1.0
+    env_num: 1
+    dataset: ./datasets/prmeval_smoke.jsonl
+    dataset_load_mode: eager
+
+    env_params:
+      task_family: prmeval
+      # Keep native artifacts and the SAfactory result JSON on the shared
+      # result mount declared in prmeval_start.yaml.
+      results_root: /workspace/Safactory/results
+      prmeval:
+        command: prmeval
+        dataset_name: safactory-prmeval-smoke
+        sampling:
+          base_frames: 3
+          progress_type: absolute_first_frame
+        infer:
+          name: openai_compatible
+          api_key: OPENAI_API_KEY
+          timeout_seconds: 120
+          max_retries: 0
+          options:
+            # Preserve /v1/sessions/<session_id> so PRMEval calls are
+            # recorded in the current SAfactory Gateway session.
+            keep_base_url: true
