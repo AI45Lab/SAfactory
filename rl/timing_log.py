@@ -22,6 +22,25 @@ _DEFAULT_LOG_NAME = "timing.jsonl"
 _file_handle = None
 _file_path: Optional[str] = None
 
+# Module-level enable switch. RL runs rely on timing data being on by
+# default; non-RL callers (e.g. a manually-started gateway) can opt out with
+# SAFACTORY_TIMING_LOG_ENABLED=0. set_enabled() lets a process flip it at
+# runtime (e.g. from loaded config) without touching env vars.
+_enabled = str(os.environ.get("SAFACTORY_TIMING_LOG_ENABLED", "1")).strip().lower() not in (
+    "0", "false", "no", "off",
+)
+
+
+def set_enabled(value: bool) -> None:
+    """Enable/disable timing emission for this process.
+
+    Emission is on by default (RL depends on it). Call ``set_enabled(False)``
+    to silence this process, e.g. a non-RL gateway that pulled in the module
+    but does not want per-step timing records.
+    """
+    global _enabled
+    _enabled = bool(value)
+
 
 def _resolve_path() -> str:
     override = os.environ.get("SAFACTORY_TIMING_LOG", "").strip()
@@ -64,7 +83,11 @@ def emit(event: str, **fields: Any) -> None:
     """Append one timing event as a JSON line.
 
     Never raises: logging must not affect the training/rollout process.
+    Silently drops the event when the module is disabled (see set_enabled() /
+    SAFACTORY_TIMING_LOG_ENABLED).
     """
+    if not _enabled:
+        return
     try:
         record: Dict[str, Any] = {"event": event, "ts": time.time()}
         record.update(fields)

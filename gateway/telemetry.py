@@ -18,7 +18,10 @@ from gateway.models import GatewayRequestContext, GatewaySessionBinding, Gateway
 from gateway.storage import GatewayStorage
 
 # Structured timing log (rl/timing_log.py). The gateway process does not have
-# rl/ on PYTHONPATH (only AIEVOBOX_ROOT), so add it defensively.
+# rl/ on PYTHONPATH (only AIEVOBOX_ROOT), so add it defensively. On import
+# failure fall back to a noop so call sites can emit unconditionally; the
+# on/off switch lives inside timing_log itself (set_enabled / env
+# SAFACTORY_TIMING_LOG_ENABLED), not behind a per-call guard here.
 try:
     from timing_log import emit as _timing_emit  # type: ignore
 except Exception:  # pragma: no cover - import path fixup
@@ -30,7 +33,8 @@ except Exception:  # pragma: no cover - import path fixup
     try:
         from timing_log import emit as _timing_emit  # type: ignore
     except Exception:
-        _timing_emit = None  # type: ignore
+        def _timing_emit(*_args: Any, **_kwargs: Any) -> None:  # type: ignore
+            return None
 
 log = logging.getLogger("gateway.telemetry")
 
@@ -179,24 +183,25 @@ class TelemetryRecorder:
         # actual LLM inference time (gateway -> llm_proxy -> sglang); latency_ms
         # is the end-to-end step time. Joined with the worker's episode record
         # (same session_id) to split env-startup vs rollout vs llm-inference.
-        if _timing_emit is not None:
-            _usage = response_body.get("usage") if isinstance(response_body, dict) else None
-            _usage = _usage if isinstance(_usage, dict) else {}
-            _timing_emit(
-                "llm_step",
-                session_id=binding.session_id,
-                group_id=getattr(binding, "group_id", None),
-                env_name=getattr(binding, "env_name", None),
-                model=binding.model,
-                step_index=getattr(binding, "llm_step_count", None),
-                latency_ms=latency_ms,
-                upstream_latency_ms=upstream_latency_ms,
-                ttft_ms=getattr(stream_stats, "ttft_ms", None) if stream_stats else None,
-                status_code=200,
-                prompt_tokens=_usage_int(_usage, "prompt_tokens", "input_tokens"),
-                completion_tokens=_usage_int(_usage, "completion_tokens", "output_tokens"),
-                total_tokens=_usage_int(_usage, "total_tokens"),
-            )
+        # Emission is gated inside timing_log (set_enabled / env), so call
+        # unconditionally; the noop fallback handles missing rl/ on PYTHONPATH.
+        _usage = response_body.get("usage") if isinstance(response_body, dict) else None
+        _usage = _usage if isinstance(_usage, dict) else {}
+        _timing_emit(
+            "llm_step",
+            session_id=binding.session_id,
+            group_id=getattr(binding, "group_id", None),
+            env_name=getattr(binding, "env_name", None),
+            model=binding.model,
+            step_index=getattr(binding, "llm_step_count", None),
+            latency_ms=latency_ms,
+            upstream_latency_ms=upstream_latency_ms,
+            ttft_ms=getattr(stream_stats, "ttft_ms", None) if stream_stats else None,
+            status_code=200,
+            prompt_tokens=_usage_int(_usage, "prompt_tokens", "input_tokens"),
+            completion_tokens=_usage_int(_usage, "completion_tokens", "output_tokens"),
+            total_tokens=_usage_int(_usage, "total_tokens"),
+        )
 
     async def enqueue_failure(
         self,
@@ -231,20 +236,19 @@ class TelemetryRecorder:
         )
         await self._enqueue(binding, record)
 
-        if _timing_emit is not None:
-            _timing_emit(
-                "llm_step",
-                session_id=binding.session_id,
-                group_id=getattr(binding, "group_id", None),
-                env_name=getattr(binding, "env_name", None),
-                model=binding.model,
-                step_index=getattr(binding, "llm_step_count", None),
-                latency_ms=latency_ms,
-                upstream_latency_ms=upstream_latency_ms,
-                ttft_ms=getattr(stream_stats, "ttft_ms", None) if stream_stats else None,
-                status_code=status_code,
-                error=error_text,
-            )
+        _timing_emit(
+            "llm_step",
+            session_id=binding.session_id,
+            group_id=getattr(binding, "group_id", None),
+            env_name=getattr(binding, "env_name", None),
+            model=binding.model,
+            step_index=getattr(binding, "llm_step_count", None),
+            latency_ms=latency_ms,
+            upstream_latency_ms=upstream_latency_ms,
+            ttft_ms=getattr(stream_stats, "ttft_ms", None) if stream_stats else None,
+            status_code=status_code,
+            error=error_text,
+        )
 
     async def wait_for_session_flush(self, binding: GatewaySessionBinding) -> None:
         if self._writer_tasks:
