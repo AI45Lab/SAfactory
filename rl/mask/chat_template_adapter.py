@@ -170,12 +170,13 @@ def create_adapter(
 def _autoregister() -> None:
     """Import and register built-in adapters. Called once at module load."""
     try:
+        # Try relative import first (when used as a package, e.g. rl.mask.chat_template_adapter)
         from .qwen_chat_template_adapter import QwenChatTemplateAdapter
-        register_adapter("qwen", QwenChatTemplateAdapter)
     except ImportError:
-        # Qwen adapter not available (e.g. missing qwen_vl_utils); the user
-        # can still use the base adapter for standard models.
-        logger.debug("QwenChatTemplateAdapter not available, skipping registration")
+        # Fall back to absolute import (when rl/mask/ is on sys.path and this
+        # module is imported as a top-level module, e.g. `from chat_template_adapter import ...`)
+        from qwen_chat_template_adapter import QwenChatTemplateAdapter
+    register_adapter("qwen", QwenChatTemplateAdapter)
 
 
 _autoregister()

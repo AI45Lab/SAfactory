@@ -30,7 +30,10 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from .chat_template_adapter import BASE_CHAT_HISTORY, ChatTemplateAdapter
+try:
+    from .chat_template_adapter import BASE_CHAT_HISTORY, ChatTemplateAdapter
+except ImportError:
+    from chat_template_adapter import BASE_CHAT_HISTORY, ChatTemplateAdapter
 
 # User-only base used for the system-message rendering trick.
 _USER_ONLY_BASE = [{"role": "user", "content": "I am a user."}]

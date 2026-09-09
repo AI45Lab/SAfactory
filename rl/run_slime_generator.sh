@@ -100,7 +100,14 @@ if (( RL_GROUP_SIZE <= 0 || RL_ROLLOUT_GROUP_BATCH_SIZE <= 0 || RL_GLOBAL_BATCH_
 fi
 
 if [[ -z "${AIEVOBOX_RUN_DIR:-}" ]]; then
-  export AIEVOBOX_RUN_DIR="${LOG_ROOT}/$(date +%Y%m%d-%H%M%S)"
+  # Reuse the buffer_server's run dir if it already created one (written to
+  # .current_run by run_buffer_server.sh). This keeps all logs (buffer_server,
+  # gateway, slime, timing) in the same directory.
+  if [[ -f "${LOG_ROOT}/.current_run" ]]; then
+    export AIEVOBOX_RUN_DIR="$(cat "${LOG_ROOT}/.current_run")"
+  else
+    export AIEVOBOX_RUN_DIR="${LOG_ROOT}/$(date +%Y%m%d-%H%M%S)"
+  fi
 fi
 mkdir -p "${AIEVOBOX_RUN_DIR}"
 printf '%s\n' "${AIEVOBOX_RUN_DIR}" > "${LOG_ROOT}/.current_run"
