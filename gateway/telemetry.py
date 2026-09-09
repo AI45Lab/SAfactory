@@ -475,37 +475,13 @@ class TelemetryRecorder:
                 self._ttft_count[record.requested_model] += 1
 
         if self.cfg.telemetry_mode == "strict" and not self._async_writes:
-            started = time.perf_counter()
-            log.info(
-                "Gateway telemetry strict write begin: event_type=%s request_id=%s session_id=%s seq_id=%s model=%s",
-                record.event_type,
-                record.request_id,
-                record.session_id,
-                record.seq_id,
-                record.requested_model,
-            )
             await self._write_record(binding, record)
             self.flushed_total += 1
-            log.info(
-                "Gateway telemetry strict write complete: event_type=%s request_id=%s elapsed_ms=%.2f flushed_total=%d",
-                record.event_type,
-                record.request_id,
-                (time.perf_counter() - started) * 1000,
-                self.flushed_total,
-            )
             return
 
         queue = self._queue_for_session(record.session_id)
         if self._async_writes and self.cfg.telemetry_mode == "strict":
             await queue.put((binding, record))
-            log.info(
-                "Gateway telemetry submitted: event_type=%s request_id=%s session_id=%s seq_id=%s queued=%d",
-                record.event_type,
-                record.request_id,
-                record.session_id,
-                record.seq_id,
-                self.queue_depth(),
-            )
             return
 
         policy = self.cfg.telemetry_loss_policy
@@ -526,14 +502,6 @@ class TelemetryRecorder:
 
         try:
             queue.put_nowait((binding, record))
-            log.info(
-                "Gateway telemetry queued: event_type=%s request_id=%s session_id=%s seq_id=%s queued=%d",
-                record.event_type,
-                record.request_id,
-                record.session_id,
-                record.seq_id,
-                self.queue_depth(),
-            )
         except asyncio.QueueFull:
             if policy == "drop_oldest":
                 try:
@@ -584,13 +552,6 @@ class TelemetryRecorder:
     ) -> None:
         if not batch:
             return
-        started = time.perf_counter()
-        log.info(
-            "Gateway telemetry batch write begin: writer=%d records=%d queued=%d",
-            writer_index,
-            len(batch),
-            self.queue_depth(),
-        )
         if self._async_writes:
             # A timeout around asyncio.to_thread cannot stop the underlying SDK call.
             # Fixed writers bound concurrency, so let each cloud batch finish instead
@@ -599,12 +560,6 @@ class TelemetryRecorder:
         else:
             for binding, record in batch:
                 await self._write_record(binding, record)
-        log.info(
-            "Gateway telemetry batch write complete: writer=%d records=%d elapsed_ms=%.2f",
-            writer_index,
-            len(batch),
-            (time.perf_counter() - started) * 1000,
-        )
 
     async def _write_record(
         self,
