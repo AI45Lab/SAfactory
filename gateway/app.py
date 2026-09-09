@@ -32,7 +32,7 @@ from gateway.telemetry import StreamTelemetryStats, TelemetryRecorder
 log = logging.getLogger("gateway.app")
 
 
-def _ensure_default_max_tokens(payload: dict[str, Any]) -> None:
+def _ensure_default_max_tokens(payload: dict[str, Any], default_max_tokens: int) -> None:
     """Inject a default max_tokens when the upstream client omits it.
 
     OpenHands defaults max_output_tokens to 0 ("auto-detect"), which fails for
@@ -40,23 +40,15 @@ def _ensure_default_max_tokens(payload: dict[str, Any]) -> None:
     to a tiny default (~128), truncating generation mid-tool-call
     (finish_reason=length). The gateway is the choke point for every LLM call,
     so filling a sane default here fixes it for all agents regardless of their
-    own config/env-var support. Set GATEWAY_DEFAULT_MAX_TOKENS=0 to disable.
-    Default 6144: with sglang decode ~56 tok/s on a single 27B GPU, a 16384-token
-    step takes ~290s, which far exceeds the gateway drain_timeout_s (30s) and the
-    runner close timeout, so episodes orphan at close. 6144 tokens => ~110s worst
-    case but typically much less (most steps emit a short tool call, not a long
-    monologue), keeping per-step latency within drain budget and reducing
-    orphans. The model's "overthinking" monologue (~7-9k tokens) will now hit the
-    6144 cap and be truncated (finish_reason=length) more often — this is the
-    intended trade-off: prefer a truncated-but-sealed step over a complete-but-
-    orphaned episode. RL signal is still produced (the group completes); long
-    unacted monologues are low-value anyway.
+    own config/env-var support. Set default_max_tokens<=0 (e.g.
+    GATEWAY_DEFAULT_MAX_TOKENS=0) to disable.
+    Default 32768: large enough that the model's "overthinking" monologue
+    (~7-9k tokens) is not truncated, while still capping runaway generation.
     """
     if "max_tokens" in payload or "max_completion_tokens" in payload:
         return
-    default = _safe_int(os.environ.get("GATEWAY_DEFAULT_MAX_TOKENS"), 6144)
-    if default > 0:
-        payload["max_tokens"] = default
+    if default_max_tokens > 0:
+        payload["max_tokens"] = default_max_tokens
 
 
 def _without_beta_query(query: str) -> str | None:
@@ -166,7 +158,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 payload = await request.json()
             if not isinstance(payload, dict):
                 raise ValueError("request body must be a JSON object")
-            _ensure_default_max_tokens(payload)
+            _ensure_default_max_tokens(payload, request.app.state.gateway_config.default_max_tokens)
 
             with trace.span("resolve_request"):
                 ctx = await resolver.resolve(
@@ -589,7 +581,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 payload = await request.json()
             if not isinstance(payload, dict):
                 raise ValueError("request body must be a JSON object")
-            _ensure_default_max_tokens(payload)
+            _ensure_default_max_tokens(payload, request.app.state.gateway_config.default_max_tokens)
 
             requested_model = payload.get("model")
             if not isinstance(requested_model, str) or not requested_model:

@@ -420,6 +420,8 @@ class SimulationWorkerGroup:
                         with trace.span("evaluation_service"):
                             eval_result = await self.evaluation_service.evaluate(eval_request)
                         _eval_elapsed = time.perf_counter() - _eval_started
+                        result.metrics = dict(result.metrics or {})
+                        result.metrics["eval_elapsed_s"] = round(_eval_elapsed, 3)
                         trace.update_context(
                             eval_status=eval_result.status,
                             eval_score=eval_result.normalized_score_10,
@@ -606,6 +608,7 @@ class SimulationWorkerGroup:
                     env_lifecycle_s=_env_lifecycle,
                     gw_first_seen_ts=_gw_first_ts,
                     gw_closed_ts=_gw_closed_ts,
+                    eval_elapsed_s=ep_metrics.get("eval_elapsed_s"),
                 )
 
     async def _acquire_lease_or_stop(self, worker_id: int) -> SimulationAgentLease | None:
