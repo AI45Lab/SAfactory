@@ -601,6 +601,7 @@ class SimulationWorkerGroup:
                     # gateway's first llm_step ts (same session_id) to derive
                     # env-startup time = first_llm_call - rjob_submit.
                     rjob_submit_ts=ep_metrics.get("rjob_submit_ts"),
+                    rjob_running_ts=ep_metrics.get("rjob_running_ts"),
                     # Per-env startup / active / lifecycle durations (seconds),
                     # derived from gateway session timing + rjob_submit_ts.
                     env_startup_s=_env_startup,
