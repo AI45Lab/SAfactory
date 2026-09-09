@@ -22,7 +22,10 @@ from evaluator.rule_evaluator import discover_rule_eval_spec
 from evaluator.service import EvaluationService
 
 # Structured timing log (rl/timing_log.py). The launcher subprocess does not
-# have rl/ on PYTHONPATH (only AIEVOBOX_ROOT), so add it defensively.
+# have rl/ on PYTHONPATH (only AIEVOBOX_ROOT), so add it defensively. On
+# import failure fall back to a noop so call sites emit unconditionally; the
+# on/off switch lives inside timing_log (set_enabled / env
+# SAFACTORY_TIMING_LOG_ENABLED), not behind a per-call guard here.
 try:
     from timing_log import emit as _timing_emit  # type: ignore
 except Exception:  # pragma: no cover - import path fixup
@@ -34,7 +37,8 @@ except Exception:  # pragma: no cover - import path fixup
     try:
         from timing_log import emit as _timing_emit  # type: ignore
     except Exception:
-        _timing_emit = None  # type: ignore
+        def _timing_emit(*_args: Any, **_kwargs: Any) -> None:  # type: ignore
+            return None
 
 from .agent_start_client import AgentStartClient
 from .session_lifecycle import complete_latest_session_step
@@ -255,13 +259,12 @@ class SimulationWorkerGroup:
                 await asyncio.sleep(interval)
                 async with self._active_lock:
                     active = self._active_episodes
-                if _timing_emit is not None:
-                    _timing_emit(
-                        "active_envs",
-                        active_episodes=active,
-                        pool_size=self.lease_pool.pool_size,
-                        worker_count=self.worker_count,
-                    )
+                _timing_emit(
+                    "active_envs",
+                    active_episodes=active,
+                    pool_size=self.lease_pool.pool_size,
+                    worker_count=self.worker_count,
+                )
         except asyncio.CancelledError:
             return
 
@@ -424,28 +427,27 @@ class SimulationWorkerGroup:
                         # Rule-evaluator timing: for PatchEval this is the
                         # apply-patch + PoC + unit-test cost, which for
                         # compiled CVE projects can dominate the episode.
-                        if _timing_emit is not None:
-                            _eval_artifacts = eval_result.artifacts if isinstance(eval_result.artifacts, dict) else {}
-                            _patch = _eval_artifacts.get("patch") or ""
-                            _patch_lines = _patch.count("\n") + 1 if _patch else 0
-                            _timing_emit(
-                                "eval",
-                                session_id=result.session_id,
-                                env_name=lease.agent_name,
-                                group_id=lease.group_id,
-                                cve_id=_eval_artifacts.get("cve_id"),
-                                eval_status=eval_result.status,
-                                score=eval_result.normalized_score_10,
-                                raw_score=eval_result.raw_score,
-                                reason=eval_result.reason,
-                                eval_elapsed_s=round(_eval_elapsed, 3),
-                                strict_success=_eval_artifacts.get("strict_success"),
-                                poc_passed=_eval_artifacts.get("poc_passed"),
-                                unit_tests_passed=_eval_artifacts.get("unit_tests_passed"),
-                                validation_type=_eval_artifacts.get("validation_type"),
-                                patch_produced=bool(_patch),
-                                patch_lines=_patch_lines or None,
-                            )
+                        _eval_artifacts = eval_result.artifacts if isinstance(eval_result.artifacts, dict) else {}
+                        _patch = _eval_artifacts.get("patch") or ""
+                        _patch_lines = _patch.count("\n") + 1 if _patch else 0
+                        _timing_emit(
+                            "eval",
+                            session_id=result.session_id,
+                            env_name=lease.agent_name,
+                            group_id=lease.group_id,
+                            cve_id=_eval_artifacts.get("cve_id"),
+                            eval_status=eval_result.status,
+                            score=eval_result.normalized_score_10,
+                            raw_score=eval_result.raw_score,
+                            reason=eval_result.reason,
+                            eval_elapsed_s=round(_eval_elapsed, 3),
+                            strict_success=_eval_artifacts.get("strict_success"),
+                            poc_passed=_eval_artifacts.get("poc_passed"),
+                            unit_tests_passed=_eval_artifacts.get("unit_tests_passed"),
+                            validation_type=_eval_artifacts.get("validation_type"),
+                            patch_produced=bool(_patch),
+                            patch_lines=_patch_lines or None,
+                        )
                         if eval_result.status == "succeeded":
                             with trace.span("reward_commit"):
                                 await self.reward_committer.commit(
@@ -552,7 +554,7 @@ class SimulationWorkerGroup:
             #   env_startup_s   = first LLM call - rjob submit  (pod boot + agent init)
             #   env_active_s    = session close - first LLM call (active rollout)
             #   env_lifecycle_s = session close - rjob submit   (full env lifetime)
-            if _timing_emit is not None and result is not None:
+            if result is not None:
                 ep_metrics = result.metrics if isinstance(result.metrics, dict) else {}
                 _rjob_submit_ts = ep_metrics.get("rjob_submit_ts")
                 _gw_first_ts = ep_metrics.get("gw_first_seen_ts")
