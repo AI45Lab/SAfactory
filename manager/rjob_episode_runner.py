@@ -171,6 +171,13 @@ class RJobEpisodeRunner:
                     trace=trace,
                 )
             timings_ms["rjob_wait_terminal_ms"] = _elapsed_ms(started)
+            # rjob_running_ts is set inside wait_terminal via trace.update_context
+            # when the RJob first enters Running state. Surface it as an absolute
+            # epoch timestamp so the episode record can derive cluster queue time
+            # (rjob_running_ts - rjob_submit_ts).
+            _running_ts = trace.context.get("rjob_running_ts")
+            if _running_ts is not None:
+                timings_abs["rjob_running_ts"] = _running_ts
             trace.update_context(rjob_status=terminal_status, status_poll_count=status_poll_count)
             try:
                 started = time.perf_counter()

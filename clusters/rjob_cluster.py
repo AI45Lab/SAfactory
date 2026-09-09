@@ -282,6 +282,10 @@ class RJobClusterBackend(ClusterBackend):
                     trace.update_context(rjob_submit_to_starting_ms=submit_to_starting_ms)
             if status == "Running" and submit_to_running_ms is None:
                 submit_to_running_ms = elapsed_ms
+                # Absolute epoch seconds at the moment the RJob entered Running.
+                # Joined with rjob_submit_ts to derive cluster queue time
+                # (rjob_running_ts - rjob_submit_ts) in the episode record.
+                rjob_running_ts = time.time()
                 if trace is not None:
                     trace.mark(
                         "rjob_running",
@@ -290,7 +294,10 @@ class RJobClusterBackend(ClusterBackend):
                         job_name=job_name,
                         submit_to_running_ms=submit_to_running_ms,
                     )
-                    trace.update_context(rjob_submit_to_running_ms=submit_to_running_ms)
+                    trace.update_context(
+                        rjob_submit_to_running_ms=submit_to_running_ms,
+                        rjob_running_ts=rjob_running_ts,
+                    )
             if status != last_status:
                 if trace is not None:
                     trace.mark(
