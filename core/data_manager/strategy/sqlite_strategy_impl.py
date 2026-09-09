@@ -628,90 +628,6 @@ class SqliteStrategy(StorageStrategy):
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
 
-    async def fetch_finished_env_steps(
-        self,
-        job_id: str,
-        after_env_id: int = 0,
-        limit_envs: int = 50,
-    ) -> tuple[List[Dict], int]:
-        """Fetch terminal steps for newly-finished environments (env-id cursor).
-
-        Two-phase fetch that eliminates the late-flip problem of the step-id
-        cursor in ``fetch_done_steps_with_context``:
-
-        Phase 1 — discover finished envs with ``id > after_env_id``. Because
-        ``mark_environment_finished`` is only called AFTER all steps are
-        ``is_terminal=True`` (guaranteed by simulation_worker's sequential
-        await), ``finished=True`` implies every training-ready step is
-        terminal — no late flips.
-        Phase 2 — fetch terminal steps for those envs.
-
-        The env cursor only advances forward, so no lookback window or
-        served-pk dedup is needed. Returns ``(rows, next_env_cursor)`` where
-        ``next_env_cursor`` is the max env id seen (0 when nothing found).
-        """
-        await self.init()
-        trace = PerfTrace(
-            "sqlite_strategy.fetch_finished_env_steps",
-            logger=log,
-            context={
-                "operation": "db_read",
-                "job_id": job_id,
-                "after_env_id": after_env_id,
-                "limit_envs": limit_envs,
-            },
-        )
-        try:
-            with trace.span("db_read.fetch_finished_envs"):
-                envs = await JobEnvironment.filter(
-                    job_id=job_id,
-                    finished=True,
-                    id__gt=after_env_id,
-                ).order_by("id").limit(limit_envs)
-            if not envs:
-                trace.emit_summary(status="success", row_count=0, next_env_cursor=after_env_id)
-                return [], after_env_id
-
-            env_ids = [e.env_id for e in envs]
-            next_env_cursor = max(e.id for e in envs)
-
-            with trace.span("db_read.fetch_env_steps"):
-                steps = await SessionStep.filter(
-                    job_id=job_id,
-                    session_id__in=env_ids,
-                    is_terminal=True,
-                ).order_by("session_id", "step_id")
-
-            rows: List[Dict] = []
-            for s in steps:
-                if not s.messages or s.messages in ("[]", "null", ""):
-                    continue
-                rows.append(
-                    {
-                        "step_pk": s.id,
-                        "step_id": s.step_id,
-                        "env_name": s.env_name,
-                        "env_id": s.session_id,
-                        "env_state": s.meta_json,
-                        "prompt": s.messages,
-                        "request": s.request,
-                        "response": s.response,
-                        "reward": s.step_reward,
-                        "step_reward": s.step_reward,
-                        "total_reward": s.reward,
-                        "session_id": s.session_id,
-                        "session_end_time": s.created_at.isoformat() if s.created_at else None,
-                        "group_id": s.group_id,
-                        "truncated": s.is_truncated,
-                        "is_session_completed": s.is_session_completed,
-                    }
-                )
-            trace.emit_summary(status="success", row_count=len(rows), next_env_cursor=next_env_cursor)
-            return rows, next_env_cursor
-        except Exception as exc:
-            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
-            raise
-
     async def get_max_step_id(self, job_id: str) -> int:
         """Get maximum primary key for pagination"""
         await self.init()
@@ -732,16 +648,4 @@ class SqliteStrategy(StorageStrategy):
             return max_id
         except Exception as exc:
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
-            raise
-
-    async def get_max_env_id(self, job_id: str) -> int:
-        """Get maximum primary key among finished environments for cursor init."""
-        await self.init()
-        try:
-            latest = await JobEnvironment.filter(
-                job_id=job_id, finished=True
-            ).order_by("-id").first()
-            return latest.id if latest else 0
-        except Exception as exc:
-            log.error("get_max_env_id failed: %s", exc, exc_info=True)
             raise

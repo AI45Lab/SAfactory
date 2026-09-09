@@ -87,7 +87,7 @@ data_manager: Optional[DataManager] = None
 
 # Env-id cursor for finished-environment fetch. Advances forward only — no
 # lookback or dedup needed because finished=True implies all steps are already
-# is_terminal=True (see sqlite/cloud strategy fetch_finished_env_steps).
+# is_terminal=True (see list_environment_rows + list_terminal_steps_for_sessions).
 last_env_cursor: int = 0
 
 # Pending items by instance_id (for grouping)
@@ -176,9 +176,15 @@ def _assistant_message_from_stored_response(response: Any) -> Optional[Dict[str,
 
 
 def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert a database row to the expected item format."""
+    """Convert a database row to the expected item format.
+
+    Accepts both the mapped format (from fetch_done_steps_with_context: keys
+    ``prompt``, ``env_state``, ``env_id``, ``session_end_time``, ``truncated``)
+    and the raw format (from list_session_step_rows: keys ``messages``,
+    ``meta_json``, ``session_id``, ``created_at``, ``is_truncated``).
+    """
     # Parse stored prompt (JSON serialized messages list)
-    prompt_str = row.get("prompt", "")
+    prompt_str = row.get("prompt") or row.get("messages", "")
     if isinstance(prompt_str, str):
         base_messages = json.loads(prompt_str) if prompt_str else []
     else:
@@ -191,12 +197,13 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
         messages.append(assistant)
 
     session_id = row.get("session_id", "")
-    env_id = row.get("env_id", "")
+    env_id = row.get("env_id") or session_id
     group_id = row.get("group_id", "")
 
-    # 从 env_state 中解析 weight_version
+    # 从 env_state / meta_json 中解析 weight_version
     weight_version = 0
-    if env_state_raw := row.get("env_state"):
+    env_state_raw = row.get("env_state") or row.get("meta_json")
+    if env_state_raw:
         try:
             env_state = json.loads(env_state_raw) if isinstance(env_state_raw, str) else env_state_raw
             raw_weight_version = env_state.get("weight_version") if isinstance(env_state, dict) else None
@@ -205,16 +212,18 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
         except (TypeError, ValueError, json.JSONDecodeError):
             weight_version = 0
 
+    truncated = row.get("truncated", row.get("is_truncated", False))
+    end_time = row.get("session_end_time") or row.get("created_at")
     extra_info = {
-        "timestamp": _parse_timestamp(row.get("session_end_time")) or _parse_timestamp(row.get("timestamp")) or time.time(),
+        "timestamp": _parse_timestamp(end_time) or _parse_timestamp(row.get("timestamp")) or time.time(),
         "steps": row.get("step_id", 0),
         # 注意：finish_reason 与 truncated 不完全等价，finish_reason 仅用于训练侧标记截断状态
-        "finish_reason": "length" if row.get("truncated", False) else "stop",
+        "finish_reason": "length" if truncated else "stop",
         "session_id": session_id,
         "env_id": env_id,
         "group_id": group_id,
         "weight_version": weight_version,
-        "truncated": row.get("truncated", False),
+        "truncated": truncated,
     }
 
     return {
@@ -227,26 +236,47 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def fetch_new_items_from_db(limit: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Fetch new completed steps from the database using env-id cursor."""
+    """Fetch new completed steps using an env-id cursor (two-phase fetch).
+
+    Phase 1: discover finished environments with id > last_env_cursor.
+    Phase 2: fetch their terminal steps via list_terminal_steps_for_sessions.
+    Because mark_environment_finished is only called after all steps are
+    is_terminal=True, finished=True guarantees all training-ready steps are
+    terminal — no late-flip, no lookback, no dedup.
+    """
     global data_manager, last_env_cursor
 
     if data_manager is None:
         return []
 
-    items = []
     try:
-        rows, next_cursor = await data_manager.fetch_finished_env_steps(
-            after_env_id=last_env_cursor,
-            limit_envs=limit or 100,
+        envs = await data_manager.list_environment_rows(
+            after_id=last_env_cursor,
+            finished=True,
+            limit=limit or 100,
         )
     except Exception as e:
-        logger.error(f"fetch_finished_env_steps error: {e}")
+        logger.error(f"list_environment_rows error: {e}")
         return []
 
+    if not envs:
+        return []
+
+    env_ids = [str(e.get("env_id") or "") for e in envs if e.get("env_id")]
+    next_cursor = max(int(e.get("id") or 0) for e in envs)
+    if not env_ids:
+        if next_cursor > last_env_cursor:
+            last_env_cursor = next_cursor
+        return []
+
+    try:
+        rows = await data_manager.list_terminal_steps_for_sessions(env_ids)
+    except Exception as e:
+        logger.error(f"list_terminal_steps_for_sessions error: {e}")
+        return []
+
+    items = []
     for row in rows:
-        step_pk = row.get("step_pk")
-        if step_pk is None:
-            continue
         try:
             item = _build_item_from_row(row)
             items.append(item)
@@ -254,7 +284,6 @@ async def fetch_new_items_from_db(limit: Optional[int] = None) -> List[Dict[str,
             logger.error(f"Error building item from row: {e}")
             continue
 
-    # Advance the env cursor: finished envs are fully consumed, never re-scan.
     if next_cursor > last_env_cursor:
         last_env_cursor = next_cursor
 
@@ -362,7 +391,8 @@ async def init_data_manager(job_session: str, storage_type: str, db_url: str, re
 
     # Initialize cursor based on restart_training flag
     if restart_training:
-        last_env_cursor = await data_manager.get_max_env_id()
+        envs = await data_manager.list_environment_rows(finished=True, limit=100000)
+        last_env_cursor = max((int(e.get("id") or 0) for e in envs), default=0)
         logger.info(f"restart_training=True, initialized last_env_cursor={last_env_cursor}")
 
 
