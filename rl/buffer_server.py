@@ -85,19 +85,10 @@ atexit.register(gateway_autostart.stop)
 # DataManager for querying the database
 data_manager: Optional[DataManager] = None
 
-# Track last served step ID for cursor-based pagination
-last_served_id: int = 0
-
-# Served step primary keys within the lookback window, used to dedup rows that
-# the lookback re-scan returns again. Bounded by the window size (see below):
-# rows older than (last_served_id - FETCH_LOOKBACK) are never re-scanned, so
-# their pks are pruned from this set. See docs/guides/buffer-cursor-deadlock_CN.md
-served_pks: set = set()
-# How many id units below the cursor to re-scan each poll, to catch terminal
-# rows whose is_terminal was flipped via UPDATE after the cursor passed their
-# id. Must exceed the max eval latency expressed in step-insert count (eval
-# runs right after the episode, so a large default is safe).
-FETCH_LOOKBACK = int(os.environ.get("BUFFER_FETCH_LOOKBACK", "100000"))
+# Env-id cursor for finished-environment fetch. Advances forward only — no
+# lookback or dedup needed because finished=True implies all steps are already
+# is_terminal=True (see sqlite/cloud strategy fetch_finished_env_steps).
+last_env_cursor: int = 0
 
 # Pending items by instance_id (for grouping)
 pending_items_by_instance: Dict[str, List[Dict[str, Any]]] = {}
@@ -236,47 +227,36 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def fetch_new_items_from_db(limit: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Fetch new completed steps from the database using cursor-based pagination."""
-    global data_manager, last_served_id, served_pks
+    """Fetch new completed steps from the database using env-id cursor."""
+    global data_manager, last_env_cursor
 
     if data_manager is None:
         return []
 
     items = []
     try:
-        rows = await data_manager.fetch_done_steps_with_context(
-            after_id=last_served_id,
-            limit=limit or 100,
-            lookback=FETCH_LOOKBACK,
+        rows, next_cursor = await data_manager.fetch_finished_env_steps(
+            after_env_id=last_env_cursor,
+            limit_envs=limit or 100,
         )
     except Exception as e:
-        logger.error(f"fetch_done_steps_with_context error: {e}")
+        logger.error(f"fetch_finished_env_steps error: {e}")
         return []
 
     for row in rows:
         step_pk = row.get("step_pk")
         if step_pk is None:
             continue
-        # The lookback window re-returns rows we have already served; skip them.
-        if step_pk in served_pks:
-            continue
         try:
             item = _build_item_from_row(row)
             items.append(item)
-            served_pks.add(step_pk)
-            # Update cursor to the latest processed id (high watermark)
-            if not last_served_id or step_pk > last_served_id:
-                last_served_id = step_pk
         except Exception as e:
             logger.error(f"Error building item from row: {e}")
             continue
 
-    # Prune served pks that have aged out of the lookback window: the strategy
-    # only re-scans id > (last_served_id - FETCH_LOOKBACK), so any pk below that
-    # floor will never be returned again and is safe to forget (bounded memory).
-    if FETCH_LOOKBACK > 0 and len(served_pks) > 4096:
-        floor = last_served_id - FETCH_LOOKBACK
-        served_pks = {pk for pk in served_pks if pk > floor}
+    # Advance the env cursor: finished envs are fully consumed, never re-scan.
+    if next_cursor > last_env_cursor:
+        last_env_cursor = next_cursor
 
     return items
 
@@ -375,16 +355,15 @@ async def get_rollout_data(request: Request):
 
 async def init_data_manager(job_session: str, storage_type: str, db_url: str, restart_training: bool = False):
     """Initialize the DataManager for querying the database."""
-    global data_manager, last_served_id, served_pks
+    global data_manager, last_env_cursor
     data_manager = DataManager(job_id=job_session, storage_type=storage_type, db_url=db_url)
     await data_manager.init()
     logger.info(f"DataManager initialized with {storage_type} DB: {db_url}, job_session: {job_session}")
 
     # Initialize cursor based on restart_training flag
     if restart_training:
-        last_served_id = await data_manager.get_max_step_id()
-        served_pks = set()
-        logger.info(f"restart_training=True, initialized last_served_id={last_served_id}")
+        last_env_cursor = await data_manager.get_max_env_id()
+        logger.info(f"restart_training=True, initialized last_env_cursor={last_env_cursor}")
 
 
 def start_aievobox_process(data: dict):
@@ -393,7 +372,7 @@ def start_aievobox_process(data: dict):
     NOTE: LLM Proxy is now hosted in-process by slime_generator.
     It must already be running before this function is called.
     """
-    global aievobox_process, group_size, last_served_id, pending_items_by_instance, data_manager
+    global aievobox_process, group_size, last_env_cursor, pending_items_by_instance, data_manager
 
     # Set group size (num_repeat_per_sample)
     group_size = int(data.get("num_repeat_per_sample", 16))

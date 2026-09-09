@@ -1197,7 +1197,103 @@ class CloudStrategy(StorageStrategy):
                 }
             )
         return rows
-        
+
+    async def fetch_finished_env_steps(
+        self,
+        job_id: str,
+        after_env_id: int = 0,
+        limit_envs: int = 50,
+    ) -> tuple[List[Dict], int]:
+        """Fetch terminal steps for newly-finished environments (env-id cursor).
+
+        Two-phase fetch (see sqlite strategy for rationale). Phase 1 lists
+        finished envs via ``list_environment_rows``; Phase 2 pulls terminal
+        steps for those env_ids. Returns ``(rows, next_env_cursor)``.
+        """
+        await self.init()
+        trace = PerfTrace(
+            "cloud_strategy.fetch_finished_env_steps",
+            logger=log,
+            context={
+                "operation": "db_read",
+                "job_id": job_id,
+                "after_env_id": after_env_id,
+                "limit_envs": limit_envs,
+            },
+        )
+        try:
+            with trace.span("db_read.fetch_finished_envs"):
+                envs = await self.list_environment_rows(
+                    EnvironmentQuery(
+                        job_id=job_id,
+                        after_id=after_env_id,
+                        finished=True,
+                        limit=limit_envs,
+                    )
+                )
+            if not envs:
+                trace.emit_summary(status="success", row_count=0, next_env_cursor=after_env_id)
+                return [], after_env_id
+
+            env_ids = [str(e.get("env_id") or "") for e in envs if e.get("env_id")]
+            next_env_cursor = max(int(e.get("id") or 0) for e in envs)
+            if not env_ids:
+                trace.emit_summary(status="success", row_count=0, next_env_cursor=next_env_cursor)
+                return [], next_env_cursor
+
+            with trace.span("db_read.fetch_env_steps"):
+                session_filter = ", ".join(
+                    "'{}'".format(_escape_sql_literal(eid)) for eid in env_ids
+                )
+                where_sql = (
+                    "job_id = '{}' AND is_terminal = True AND session_id IN ({})"
+                    .format(_escape_sql_literal(job_id), session_filter)
+                )
+                results = self.client.pull_data(
+                    dataset_type=CLOUD_DATASET_TYPE,
+                    cursor=0,
+                    checkout_latest=True,
+                    where_sql=where_sql,
+                    limit=10000,
+                    deserialize_json=True,
+                )
+
+            rows: List[Dict] = []
+            if results is not None and len(results) > 0:
+                for _, row in results.iterrows():
+                    meta = _meta_json_object(row.get("meta_json"))
+                    messages = _json_value(row.get("messages"), [])
+                    if not isinstance(messages, (dict, list)):
+                        messages = []
+                    if not messages:
+                        continue
+                    response = _json_value(row.get("response"), row.get("response"))
+                    rows.append(
+                        {
+                            "step_pk": row.get("id") or row.get("step_id"),
+                            "step_id": row["step_id"],
+                            "env_name": row["env_name"],
+                            "env_id": row["session_id"],
+                            "env_state": json.dumps(meta, ensure_ascii=False, default=str),
+                            "prompt": self.normalize_messages(messages),
+                            "request": meta.get("request"),
+                            "response": _response_text(response),
+                            "reward": row["reward"],
+                            "step_reward": row["step_reward"],
+                            "total_reward": row["reward"],
+                            "session_id": row["session_id"],
+                            "session_end_time": row.get("created_at"),
+                            "group_id": meta.get("group_id"),
+                            "truncated": row["is_truncated"],
+                            "is_session_completed": row["is_session_completed"],
+                        }
+                    )
+            trace.emit_summary(status="success", row_count=len(rows), next_env_cursor=next_env_cursor)
+            return rows, next_env_cursor
+        except Exception as exc:
+            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
+            raise
+
     async def get_max_step_id(self, job_id: str) -> int:
         """Get maximum primary key for pagination"""
         await self.init()
@@ -1210,6 +1306,20 @@ class CloudStrategy(StorageStrategy):
         )
         
         return last_cursor
+
+    async def get_max_env_id(self, job_id: str) -> int:
+        """Get maximum primary key among finished environments for cursor init."""
+        await self.init()
+        try:
+            envs = await self.list_environment_rows(
+                EnvironmentQuery(job_id=job_id, finished=True, limit=100000)
+            )
+            if not envs:
+                return 0
+            return max(int(e.get("id") or 0) for e in envs)
+        except Exception as exc:
+            log.error("get_max_env_id failed: %s", exc, exc_info=True)
+            raise
 
     # --- Helpers ---
     def extract_image_path(self, item: dict) -> str | None:

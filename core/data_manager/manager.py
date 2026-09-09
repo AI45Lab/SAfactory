@@ -430,10 +430,30 @@ class DataManager:
             return await self._strategy.fetch_done_steps_with_context(self.job_id, after_id, limit, lookback)
         return []
 
+    async def fetch_finished_env_steps(
+        self,
+        after_env_id: int = 0,
+        limit_envs: int = 50,
+    ) -> tuple[List[Dict], int]:
+        """Fetch terminal steps for newly-finished environments (env-id cursor).
+
+        Returns ``(rows, next_env_cursor)``. Falls back to the legacy
+        step-id cursor when the strategy does not implement the new method.
+        """
+        if hasattr(self._strategy, 'fetch_finished_env_steps'):
+            return await self._strategy.fetch_finished_env_steps(self.job_id, after_env_id, limit_envs)
+        return [], after_env_id
+
     async def get_max_step_id(self) -> int:
         """Get maximum primary key for pagination"""
         if hasattr(self._strategy, 'get_max_step_id'):
             return await self._strategy.get_max_step_id(self.job_id)
+        return 0
+
+    async def get_max_env_id(self) -> int:
+        """Get maximum primary key among finished environments for cursor init."""
+        if hasattr(self._strategy, 'get_max_env_id'):
+            return await self._strategy.get_max_env_id(self.job_id)
         return 0
 
     @property
