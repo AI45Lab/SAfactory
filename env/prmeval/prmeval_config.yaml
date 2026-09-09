@@ -1,10 +1,10 @@
 environments:
   - env_name: prmeval
-    # This image is built outside SAfactory and must already contain the
-    # published prmeval wheel plus its runtime dependencies.
+    # Built from env/prmeval/Dockerfile with the prmeval wheel and runtime dependencies.
+    # Reported local build: image ID 2d2648031895, size 7.27GB.
     env_image: safactory-prmeval:0.1.0
     env_num: 1
-    dataset: ./datasets/prmeval_smoke.jsonl
+    dataset: ./datasets/samples.jsonl
     dataset_load_mode: eager
 
     env_params:
@@ -13,17 +13,16 @@ environments:
       # result mount declared in prmeval_start.yaml.
       results_root: /workspace/Safactory/results
       prmeval:
-        command: prmeval
-        dataset_name: safactory-prmeval-smoke
         sampling:
-          base_frames: 3
+          dataset_name: rbm_1m_ood_test
+          paths: [/tmp/safactory_prmeval_datasets/temp_sample.jsonl]
+          eval_types: [progress]
+          base_frames: 12
           progress_type: absolute_first_frame
         infer:
           name: openai_compatible
-          api_key: OPENAI_API_KEY
-          timeout_seconds: 120
-          max_retries: 0
-          options:
-            # Preserve /v1/sessions/<session_id> so PRMEval calls are
-            # recorded in the current SAfactory Gateway session.
-            keep_base_url: true
+          base_url: BASE_URL
+          api_key: API_KEY
+          model_id: MODEL_ID
+        metrics: [progress]
+

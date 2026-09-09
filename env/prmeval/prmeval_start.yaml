@@ -1,8 +1,8 @@
 agent_name: prmeval
 
 container:
-  # No Dockerfile is kept in SAfactory. env_image must be an externally built
-  # Python image with the prmeval wheel already installed.
+  # Uses safactory-prmeval:0.1.0 via env_image in prmeval_config.yaml.
+  # Build from the repository root: docker build -t safactory-prmeval:0.1.0 env/prmeval
   workdir: /workspace
   runner_entrypoint:
     source: ./runner.py

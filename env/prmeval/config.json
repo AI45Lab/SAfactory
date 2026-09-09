@@ -1,0 +1,40 @@
+{
+    "env_name": "prmeval",
+    "env_image": "safactory-prmeval:0.1.0",
+    "env_num": 1,
+    "session_id": "123",
+    "job_id":"123",
+    "dataset": {"schema_version": "bench.record.v1", "target_progress": [0.0, 0.12903225806451613, 0.25806451612903225, 0.41935483870967744, 0.5483870967741935, 0.7096774193548387, 0.8387096774193549, 1.0], "quality_label":"successful", "frames": "/mnt/shared-storage-user/liuyicong/SAfactory/env/prmeval/datasets/sample_frames/4d652a483be658be9dfd7c9b-trajectory.npz", "id": "4d652a483be658be9dfd7c9b", "sample_id": "4d652a483be658be9dfd7c9b", "task": "Open the bottle", "evaluation": {"type": "progress", "dataset": {"name": "rbm_1m_ood", "source": "usc_trossen"}}, "input": {"task": "Open the bottle", "items": [{"role": "trajectory", "frames": {"type": "npz", "path": "/mnt/shared-storage-user/liuyicong/SAfactory/env/prmeval/datasets/sample_frames/4d652a483be658be9dfd7c9b-trajectory.npz", "key": "frames", "num_frames": 8, "sha256": "6fc890bb8d3ea23f995eec6168f2c5ce88847ffed620ac662819f274c1078bf3"}, "frame_indices": [0, 4, 8, 13, 17, 22, 26, 31], "source_id": "ec723696-61c2-478a-a21f-0c4bf7f9a0d7", "data": {}}]}, "target": {"kind": "progress", "values": [0.0, 0.12903225806451613, 0.25806451612903225, 0.41935483870967744, 0.5483870967741935, 0.7096774193548387, 0.8387096774193549, 1.0], "value": null, "label": null, "probability": null}, "infer": null, "prediction": null, "execution": null},
+
+    "dataset_load_mode": "eager",
+    "gateway_base_url": "http://xxx/v1/chat/completions",
+    "model": "Qwen3.6-35B-A3B-FP8",
+    "api_key": "xxx",
+    "env_params": {
+        "task_family": "prmeval",
+        "results_root": "/workspace/Safactory/results",
+        "dataset": {"schema_version": "bench.record.v1", "target_progress": [0.0, 0.12903225806451613, 0.25806451612903225, 0.41935483870967744, 0.5483870967741935, 0.7096774193548387, 0.8387096774193549, 1.0], "quality_label":"successful", "frames": "/mnt/shared-storage-user/liuyicong/SAfactory/env/prmeval/datasets/sample_frames/4d652a483be658be9dfd7c9b-trajectory.npz", "id": "4d652a483be658be9dfd7c9b", "sample_id": "4d652a483be658be9dfd7c9b", "task": "Open the bottle", "evaluation": {"type": "progress", "dataset": {"name": "rbm_1m_ood", "source": "usc_trossen"}}, "input": {"task": "Open the bottle", "items": [{"role": "trajectory", "frames": {"type": "npz", "path": "/mnt/shared-storage-user/liuyicong/SAfactory/env/prmeval/datasets/sample_frames/4d652a483be658be9dfd7c9b-trajectory.npz", "key": "frames", "num_frames": 8, "sha256": "6fc890bb8d3ea23f995eec6168f2c5ce88847ffed620ac662819f274c1078bf3"}, "frame_indices": [0, 4, 8, 13, 17, 22, 26, 31], "source_id": "ec723696-61c2-478a-a21f-0c4bf7f9a0d7", "data": {}}]}, "target": {"kind": "progress", "values": [0.0, 0.12903225806451613, 0.25806451612903225, 0.41935483870967744, 0.5483870967741935, 0.7096774193548387, 0.8387096774193549, 1.0], "value": null, "label": null, "probability": null}, "infer": null, "prediction": null, "execution": null},
+        "prmeval": {
+            "sampling": {
+                "dataset_name": "test_sample",
+                "paths": [
+                    "/tmp/safactory_prmeval_datasets/temp_sample.jsonl"
+                ],
+                "eval_types": [
+                    "progress"
+                ],
+                "base_frames": 12,
+                "progress_type": "absolute_first_frame"
+            },
+            "infer": {
+                "name": "openai_compatible",
+                "base_url": "BASE_URL",
+                "api_key": "API_KEY",
+                "model_id": "MODEL_ID"
+            },
+            "metrics": [
+                "progress"
+            ]
+        }
+    }
+}
