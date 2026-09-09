@@ -313,6 +313,7 @@ async def _update_persisted_row(
     update_rows = getattr(data_manager, "update_session_step_rows", None)
     if callable(update_rows):
         return await update_rows(
+            job_id=row.get("job_id") or None,
             session_id=str(row.get("session_id") or ""),
             step_id=int(row.get("step_id") or 0),
             llm_model=str(row.get("llm_model") or "") or None,
