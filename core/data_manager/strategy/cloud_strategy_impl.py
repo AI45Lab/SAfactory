@@ -487,8 +487,8 @@ class CloudStrategy(StorageStrategy):
         return env_id
 
     async def get_all_environments(self, job_id: Optional[str] = None) -> List[Dict]:
-        """Get all environments from cache"""
-        return self._list_env_configs(job_id=job_id)
+        """Get all environments from the config store."""
+        return await self.list_environment_rows(EnvironmentQuery(job_id=job_id))
 
     async def get_environment_by_env_id(self, env_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve one environment config from cache or cloud EnvConfigManager."""
@@ -534,7 +534,9 @@ class CloudStrategy(StorageStrategy):
             clauses.append(f"env_id = '{_escape_sql_literal(query.env_id)}'")
         if query.after_id:
             clauses.append(f"id > {int(query.after_id)}")
-        filter_query = " AND ".join(clauses) or None
+        if query.finished is not None:
+            clauses.append(f"finished = {str(query.finished).lower()}")
+        filter_query = " AND ".join(clauses)
         page_size = max(100, query.limit or 1000)
         effective_offset = max(0, query.offset)
         normalized: List[Dict[str, Any]] = []
@@ -556,8 +558,6 @@ class CloudStrategy(StorageStrategy):
                         "cloud environment pagination requires EnvConfigManager "
                         "to return the physical id column"
                     )
-                if query.finished is not None and _truthy_bool(row.get("finished")) != query.finished:
-                    continue
                 if query.is_deleted is not None and _truthy_bool(row.get("is_deleted")) != query.is_deleted:
                     continue
                 env_id = str(row.get("env_id") or "")
@@ -882,33 +882,6 @@ class CloudStrategy(StorageStrategy):
             trace_context={"job_id": job_id, "field_count": len(normalized)},
         )
         return len(query.record_ids) or int(bool(query.record_id)) or 1
-
-    def get_env_configs(
-        self,
-        limit: Optional[int] = None,
-        offset: int = 0,
-        job_id: Optional[str] = None,
-    ) -> List[Dict]:
-        """Synchronous scheduler reader for cached cloud environment configs."""
-        configs = [
-            row for row in self._list_env_configs(job_id=job_id)
-            if not _truthy_bool(row.get("finished", False))
-        ]
-        start = max(0, int(offset or 0))
-        if limit is None:
-            return configs[start:]
-        end = start + max(0, int(limit))
-        return configs[start:end]
-
-    def _list_env_configs(self, job_id: Optional[str] = None) -> List[Dict]:
-        rows: List[Dict] = []
-        for index, config in enumerate(self._env_configs.values(), start=1):
-            row = self._normalize_env_config(config)
-            row.setdefault("id", index)
-            if job_id and str(row.get("job_id") or "") != str(job_id):
-                continue
-            rows.append(row)
-        return rows
 
     def _normalize_env_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
         row = dict(config)

@@ -22,7 +22,11 @@ async def cleanup_resume_artifacts(
     rjob_backend: RJobClusterBackend | None = None,
 ) -> List[Path]:
     """Remove stale RJobs and result paths for unfinished resume sessions."""
-    rows = await data_manager.get_all_environments(job_id)
+    rows = await data_manager.list_environment_rows(
+        job_id=job_id,
+        finished=False,
+        is_deleted=False,
+    )
     owned_backend = rjob_backend is None
     backend = rjob_backend or RJobClusterBackend(
         cluster_cfg=dict(manager_cfg.get("cluster") or {})
@@ -31,9 +35,6 @@ async def cleanup_resume_artifacts(
 
     try:
         for row in rows:
-            if _truthy(row.get("finished")) or _truthy(row.get("is_deleted")):
-                continue
-
             session_id = str(row.get("env_id") or "").strip()
             if not session_id:
                 continue
@@ -79,11 +80,7 @@ async def cleanup_resume_artifacts(
     log.info(
         "resume result preflight completed: job_id=%s unfinished=%d removed_paths=%d",
         job_id,
-        sum(
-            1
-            for row in rows
-            if not _truthy(row.get("finished")) and not _truthy(row.get("is_deleted"))
-        ),
+        len(rows),
         len(removed),
     )
     return removed
@@ -95,9 +92,3 @@ def _remove_result_path(path: Path) -> None:
         return
     if path.is_dir():
         shutil.rmtree(path)
-
-
-def _truthy(value: Any) -> bool:
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
