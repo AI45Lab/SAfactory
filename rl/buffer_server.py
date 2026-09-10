@@ -85,9 +85,9 @@ atexit.register(gateway_autostart.stop)
 # DataManager for querying the database
 data_manager: Optional[DataManager] = None
 
-# Env-id cursor for finished-environment fetch. Advances forward only — no
-# lookback or dedup needed because finished=True implies all steps are already
-# is_terminal=True (see list_environment_rows + list_terminal_steps_for_sessions).
+# Env-id cursor for finished-environment fetch. Advances forward only:
+# finished=True implies all steps are already is_terminal=True, so there is no
+# late-flip window to re-scan (see list_environment_rows + list_terminal_steps_for_sessions).
 last_env_cursor: int = 0
 
 # Pending items by instance_id (for grouping)
@@ -178,10 +178,9 @@ def _assistant_message_from_stored_response(response: Any) -> Optional[Dict[str,
 def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a database row to the expected item format.
 
-    Accepts both the mapped format (from fetch_done_steps_with_context: keys
-    ``prompt``, ``env_state``, ``env_id``, ``session_end_time``, ``truncated``)
-    and the raw format (from list_session_step_rows: keys ``messages``,
-    ``meta_json``, ``session_id``, ``created_at``, ``is_truncated``).
+    Accepts the raw format from list_terminal_steps_for_sessions (keys
+    ``messages``/``prompt``, ``meta_json``/``env_state``, ``session_id``/``env_id``,
+    ``created_at``/``session_end_time``, ``is_truncated``/``truncated``).
     """
     # Parse stored prompt (JSON serialized messages list)
     prompt_str = row.get("prompt") or row.get("messages", "")
@@ -242,7 +241,7 @@ async def fetch_new_items_from_db(limit: Optional[int] = None) -> List[Dict[str,
     Phase 2: fetch their terminal steps via list_terminal_steps_for_sessions.
     Because mark_environment_finished is only called after all steps are
     is_terminal=True, finished=True guarantees all training-ready steps are
-    terminal — no late-flip, no lookback, no dedup.
+    terminal — no late-flip window, no dedup needed.
     """
     global data_manager, last_env_cursor
 

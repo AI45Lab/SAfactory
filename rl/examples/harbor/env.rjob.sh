@@ -137,7 +137,7 @@ export LLM_MAX_LENGTH="${LLM_MAX_LENGTH:-131072}"
 export LLM_TEMPERATURE="${LLM_TEMPERATURE:-1.0}"
 # Gateway runs on THIS training pod (started by the buffer server via
 # gateway_autostart). Default to this pod's IP so RJob pods can reach it.
-export AIEVOBOX_GATEWAY_HOST="${HARBOR_GATEWAY_HOST:-$(hostname -I | awk '{print $1}')}"
+export AIEVOBOX_GATEWAY_HOST="${HARBOR_GATEWAY_HOST:-$(hostname -i | awk '{print $1}')}"
 export AIEVOBOX_GATEWAY_PORT="${HARBOR_GATEWAY_PORT:-8000}"
 export AIEVOBOX_GATEWAY_BASE_URL="http://${AIEVOBOX_GATEWAY_HOST}:${AIEVOBOX_GATEWAY_PORT}/v1/sessions"
 

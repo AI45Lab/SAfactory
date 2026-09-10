@@ -433,25 +433,7 @@ class DataManager:
     async def close(self) -> None:
         """Close the storage strategy"""
         await self._strategy.close()
-    
-    async def fetch_done_steps_with_context(
-        self,
-        after_id: int = 0,
-        limit: int = 100,
-        lookback: int = 0
-    ) -> List[Dict]:
-        """Fetch completed steps for training data collection"""
-        if hasattr(self._strategy, 'fetch_done_steps_with_context'):
-            return await self._strategy.fetch_done_steps_with_context(self.job_id, after_id, limit, lookback)
-        return []
 
-    async def get_max_step_id(self) -> int:
-        """Get maximum primary key for pagination"""
-        if hasattr(self._strategy, 'get_max_step_id'):
-            return await self._strategy.get_max_step_id(self.job_id)
-        return 0
-
-    @property
     def buffer_stats(self) -> Optional[dict]:
         """Get buffer statistics (SQLite only)"""
         if hasattr(self._strategy, 'buffer_stats'):

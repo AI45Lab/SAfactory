@@ -60,7 +60,7 @@ export AIEVOBOX_AGENT_START_CONFIG="${PATCH_EVAL_GENERATED_DIR}/patcheval_start.
 export AIEVOBOX_AGENT_ROOT="${PATCH_EVAL_GENERATED_DIR}"
 # Per-task rollout rounds (NOT LLM steps per episode). Each CVE task is rolled
 # out this many times per rollout step.
-export AIEVOBOX_MAX_STEPS="${PATCHEVAL_MAX_STEPS:-1}"
+export AIEVOBOX_MAX_STEPS="${PATCHEVAL_MAX_STEPS:-60}"
 export AIEVOBOX_ENABLE_EVALUATION="${AIEVOBOX_ENABLE_EVALUATION:-1}"
 # RJob can scale across the cluster; default higher than docker's 1.
 # Raised from 4 to 16 to fix the rollout throughput bottleneck (SGLang was
@@ -81,7 +81,7 @@ export AIEVOBOX_AGENT_START_TIMEOUT_S="${PATCHEVAL_AGENT_START_TIMEOUT_S:-1200}"
 # 40 gives the model a real shot at explore+edit+test while keeping
 # throughput workable (~1.5hr/train step, ~6 days/100 epoch). max_tokens stays
 # at 6144 (gateway default) — not lowered, per user choice.
-export AIEVOBOX_GATEWAY_MAX_STEPS="${PATCHEVAL_GATEWAY_MAX_STEPS:-40}"
+export AIEVOBOX_GATEWAY_MAX_STEPS="${PATCHEVAL_GATEWAY_MAX_STEPS:-60}"
 
 # NOTE: geo3k_vl/env.sh (sourced above) already sets these to its own defaults
 # (e.g. RL_GLOBAL_BATCH_SIZE=512, RL_ROLLOUT_GROUP_BATCH_SIZE=64). Using
@@ -111,7 +111,7 @@ export LLM_TEMPERATURE="${LLM_TEMPERATURE:-1.0}"
 # Gateway runs on THIS training pod (started by the buffer server via
 # gateway_autostart). Default to this pod's IP so it always points at the live
 # gateway, not a stale hardcoded IP. Override via PATCHEVAL_GATEWAY_HOST.
-export AIEVOBOX_GATEWAY_HOST="${PATCHEVAL_GATEWAY_HOST:-$(hostname -I | awk '{print $1}')}"
+export AIEVOBOX_GATEWAY_HOST="${PATCHEVAL_GATEWAY_HOST:-$(hostname -i | awk '{print $1}')}"
 export AIEVOBOX_GATEWAY_PORT="${PATCHEVAL_GATEWAY_PORT:-8000}"
 export AIEVOBOX_GATEWAY_BASE_URL="http://${AIEVOBOX_GATEWAY_HOST}:${AIEVOBOX_GATEWAY_PORT}/v1/sessions"
 
