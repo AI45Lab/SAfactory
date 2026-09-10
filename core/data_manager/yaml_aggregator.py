@@ -140,12 +140,16 @@ async def sync_configs_to_db(
     job_id = data_manager.job_id
     set_job_db_processing_done(job_id, False)
     try:
-        existing = await data_manager.list_environment_rows(job_id=job_id)
+        existing = await data_manager.list_environment_rows(job_id=job_id, limit=1)
         if existing and resume:
+            unfinished = await data_manager.list_environment_rows(
+                job_id=job_id,
+                finished=False,
+            )
             unfinished_ids = [
                 str(row.get("env_id") or "")
-                for row in existing
-                if not bool(row.get("finished", False)) and row.get("env_id")
+                for row in unfinished
+                if row.get("env_id")
             ]
             if unfinished_ids:
                 await data_manager.delete_session_step_rows(
