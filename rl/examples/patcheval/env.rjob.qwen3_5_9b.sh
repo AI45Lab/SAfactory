@@ -87,8 +87,12 @@ export AIEVOBOX_GATEWAY_MAX_STEPS="${PATCHEVAL_GATEWAY_MAX_STEPS:-60}"
 # (e.g. RL_GLOBAL_BATCH_SIZE=512, RL_ROLLOUT_GROUP_BATCH_SIZE=64). Using
 # ${VAR:-default} here would keep geo3k's values, so we override
 # unconditionally. Override via PATCHEVAL_* if needed.
+# group_size=2 + rollout_batch=2 + num_rollout=10 -> 40 episodes total.
+# global_batch must be <= 40 or train_iters = 40//global_batch = 0 ->
+# Megatron OptimizerParamScheduler asserts lr_decay_steps>0 and crashes.
+# 8 keeps 4 groups/step (group_size=2) and yields train_iters=5.
 export RL_GROUP_SIZE="${PATCHEVAL_GROUP_SIZE:-2}"
-export RL_GLOBAL_BATCH_SIZE="${PATCHEVAL_GLOBAL_BATCH_SIZE:-64}"
+export RL_GLOBAL_BATCH_SIZE="${PATCHEVAL_GLOBAL_BATCH_SIZE:-8}"
 export RL_ROLLOUT_GROUP_BATCH_SIZE="${PATCHEVAL_ROLLOUT_GROUP_BATCH_SIZE:-2}"
 export SLIME_ROLLOUT_BATCH_SIZE="${PATCHEVAL_SLIME_ROLLOUT_BATCH_SIZE:-${RL_ROLLOUT_GROUP_BATCH_SIZE}}"
 export SLIME_GLOBAL_BATCH_SIZE="${PATCHEVAL_SLIME_GLOBAL_BATCH_SIZE:-${RL_GLOBAL_BATCH_SIZE}}"
