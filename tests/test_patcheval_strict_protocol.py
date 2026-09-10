@@ -5,7 +5,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from env.patcheval import strict_runner
+from env.patcheval import runner
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +26,7 @@ class PatchEvalStrictPromptTest(unittest.TestCase):
         functions = [
             {
                 "id": item["id"],
-                "original_code": strict_runner._process_original_code(item["snippet"]),
+                "original_code": runner._process_original_code(item["snippet"]),
             }
             for item in self.record["vul_func"]
         ]
@@ -51,7 +51,7 @@ class PatchEvalStrictPromptTest(unittest.TestCase):
                     self.record["cve_id"],
                     [],
                 )
-                actual = strict_runner._build_prompt(
+                actual = runner._build_prompt(
                     record=self.record,
                     vul_functions=self.record["vul_func"],
                     feedbacks={},
@@ -63,7 +63,7 @@ class PatchEvalStrictPromptTest(unittest.TestCase):
     def test_official_function_json_is_parsed(self) -> None:
         response = '```json\n[{"id":"vul_py_1","patch":"def fixed():\\n    return True"}]\n```'
         self.assertEqual(
-            strict_runner._parse_response(response),
+            runner._parse_response(response),
             {"vul_py_1": "def fixed():\n    return True"},
         )
 
