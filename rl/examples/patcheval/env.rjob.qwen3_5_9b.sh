@@ -88,11 +88,15 @@ export AIEVOBOX_GATEWAY_MAX_STEPS="${PATCHEVAL_GATEWAY_MAX_STEPS:-60}"
 # ${VAR:-default} here would keep geo3k's values, so we override
 # unconditionally. Override via PATCHEVAL_* if needed.
 # group_size=2 + rollout_batch=2 + num_rollout=10 -> 40 episodes total.
-# global_batch must be <= 40 or train_iters = 40//global_batch = 0 ->
-# Megatron OptimizerParamScheduler asserts lr_decay_steps>0 and crashes.
-# 8 keeps 4 groups/step (group_size=2) and yields train_iters=5.
+# global_batch_size must equal rollout_batch_size * group_size = 2*2 = 4 so
+# each rollout's samples exactly fill one global batch (1 train step/rollout,
+# no waste). This is the 27B invariant (gbs=64=8*8). A larger gbs (e.g. 8)
+# breaks it: each rollout yields 4 samples < 8 -> rollout.py:608 raises
+# "Not enough samples 4 for global_batch_size 8". Also keeps train_iters
+# = 40//4 = 10 > 0 so Megatron OptimizerParamScheduler's lr_decay_steps>0
+# assert passes.
 export RL_GROUP_SIZE="${PATCHEVAL_GROUP_SIZE:-2}"
-export RL_GLOBAL_BATCH_SIZE="${PATCHEVAL_GLOBAL_BATCH_SIZE:-8}"
+export RL_GLOBAL_BATCH_SIZE="${PATCHEVAL_GLOBAL_BATCH_SIZE:-4}"
 export RL_ROLLOUT_GROUP_BATCH_SIZE="${PATCHEVAL_ROLLOUT_GROUP_BATCH_SIZE:-2}"
 export SLIME_ROLLOUT_BATCH_SIZE="${PATCHEVAL_SLIME_ROLLOUT_BATCH_SIZE:-${RL_ROLLOUT_GROUP_BATCH_SIZE}}"
 export SLIME_GLOBAL_BATCH_SIZE="${PATCHEVAL_SLIME_GLOBAL_BATCH_SIZE:-${RL_GLOBAL_BATCH_SIZE}}"
