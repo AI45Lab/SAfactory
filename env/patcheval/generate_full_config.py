@@ -251,7 +251,7 @@ def write_configs(
     runner_name = {
         "claudecode": "claudecode_runner.py",
         "openhands": "openhands_runner.py",
-    }.get(baseline, "strict_runner.py")
+    }.get(baseline, "runner.py")
     runner_path = Path(__file__).resolve().with_name(runner_name)
     container_env = {
         "PYTHONDONTWRITEBYTECODE": "1",
