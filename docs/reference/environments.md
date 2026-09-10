@@ -16,6 +16,7 @@ The standard environment for onboarding, smoke tests, evaluation, and RL example
 | OpenClaw | `openclaw` | General OpenClaw CLI tasks | `env/openclaw/openclaw_config.yaml` | `env/openclaw/openclaw_start.yaml` | Docker | Optional |
 | OpenRT | `openrt` | Safety / red-team benchmark | `env/openrt/openrt_config.yaml` | `env/openrt/openrt_start.yaml` | Docker | `env/openrt/rule_evaluator.py` |
 | OpenRT RJob | `openrt` | Remote OpenRT benchmark | `env/openrt/openrt_config.rjob.yaml` | `env/openrt/openrt_start.rjob.yaml` | RJob | `env/openrt/rule_evaluator.py` |
+| Harbor | `harbor` | Generic Harbor tasks | `env/harbor/harbor_config.rjob.yaml` | `env/harbor/harbor_start.rjob.yaml` | Privileged RJob + DinD | `env/harbor/rule_evaluator.py` |
 | WildClawBench | `wildclawbench` | Community benchmark harness | `env/wildclawbench/wildclawbench_config.yaml` | `env/wildclawbench/wildclawbench_start.yaml` | Docker | Optional |
 | DTAP | `dtap` | DecodingTrust-Agent workloads | `env/dtap/dtap_config.yaml` | `env/dtap/dtap_start.yaml` | Docker | Optional |
 | ClawEnvKit | `clawenvkit` | Auto-ClawEval-style tasks | `env/clawenvkit/clawenvkit_config.yaml` | `env/clawenvkit/clawenvkit_start.yaml` | Docker | Optional |
@@ -124,6 +125,27 @@ The repository also contains RJob examples:
 - `env/openrt/openrt_start.rjob.yaml`
 
 Use those as references when creating Geo3K or custom RJob configs.
+
+## Harbor
+
+The Harbor environment runs Harbor directly in a privileged RJob container and
+starts a nested Docker daemon with `fuse-overlayfs` to build and run task
+containers. The runtime image excludes the runner, tasks, a selected model-agent
+runtime, and credentials; the start config injects the runner and smoke task.
+
+Files:
+
+- `env/harbor/runner.py`
+- `env/harbor/rule_evaluator.py`
+- `env/harbor/harbor_config.rjob.yaml`
+- `env/harbor/harbor_start.rjob.yaml`
+- `env/harbor/tasks/oracle-smoke/`
+
+Each dataset row maps to one Harbor trial. `oracle` is only the smoke-test
+default; the runner passes other Harbor agent and model values through to
+Harbor. See the [Harbor RJob environment](../../env/harbor/README.md) for image
+details, resource requirements, parameters, launch commands, and acceptance
+checks.
 
 ## WildClawBench
 

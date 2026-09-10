@@ -261,8 +261,8 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
             minimum=1.0,
         ),
         gateway_close_timeout_s=_float_at_least(
-            getattr(args, "gateway_close_timeout_s", 15.0),
-            default=15.0,
+            getattr(args, "gateway_close_timeout_s", 120.0),
+            default=120.0,
             minimum=1.0,
         ),
         gateway_close_retries=_int_at_least(
@@ -271,8 +271,8 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
             minimum=0,
         ),
         gateway_close_retry_backoff_s=_float_at_least(
-            getattr(args, "gateway_close_retry_backoff_s", 1.0),
-            default=1.0,
+            getattr(args, "gateway_close_retry_backoff_s", 10.0),
+            default=10.0,
             minimum=0.0,
         ),
         shutdown_timeout_s=_float_at_least(

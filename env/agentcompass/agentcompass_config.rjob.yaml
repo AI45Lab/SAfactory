@@ -1,0 +1,12 @@
+environments:
+  - env_name: agentcompass
+    # Shared laboratory RJob image. Deployment credentials and Gateway settings
+    # remain outside this repository.
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:agentcompass-02
+    env_num: 1
+    dataset: ./datasets/agentcompass_diagnostic.jsonl
+    dataset_load_mode: eager
+
+    env_params:
+      task_family: agentcompass
+      results_root: /app/results

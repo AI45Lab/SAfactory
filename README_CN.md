@@ -146,7 +146,7 @@ WT_SDK_PROFILE=test
 WT_SDK_PROFILE=production
 ```
 
-`test` 会选择 `landing_test` 和 `env_config_test`；`production`/`prod`
+`test` 会选择 `v2_landing_test` 和 `env_config_test`；`production`/`prod`
 会选择 `wind_tunnel_landing` 和 `evaluation_env_config`，从而保证轨迹数据和
 环境配置数据位于同一个环境。`storage_config` 中的显式表名会覆盖 profile，
 仅应在有意指定特殊表时使用。SAfactory 不访问 serving 表。

@@ -1,4 +1,4 @@
-# CyberGym + OpenHands controller image.
+# Unified CyberGym controller image for OpenHands, OpenCode, Codex, and Claude Code.
 #
 # CyberGym and its example agents are cloned from their upstream repositories
 # during the image build. Safactory's small controller runtime is copied from
@@ -24,6 +24,7 @@ ARG NODE_VERSION=22.23.1
 ARG POETRY_VERSION=1.8.5
 ARG CYBERGYM_REPOSITORY=https://github.com/sunblaze-ucb/cybergym.git
 ARG CYBERGYM_REF=main
+ARG BUILD_OPENHANDS=true
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -110,25 +111,47 @@ RUN mkdir -p /workspace \
 
 WORKDIR /workspace/cybergym
 
-# Populate examples/agents and all of its nested submodules from the revisions
-# recorded by the cloned CyberGym repository.
-RUN git submodule update --init --recursive examples/agents
+# Agent adapters are copied from this checkout below. Only a combined
+# OpenHands image needs the large recursively nested example-agent submodule.
+RUN if [[ "${BUILD_OPENHANDS}" == "true" ]]; then \
+        git submodule update --init --recursive examples/agents; \
+    else \
+        mkdir -p examples/agents; \
+    fi
 
-# Fail early with an actionable error if the agent submodules are incomplete.
-RUN test -f examples/agents/openhands/run.py \
-    && test -f examples/agents/openhands/openhands-repo/Makefile \
+# Use the adapters from this Safactory checkout. The CyberGym revision can
+# point at an older examples/agents commit that predates these adapters.
+COPY cybergym-agent-examples/codex/run.py /workspace/cybergym/examples/agents/codex/run.py
+COPY cybergym-agent-examples/opencode/run.py /workspace/cybergym/examples/agents/opencode/run.py
+COPY cybergym-agent-examples/claude_code/run.py /workspace/cybergym/examples/agents/claude_code/run.py
+
+# Codex is the default controller target and does not require the large nested
+# OpenHands repository. Enable BUILD_OPENHANDS only for a combined image.
+RUN test -f examples/agents/codex/run.py \
+    && test -f examples/agents/opencode/run.py \
+    && test -f examples/agents/claude_code/run.py \
     || { \
-        echo "OpenHands sources are missing." >&2; \
-        echo "CyberGym example-agent submodules could not be initialized." >&2; \
+        echo "Codex/OpenCode/Claude Code CyberGym adapters are missing." >&2; \
         exit 1; \
-    }
+    }; \
+    if [[ "${BUILD_OPENHANDS}" == "true" ]]; then \
+        test -f examples/agents/openhands/run.py \
+        && test -f examples/agents/openhands/openhands-repo/Makefile \
+        || { \
+            echo "BUILD_OPENHANDS=true but the nested OpenHands sources are missing." >&2; \
+            exit 1; \
+        }; \
+    fi
 
 RUN python3.12 -m pip install --upgrade pip setuptools wheel \
     && python3.12 -m pip install -e '.[dev,server]'
 
-# Build the pinned OpenHands source while deliberately omitting Playwright.
-RUN make -C examples/agents/openhands/openhands-repo \
-    build INSTALL_PLAYWRIGHT=false
+# Build OpenHands only when explicitly requested. Codex and OpenCode execute
+# in their own agent images and need no OpenHands Poetry environment.
+RUN if [[ "${BUILD_OPENHANDS}" == "true" ]]; then \
+        make -C examples/agents/openhands/openhands-repo \
+          build INSTALL_PLAYWRIGHT=false; \
+    fi
 
 # Smoke-check the packaged control-plane dependencies. This does not require
 # access to the host Docker daemon during image build.
@@ -144,8 +167,14 @@ RUN python3.12 -c "import cybergym, docker, fastapi, httpx, sqlalchemy, tomli_w;
 # Bake the single episode entrypoint and its preparation/result helpers into
 # the controller image. Docker and RJob modes execute the same runner.sh.
 RUN mkdir -p /opt/safactory/cybergym
-COPY runner.sh /opt/safactory/cybergym/runner.sh
-COPY runner_lib/ /opt/safactory/cybergym/
+COPY env/cybergym/runner.sh /opt/safactory/cybergym/runner.sh
+COPY cybergym/common.sh /opt/safactory/cybergym/common.sh
+COPY cybergym/docker_prepare.sh /opt/safactory/cybergym/docker_prepare.sh
+COPY cybergym/rjob_prepare.sh /opt/safactory/cybergym/rjob_prepare.sh
+COPY cybergym/episode_prepare.py /opt/safactory/cybergym/episode_prepare.py
+COPY cybergym/openhands_prepare.py /opt/safactory/cybergym/openhands_prepare.py
+COPY cybergym/agent_dispatch.py /opt/safactory/cybergym/agent_dispatch.py
+COPY cybergym/result_writer.py /opt/safactory/cybergym/result_writer.py
 RUN chmod 0755 \
       /opt/safactory/cybergym/runner.sh \
       /opt/safactory/cybergym/common.sh \
@@ -153,6 +182,7 @@ RUN chmod 0755 \
       /opt/safactory/cybergym/rjob_prepare.sh \
       /opt/safactory/cybergym/episode_prepare.py \
       /opt/safactory/cybergym/openhands_prepare.py \
+      /opt/safactory/cybergym/agent_dispatch.py \
       /opt/safactory/cybergym/result_writer.py \
     && bash -n /opt/safactory/cybergym/runner.sh \
     && bash -n /opt/safactory/cybergym/common.sh \
@@ -161,6 +191,7 @@ RUN chmod 0755 \
     && python3.12 -m py_compile \
       /opt/safactory/cybergym/episode_prepare.py \
       /opt/safactory/cybergym/openhands_prepare.py \
+      /opt/safactory/cybergym/agent_dispatch.py \
       /opt/safactory/cybergym/result_writer.py
 
 # Runtime files belong in bind-mounted directories under the CyberGym root. For

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -20,6 +21,10 @@ class RewardCommitter:
         db_url: str,
         storage_type: str = "sqlite",
         data_manager: Any | None = None,
+        gateway_client: Any | None = None,
+        llm_model: str = "",
+        db_read_retries: int = 3,
+        db_buffer_interval_s: float = 10.0,
     ) -> None:
         self.storage_type = str(storage_type or "sqlite").strip().lower()
         if self.storage_type not in {"sqlite", "cloud"}:
@@ -30,6 +35,10 @@ class RewardCommitter:
                 raise ValueError("RewardCommitter cloud mode requires a data manager")
             data_manager = DataManager(job_id="", storage_type="sqlite", db_url=db_url)
         self.data_manager = data_manager
+        self.gateway_client = gateway_client
+        self.llm_model = str(llm_model or "")
+        self.db_read_retries = max(0, int(db_read_retries))
+        self.db_buffer_interval_s = max(0.0, float(db_buffer_interval_s))
 
     async def commit(
         self,
@@ -96,11 +105,7 @@ class RewardCommitter:
             EvalStatus.TRUNCATED,
             EvalStatus.TRUNCATED.value,
         }
-        rows = await self.data_manager.list_session_steps(
-            session_id,
-            checkout_latest=True,
-        )
-        terminal = select_reward_target(rows)
+        rows, terminal = await self._read_reward_target(session_id)
         log.info(
             "EVAL REWARD rows: session=%s total_rows=%d terminal_found=%s",
             session_id,
@@ -187,6 +192,63 @@ class RewardCommitter:
                 f"Cannot commit evaluation reward: session row was not updated for {session_id}"
             )
 
+    async def _read_reward_target(
+        self,
+        session_id: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        use_gateway_target = self.gateway_client is not None and bool(self.llm_model)
+        target_step_id: int | None = None
+        if use_gateway_target:
+            try:
+                target_step_id = await self.gateway_client.get_latest_success_step(
+                    session_id,
+                    self.llm_model,
+                )
+            except Exception as exc:
+                log.warning(
+                    "EVAL REWARD gateway target lookup failed; using DB fallback: session=%s model=%s error=%s",
+                    session_id,
+                    self.llm_model,
+                    exc,
+                )
+
+        rows: list[dict[str, Any]] = []
+        if target_step_id is not None:
+            for attempt in range(self.db_read_retries + 1):
+                rows = await self.data_manager.list_session_steps(
+                    session_id,
+                    checkout_latest=True,
+                )
+                target = select_reward_target(
+                    rows,
+                    step_id=target_step_id,
+                    llm_model=self.llm_model,
+                    require_http_200=True,
+                )
+                if target is not None:
+                    return rows, target
+                if attempt < self.db_read_retries:
+                    await asyncio.sleep(self.db_buffer_interval_s)
+            log.warning(
+                "EVAL REWARD gateway target not visible after retries; using DB fallback: "
+                "session=%s model=%s step_id=%s retries=%d",
+                session_id,
+                self.llm_model,
+                target_step_id,
+                self.db_read_retries,
+            )
+        else:
+            rows = await self.data_manager.list_session_steps(
+                session_id,
+                checkout_latest=True,
+            )
+
+        return rows, select_reward_target(
+            rows,
+            llm_model=self.llm_model if use_gateway_target else None,
+            require_http_200=use_gateway_target,
+        )
+
     def _build_reward_metadata(self, *, session_id: str, eval_result: EvalResult) -> str:
         return json.dumps(
             {
@@ -248,12 +310,13 @@ async def _update_persisted_row(
     row: dict[str, Any],
     updates: dict[str, Any],
 ) -> int:
-    record_id = str(row.get("record_id") or row.get("id") or "")
     update_rows = getattr(data_manager, "update_session_step_rows", None)
-    if record_id and callable(update_rows):
+    if callable(update_rows):
         return await update_rows(
-            job_id=str(row.get("job_id") or "") or None,
-            record_id=record_id,
+            job_id=row.get("job_id") or None,
+            session_id=str(row.get("session_id") or ""),
+            step_id=int(row.get("step_id") or 0),
+            llm_model=str(row.get("llm_model") or "") or None,
             updates=updates,
         )
     return await data_manager.update_session_step(

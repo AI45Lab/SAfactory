@@ -37,6 +37,15 @@ class StreamTelemetryStats:
     upstream_cancelled: bool = False
 
 
+@dataclass(frozen=True)
+class _SessionFlushBarrier:
+    session_id: str
+    future: asyncio.Future[None]
+
+
+TelemetryQueueItem = tuple[GatewaySessionBinding, GatewayTelemetryRecord] | _SessionFlushBarrier
+
+
 class TelemetryRecorder:
     def __init__(self, cfg: GatewayConfig, storage: GatewayStorage):
         self.cfg = cfg
@@ -45,7 +54,7 @@ class TelemetryRecorder:
         writer_count = int(cfg.telemetry_writer_count) if self._async_writes else 1
         queue_capacity = max(writer_count, int(cfg.max_queue_size))
         base_capacity, extra = divmod(queue_capacity, writer_count)
-        self._queues: list[asyncio.Queue[tuple[GatewaySessionBinding, GatewayTelemetryRecord]]] = [
+        self._queues: list[asyncio.Queue[TelemetryQueueItem]] = [
             asyncio.Queue(maxsize=base_capacity + (1 if index < extra else 0))
             for index in range(writer_count)
         ]
@@ -64,6 +73,7 @@ class TelemetryRecorder:
         self._session_truncated_total: defaultdict[str, int] = defaultdict(int)
         self._synthetic_stop_total: defaultdict[str, int] = defaultdict(int)
         self._truncated_sessions: set[tuple[str, str]] = set()
+        self._latest_success_step: dict[tuple[str, str], int] = {}
 
     async def start(self) -> None:
         if self._running:
@@ -125,6 +135,7 @@ class TelemetryRecorder:
         stream_stats: StreamTelemetryStats | None = None,
         request_headers: dict[str, str] | None = None,
         response_text: str | None = None,
+        status_code: int = 200,
     ) -> None:
         await self._record_binding(binding, target, error=False)
         record = await self._build_record(
@@ -133,7 +144,7 @@ class TelemetryRecorder:
             target=target,
             request_body=request_body,
             response_body=response_body,
-            status_code=200,
+            status_code=status_code,
             latency_ms=latency_ms,
             upstream_latency_ms=upstream_latency_ms,
             stream_stats=stream_stats,
@@ -141,6 +152,13 @@ class TelemetryRecorder:
             response_text=response_text,
         )
         await self._enqueue(binding, record)
+        if record.status_code == 200:
+            async with self._lock:
+                key = (record.session_id, record.requested_model)
+                self._latest_success_step[key] = max(
+                    record.seq_id,
+                    self._latest_success_step.get(key, 0),
+                )
 
     async def enqueue_failure(
         self,
@@ -174,6 +192,35 @@ class TelemetryRecorder:
             response_text=response_text,
         )
         await self._enqueue(binding, record)
+
+    async def wait_for_session_flush(self, binding: GatewaySessionBinding) -> None:
+        if self._writer_tasks:
+            future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            await self._queue_for_session(binding.session_id).put(
+                _SessionFlushBarrier(binding.session_id, future)
+            )
+            await future
+        flush_session = getattr(self.storage, "flush_session", None)
+        if callable(flush_session):
+            await flush_session(binding)
+
+    async def latest_success_step_id(self, session_id: str, model: str) -> int | None:
+        async with self._lock:
+            return self._latest_success_step.get((session_id, model))
+
+    async def clear_session_cache(self, session_ids: list[str]) -> int:
+        targets = set(session_ids)
+        async with self._lock:
+            seq_keys = [key for key in self._seq_by_session_model if key[0] in targets]
+            latest_keys = [key for key in self._latest_success_step if key[0] in targets]
+            truncated_keys = [key for key in self._truncated_sessions if key[0] in targets]
+            for key in seq_keys:
+                self._seq_by_session_model.pop(key, None)
+            for key in latest_keys:
+                self._latest_success_step.pop(key, None)
+            for key in truncated_keys:
+                self._truncated_sessions.discard(key)
+            return len(seq_keys) + len(latest_keys) + len(truncated_keys)
 
     async def enqueue_session_close(
         self,
@@ -251,7 +298,7 @@ class TelemetryRecorder:
                 except asyncio.TimeoutError:
                     continue
 
-                batch = [first]
+                batch: list[TelemetryQueueItem] = [first]
                 deadline = asyncio.get_running_loop().time() + interval_s
                 while len(batch) < batch_size:
                     try:
@@ -267,18 +314,24 @@ class TelemetryRecorder:
                         break
 
                 try:
-                    await self._write_batch(batch, writer_index=writer_index)
-                    self.flushed_total += len(batch)
+                    await self._write_queue_items(batch, writer_index=writer_index)
+                    self.flushed_total += sum(
+                        isinstance(item, tuple) for item in batch
+                    )
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
                     log.exception(
                         "Gateway telemetry batch write failed: writer=%d records=%d",
                         writer_index,
-                        len(batch),
+                        sum(isinstance(item, tuple) for item in batch),
                     )
-                    for _binding, _record in batch:
-                        await self._drop("write_failed")
+                    for item in batch:
+                        if isinstance(item, _SessionFlushBarrier):
+                            if not item.future.done():
+                                item.future.set_exception(exc)
+                        else:
+                            await self._drop("write_failed")
                 finally:
                     for _ in batch:
                         queue.task_done()
@@ -288,7 +341,7 @@ class TelemetryRecorder:
     async def flush_once(self, *, drain_all: bool = False) -> None:
         for writer_index, queue in enumerate(self._queues):
             limit = queue.qsize() if drain_all else self.cfg.telemetry_batch_size
-            batch: list[tuple[GatewaySessionBinding, GatewayTelemetryRecord]] = []
+            batch: list[TelemetryQueueItem] = []
             for _ in range(max(0, limit)):
                 try:
                     batch.append(queue.get_nowait())
@@ -297,8 +350,13 @@ class TelemetryRecorder:
             if not batch:
                 continue
             try:
-                await self._write_batch(batch, writer_index=writer_index)
-                self.flushed_total += len(batch)
+                await self._write_queue_items(batch, writer_index=writer_index)
+                self.flushed_total += sum(isinstance(item, tuple) for item in batch)
+            except Exception as exc:
+                for item in batch:
+                    if isinstance(item, _SessionFlushBarrier) and not item.future.done():
+                        item.future.set_exception(exc)
+                raise
             finally:
                 for _ in batch:
                     queue.task_done()
@@ -440,11 +498,30 @@ class TelemetryRecorder:
     def _queue_for_session(
         self,
         session_id: str,
-    ) -> asyncio.Queue[tuple[GatewaySessionBinding, GatewayTelemetryRecord]]:
+    ) -> asyncio.Queue[TelemetryQueueItem]:
         if len(self._queues) == 1:
             return self._queues[0]
         shard = zlib.crc32(session_id.encode("utf-8")) % len(self._queues)
         return self._queues[shard]
+
+    async def _write_queue_items(
+        self,
+        items: list[TelemetryQueueItem],
+        *,
+        writer_index: int,
+    ) -> None:
+        records: list[tuple[GatewaySessionBinding, GatewayTelemetryRecord]] = []
+        for item in items:
+            if isinstance(item, tuple):
+                records.append(item)
+                continue
+            if records:
+                await self._write_batch(records, writer_index=writer_index)
+                records = []
+            if not item.future.done():
+                item.future.set_result(None)
+        if records:
+            await self._write_batch(records, writer_index=writer_index)
 
     async def _write_batch(
         self,

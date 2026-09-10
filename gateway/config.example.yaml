@@ -9,11 +9,11 @@ storage_config:
   db_url: sqlite://env_trajs.db
   # Cloud mode uses wt-data-gateway default database URIs.
   # Best practice: omit table names here and set only WT_SDK_PROFILE in .env.
-  # WT_SDK_PROFILE=test selects landing_test and env_config_test;
+  # WT_SDK_PROFILE=test selects v2_landing_test and env_config_test;
   # WT_SDK_PROFILE=production/prod selects wind_tunnel_landing and
   # evaluation_env_config. Explicit table names override the profile and can
   # accidentally mix test and production data; use them only when intentional.
-  # landing_table: landing_test
+  # landing_table: v2_landing_test
   # env_config_table: env_config_test
 
 max_inflight_requests: 2048
@@ -26,6 +26,10 @@ upstream_no_proxy:
   - localhost
 per_llm_route_max_concurrency: 256
 per_session_max_inflight: 64
+close_mode: soft_close
+# Close stays in memory as "closing" until telemetry is flushed or this deadline expires.
+session_close_timeout_s: 90
+session_close_retry_after_s: 10
 
 telemetry:
   mode: strict
