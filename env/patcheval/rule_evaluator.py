@@ -35,17 +35,40 @@ async def evaluate_rule(
     official_record = official_record if isinstance(official_record, dict) else {}
     language = str(official_record.get("programming_language") or "").strip()
 
+    # Pre-gate (relaxed): align with PatchEval's native scoring semantics.
+    # The official bench has NO upfront rejection of empty/missing patches -- an
+    # empty patch flows through the Docker oracle and scores 0 (validation_fail),
+    # it is a legitimate negative sample, NOT "no data". Returning FAILED here
+    # made RewardCommitter refuse to write a reward (reward stays NULL), which
+    # silently dropped these trajectories and starved RL of negative samples.
+    # So instead of FAILED/null, return SUCCEEDED with score 0 so a reward of 0.0
+    # is committed and the trajectory can join a GRPO group.
     if not cve_id or not patch or not language:
-        return EvalResult.failed(
+        missing = []
+        if not cve_id:
+            missing.append("cve_id")
+        if not patch:
+            missing.append("patch")
+        if not language:
+            missing.append("language")
+        return EvalResult(
             session_id=request.session_id,
             eval_id=spec.eval_id,
             method=spec.method.value,
-            reason="PatchEval runner did not provide cve_id, patch, and programming language",
+            status=EvalStatus.SUCCEEDED.value,
+            raw_score=0.0,
+            normalized_score_10=0.0,
+            reason=(
+                "PatchEval pre-gate: missing "
+                + ", ".join(missing)
+                + " -- scored 0 (no valid patch produced)"
+            ),
             artifacts={
                 "bench": "patcheval",
                 "cve_id": cve_id or None,
                 "patch_generated": bool(patch),
                 "language": language or None,
+                "validation_type": "validation_fail",
                 "metrics": metrics,
             },
         )
@@ -76,28 +99,45 @@ async def evaluate_rule(
             fallback = _fallback_from_runner_metrics(request, spec, metrics, exc)
             if fallback is not None:
                 return fallback
-        return EvalResult.failed(
+        # Align with PatchEval native semantics: an exception during official
+        # evaluation (typically Docker unavailable on the rjob coordinator) is
+        # a validation failure, NOT "no data". Score 0 so a reward of 0.0 is
+        # committed and the trajectory joins a GRPO group instead of being
+        # silently dropped (FAILED -> RewardCommitter refuses -> reward NULL).
+        return EvalResult(
             session_id=request.session_id,
             eval_id=spec.eval_id,
             method=spec.method.value,
-            reason="official PatchEval evaluation raised an exception",
+            status=EvalStatus.SUCCEEDED.value,
+            raw_score=0.0,
+            normalized_score_10=0.0,
+            reason="official PatchEval evaluation raised an exception (Docker unavailable?) -- scored 0",
             error_text=str(exc),
-            artifacts={"bench": "patcheval", "cve_id": cve_id, "patch": patch},
+            artifacts={"bench": "patcheval", "cve_id": cve_id, "patch": patch, "validation_type": "validation_fail"},
         )
 
     strict_success = validation_type == "Repair Success"
     if poc_passed is None:
-        return EvalResult.failed(
+        # Align with PatchEval native semantics: the bench swallows the
+        # container-start exception (run_evaluation.py) and treats an
+        # unstartable CVE container as validation_fail -> 0, a legitimate
+        # negative sample. Returning FAILED here made RewardCommitter refuse
+        # to write a reward, silently dropping these patch-producing
+        # trajectories and starving RL of negative samples.
+        return EvalResult(
             session_id=request.session_id,
             eval_id=spec.eval_id,
             method=spec.method.value,
-            reason="official PatchEval evaluator could not start the CVE container",
+            status=EvalStatus.SUCCEEDED.value,
+            raw_score=0.0,
+            normalized_score_10=0.0,
+            reason="official PatchEval evaluator could not start the CVE container -- scored 0 (validation_fail)",
             error_text=_trim_log(poc_log or "unknown Docker evaluation error"),
             artifacts={
                 "bench": "patcheval",
                 "cve_id": cve_id,
                 "patch": patch,
-                "validation_type": validation_type,
+                "validation_type": "validation_fail",
                 "poc_log": _trim_log(poc_log),
                 "unit_test_log": _trim_log(unit_test_log),
             },

@@ -105,7 +105,7 @@ export LLM_TEMPERATURE="${LLM_TEMPERATURE:-1.0}"
 # Gateway runs on THIS training pod (started by the buffer server via
 # gateway_autostart). Default to this pod's IP so it always points at the live
 # gateway, not a stale hardcoded IP. Override via PATCHEVAL_GATEWAY_HOST.
-export AIEVOBOX_GATEWAY_HOST="${PATCHEVAL_GATEWAY_HOST:-$(hostname -I | awk '{print $1}')}"
+export AIEVOBOX_GATEWAY_HOST="${PATCHEVAL_GATEWAY_HOST:-$(hostname -i | awk '{print $1}')}"
 export AIEVOBOX_GATEWAY_PORT="${PATCHEVAL_GATEWAY_PORT:-8000}"
 export AIEVOBOX_GATEWAY_BASE_URL="http://${AIEVOBOX_GATEWAY_HOST}:${AIEVOBOX_GATEWAY_PORT}/v1/sessions"
 
