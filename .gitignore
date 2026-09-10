@@ -14,7 +14,6 @@ logs/
 *.db
 *.db-shm
 *.db-wal
-*.npz
 
 # Local scratch exports
 tmp/
