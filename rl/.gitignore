@@ -1,0 +1,7 @@
+# Local-only utility / one-off experiment scripts (kept on disk, not tracked).
+# - cleanup_rl.sh: one-shot "kill all RL residual processes" helper.
+# - restart_pool_test.sh: one-off POOL_SIZE sweep experiment (hardcoded 27B).
+# - collect_pool_metrics.sh: companion metrics collector for the sweep above.
+cleanup_rl.sh
+restart_pool_test.sh
+collect_pool_metrics.sh

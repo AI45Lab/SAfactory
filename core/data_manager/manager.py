@@ -314,6 +314,21 @@ class DataManager:
             checkout_latest=checkout_latest,
         ))
 
+    async def list_terminal_steps_for_sessions(
+        self,
+        session_ids: List[str],
+        *,
+        job_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return terminal step rows for a batch of sessions (used by the RL buffer)."""
+        if not session_ids:
+            return []
+        return await self._strategy.list_session_step_rows(SessionStepQuery(
+            job_id=job_id or self.job_id or None,
+            session_ids=tuple(session_ids),
+            is_terminal=True,
+        ))
+
     async def update_session_step_rows(
         self,
         *,
@@ -418,24 +433,7 @@ class DataManager:
     async def close(self) -> None:
         """Close the storage strategy"""
         await self._strategy.close()
-    
-    async def fetch_done_steps_with_context(
-        self,
-        after_id: int = 0,
-        limit: int = 100
-    ) -> List[Dict]:
-        """Fetch completed steps for training data collection"""
-        if hasattr(self._strategy, 'fetch_done_steps_with_context'):
-            return await self._strategy.fetch_done_steps_with_context(self.job_id, after_id, limit)
-        return []
 
-    async def get_max_step_id(self) -> int:
-        """Get maximum primary key for pagination"""
-        if hasattr(self._strategy, 'get_max_step_id'):
-            return await self._strategy.get_max_step_id(self.job_id)
-        return 0
-
-    @property
     def buffer_stats(self) -> Optional[dict]:
         """Get buffer statistics (SQLite only)"""
         if hasattr(self._strategy, 'buffer_stats'):

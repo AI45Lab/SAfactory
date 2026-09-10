@@ -1,0 +1,105 @@
+"""Structured timing log for offline analysis.
+
+Writes one JSON line per event to a single append-only file so the buffer
+server (rollout side) and the slime generator (training side) can both record
+into the same log even when they run as separate processes.
+
+Default path is ``${LOG_ROOT}/timing.jsonl`` (shared by both sides via the
+env.sh), overridable with ``SAFACTORY_TIMING_LOG``. Each line carries an
+``event`` field and a monotonic ``ts`` (epoch seconds) plus whatever fields
+the caller passes. Lines are flushed immediately so a crash never loses
+already-recorded events.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from typing import Any, Dict, Optional
+
+_DEFAULT_LOG_NAME = "timing.jsonl"
+_file_handle = None
+_file_path: Optional[str] = None
+
+# Module-level enable switch. RL runs rely on timing data being on by
+# default; non-RL callers (e.g. a manually-started gateway) can opt out with
+# SAFACTORY_TIMING_LOG_ENABLED=0. set_enabled() lets a process flip it at
+# runtime (e.g. from loaded config) without touching env vars.
+_enabled = str(os.environ.get("SAFACTORY_TIMING_LOG_ENABLED", "1")).strip().lower() not in (
+    "0", "false", "no", "off",
+)
+
+
+def set_enabled(value: bool) -> None:
+    """Enable/disable timing emission for this process.
+
+    Emission is on by default (RL depends on it). Call ``set_enabled(False)``
+    to silence this process, e.g. a non-RL gateway that pulled in the module
+    but does not want per-step timing records.
+    """
+    global _enabled
+    _enabled = bool(value)
+
+
+def _resolve_path() -> str:
+    override = os.environ.get("SAFACTORY_TIMING_LOG", "").strip()
+    if override:
+        return override
+    log_root = os.environ.get("LOG_ROOT", "").strip() or "/tmp"
+    # Prefer the current run directory (written by run_slime_generator.sh /
+    # run_buffer_server.sh) so timing events are per-run instead of
+    # accumulating in a single root-level file.
+    current_run_file = os.path.join(log_root, ".current_run")
+    try:
+        with open(current_run_file, "r") as f:
+            run_dir = f.read().strip()
+        if run_dir and os.path.isdir(run_dir):
+            return os.path.join(run_dir, _DEFAULT_LOG_NAME)
+    except Exception:
+        pass
+    return os.path.join(log_root, _DEFAULT_LOG_NAME)
+
+
+def _ensure_handle():
+    global _file_handle, _file_path
+    path = _resolve_path()
+    if _file_handle is not None and _file_path == path:
+        return _file_handle
+    if _file_handle is not None:
+        try:
+            _file_handle.flush()
+            _file_handle.close()
+        except Exception:
+            pass
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    # Line-buffered append: each write is a full line, flushed right away.
+    _file_handle = open(path, "a", buffering=1, encoding="utf-8")
+    _file_path = path
+    return _file_handle
+
+
+def emit(event: str, **fields: Any) -> None:
+    """Append one timing event as a JSON line.
+
+    Never raises: logging must not affect the training/rollout process.
+    Silently drops the event when the module is disabled (see set_enabled() /
+    SAFACTORY_TIMING_LOG_ENABLED).
+    """
+    if not _enabled:
+        return
+    try:
+        record: Dict[str, Any] = {"event": event, "ts": time.time()}
+        record.update(fields)
+        line = json.dumps(record, ensure_ascii=False, default=str)
+        handle = _ensure_handle()
+        handle.write(line + "\n")
+        handle.flush()
+    except Exception:
+        # Best-effort: drop on the floor rather than killing the run.
+        pass
+
+
+def now_s() -> float:
+    """Monotonic seconds, for callers that measure spans themselves."""
+    return time.perf_counter()

@@ -13,6 +13,8 @@ shared TrajectoryMaskBuilder in memory — no HTTP round-trip needed.
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import copy
+import json
 import logging
 import os
 import sys
@@ -71,8 +73,11 @@ if MASK_DIR not in sys.path:
     sys.path.insert(0, MASK_DIR)
 
 from trajectory_mask_builder import PreparedPrompt, TrajectoryMaskBuilder
+from chat_template_adapter import create_adapter
 
 app = FastAPI(title="LLM Proxy Server", debug=True)
+
+
 
 def _resolve_proxy_workers() -> int:
     default_workers = min(32, max(8, os.cpu_count() or 8))
@@ -108,6 +113,7 @@ class ProxyState:
         self.tokenizer = None
         self.processor: Optional[Any] = None
         self.trajectory_mask_builder: Optional[TrajectoryMaskBuilder] = None
+        self.chat_template_adapter = None  # type: ignore[type-arg]
         self.remote_engine_url: Optional[str] = None  # Base URL without /v1
         self._http_client: Optional[httpx.AsyncClient] = None
         self._builder_executor: Optional[ThreadPoolExecutor] = None
@@ -183,6 +189,17 @@ async def proxy_chat_completions(request: Request):
         raise HTTPException(status_code=400, detail=f"Invalid JSON body: {e}")
 
     messages = payload.get("messages", [])
+    # OpenHands sends OpenAI-style `tools` so the model sees the real tool
+    # definitions (terminal/file_editor/...). Without passing them through,
+    # the chat template never renders the <tools> system block and the model
+    # hallucinates tool names (e.g. `bash` instead of `terminal`), so OpenHands
+    # rejects every call ("Tool 'Bash' not found") and the agent never produces
+    # a patch. Forward them to the mask builder so the prompt (and thus the
+    # recorded trajectory) includes the tools system block.
+    tools = payload.get("tools")
+    # Normalize messages via the chat template adapter (e.g. Qwen needs
+    # tool_calls.arguments as dict and content as string).
+    messages = STATE.chat_template_adapter.normalize_messages(messages)
 
     # Get sampling params from payload or use defaults
     temperature = payload.get("temperature", STATE.temperature)
@@ -197,7 +214,8 @@ async def proxy_chat_completions(request: Request):
         builder_executor,
         STATE.trajectory_mask_builder.prepare_generate_input,
         session_id,
-        messages
+        messages,
+        tools,
     )
     input_ids = prep.input_ids
     image_data = prep.image_data
@@ -250,12 +268,23 @@ async def proxy_chat_completions(request: Request):
     http_client = STATE.get_http_client()
     url = f"{STATE.remote_engine_url}/generate"
 
+    # Session affinity: when the SGLang router runs the `consistent_hashing`
+    # policy, it pins all turns of a session (keyed by this header) to one
+    # worker so the worker's RadixAttention prefix tree keeps reusing the
+    # session's growing history. Without it the default cache_aware policy
+    # scatters turns across workers and ~78% of prefills recompute the full
+    # prompt from scratch. Harmless when the router uses a non-hashing policy
+    # (unknown header is ignored).
+    gen_headers: dict[str, str] = {"Content-Type": "application/json"}
+    if session_id:
+        gen_headers["X-SMG-Routing-Key"] = session_id
+
     try:
         logger.debug(f"Calling /generate: input_ids length={len(input_ids)}, max_new_tokens={max_new_tokens}")
         resp = await http_client.post(
             url,
             json=generate_payload,
-            headers={"Content-Type": "application/json"}
+            headers=gen_headers
         )
         resp.raise_for_status()
         resp_json = resp.json()
@@ -279,9 +308,25 @@ async def proxy_chat_completions(request: Request):
     # Get assistant_text from generate API response (already decoded)
     assistant_text = resp_json.get("text", "")
 
-    # Save trajectory
+    # Convert model text-format tool calls into OpenAI `tool_calls` so
+    # OpenHands executes them (e.g. Qwen emits <function=...> as text).
+    msg_content, tool_calls, tool_finish = STATE.chat_template_adapter.parse_tool_calls(assistant_text)
+    if tool_calls:
+        message_obj = {"role": "assistant", "content": msg_content, "tool_calls": tool_calls}
+        resp_finish_reason = tool_finish
+    else:
+        message_obj = {"role": "assistant", "content": assistant_text}
+        resp_finish_reason = finish_reason
+
+    # Save trajectory. Pass a NORMALIZED copy of message_obj so the trie
+    # stores the same message format as the DB after normalization. The raw
+    # assistant_text is still used for token/mask computation. We normalize a
+    # COPY so the response sent to OpenHands keeps the original format.
     if STATE.trajectory_mask_builder is not None:
         try:
+            trie_msg = STATE.chat_template_adapter.normalize_messages(
+                [copy.deepcopy(message_obj)]
+            )[0]
             await loop.run_in_executor(
                 builder_executor,
                 STATE.trajectory_mask_builder.record_generation,
@@ -290,6 +335,7 @@ async def proxy_chat_completions(request: Request):
                 output_logprobs,
                 assistant_text,
                 finish_reason,
+                trie_msg,
             )
         except Exception as e:
             import traceback
@@ -303,11 +349,8 @@ async def proxy_chat_completions(request: Request):
         "model": "proxy",
         "choices": [{
             "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": assistant_text
-            },
-            "finish_reason": finish_reason
+            "message": message_obj,
+            "finish_reason": resp_finish_reason
         }],
         "usage": {
             "prompt_tokens": len(input_ids),

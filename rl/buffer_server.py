@@ -22,6 +22,7 @@ if _SCRIPT_DIR not in sys.path:
 
 from utils import get_env
 import gateway_autostart
+from timing_log import emit as timing_emit
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -34,10 +35,21 @@ if AIEVOBOX_ROOT not in sys.path:
 
 from core.data_manager.manager import DataManager
 
-# Setup logging
-LOG_DIR = os.path.join(AIEVOBOX_ROOT, "logs")
+# Setup logging — write into the per-run directory (same place as slime.log,
+# e.g. logs/patcheval_qwen3_8_27b/20260825-221716/) so each run's logs are
+# co-located instead of appending to a flat cross-run file. run_buffer_server.sh
+# exports AIEVOBOX_RUN_DIR (from .current_run or a fresh timestamp) before
+# launching us; fall back to the flat logs/ dir if it isn't set.
+_RUN_DIR = os.environ.get("AIEVOBOX_RUN_DIR", "").strip()
+LOG_DIR = _RUN_DIR or os.path.join(AIEVOBOX_ROOT, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "buffer_server.log")
+# Co-locate the gateway's own log in the run dir too. The gateway subprocess
+# (launched below via gateway_autostart) inherits this env and reads
+# SAFACTORY_GATEWAY_LOG_PATH at startup (gateway/__main__.py). Only override
+# when running per-run (don't clobber an explicit user override).
+if _RUN_DIR and not os.environ.get("SAFACTORY_GATEWAY_LOG_PATH"):
+    os.environ["SAFACTORY_GATEWAY_LOG_PATH"] = os.path.join(LOG_DIR, "gateway.log")
 
 logger = logging.getLogger("buffer_server")
 logger.setLevel(logging.DEBUG)
@@ -73,8 +85,10 @@ atexit.register(gateway_autostart.stop)
 # DataManager for querying the database
 data_manager: Optional[DataManager] = None
 
-# Track last served step ID for cursor-based pagination
-last_served_id: int = 0
+# Env-id cursor for finished-environment fetch. Advances forward only:
+# finished=True implies all steps are already is_terminal=True, so there is no
+# late-flip window to re-scan (see list_environment_rows + list_terminal_steps_for_sessions).
+last_env_cursor: int = 0
 
 # Pending items by instance_id (for grouping)
 pending_items_by_instance: Dict[str, List[Dict[str, Any]]] = {}
@@ -162,9 +176,14 @@ def _assistant_message_from_stored_response(response: Any) -> Optional[Dict[str,
 
 
 def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert a database row to the expected item format."""
+    """Convert a database row to the expected item format.
+
+    Accepts the raw format from list_terminal_steps_for_sessions (keys
+    ``messages``/``prompt``, ``meta_json``/``env_state``, ``session_id``/``env_id``,
+    ``created_at``/``session_end_time``, ``is_truncated``/``truncated``).
+    """
     # Parse stored prompt (JSON serialized messages list)
-    prompt_str = row.get("prompt", "")
+    prompt_str = row.get("prompt") or row.get("messages", "")
     if isinstance(prompt_str, str):
         base_messages = json.loads(prompt_str) if prompt_str else []
     else:
@@ -177,12 +196,13 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
         messages.append(assistant)
 
     session_id = row.get("session_id", "")
-    env_id = row.get("env_id", "")
+    env_id = row.get("env_id") or session_id
     group_id = row.get("group_id", "")
 
-    # 从 env_state 中解析 weight_version
+    # 从 env_state / meta_json 中解析 weight_version
     weight_version = 0
-    if env_state_raw := row.get("env_state"):
+    env_state_raw = row.get("env_state") or row.get("meta_json")
+    if env_state_raw:
         try:
             env_state = json.loads(env_state_raw) if isinstance(env_state_raw, str) else env_state_raw
             raw_weight_version = env_state.get("weight_version") if isinstance(env_state, dict) else None
@@ -191,16 +211,18 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
         except (TypeError, ValueError, json.JSONDecodeError):
             weight_version = 0
 
+    truncated = row.get("truncated", row.get("is_truncated", False))
+    end_time = row.get("session_end_time") or row.get("created_at")
     extra_info = {
-        "timestamp": _parse_timestamp(row.get("session_end_time")) or _parse_timestamp(row.get("timestamp")) or time.time(),
+        "timestamp": _parse_timestamp(end_time) or _parse_timestamp(row.get("timestamp")) or time.time(),
         "steps": row.get("step_id", 0),
         # 注意：finish_reason 与 truncated 不完全等价，finish_reason 仅用于训练侧标记截断状态
-        "finish_reason": "length" if row.get("truncated", False) else "stop",
+        "finish_reason": "length" if truncated else "stop",
         "session_id": session_id,
         "env_id": env_id,
         "group_id": group_id,
         "weight_version": weight_version,
-        "truncated": row.get("truncated", False),
+        "truncated": truncated,
     }
 
     return {
@@ -213,33 +235,56 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def fetch_new_items_from_db(limit: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Fetch new completed steps from the database using cursor-based pagination."""
-    global data_manager, last_served_id
+    """Fetch new completed steps using an env-id cursor (two-phase fetch).
+
+    Phase 1: discover finished environments with id > last_env_cursor.
+    Phase 2: fetch their terminal steps via list_terminal_steps_for_sessions.
+    Because mark_environment_finished is only called after all steps are
+    is_terminal=True, finished=True guarantees all training-ready steps are
+    terminal — no late-flip window, no dedup needed.
+    """
+    global data_manager, last_env_cursor
 
     if data_manager is None:
         return []
 
-    items = []
     try:
-        rows = await data_manager.fetch_done_steps_with_context(
-            after_id=last_served_id,
-            limit=limit or 100
+        envs = await data_manager.list_environment_rows(
+            after_id=last_env_cursor,
+            finished=True,
+            limit=limit or 100,
         )
     except Exception as e:
-        logger.error(f"fetch_done_steps_with_context error: {e}")
+        logger.error(f"list_environment_rows error: {e}")
         return []
 
+    if not envs:
+        return []
+
+    env_ids = [str(e.get("env_id") or "") for e in envs if e.get("env_id")]
+    next_cursor = max(int(e.get("id") or 0) for e in envs)
+    if not env_ids:
+        if next_cursor > last_env_cursor:
+            last_env_cursor = next_cursor
+        return []
+
+    try:
+        rows = await data_manager.list_terminal_steps_for_sessions(env_ids)
+    except Exception as e:
+        logger.error(f"list_terminal_steps_for_sessions error: {e}")
+        return []
+
+    items = []
     for row in rows:
-        step_pk = row.get("step_pk")
         try:
             item = _build_item_from_row(row)
             items.append(item)
-            # Update cursor to the latest processed id
-            if not last_served_id or step_pk > last_served_id:
-                last_served_id = step_pk
         except Exception as e:
             logger.error(f"Error building item from row: {e}")
             continue
+
+    if next_cursor > last_env_cursor:
+        last_env_cursor = next_cursor
 
     return items
 
@@ -338,15 +383,16 @@ async def get_rollout_data(request: Request):
 
 async def init_data_manager(job_session: str, storage_type: str, db_url: str, restart_training: bool = False):
     """Initialize the DataManager for querying the database."""
-    global data_manager, last_served_id
+    global data_manager, last_env_cursor
     data_manager = DataManager(job_id=job_session, storage_type=storage_type, db_url=db_url)
     await data_manager.init()
     logger.info(f"DataManager initialized with {storage_type} DB: {db_url}, job_session: {job_session}")
 
     # Initialize cursor based on restart_training flag
     if restart_training:
-        last_served_id = await data_manager.get_max_step_id()
-        logger.info(f"restart_training=True, initialized last_served_id={last_served_id}")
+        envs = await data_manager.list_environment_rows(finished=True, limit=100000)
+        last_env_cursor = max((int(e.get("id") or 0) for e in envs), default=0)
+        logger.info(f"restart_training=True, initialized last_env_cursor={last_env_cursor}")
 
 
 def start_aievobox_process(data: dict):
@@ -355,7 +401,7 @@ def start_aievobox_process(data: dict):
     NOTE: LLM Proxy is now hosted in-process by slime_generator.
     It must already be running before this function is called.
     """
-    global aievobox_process, group_size, last_served_id, pending_items_by_instance, data_manager
+    global aievobox_process, group_size, last_env_cursor, pending_items_by_instance, data_manager
 
     # Set group size (num_repeat_per_sample)
     group_size = int(data.get("num_repeat_per_sample", 16))
@@ -395,6 +441,7 @@ def start_aievobox_process(data: dict):
     agent_root = get_env("AIEVOBOX_AGENT_ROOT") or "env"
     agent_config = os.environ.get("AIEVOBOX_AGENT_CONFIG")
     agent_start_config = os.environ.get("AIEVOBOX_AGENT_START_CONFIG")
+    rjob_config = str(get_env("AIEVOBOX_RJOB_CONFIG") or "").strip()
     # v2 docker/rjob runs need the container startup definition (env_types). When
     # not set explicitly, derive it from the agent config path:
     # env/<name>/<name>_config.yaml -> env/<name>/<name>_start.yaml.
@@ -408,15 +455,46 @@ def start_aievobox_process(data: dict):
     llm_temperature = float(get_env("LLM_TEMPERATURE") or 1.0)
     pool_size = int(get_env("AIEVOBOX_POOL_SIZE") or 16)
     rl_epoch = int(get_env("RL_EPOCH") or 1)
+    docker_image_archive_dir = str(
+        get_env("AIEVOBOX_DOCKER_IMAGE_ARCHIVE_DIR") or ""
+    ).strip()
+    docker_pull_policy = str(
+        get_env("AIEVOBOX_DOCKER_PULL_POLICY") or "never"
+    ).strip()
+    agent_start_timeout_s = str(
+        get_env("AIEVOBOX_AGENT_START_TIMEOUT_S") or ""
+    ).strip()
     evaluation_flag = str(os.environ.get("AIEVOBOX_ENABLE_EVALUATION") or "").strip().lower()
     evaluation_enabled = evaluation_flag in {"1", "true", "yes", "on"}
+
+    # Circuit breaker: tolerate a large batch of failures before tripping. The
+    # breaker's min_samples is capped at window (simulation_worker.py), so both
+    # must be raised together. Default 240 lets the first 240 episodes fail
+    # without stopping scheduling (useful while the model is weak / during
+    # bring-up). The consecutive-timeout limit must also be raised: the default
+    # of 5 trips as soon as 5 episodes eval-timeout in a row, which is normal
+    # during bring-up (e.g. npm/network flakiness in rule evaluators). Override
+    # via AIEVOBOX_CIRCUIT_BREAKER_WINDOW / AIEVOBOX_CIRCUIT_BREAKER_MIN_SAMPLES /
+    # AIEVOBOX_CIRCUIT_BREAKER_CONSECUTIVE_TIMEOUTS; set 0 to fall back to
+    # launcher defaults (window=50, min_samples=20, consecutive=5).
+    cb_window = int(get_env("AIEVOBOX_CIRCUIT_BREAKER_WINDOW") or 240)
+    cb_min_samples = int(get_env("AIEVOBOX_CIRCUIT_BREAKER_MIN_SAMPLES") or 240)
+    cb_consecutive_timeouts = int(get_env("AIEVOBOX_CIRCUIT_BREAKER_CONSECUTIVE_TIMEOUTS") or 240)
+
+    # Gateway close timeout: must exceed the gateway's drain_timeout_s (30s) or
+    # the runner abandons the close before the gateway finishes draining in-flight
+    # LLM requests, leaving sessions unsealed (is_terminal=0) and orphaning rollout
+    # groups. Default 45s > 30s drain. Override via AIEVOBOX_GATEWAY_CLOSE_TIMEOUT_S.
+    gateway_close_timeout_s = float(get_env("AIEVOBOX_GATEWAY_CLOSE_TIMEOUT_S") or 45.0)
 
     cmd = [
         "python3", launcher_script,
         "--mode", mode,
+        *(["--rjob-config", rjob_config] if rjob_config else []),
         "--db-path", db_url,
         "--storage-type", storage_type,
-        *(["--agent-config", agent_config] if agent_config else ["--agent-root", agent_root]),
+        "--agent-root", agent_root,
+        *(["--agent-config", agent_config] if agent_config else []),
         *(["--agent-start-config", agent_start_config] if agent_start_config else []),
         *(["--enable-evaluation"] if evaluation_enabled else []),
         "--gateway-base-url", gateway_base_url,
@@ -428,6 +506,33 @@ def start_aievobox_process(data: dict):
         "--no-rebuild-table",
         "--rl-group-size", str(group_size),
         "--rl-epoch", str(rl_epoch),
+        "--docker-pull-policy", docker_pull_policy,
+        *(
+            ["--agent-start-timeout-s", agent_start_timeout_s]
+            if agent_start_timeout_s
+            else []
+        ),
+        *(
+            ["--docker-image-archive-dir", docker_image_archive_dir]
+            if docker_image_archive_dir
+            else []
+        ),
+        *(
+            ["--circuit-breaker-window", str(cb_window)]
+            if cb_window > 0
+            else []
+        ),
+        *(
+            ["--circuit-breaker-min-samples", str(cb_min_samples)]
+            if cb_min_samples > 0
+            else []
+        ),
+        *(
+            ["--circuit-breaker-consecutive-timeouts", str(cb_consecutive_timeouts)]
+            if cb_consecutive_timeouts > 0
+            else []
+        ),
+        "--gateway-close-timeout-s", str(gateway_close_timeout_s),
     ]
 
     logger.info(f"Starting launcher.py: {' '.join(cmd)}")
@@ -442,6 +547,31 @@ def start_aievobox_process(data: dict):
             stderr=None,  # Inherit stderr
         )
         logger.info(f"launcher.py started with PID: {aievobox_process.pid}")
+
+        # Record the RL capacity / GPU-ratio config once per rollout start so
+        # the timing log is self-describing for offline capacity analysis.
+        timing_emit(
+            "rl_config",
+            mode=get_env("AIEVOBOX_MODE") or "docker",
+            pool_size=pool_size,
+            group_size=group_size,
+            max_steps=max_steps,
+            rollout_num_gpus=int(get_env("ROLLOUT_NUM_GPUS") or 0),
+            rollout_num_gpus_per_engine=int(get_env("ROLLOUT_NUM_GPUS_PER_ENGINE") or 0),
+            num_gpus=int(get_env("NUM_GPUS") or 0),
+            actor_num_gpus_per_node=int(get_env("ACTOR_NUM_GPUS_PER_NODE") or 0),
+            global_batch_size=int(get_env("RL_GLOBAL_BATCH_SIZE") or 0),
+            rollout_batch_size=int(get_env("SLIME_ROLLOUT_BATCH_SIZE") or 0),
+            num_rollout=int(get_env("NUM_ROLLOUT") or 0),
+            rl_epoch=int(get_env("RL_EPOCH") or 0),
+            gateway_max_steps=int(get_env("AIEVOBOX_GATEWAY_MAX_STEPS") or -1),
+            # Ratio of concurrent env pods to inference GPUs (envs per GPU).
+            envs_per_inference_gpu=(
+                pool_size / int(get_env("ROLLOUT_NUM_GPUS") or 1)
+                if int(get_env("ROLLOUT_NUM_GPUS") or 0) > 0
+                else None
+            ),
+        )
     except Exception as e:
         logger.error(f"Failed to start launcher.py: {e}")
         raise
@@ -467,6 +597,76 @@ async def start_rollout(request: Request):
     thread.start()
 
     return {"message": "Rollout started"}
+
+
+@app.post("/stop_rollout")
+async def stop_rollout():
+    """Kill the AIEvoBox launcher process to stop all envs.
+
+    Called by slime_generator after collecting enough rollout data,
+    before the training step begins. This ensures no envs are still
+    sending LLM requests to SGLang, so flush_cache can succeed immediately.
+    """
+    global aievobox_process
+
+    if aievobox_process is None or aievobox_process.poll() is not None:
+        logger.info("[stop_rollout] AIEvoBox not running, nothing to stop")
+        return {"message": "AIEvoBox not running"}
+
+    pid = aievobox_process.pid
+    logger.info(f"[stop_rollout] Killing AIEvoBox process tree (pid={pid})")
+
+    try:
+        import signal
+        import os
+        import subprocess
+
+        # Kill only the launcher.py process and its children, NOT the entire
+        # process group (which would also kill the buffer server itself).
+        # Use ps to find all descendant PIDs, then kill them individually.
+        try:
+            # Find all child/descendant processes of the launcher
+            result = subprocess.run(
+                ["ps", "--ppid", str(pid), "-o", "pid=", "--no-header"],
+                capture_output=True, text=True, timeout=5,
+            )
+            child_pids = [int(p.strip()) for p in result.stdout.split() if p.strip()]
+
+            # Recursively find grandchildren
+            all_pids = list(child_pids)
+            for child_pid in child_pids:
+                try:
+                    result2 = subprocess.run(
+                        ["ps", "--ppid", str(child_pid), "-o", "pid=", "--no-header"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    all_pids.extend(int(p.strip()) for p in result2.stdout.split() if p.strip())
+                except Exception:
+                    pass
+
+            # Kill children first (bottom-up), then the launcher itself
+            for kill_pid in all_pids:
+                try:
+                    os.kill(kill_pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+
+            # Finally kill the launcher process itself
+            aievobox_process.kill()
+        except (ProcessLookupError, PermissionError):
+            aievobox_process.kill()
+
+        aievobox_process.wait(timeout=10)
+        logger.info(f"[stop_rollout] AIEvoBox process {pid} killed successfully")
+    except Exception as e:
+        logger.warning(f"[stop_rollout] Error killing AIEvoBox: {e}")
+        try:
+            aievobox_process.kill()
+        except Exception:
+            pass
+
+    aievobox_process = None
+    return {"message": "AIEvoBox stopped", "pid": pid}
 
 
 @app.get("/health")

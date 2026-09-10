@@ -3,3 +3,9 @@ export_core_trajectories.py
 PATCHEVAL_DB_FIELDS.md
 *.jsonl
 *.json
+
+wandb_logs/
+
+generated_openhands_exp1_js77/
+patcheval_eval_gateway.yaml
+patcheval_eval_gateway.db

@@ -17,6 +17,25 @@ from gateway.llm_router import LLMRouteTarget
 from gateway.models import GatewayRequestContext, GatewaySessionBinding, GatewayTelemetryRecord
 from gateway.storage import GatewayStorage
 
+# Structured timing log (rl/timing_log.py). The gateway process does not have
+# rl/ on PYTHONPATH (only AIEVOBOX_ROOT), so add it defensively. On import
+# failure fall back to a noop so call sites can emit unconditionally; the
+# on/off switch lives inside timing_log itself (set_enabled / env
+# SAFACTORY_TIMING_LOG_ENABLED), not behind a per-call guard here.
+try:
+    from timing_log import emit as _timing_emit  # type: ignore
+except Exception:  # pragma: no cover - import path fixup
+    import os as _os
+    import sys as _sys
+    _rl_dir = _os.path.join(_os.environ.get("AIEVOBOX_ROOT", ""), "rl")
+    if _rl_dir and _rl_dir not in _sys.path:
+        _sys.path.insert(0, _rl_dir)
+    try:
+        from timing_log import emit as _timing_emit  # type: ignore
+    except Exception:
+        def _timing_emit(*_args: Any, **_kwargs: Any) -> None:  # type: ignore
+            return None
+
 log = logging.getLogger("gateway.telemetry")
 
 SENSITIVE_KEY_PARTS = (
@@ -160,6 +179,17 @@ class TelemetryRecorder:
                     self._latest_success_step.get(key, 0),
                 )
 
+        # Per-LLM-step timing for offline analysis. See _emit_llm_step for the
+        # field semantics; emission is gated inside timing_log.
+        self._emit_llm_step(
+            binding,
+            latency_ms,
+            upstream_latency_ms,
+            stream_stats,
+            200,
+            response_body=response_body,
+        )
+
     async def enqueue_failure(
         self,
         ctx: GatewayRequestContext,
@@ -192,6 +222,15 @@ class TelemetryRecorder:
             response_text=response_text,
         )
         await self._enqueue(binding, record)
+
+        self._emit_llm_step(
+            binding,
+            latency_ms,
+            upstream_latency_ms,
+            stream_stats,
+            status_code,
+            error_text=error_text,
+        )
 
     async def wait_for_session_flush(self, binding: GatewaySessionBinding) -> None:
         if self._writer_tasks:
@@ -399,6 +438,45 @@ class TelemetryRecorder:
             binding.model = target.route_model
             binding.upstream_base_url = target.base_url
         binding.last_seen_at = datetime.now(timezone.utc)
+
+    def _emit_llm_step(
+        self,
+        binding: GatewaySessionBinding,
+        latency_ms: float,
+        upstream_latency_ms: float | None,
+        stream_stats: StreamTelemetryStats | None,
+        status_code: int,
+        response_body: dict[str, Any] | None = None,
+        error_text: str | None = None,
+    ) -> None:
+        """Emit one structured ``llm_step`` timing record for offline analysis.
+
+        ``upstream_latency_ms`` is the actual LLM inference time (gateway ->
+        llm_proxy -> sglang); ``latency_ms`` is the end-to-end step time. Joined
+        with the worker's episode record (same session_id) to split env-startup
+        vs rollout vs llm-inference. Emission is gated inside ``timing_log``
+        (``set_enabled`` / ``SAFACTORY_TIMING_LOG_ENABLED``), so this call is
+        unconditional; the import-time noop fallback covers a missing ``rl/``
+        on PYTHONPATH.
+        """
+        usage = response_body.get("usage") if isinstance(response_body, dict) else None
+        usage = usage if isinstance(usage, dict) else {}
+        _timing_emit(
+            "llm_step",
+            session_id=binding.session_id,
+            group_id=getattr(binding, "group_id", None),
+            env_name=getattr(binding, "env_name", None),
+            model=binding.model,
+            step_index=getattr(binding, "llm_step_count", None),
+            latency_ms=latency_ms,
+            upstream_latency_ms=upstream_latency_ms,
+            ttft_ms=getattr(stream_stats, "ttft_ms", None) if stream_stats else None,
+            status_code=status_code,
+            error=error_text,
+            prompt_tokens=_usage_int(usage, "prompt_tokens", "input_tokens"),
+            completion_tokens=_usage_int(usage, "completion_tokens", "output_tokens"),
+            total_tokens=_usage_int(usage, "total_tokens"),
+        )
 
     async def _next_seq(self, session_id: str, model: str) -> int:
         async with self._lock:

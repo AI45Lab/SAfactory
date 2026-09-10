@@ -35,17 +35,40 @@ async def evaluate_rule(
     official_record = official_record if isinstance(official_record, dict) else {}
     language = str(official_record.get("programming_language") or "").strip()
 
+    # Pre-gate (relaxed): align with PatchEval's native scoring semantics.
+    # The official bench has NO upfront rejection of empty/missing patches -- an
+    # empty patch flows through the Docker oracle and scores 0 (validation_fail),
+    # it is a legitimate negative sample, NOT "no data". Returning FAILED here
+    # made RewardCommitter refuse to write a reward (reward stays NULL), which
+    # silently dropped these trajectories and starved RL of negative samples.
+    # So instead of FAILED/null, return SUCCEEDED with score 0 so a reward of 0.0
+    # is committed and the trajectory can join a GRPO group.
     if not cve_id or not patch or not language:
-        return EvalResult.failed(
+        missing = []
+        if not cve_id:
+            missing.append("cve_id")
+        if not patch:
+            missing.append("patch")
+        if not language:
+            missing.append("language")
+        return EvalResult(
             session_id=request.session_id,
             eval_id=spec.eval_id,
             method=spec.method.value,
-            reason="PatchEval runner did not provide cve_id, patch, and programming language",
+            status=EvalStatus.SUCCEEDED.value,
+            raw_score=0.0,
+            normalized_score_10=0.0,
+            reason=(
+                "PatchEval pre-gate: missing "
+                + ", ".join(missing)
+                + " -- scored 0 (no valid patch produced)"
+            ),
             artifacts={
                 "bench": "patcheval",
                 "cve_id": cve_id or None,
                 "patch_generated": bool(patch),
                 "language": language or None,
+                "validation_type": "validation_fail",
                 "metrics": metrics,
             },
         )
@@ -65,28 +88,56 @@ async def evaluate_rule(
             [],
         )
     except Exception as exc:
-        return EvalResult.failed(
+        # In rjob mode the runner already runs the official PatchEval evaluation
+        # (PoC + unit tests) inside the RJob pod using the real CVE image, and
+        # records strict_success/poc_passed/unit_tests_passed in its metrics.
+        # The launcher-side re-evaluation here needs a local Docker daemon,
+        # which rjob coordinator hosts typically lack (k8s worker nodes run
+        # containerd, not dockerd). When Docker is unavailable, fall back to the
+        # runner's authoritative in-pod result instead of failing the episode.
+        if _is_docker_unavailable(exc):
+            fallback = _fallback_from_runner_metrics(request, spec, metrics, exc)
+            if fallback is not None:
+                return fallback
+        # Align with PatchEval native semantics: an exception during official
+        # evaluation (typically Docker unavailable on the rjob coordinator) is
+        # a validation failure, NOT "no data". Score 0 so a reward of 0.0 is
+        # committed and the trajectory joins a GRPO group instead of being
+        # silently dropped (FAILED -> RewardCommitter refuses -> reward NULL).
+        return EvalResult(
             session_id=request.session_id,
             eval_id=spec.eval_id,
             method=spec.method.value,
-            reason="official PatchEval evaluation raised an exception",
+            status=EvalStatus.SUCCEEDED.value,
+            raw_score=0.0,
+            normalized_score_10=0.0,
+            reason="official PatchEval evaluation raised an exception (Docker unavailable?) -- scored 0",
             error_text=str(exc),
-            artifacts={"bench": "patcheval", "cve_id": cve_id, "patch": patch},
+            artifacts={"bench": "patcheval", "cve_id": cve_id, "patch": patch, "validation_type": "validation_fail"},
         )
 
     strict_success = validation_type == "Repair Success"
     if poc_passed is None:
-        return EvalResult.failed(
+        # Align with PatchEval native semantics: the bench swallows the
+        # container-start exception (run_evaluation.py) and treats an
+        # unstartable CVE container as validation_fail -> 0, a legitimate
+        # negative sample. Returning FAILED here made RewardCommitter refuse
+        # to write a reward, silently dropping these patch-producing
+        # trajectories and starving RL of negative samples.
+        return EvalResult(
             session_id=request.session_id,
             eval_id=spec.eval_id,
             method=spec.method.value,
-            reason="official PatchEval evaluator could not start the CVE container",
+            status=EvalStatus.SUCCEEDED.value,
+            raw_score=0.0,
+            normalized_score_10=0.0,
+            reason="official PatchEval evaluator could not start the CVE container -- scored 0 (validation_fail)",
             error_text=_trim_log(poc_log or "unknown Docker evaluation error"),
             artifacts={
                 "bench": "patcheval",
                 "cve_id": cve_id,
                 "patch": patch,
-                "validation_type": validation_type,
+                "validation_type": "validation_fail",
                 "poc_log": _trim_log(poc_log),
                 "unit_test_log": _trim_log(unit_test_log),
             },
@@ -129,6 +180,74 @@ def _start_metrics(request: EvalRequest) -> dict[str, Any]:
 
 def _trim_log(value: Any) -> str:
     return str(value or "")[-_MAX_LOG_CHARS:]
+
+
+def _is_docker_unavailable(exc: BaseException) -> bool:
+    """True when the exception indicates the Docker daemon is not reachable."""
+    text = str(exc).lower()
+    if "fetching server api version" in text:
+        return True
+    if "no such file or directory" in text and "docker" in text:
+        return True
+    walked = exc
+    while walked is not None:
+        cls = type(walked)
+        if cls.__module__ == "docker.errors" or cls.__name__ == "DockerException":
+            return True
+        walked = walked.__cause__ or walked.__context__
+    return False
+
+
+def _fallback_from_runner_metrics(
+    request: EvalRequest,
+    spec: EvalSpec,
+    metrics: dict[str, Any],
+    exc: BaseException,
+) -> EvalResult | None:
+    """Build an EvalResult from the runner's in-pod official evaluation.
+
+    The runner runs the official CVE evaluation (PoC + unit tests) inside the
+    RJob pod with the real CVE image; its metrics carry strict_success,
+    poc_passed, unit_tests_passed, etc. When the launcher cannot re-run that
+    evaluation (no local Docker daemon), those metrics are the authoritative
+    result.
+    """
+    if not isinstance(metrics, dict):
+        return None
+    if "strict_success" not in metrics or "poc_passed" not in metrics:
+        return None
+    strict_success = bool(metrics.get("strict_success"))
+    score = 1.0 if strict_success else 0.0
+    failure_stage = metrics.get("failure_stage")
+    return EvalResult(
+        session_id=request.session_id,
+        eval_id=spec.eval_id,
+        method=spec.method.value,
+        status=EvalStatus.SUCCEEDED.value,
+        raw_score=score,
+        normalized_score_10=10.0 if strict_success else 0.0,
+        reason=(
+            "runner in-pod evaluation passed (launcher Docker unavailable)"
+            if strict_success
+            else f"runner in-pod evaluation did not pass: {failure_stage or 'patch not fixed'}"
+        ),
+        error_text=str(exc),
+        artifacts={
+            "bench": "patcheval",
+            "cve_id": metrics.get("cve_id") or None,
+            "setting": metrics.get("setting"),
+            "eval_source": "runner_in_pod_fallback",
+            "strict_success": strict_success,
+            "poc_passed": metrics.get("poc_passed") is True,
+            "unit_test_present": metrics.get("unit_test_present") is True,
+            "unit_tests_passed": metrics.get("unit_tests_passed") is True,
+            "failure_stage": failure_stage,
+            "poc_log": _trim_log(metrics.get("poc_log")),
+            "unit_test_log": _trim_log(metrics.get("unit_test_log")),
+            "patch": metrics.get("patch"),
+            "launcher_docker_error": str(exc),
+        },
+    )
 
 
 def _load_official_evaluation(env_params: dict[str, Any]) -> type[Any]:
