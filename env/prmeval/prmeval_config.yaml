@@ -1,8 +1,7 @@
 environments:
   - env_name: prmeval
     # Built from env/prmeval/Dockerfile with the prmeval wheel and runtime dependencies.
-    # Reported local build: image ID 2d2648031895, size 7.27GB.
-    env_image: safactory-prmeval:0.1.0
+    env_image: safactory-prmeval:0.1.1
     env_num: 1
     dataset: ./datasets/samples.jsonl
     dataset_load_mode: eager
@@ -15,14 +14,11 @@ environments:
       prmeval:
         sampling:
           dataset_name: rbm_1m_ood_test
-          paths: [/tmp/safactory_prmeval_datasets/temp_sample.jsonl]
+          paths: [/tmp/safactory-prmeval-tempfile/temp_sample.jsonl]
           eval_types: [progress]
           base_frames: 12
           progress_type: absolute_first_frame
         infer:
           name: openai_compatible
-          base_url: BASE_URL
-          api_key: API_KEY
-          model_id: MODEL_ID
         metrics: [progress]
 

@@ -282,7 +282,15 @@ class DockerContainerBackend(ClusterBackend):
 
             running = await self._container_running(ident)
             if running:
-                await self._stop_container(ident, attempt=attempt)
+                stopped = await self._stop_container(ident, attempt=attempt)
+                if stopped and self._remove_on_close:
+                    # Docker's --rm cleanup may outlive docker stop. Give it
+                    # time to finish before falling back to explicit removal.
+                    if await self._wait_for_container_removal(
+                        ident, timeout_s=min(5.0, self._remove_timeout_s)
+                    ):
+                        log.info("Docker container stopped and auto-removed: %s", ident)
+                        return True
                 exists_after_stop = await self._container_exists(ident)
                 if exists_after_stop is False:
                     log.info("Docker container stopped and auto-removed: %s", ident)
@@ -320,6 +328,21 @@ class DockerContainerBackend(ClusterBackend):
             record.container_id,
         )
         return False
+
+    async def _wait_for_container_removal(self, ident: str, *, timeout_s: float) -> bool:
+        async def poll() -> bool:
+            while True:
+                exists = await self._container_exists(ident)
+                if exists is False:
+                    return True
+                if exists is None:
+                    return False
+                await asyncio.sleep(0.2)
+
+        try:
+            return await asyncio.wait_for(poll(), timeout=timeout_s)
+        except asyncio.TimeoutError:
+            return False
 
     async def _container_exists(self, ident: str) -> Optional[bool]:
         try:
@@ -427,6 +450,18 @@ class DockerContainerBackend(ClusterBackend):
             return True
         if self._is_missing_container_error(result.stderr):
             return True
+        error_text = (result.stderr or "").lower()
+        if "removal of container" in error_text and "already in progress" in error_text:
+            log.debug("Docker container removal already in progress; waiting: %s", ident)
+            if await self._wait_for_container_removal(ident, timeout_s=self._remove_timeout_s):
+                return True
+            log.warning(
+                "Docker container removal could not be confirmed: container=%s attempt=%d/%d",
+                ident,
+                attempt,
+                self._remove_retries,
+            )
+            return False
         log.warning(
             "docker rm failed for %s attempt=%d/%d: %s",
             ident,

@@ -1,20 +1,18 @@
 agent_name: prmeval
 
 container:
-  # Uses safactory-prmeval:0.1.0 via env_image in prmeval_config.yaml.
+  # Uses safactory-prmeval:0.1.1 via env_image in prmeval_config.yaml.
   # Build from the repository root: docker build -t safactory-prmeval:0.1.0 env/prmeval
   workdir: /workspace
   runner_entrypoint:
-    source: ./runner.py
-    target: /tmp/safactory-prmeval-runner.py
-    command: "python /tmp/safactory-prmeval-runner.py"
+    source: ./
+    target: /tmp/safactory-prmeval
+    command: "python /tmp/safactory-prmeval/runner.py"
 
   mounts:
     - source: ./results
       target: /workspace/Safactory/results
       mode: rw
-    # For production datasets whose `frames` fields are paths, add a read-only
-    # media mount here and set env_params.media_root in the agent config.
 
   env:
     # The Gateway accepts this placeholder; do not put a provider key here.

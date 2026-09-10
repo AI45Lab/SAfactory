@@ -32,7 +32,7 @@ def test_read_request():
     import json
 
     with open(
-        "/mnt/shared-storage-user/liuyicong/SAfactory/env/prmeval/config.json",
+        "./config.json",
         "r",
         encoding="utf-8",
     ) as f:
@@ -97,7 +97,7 @@ def run_episode(request: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(env_params, dict):
         raise TypeError("env_params must be a JSON object")
     dataset = env_params["dataset"]
-    output_path = Path("/tmp/safactory_prmeval_datasets/temp_sample.jsonl")
+    output_path = Path("/tmp/safactory-prmeval-tempfile/temp_sample.jsonl")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -125,6 +125,7 @@ def main() -> int:
     try:
         request = read_request()
         # request = test_read_request()
+        # print(request)
         session_id = request.get("session_id", session_id)
         result = run_episode(request)
     except Exception as exc:
