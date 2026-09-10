@@ -1,0 +1,32 @@
+agent_name: prmeval
+container:
+  workdir: /tmp
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-prmeval/runner.py
+    command: python /tmp/safactory-prmeval/runner.py
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    HTTP_PROXY: ""
+    HTTPS_PROXY: ""
+    ALL_PROXY: ""
+    http_proxy: ""
+    https_proxy: ""
+    all_proxy: ""
+    NO_PROXY: ""
+    no_proxy: ""
+rjob:
+  name_prefix: prmeval
+  private_machine: Group
+  image_pull_policy: IfNotPresent
+  no_packaging: true
+  cleanup_on_finish: true
+  keep_failed_jobs: true
+  resources:
+    cpu: 2
+    gpu: 0
+    memory_in_mb: 4096
+  mount_config:
+    - "gpfs://gpfs1/liuyicong/SAfactory/results:/app/results"
+    # Mount each GPFS source once; the startup command links the alternate frame path.
+    - "gpfs://gpfs1/liuyicong/SAfactory/env/prmeval/datasets:/tmp/safactory-prmeval/datasets"

@@ -11,6 +11,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from prmeval.core import EvalConfig, Evaluator  # type: ignore
 
@@ -63,23 +64,15 @@ def post_process_result(result: dict[str, Any], session_id, job_id) -> dict[str,
     }
 
 
-def post_process_config(config: dict[str, Any], request) -> EvalConfig:
-    #  在此处对 prmeval_config 做后处理，例如：
-    # - 补充模型ID，推理信息
+def post_process_config(config: dict[str, Any], request) -> dict[str, Any]:
+    # Use the session route so the gateway can associate inference with this episode.
 
-    # 3. 模型调用参数。容器内调用优先使用 SAfactory 注入的 session URL，
-    # 它已经处理 localhost 到宿主机地址的转换，并包含 session_id。
-    gateway_base_url = request["gateway_base_url"]
+    session_id = _required_text(request.get("session_id"), "session_id")
+    base_url = _resolve_base_url(request, session_id)
     model = os.environ.get("SAFACTORY_ROUTE_MODEL") or request["model"]
-    # api_key = request["api_key"]
-
-    # temperature = request.get("temperature", 0.0)
-    # timeout_s = request.get("agent_start_timeout_s", 600.0)
-    # gateway_session_url = os.environ.get("SAFACTORY_GATEWAY_SESSION_URL_CONTAINER")
 
     config["infer"]["model_id"] = model
-    config["infer"]["base_url"] = gateway_base_url
-    # config["infer"]["api_key"]= api_key
+    config["infer"]["base_url"] = base_url
 
     return config
 
@@ -167,6 +160,55 @@ def _persist_result_artifact(result: dict[str, Any]) -> None:
             file=sys.stderr,
             flush=True,
         )
+
+
+def _required_text(value: Any, name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise RuntimeError(f"SimulationStartRequest missing {name}")
+    return text
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _containerize_local_gateway_url(url: str) -> str:
+    try:
+        parts = urlsplit(str(url))
+    except Exception:
+        return str(url)
+    if parts.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return str(url)
+    netloc = "host.docker.internal"
+    if parts.port is not None:
+        netloc = f"{netloc}:{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def _gateway_session_url(request: dict[str, Any], session_id: str) -> str:
+    base = str(request.get("gateway_base_url") or "").rstrip("/")
+    if not base:
+        return ""
+    return _containerize_local_gateway_url(f"{base}/{session_id}")
+
+
+def _resolve_base_url(request: dict[str, Any], session_id: str) -> str:
+    base_url = _first_text(
+        os.environ.get("SAFACTORY_GATEWAY_SESSION_URL_CONTAINER"),
+        _gateway_session_url(request, session_id),
+        os.environ.get("OPENROUTER_BASE_URL"),
+        os.environ.get("OPENAI_BASE_URL"),
+    )
+    if not base_url:
+        raise RuntimeError(
+            "geo3k runner could not resolve an OpenAI-compatible base URL"
+        )
+    return base_url
 
 
 if __name__ == "__main__":

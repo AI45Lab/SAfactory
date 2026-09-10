@@ -1,16 +1,13 @@
 environments:
   - env_name: prmeval
-    # Built from env/prmeval/Dockerfile with the prmeval wheel and runtime dependencies.
-    env_image: safactory-prmeval:0.1.1
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_proxy/safactory_prmeval:0.1.1
     env_num: 1
     dataset: ./datasets/samples.jsonl
     dataset_load_mode: eager
-
     env_params:
       task_family: prmeval
-      # Keep native artifacts and the SAfactory result JSON on the shared
-      # result mount declared in prmeval_start.yaml.
-      results_root: /workspace/Safactory/results
+      results_root: /app/results
+      native_timeout_s: 600
       prmeval:
         sampling:
           dataset_name: rbm_1m_ood_test
@@ -23,4 +20,3 @@ environments:
           options:
             keep_base_url: true
         metrics: [progress]
-
