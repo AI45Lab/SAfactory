@@ -1,0 +1,26 @@
+environments:
+  - env_name: prmeval
+    # Built from env/prmeval/Dockerfile with the prmeval wheel and runtime dependencies.
+    env_image: safactory-prmeval:0.1.1
+    env_num: 1
+    dataset: ./datasets/samples.jsonl
+    dataset_load_mode: eager
+
+    env_params:
+      task_family: prmeval
+      # Keep native artifacts and the SAfactory result JSON on the shared
+      # result mount declared in prmeval_start.yaml.
+      results_root: /workspace/Safactory/results
+      prmeval:
+        sampling:
+          dataset_name: rbm_1m_ood_test
+          paths: [/tmp/safactory-prmeval-tempfile/temp_sample.jsonl]
+          eval_types: [progress]
+          base_frames: 12
+          progress_type: absolute_first_frame
+        infer:
+          name: openai_compatible
+          options:
+            keep_base_url: true
+        metrics: [progress]
+

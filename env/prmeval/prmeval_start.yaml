@@ -1,0 +1,27 @@
+agent_name: prmeval
+
+container:
+  # Uses safactory-prmeval:0.1.1 via env_image in prmeval_config.yaml.
+  # Build from the repository root: docker build -t safactory-prmeval:0.1.0 env/prmeval
+  workdir: /workspace
+  runner_entrypoint:
+    source: ./
+    target: /tmp/safactory-prmeval
+    command: "python /tmp/safactory-prmeval/runner.py"
+
+  mounts:
+    - source: ./results
+      target: /workspace/Safactory/results
+      mode: rw
+
+  env:
+    # The Gateway accepts this placeholder; do not put a provider key here.
+    OPENAI_API_KEY: EMPTY
+    PYTHONDONTWRITEBYTECODE: "1"
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
+    no_proxy: host.docker.internal,localhost,127.0.0.1,::1
+
+  extra_args:
+    - --add-host=host.docker.internal:host-gateway
+
+  idle_command: "tail -f /dev/null"

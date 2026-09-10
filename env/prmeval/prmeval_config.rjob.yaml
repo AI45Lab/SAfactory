@@ -1,0 +1,22 @@
+environments:
+  - env_name: prmeval
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_proxy/safactory_prmeval:0.1.1
+    env_num: 1
+    dataset: ./datasets/samples.jsonl
+    dataset_load_mode: eager
+    env_params:
+      task_family: prmeval
+      results_root: /app/results
+      native_timeout_s: 600
+      prmeval:
+        sampling:
+          dataset_name: rbm_1m_ood_test
+          paths: [/tmp/safactory-prmeval-tempfile/temp_sample.jsonl]
+          eval_types: [progress]
+          base_frames: 12
+          progress_type: absolute_first_frame
+        infer:
+          name: openai_compatible
+          options:
+            keep_base_url: true
+        metrics: [progress]
