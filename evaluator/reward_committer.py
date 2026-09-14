@@ -217,12 +217,13 @@ class RewardCommitter:
             for attempt in range(self.db_read_retries + 1):
                 rows = await self.data_manager.list_session_steps(
                     session_id,
+                    job_id=self.data_manager.job_id,
+                    step_id=target_step_id,
+                    llm_model=self.llm_model,
                     checkout_latest=True,
                 )
                 target = select_reward_target(
                     rows,
-                    step_id=target_step_id,
-                    llm_model=self.llm_model,
                     require_http_200=True,
                 )
                 if target is not None:
@@ -237,11 +238,12 @@ class RewardCommitter:
                 target_step_id,
                 self.db_read_retries,
             )
-        else:
-            rows = await self.data_manager.list_session_steps(
-                session_id,
-                checkout_latest=True,
-            )
+
+        rows = await self.data_manager.list_session_steps(
+            session_id,
+            job_id=self.data_manager.job_id,
+            checkout_latest=True,
+        )
 
         return rows, select_reward_target(
             rows,
