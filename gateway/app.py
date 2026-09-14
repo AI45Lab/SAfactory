@@ -1164,6 +1164,10 @@ def _upstream_latency_ms_from_exception(exc: Exception) -> float | None:
         return None
 
 
+def _stream_completed(summary: dict[str, Any]) -> bool:
+    return summary.get("status") == "completed"
+
+
 async def _stream_and_finalize(
     *,
     opened: StreamForwardContext,
@@ -1232,10 +1236,16 @@ async def _stream_and_finalize(
                 )
             yield chunk
     except asyncio.CancelledError:
-        client_cancelled = True
-        status_code = 499
-        error_text = "client cancelled streaming response"
-        log.warning("Gateway stream client cancelled: request_id=%s", ctx.request_id)
+        if _stream_completed(stream_response_body):
+            log.info(
+                "Gateway stream closed after completion: request_id=%s",
+                ctx.request_id,
+            )
+        else:
+            client_cancelled = True
+            status_code = 499
+            error_text = "client cancelled streaming response"
+            log.warning("Gateway stream client cancelled: request_id=%s", ctx.request_id)
         raise
     except Exception as exc:
         upstream_cancelled = True
