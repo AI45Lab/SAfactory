@@ -98,6 +98,14 @@ class StorageStrategy(ABC):
         pass
 
     @abstractmethod
+    async def upsert_session_step_rows(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Upsert complete session-step rows by their immutable job_id and record_id."""
+        pass
+
+    @abstractmethod
     async def list_session_step_rows(
         self,
         query: SessionStepQuery,
