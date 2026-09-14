@@ -24,6 +24,9 @@ RJOB_FAILED_STATUSES = {"Failed", "Stopped", "Killed"}
 
 _DEFAULT_RUNNER_CONTAINER_PATH = "/tmp/safactory-openclaw-runner.mjs"
 _DEFAULT_RUN_COMMAND = f"node {_DEFAULT_RUNNER_CONTAINER_PATH}"
+# RJob task ids are "<job_name>-<task_name>" and must match the cluster regex
+# ^[a-zA-Z0-9][-a-zA-Z0-9]{1,61}[a-zA-Z0-9]$ — dots are NOT allowed, so strip them
+# (replace with "-") rather than only allowing alnum + "." + "-".
 _INVALID_NAME_CHARS = re.compile(r"[^a-z0-9-]+")
 _MAX_RJOB_NAME_LEN = 49
 _MAX_RJOB_AGENT_NAME_LEN = 12
@@ -279,6 +282,10 @@ class RJobClusterBackend(ClusterBackend):
                     trace.update_context(rjob_submit_to_starting_ms=submit_to_starting_ms)
             if status == "Running" and submit_to_running_ms is None:
                 submit_to_running_ms = elapsed_ms
+                # Absolute epoch seconds at the moment the RJob entered Running.
+                # Joined with rjob_submit_ts to derive cluster queue time
+                # (rjob_running_ts - rjob_submit_ts) in the episode record.
+                rjob_running_ts = time.time()
                 if trace is not None:
                     trace.mark(
                         "rjob_running",
@@ -287,7 +294,10 @@ class RJobClusterBackend(ClusterBackend):
                         job_name=job_name,
                         submit_to_running_ms=submit_to_running_ms,
                     )
-                    trace.update_context(rjob_submit_to_running_ms=submit_to_running_ms)
+                    trace.update_context(
+                        rjob_submit_to_running_ms=submit_to_running_ms,
+                        rjob_running_ts=rjob_running_ts,
+                    )
             if status != last_status:
                 if trace is not None:
                     trace.mark(

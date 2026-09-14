@@ -14,13 +14,79 @@ from typing import Any
 
 DEFAULT_TIMEOUT_S = 2700.0
 DEFAULT_INSTALL_TIMEOUT_S = 900.0
+DEFAULT_MAX_OUTPUT_TOKENS = 8192
 MAX_LOG_CHARS = 32_000
+
+# Live log file on shared storage so the training node can `tail -f` and see
+# exactly where OpenHands is stuck (subprocess.run(capture_output=True) buffers
+# everything in memory until exit, so a hang shows nothing). Opened in main().
+_LOG_FILE = None
+
+
+def _log(msg: str) -> None:
+    if _LOG_FILE is None:
+        return
+    try:
+        _LOG_FILE.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+        _LOG_FILE.flush()
+    except Exception:
+        pass
+
+
+def _open_log(session_id: str):
+    global _LOG_FILE
+    candidates = []
+    result_path = os.environ.get("SAFACTORY_RESULT_PATH", "")
+    if result_path:
+        candidates.append(os.path.join(os.path.dirname(result_path), "openhands.log"))
+    subdir = os.environ.get("SAFACTORY_OUTPUT_SUBDIR", "")
+    if subdir:
+        candidates.append(os.path.join(subdir, "openhands.log"))
+    candidates.append(f"/tmp/openhands-{session_id}.log")
+    for path in candidates:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            f = open(path, "a", buffering=1)
+            _LOG_FILE = f
+            _log(f"===== openhands_runner start session={session_id} pid={os.getpid()} =====")
+            _log(f"log file: {path}")
+            return
+        except Exception:
+            continue
+
+
+def _block_github_cdn() -> None:
+    """Point github.com + raw.githubusercontent.com at 127.0.0.1 in /etc/hosts
+    so the openhands binary's startup calls (version check via
+    raw.githubusercontent.com, public-skills git clone via github.com) fail fast
+    (ECONNREFUSED) instead of hanging on the slow/flaky GitHub CDN from RJob
+    pods. The binary catches these errors and proceeds to the LLM calls. Only
+    done when using the pre-installed local binary (PATCHEVAL_OPENHANDS_BIN),
+    since the curl installer path needs real github.com access.
+    """
+    if not os.environ.get("PATCHEVAL_OPENHANDS_BIN", "").strip():
+        return
+    hosts = ["raw.githubusercontent.com", "github.com", "objects.githubusercontent.com"]
+    try:
+        with open("/etc/hosts", "r") as f:
+            current = f.read()
+        additions = [f"127.0.0.1 {h}" for h in hosts if h not in current]
+        if not additions:
+            _log("block_github: already blocked in /etc/hosts")
+            return
+        with open("/etc/hosts", "a") as f:
+            f.write("\n# safactory: fast-fail openhands startup github calls\n")
+            f.write("\n".join(additions) + "\n")
+        _log(f"block_github: added to /etc/hosts: {additions}")
+    except Exception as exc:
+        _log(f"block_github: failed to edit /etc/hosts: {exc!r}")
 
 
 def main() -> int:
     started_at = time.perf_counter()
     request = _read_request()
     session_id = _required_text(request.get("session_id"), "session_id")
+    _open_log(session_id)
     cve_id = ""
 
     try:
@@ -99,16 +165,42 @@ def main() -> int:
 
 
 def _ensure_openhands(timeout_s: float) -> str:
+    # 1) Explicit override: a pre-installed openhands binary on shared storage.
+    _log("ensure_openhands: step 1) PATCHEVAL_OPENHANDS_BIN override")
+    override = os.environ.get("PATCHEVAL_OPENHANDS_BIN", "").strip()
+    if override and Path(override).is_file() and os.access(override, os.X_OK):
+        _log(f"ensure_openhands: using override {override}")
+        return override
+    # 2) Already on PATH (e.g. baked into the env image).
+    _log("ensure_openhands: step 2) which openhands")
     existing = shutil.which("openhands")
     if existing:
+        _log(f"ensure_openhands: using PATH binary {existing}")
         return existing
+    # 3) pip install from the cluster's internal PyPI mirror (no external egress
+    #    needed). RJob env pods can reach mirrors.h.pjlab.org.cn (same domain as
+    #    the image registry they already pull from). PIP_INDEX_URL is set in the
+    #    start yaml env so pip uses the internal mirror instead of pypi.org.
+    import sys
+    _log("ensure_openhands: step 3) pip install openhands-ai")
+    try:
+        _run_streamed([sys.executable, "-m", "pip", "install", "openhands-ai"], timeout_s)
+    except Exception as exc:
+        _log(f"ensure_openhands: pip install raised {exc!r}")
+    found = shutil.which("openhands")
+    if found:
+        _log(f"ensure_openhands: using pip-installed binary {found}")
+        return found
+    # 4) Last resort: download + run the official installer (needs external egress).
+    _log("ensure_openhands: step 4) curl install.openhands.dev installer")
     install_dir = Path("/opt/openhands")
     install_dir.mkdir(parents=True, exist_ok=True)
     script = Path("/tmp/install-openhands.sh")
-    _run(["curl", "-fsSL", "https://install.openhands.dev/install.sh", "-o", str(script)], timeout_s)
+    _run_streamed(["curl", "-fsSL", "https://install.openhands.dev/install.sh", "-o", str(script)], timeout_s)
     env = os.environ.copy()
     env["OPENHANDS_INSTALL_DIR"] = str(install_dir)
-    install = _run(["bash", str(script)], timeout_s, env=env, check=False)
+    install_rc, install_out = _run_streamed(["bash", str(script)], timeout_s, env=env)
+    _log(f"ensure_openhands: installer exit={install_rc}")
     candidates = (
         install_dir / "openhands",
         Path("/usr/local/bin/openhands"),
@@ -118,10 +210,12 @@ def _ensure_openhands(timeout_s: float) -> str:
     )
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
+            _log(f"ensure_openhands: using installer binary {candidate}")
             return str(candidate)
+    _log("ensure_openhands: NO binary found after all steps")
     raise RuntimeError(
         "OpenHands installation completed but no executable was found. "
-        f"installer exit={install.returncode}; output={_trim_log(install.stdout + install.stderr)}"
+        f"installer exit={install_rc}; output={_trim_log(install_out)}"
     )
 
 
@@ -134,9 +228,14 @@ def _run_openhands(
     problem_statement: str,
     timeout_s: float,
 ) -> dict[str, Any]:
+    # Prefer the dynamic gateway URL injected by the launcher
+    # (SAFACTORY_GATEWAY_BASE_URL, derived from AIEVOBOX_GATEWAY_HOST) over the
+    # static PATCHEVAL_OPENHANDS_GATEWAY_BASE_URL baked into the start yaml,
+    # which can go stale when the training pod IP changes between runs.
     gateway_base = _required_text(
-        os.environ.get("PATCHEVAL_OPENHANDS_GATEWAY_BASE_URL"),
-        "PATCHEVAL_OPENHANDS_GATEWAY_BASE_URL",
+        os.environ.get("SAFACTORY_GATEWAY_BASE_URL")
+        or os.environ.get("PATCHEVAL_OPENHANDS_GATEWAY_BASE_URL"),
+        "SAFACTORY_GATEWAY_BASE_URL",
     ).rstrip("/")
     route_model = _required_text(
         os.environ.get("PATCHEVAL_OPENHANDS_MODEL"),
@@ -148,6 +247,15 @@ def _run_openhands(
         "PatchEval evaluator scripts, test.patch, fix.patch, or other benchmark artifacts. "
         "Leave the final code changes in the git working tree."
     )
+    # OpenHands defaults max_output_tokens to 0 ("auto-detect from model"), but
+    # auto-detection fails for the custom gateway-routed model, so no max_tokens
+    # is sent in the LLM request and sglang falls back to a tiny default (~128),
+    # truncating generation mid-tool-call (finish_reason=length). Set an
+    # explicit cap so tool calls + reasoning render fully.
+    max_output_tokens = _positive_int(
+        os.environ.get("PATCHEVAL_OPENHANDS_MAX_OUTPUT_TOKENS"),
+        DEFAULT_MAX_OUTPUT_TOKENS,
+    )
     env = os.environ.copy()
     env.update(
         {
@@ -155,6 +263,7 @@ def _run_openhands(
             "LLM_MODEL": f"openai/{route_model}",
             "LLM_API_KEY": "safactory",
             "LLM_BASE_URL": f"{gateway_base}/{session_id}",
+            "LLM_MAX_OUTPUT_TOKENS": str(max_output_tokens),
         }
     )
     command = [
@@ -167,16 +276,55 @@ def _run_openhands(
         "--task",
         task,
     ]
+    _log(f"run_openhands: cwd={work_dir} gateway={gateway_base} model={route_model}")
+    _log(f"run_openhands: cmd={' '.join(command)}")
+    _log(f"run_openhands: LLM_BASE_URL={env['LLM_BASE_URL']}")
+    _block_github_cdn()
     try:
-        completed = _run(command, timeout_s, cwd=work_dir, check=False, env=env)
-    except subprocess.TimeoutExpired as exc:
-        output = (exc.stdout or "") + (exc.stderr or "")
-        return {"exit_code": None, "output": output, "timed_out": True}
-    return {
-        "exit_code": completed.returncode,
-        "output": completed.stdout + completed.stderr,
-        "timed_out": False,
-    }
+        proc = subprocess.Popen(
+            command,
+            cwd=str(work_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
+        buffer_parts: list[str] = []
+        deadline = time.perf_counter() + timeout_s
+        timed_out = False
+        assert proc.stdout is not None
+        while True:
+            line = proc.stdout.readline()
+            if line == "":
+                if proc.poll() is not None:
+                    break
+                if time.perf_counter() > deadline:
+                    timed_out = True
+                    break
+                continue
+            buffer_parts.append(line)
+            _log(f"OH| {line.rstrip()}")
+        if timed_out and proc.poll() is None:
+            _log(f"run_openhands: TIMEOUT after {timeout_s}s, killing pid={proc.pid}")
+            proc.kill()
+        try:
+            remaining = proc.communicate(timeout=10)[0] or ""
+        except Exception:
+            remaining = ""
+        if remaining:
+            buffer_parts.append(remaining)
+            _log(f"OH| (tail) {remaining.rstrip()}")
+        exit_code = proc.returncode
+        _log(f"run_openhands: exit_code={exit_code} timed_out={timed_out}")
+        return {
+            "exit_code": exit_code,
+            "output": "".join(buffer_parts),
+            "timed_out": timed_out,
+        }
+    except Exception as exc:
+        _log(f"run_openhands: exception {exc!r}")
+        return {"exit_code": None, "output": str(exc), "timed_out": False}
 
 
 def _hide_evaluation_artifacts() -> None:
@@ -212,7 +360,20 @@ def _read_request() -> dict[str, Any]:
 
 
 def _write_result(value: dict[str, Any]) -> None:
-    print(json.dumps(value, ensure_ascii=False))
+    text = json.dumps(value, ensure_ascii=False)
+    print(text, flush=True)
+    # RJob mode: logs_rjob sometimes returns empty stdout, so also persist the
+    # result to the shared artifact path (SAFACTORY_RESULT_PATH) on gpfs. The
+    # launcher's parse_result_artifact fallback reads this same file.
+    result_path = os.environ.get("SAFACTORY_RESULT_PATH")
+    if result_path:
+        try:
+            Path(result_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(result_path).write_text(text)
+        except Exception:
+            # stdout print above is the primary path; never let a file-write
+            # failure change the process exit status.
+            pass
 
 
 def _run(
@@ -234,6 +395,61 @@ def _run(
     )
 
 
+def _run_streamed(
+    args: list[str],
+    timeout_s: float,
+    *,
+    cwd: Path = Path("/workspace"),
+    env: dict[str, str] | None = None,
+) -> tuple[int, str]:
+    """Run a command, streaming merged stdout/stderr to the live log file.
+
+    Used for the OpenHands install steps (pip / curl / bash installer) so a
+    hang during download is visible in the shared log instead of silent.
+    Returns (returncode, combined_output). Never raises on timeout/non-zero.
+    """
+    try:
+        proc = subprocess.Popen(
+            args,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
+    except Exception as exc:
+        _log(f"run_streamed: spawn failed {args[0]}: {exc!r}")
+        return -1, str(exc)
+    parts: list[str] = []
+    deadline = time.perf_counter() + timeout_s
+    timed_out = False
+    assert proc.stdout is not None
+    while True:
+        line = proc.stdout.readline()
+        if line == "":
+            if proc.poll() is not None:
+                break
+            if time.perf_counter() > deadline:
+                timed_out = True
+                break
+            continue
+        parts.append(line)
+        _log(f"INSTALL| {line.rstrip()}")
+    if timed_out and proc.poll() is None:
+        _log(f"run_streamed: TIMEOUT after {timeout_s}s, killing {args[0]}")
+        proc.kill()
+    try:
+        rem = proc.communicate(timeout=10)[0] or ""
+    except Exception:
+        rem = ""
+    if rem:
+        parts.append(rem)
+        _log(f"INSTALL| (tail) {rem.rstrip()}")
+    _log(f"run_streamed: {args[0]} exit={proc.returncode} timed_out={timed_out}")
+    return proc.returncode, "".join(parts)
+
+
 def _required_text(value: Any, name: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -244,6 +460,14 @@ def _required_text(value: Any, name: str) -> str:
 def _positive_float(value: Any, default: float) -> float:
     try:
         parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
     except (TypeError, ValueError):
         return default
     return parsed if parsed > 0 else default

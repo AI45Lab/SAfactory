@@ -30,3 +30,11 @@ tmp/
 
 # Local Harbor dataset tooling
 /env/harbor/generate_vulhub_dataset.py
+
+# Local cybergym env overrides (tracked files kept via skip-worktree)
+/env/cybergym/
+
+/.safactory-locks/
+
+# Local credentials / private config (do not commit)
+config.yaml

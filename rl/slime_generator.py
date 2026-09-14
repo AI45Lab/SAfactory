@@ -32,11 +32,27 @@ from slime.utils.types import Sample
 
 import llm_proxy as _llm_proxy_module
 from trajectory_mask_builder import TrajectoryMaskBuilder
+from chat_template_adapter import create_adapter
 from opd.teacher_log_probs import attach_teacher_log_probs
+
+from timing_log import emit as _timing_emit, now_s as _timing_now
 
 __all__ = ["generate_rollout"]
 
 logger = logging.getLogger(__name__)
+
+# Timestamp (perf_counter) at the end of the previous rollout step, used to
+# derive the inter-step "train time" (time slime spends on the GRPO update +
+# checkpointing between two rollout calls). None before the first step.
+_prev_rollout_end: Optional[float] = None
+
+# Wall-clock epoch seconds (time.time()) of the previous rollout_step emission.
+# The weight update of step N completes during the train phase right after the
+# rollout_step N event, so the interval between two consecutive weight updates
+# equals the gap between two consecutive rollout_step emissions. We record
+# that gap as `weight_update_interval_s` so the real update-weight cadence is
+# directly readable from the log without post-processing timestamps.
+_prev_rollout_step_ts: Optional[float] = None
 
 # Global variables
 TOKENIZER = None
@@ -197,14 +213,19 @@ def _init_llm_proxy_server(args):
     except Exception:
         processor = None
 
-    # 3. TrajectoryMaskBuilder
-    TRAJECTORY_MASK_BUILDER = TrajectoryMaskBuilder(TOKENIZER, processor)
+    # 3. Chat template adapter (model-specific normalization / tool-call parsing)
+    adapter_type = os.environ.get("LOSS_MASK_TYPE", "")
+    _chat_adapter = create_adapter(adapter_type, TOKENIZER, processor)
 
-    # 4. Wire into llm_proxy module STATE (shared in-process)
+    # 4. TrajectoryMaskBuilder (uses the adapter for message rendering)
+    TRAJECTORY_MASK_BUILDER = TrajectoryMaskBuilder(TOKENIZER, processor, adapter=_chat_adapter)
+
+    # 5. Wire into llm_proxy module STATE (shared in-process)
     state = _llm_proxy_module.STATE
     state.tokenizer = TOKENIZER
     state.processor = processor
     state.trajectory_mask_builder = TRAJECTORY_MASK_BUILDER
+    state.chat_template_adapter = _chat_adapter
 
     remote_engine_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     state.remote_engine_url = remote_engine_url
@@ -280,6 +301,16 @@ def build_loss_mask_from_response_mask(
 def _get_record_training_info(record: Dict[str, Any]) -> Dict[str, Any]:
     oai_messages = record["messages"]
     session_id = record["extra_info"].get("session_id", "")
+    # Re-apply the SAME normalization llm_proxy applied at generation time
+    # (e.g. Qwen: tool_call.arguments JSON string -> dict; content None -> "").
+    # The mask builder's in-memory session tree stores NORMALIZED messages
+    # (prepare_generate_input is called after adapter.normalize_messages
+    # in llm_proxy.proxy_chat_completions). The DB, however, stores the raw
+    # OpenAI format (arguments as JSON string, content possibly null). Without
+    # re-normalizing here, _message_matches compares dict-arguments vs
+    # JSON-string-arguments (and "" vs None content) -> matched=0 for every
+    # session -> 0 trainable groups -> no training -> weight_version stuck at 1.
+    oai_messages = _llm_proxy_module.STATE.chat_template_adapter.normalize_messages(oai_messages)
     tokens, response_mask, _image_data, messages_str, mm_train_inputs = TRAJECTORY_MASK_BUILDER.get_training_info(
         session_id,
         oai_messages,
@@ -669,12 +700,96 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
     metrics.record("used/count", float(sum(len(g) for g in final_return_results)), AggType.SUM)
     metrics.push(step=rollout_id)
 
+    # In colocate mode, training and inference share the same GPUs, so before
+    # the training step begins we must kill all env processes (so no env keeps
+    # sending LLM requests to SGLang) and abort residual SGLang requests (so
+    # flush_cache during release/resume succeeds immediately). This whole
+    # block is colocate-only.
+    #
+    # In non-colocate mode, training and inference use SEPARATE GPUs — there is
+    # no release/resume memory cycle and no flush_cache. Killing the launcher
+    # here is actively harmful: START_ROLLOUT is only True on the first rollout,
+    # so once the launcher is killed it is never restarted, and subsequent
+    # rollout rounds have no envs producing data → buffer never fills → the
+    # pipeline stalls forever (the run gets stuck on step 2). Therefore in
+    # non-colocate mode we keep the launcher alive so it keeps producing
+    # trajectories across rollout rounds.
+    colocate = os.environ.get("SLIME_COLOCATE", "false").lower() in ("true", "1")
+    if colocate:
+        try:
+            stop_url = f"{base_url}/stop_rollout"
+            resp = requests.post(stop_url, timeout=15)
+            if resp.status_code == 200:
+                logger.info(f"[generate_rollout] Stopped all envs (kill launcher.py)")
+                print(f"[generate_rollout] Stopped all envs before returning data")
+            else:
+                logger.warning(f"[generate_rollout] stop_rollout returned HTTP {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"[generate_rollout] Failed to stop envs: {e}")
+
+        # Abort residual pending requests on all SGLang workers.
+        # Even though envs are killed, there may be requests that envs sent
+        # just before being killed, still sitting in SGLang's queue. These
+        # residual requests (especially long generations with max_tokens=32768)
+        # would keep the scheduler busy for minutes, causing flush_cache to
+        # time out. Aborting them ensures the scheduler becomes idle quickly.
+        # This mirrors slime's original abort() in sglang_rollout.py.
+        try:
+            router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+            # Try /workers first (sglang_router > 0.2.1), fall back to /list_workers
+            worker_urls = None
+            try:
+                resp = requests.get(f"{router_url}/workers", timeout=10)
+                if resp.status_code == 200:
+                    worker_urls = [w["url"] for w in resp.json().get("workers", [])]
+            except Exception:
+                pass
+            if not worker_urls:
+                resp = requests.get(f"{router_url}/list_workers", timeout=10)
+                if resp.status_code == 200:
+                    worker_urls = resp.json().get("urls", [])
+
+            if worker_urls:
+                for url in worker_urls:
+                    try:
+                        requests.post(
+                            f"{url}/abort_request",
+                            json={"abort_all": True},
+                            timeout=10,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[generate_rollout] abort failed for {url}: {e}")
+                logger.info(
+                    f"[generate_rollout] Aborted residual requests on "
+                    f"{len(worker_urls)} SGLang workers"
+                )
+                print(f"[generate_rollout] Aborted residual requests on {len(worker_urls)} workers")
+            else:
+                logger.warning("[generate_rollout] No SGLang worker URLs found to abort")
+        except Exception as e:
+            logger.warning(f"[generate_rollout] Failed to abort SGLang workers: {e}")
+
+        # Give SGLang a moment to process the abort and clean up
+        time.sleep(3)
+    else:
+        # Non-colocate: stop launcher so the next rollout_id can restart it
+        # with current weights. The launcher starts a fixed batch (pool_size)
+        # and does NOT replenish, so keeping it alive means no new data after
+        # the batch finishes. The next generate_rollout call will start_rollout
+        # a fresh launcher with the updated weight version.
+        try:
+            requests.post(f"{base_url}/stop_rollout", timeout=15)
+            logger.info(f"[generate_rollout] Non-colocate: stopped launcher (will restart next rollout)")
+            print(f"[generate_rollout] Non-colocate: launcher stopped")
+        except Exception as e:
+            logger.warning(f"[generate_rollout] stop_rollout failed: {e}")
+
     return final_return_results
 
 
 def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
     """Generate rollout for both training and evaluation."""
-    global START_ROLLOUT
+    global START_ROLLOUT, _prev_rollout_end, _prev_rollout_step_ts
 
     # Initialize tokenizer + processor + llm_proxy HTTP server (once).
     # Must happen BEFORE start_rollout, because buffer_server will launch
@@ -687,8 +802,60 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
         print(f"start rollout with payload: {start_inform}")
         print(f"start rollout id: {rollout_id}")
         START_ROLLOUT = False
+    elif not evaluation:
+        # rollout_id > 1: restart launcher so new envs use current weights.
+        # The old launcher's envs were started with a stale weight_version and
+        # their data would be filtered out by weight_version check; worse, the
+        # launcher starts a fixed batch (pool_size) and does NOT replenish, so
+        # once those envs finish there is no new data at all. Stop the old
+        # launcher and start a fresh one each rollout round.
+        try:
+            requests.post(f"{args.rollout_buffer_url}/stop_rollout", timeout=15)
+            logger.info(f"[generate_rollout] Stopped old launcher before rollout_id={rollout_id}")
+        except Exception as e:
+            logger.warning(f"[generate_rollout] stop_rollout before restart failed: {e}")
+        metadata = data_buffer.get_metadata()
+        start_inform = start_rollout(args.rollout_buffer_url, args, metadata)
+        print(f"restart rollout for rollout_id={rollout_id}: {start_inform}")
+
+    rollout_start = _timing_now()
+    # train_time = time slime spent on the GRPO update + ckpt between the end
+    # of the previous rollout call and the start of this one (None for step 0).
+    train_time_s = (rollout_start - _prev_rollout_end) if _prev_rollout_end is not None else None
 
     sample_groups = run(generate_rollout_async(args, rollout_id, data_buffer, evaluation))
     if evaluation:
+        rollout_end = _timing_now()
+        _prev_rollout_end = rollout_end
+        _step_ts = time.time()
+        _wu_interval = round(_step_ts - _prev_rollout_step_ts, 3) if _prev_rollout_step_ts is not None else None
+        _timing_emit(
+            "rollout_step",
+            rollout_id=rollout_id,
+            evaluation=True,
+            rollout_time_s=round(rollout_end - rollout_start, 3),
+            train_time_s=round(train_time_s, 3) if train_time_s is not None else None,
+            weight_update_interval_s=_wu_interval,
+            global_batch_size=int(os.environ.get("RL_GLOBAL_BATCH_SIZE") or 0),
+            rollout_batch_size=int(os.environ.get("SLIME_ROLLOUT_BATCH_SIZE") or 0),
+            num_groups=len(sample_groups) if sample_groups is not None else None,
+        )
+        _prev_rollout_step_ts = _step_ts
         return sample_groups
-    return run(attach_teacher_log_probs(args, sample_groups))
+    sample_groups = run(attach_teacher_log_probs(args, sample_groups))
+    rollout_end = _timing_now()
+    _step_ts = time.time()
+    _wu_interval = round(_step_ts - _prev_rollout_step_ts, 3) if _prev_rollout_step_ts is not None else None
+    _timing_emit(
+        "rollout_step",
+        rollout_id=rollout_id,
+        rollout_time_s=round(rollout_end - rollout_start, 3),
+        train_time_s=round(train_time_s, 3) if train_time_s is not None else None,
+        weight_update_interval_s=_wu_interval,
+        global_batch_size=int(os.environ.get("RL_GLOBAL_BATCH_SIZE") or 0),
+        rollout_batch_size=int(os.environ.get("SLIME_ROLLOUT_BATCH_SIZE") or 0),
+        num_groups=len(sample_groups) if sample_groups is not None else None,
+    )
+    _prev_rollout_step_ts = _step_ts
+    _prev_rollout_end = rollout_end
+    return sample_groups
