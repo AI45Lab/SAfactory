@@ -1,7 +1,7 @@
 environments:
   - env_name: prmeval
     # Built from env/prmeval/Dockerfile with the prmeval wheel and runtime dependencies.
-    env_image: safactory-prmeval:0.1.1
+    env_image: safactory-prmeval:0.2.0
     env_num: 1
     dataset: ./datasets/samples.jsonl
     dataset_load_mode: eager
@@ -15,12 +15,11 @@ environments:
         sampling:
           dataset_name: rbm_1m_ood_test
           paths: [/tmp/safactory-prmeval-tempfile/temp_sample.jsonl]
-          eval_types: [progress]
-          base_frames: 12
+          base_frames: 8
           progress_type: absolute_first_frame
         infer:
           name: openai_compatible
-          options:
+          model_extra_config:
             keep_base_url: true
-        metrics: [progress]
+        eval_types: progress
 
