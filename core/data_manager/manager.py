@@ -305,12 +305,16 @@ class DataManager:
         session_id: str,
         *,
         job_id: Optional[str] = None,
+        step_id: Optional[int] = None,
+        llm_model: Optional[str] = None,
         checkout_latest: bool = False,
     ) -> List[Dict[str, Any]]:
         """Return persisted rows for one session in trajectory order."""
         return await self._strategy.list_session_step_rows(SessionStepQuery(
             job_id=job_id or self.job_id or None,
             session_id=session_id,
+            step_id=step_id,
+            llm_model=llm_model,
             checkout_latest=checkout_latest,
         ))
 
