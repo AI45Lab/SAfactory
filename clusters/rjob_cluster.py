@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import urlsplit
 
+import httpx
+
 from core.perf_trace import PerfTrace
 from manager.binding_plan import BindingPlan
 from manager.types import PoolEntry, SimulationAgentLease, SimulationStartRequest
@@ -321,9 +323,35 @@ class RJobClusterBackend(ClusterBackend):
                 log.warning("RJob %s returned unrecognized status=%s; keep polling", job_name, status)
             await asyncio.sleep(max(0.1, float(poll_interval_s)))
 
-    async def logs_text(self, client: Any, job_name: str, *, suppress_errors: bool = False) -> str:
+    async def logs_text(
+        self,
+        client: Any,
+        job_name: str,
+        *,
+        timeout_s: float,
+        suppress_errors: bool = False,
+    ) -> str:
         try:
-            raw = await asyncio.to_thread(client.logs_rjob, job_name)
+            endpoint = (
+                f"{client.cluster_entry.rstrip('/')}/kapis/{client.group}/v1alpha1/tenants/"
+                f"{client.namespace.split('-')[0]}/projects/{client.namespace}/rjobs/{job_name}"
+            )
+            timeout = httpx.Timeout(timeout_s, connect=min(10.0, timeout_s))
+            async with httpx.AsyncClient(
+                auth=(client.username, client.password),
+                verify=client.verifyssl,
+                timeout=timeout,
+            ) as session:
+                response = await session.get(f"{endpoint}/infos")
+                response.raise_for_status()
+                replicas = [
+                    replica
+                    for task_replicas in response.json()["data"].values()
+                    for replica in task_replicas
+                ]
+                response = await session.get(f"{endpoint}/logs", params={"replicas": replicas})
+                response.raise_for_status()
+                raw = response.json()["data"]
         except Exception:
             if suppress_errors:
                 log.warning("RJob logs_rjob failed for %s", job_name, exc_info=True)
@@ -674,7 +702,7 @@ def merge_env_dicts(*values: Any) -> Dict[str, str]:
 def _normalize_custom_resources(value: Any) -> List[str]:
     """Convert YAML-friendly custom resources to the RJob SDK list[str] form."""
     if isinstance(value, dict):
-        items = [f"{str(name).strip()}={str(quantity).strip()}" for name, quantity in value.items()]
+        items = [f"{str(name).strip()}:{str(quantity).strip()}" for name, quantity in value.items()]
     elif isinstance(value, str):
         items = [value]
     elif isinstance(value, (list, tuple)):
@@ -692,12 +720,13 @@ def _normalize_custom_resources(value: Any) -> List[str]:
     normalized: List[str] = []
     for item in items:
         text = item.strip()
-        name, separator, quantity = text.partition("=")
-        if not separator or not name.strip() or not quantity.strip():
+        separator = "=" if "=" in text else ":"
+        name, found, quantity = text.partition(separator)
+        if not found or not name.strip() or not quantity.strip():
             raise ValueError(
                 "RJob resources.custom_resources entries must use resource-name=value format"
             )
-        normalized.append(f"{name.strip()}={quantity.strip()}")
+        normalized.append(f"{name.strip()}:{quantity.strip()}")
     return normalized
 
 
