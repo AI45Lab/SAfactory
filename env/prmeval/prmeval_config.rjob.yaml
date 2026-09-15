@@ -7,7 +7,6 @@ environments:
     env_params:
       task_family: prmeval
       results_root: /app/results
-      native_timeout_s: 600
       prmeval:
         sampling:
           dataset_name: rbm_1m_ood_test

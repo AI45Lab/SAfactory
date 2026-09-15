@@ -16,7 +16,6 @@ container:
 
   env:
     # The Gateway accepts this placeholder; do not put a provider key here.
-    OPENAI_API_KEY: EMPTY
     PYTHONDONTWRITEBYTECODE: "1"
     NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
     no_proxy: host.docker.internal,localhost,127.0.0.1,::1
