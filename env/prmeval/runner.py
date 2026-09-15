@@ -60,7 +60,7 @@ def post_process_result(result: dict[str, Any], session_id, job_id) -> dict[str,
         "terminated": True,
         "truncated": False,
         "error_text": None,
-        "metrics": result,
+        "metrics": result["metrics"]["progress"],
     }
 
 

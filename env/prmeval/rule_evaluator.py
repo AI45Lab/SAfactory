@@ -23,7 +23,7 @@ async def evaluate_rule(
     metrics = _start_metrics(request)
 
     try:
-        score = _float_or_none(metrics["metrics"]["progress"]["mse"])
+        score = _float_or_none(metrics["mse"])
         if score is None:
             return EvalResult.failed(
                 session_id=request.session_id,
