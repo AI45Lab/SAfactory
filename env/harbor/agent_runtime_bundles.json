@@ -22,6 +22,17 @@
       "source_sha256": "0c304edad9753e2efeb88ddb76c5a13c06160d67c980b9d849ad65bfadde3fd8",
       "archive_entry": "package/claude",
       "sha256": "d535985e6941a3eb00179ccd7f52ceb0c6623a0305a518ebc4e6514f84a94c99"
+    },
+    {
+      "agent": "claude-code",
+      "version": "2.1.207",
+      "platform": "linux-amd64",
+      "entrypoint": "claude",
+      "version_output": "2.1.207 (Claude Code)",
+      "source_url": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.207.tgz",
+      "source_sha256": "862d403aa07a49548215fb8b1255cb5a66fd31601e33e13bc8e6925526d242c0",
+      "archive_entry": "package/claude",
+      "sha256": "85e7e988a392d859f90802ca21fb26e89d3c9ab527f5ed0b08df3955e34d5c83"
     }
   ]
 }

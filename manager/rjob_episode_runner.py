@@ -45,6 +45,7 @@ class RJobEpisodeRunner:
         cfg = dict(lease.runtime_config or {})
         poll_interval_s = float(cfg.get("poll_interval_s", 5.0) or 5.0)
         timeout_s = float(request.agent_start_timeout_s or self.timeout_s)
+        logs_timeout_s = max(1.0, float(cfg.get("logs_timeout_s", 30.0) or 30.0))
         trace = PerfTrace(
             "rjob_episode.start",
             logger=log,
@@ -169,26 +170,39 @@ class RJobEpisodeRunner:
                 )
             timings_ms["rjob_wait_terminal_ms"] = _elapsed_ms(started)
             trace.update_context(rjob_status=terminal_status, status_poll_count=status_poll_count)
-            try:
-                started = time.perf_counter()
-                with trace.span("fetch_logs", submitted_rjob_name=submitted_name, terminal_status=terminal_status):
-                    logs_text = await self._cluster.logs_text(client, submitted_name)
-                timings_ms["rjob_fetch_logs_ms"] = _elapsed_ms(started)
-                trace.mark("logs_fetched", log_chars=len(logs_text))
-            except Exception as exc:
-                logs_error = str(exc)
-                timings_ms["rjob_fetch_logs_ms"] = _elapsed_ms(started)
-                trace.mark("logs_fetch_failed", error=logs_error, error_type=type(exc).__name__)
-
             started = time.perf_counter()
-            with trace.span("parse_result", submitted_rjob_name=submitted_name, terminal_status=terminal_status):
-                result = self._result_from_terminal_status(
-                    terminal_status=terminal_status,
-                    logs_text=logs_text,
-                    lease=lease,
-                    request=request,
-                    job_name=submitted_name,
-                )
+            result = self._result_from_terminal_status(
+                terminal_status=terminal_status,
+                logs_text=None,
+                lease=lease,
+                request=request,
+                job_name=submitted_name,
+            )
+            if result is None:
+                try:
+                    started = time.perf_counter()
+                    with trace.span("fetch_logs", submitted_rjob_name=submitted_name, terminal_status=terminal_status):
+                        logs_text = await self._cluster.logs_text(
+                            client,
+                            submitted_name,
+                            timeout_s=logs_timeout_s,
+                        )
+                    timings_ms["rjob_fetch_logs_ms"] = _elapsed_ms(started)
+                    trace.mark("logs_fetched", log_chars=len(logs_text))
+                except Exception as exc:
+                    logs_error = str(exc)
+                    timings_ms["rjob_fetch_logs_ms"] = _elapsed_ms(started)
+                    trace.mark("logs_fetch_failed", error=logs_error, error_type=type(exc).__name__)
+
+                started = time.perf_counter()
+                with trace.span("parse_result", submitted_rjob_name=submitted_name, terminal_status=terminal_status):
+                    result = self._result_from_terminal_status(
+                        terminal_status=terminal_status,
+                        logs_text=logs_text,
+                        lease=lease,
+                        request=request,
+                        job_name=submitted_name,
+                    )
             if logs_error:
                 result.metrics = dict(result.metrics or {})
                 result.metrics["logs_error"] = logs_error
@@ -210,7 +224,12 @@ class RJobEpisodeRunner:
                 timings_ms["rjob_stop_ms"] = _elapsed_ms(started)
                 started = time.perf_counter()
                 with trace.span("fetch_timeout_logs", submitted_rjob_name=submitted_name):
-                    logs_text = await self._cluster.logs_text(client, submitted_name, suppress_errors=True)
+                    logs_text = await self._cluster.logs_text(
+                        client,
+                        submitted_name,
+                        timeout_s=logs_timeout_s,
+                        suppress_errors=True,
+                    )
                 timings_ms["rjob_fetch_timeout_logs_ms"] = _elapsed_ms(started)
             result = SimulationStartResult(
                 session_id=request.session_id,
@@ -289,11 +308,17 @@ class RJobEpisodeRunner:
         self,
         *,
         terminal_status: str,
-        logs_text: str,
+        logs_text: str | None,
         lease: SimulationAgentLease,
         request: SimulationStartRequest,
         job_name: str,
-    ) -> SimulationStartResult:
+    ) -> SimulationStartResult | None:
+        metrics = {
+            "runtime": "rjob",
+            "rjob_name": job_name,
+            "rjob_status": terminal_status,
+            "logs_tail": tail(logs_text or ""),
+        }
         result_mode = str(lease.result_mode or "json").strip().lower()
         if terminal_status in RJOB_SUCCEEDED_STATUSES and result_mode == "exit_code":
             return SimulationStartResult(
@@ -303,69 +328,54 @@ class RJobEpisodeRunner:
                 step_count=0,
                 terminated=True,
                 truncated=False,
-                metrics={
-                    "runtime": "rjob",
-                    "rjob_name": job_name,
-                    "rjob_status": terminal_status,
-                    "result_mode": result_mode,
-                    "logs_tail": tail(logs_text),
-                },
+                metrics={**metrics, "result_mode": result_mode},
             )
 
-        try:
-            body = parse_result_output(logs_text)
-            result = normalize_result(body, session_id=request.session_id)
-            result_source = "stdout"
-            artifact_source_path = ""
-            stdout_parse_error = ""
-        except Exception as exc:
-            stdout_parse_error = str(exc)
+        # Probe the shared artifact before fetching logs. Retry it after unusable
+        # logs in case the file became visible while the log request was pending.
+        sources = ("artifact",) if logs_text is None else ("stdout", "artifact")
+        errors: Dict[str, str] = {}
+        artifact_source_path = ""
+        for result_source in sources:
             try:
-                body, artifact_path = parse_result_artifact(request)
+                if result_source == "artifact":
+                    body, artifact_path = parse_result_artifact(request)
+                    artifact_source_path = str(artifact_path)
+                else:
+                    body = parse_result_output(logs_text)
                 result = normalize_result(body, session_id=request.session_id)
-                result_source = "artifact"
-                artifact_source_path = str(artifact_path)
-            except Exception as artifact_exc:
-                artifact_path_text = result_artifact_path(request)
-                candidates = [str(path) for path in result_artifact_candidates(request, artifact_path_text)]
-                error_text = (
-                    f"RJob {job_name} finished with status={terminal_status}, "
-                    f"but no SimulationStartResult JSON could be parsed: {stdout_parse_error}; "
-                    f"artifact_error={artifact_exc}"
-                )
-                if candidates:
-                    error_text += f"; artifact_candidates={candidates}"
-                return SimulationStartResult(
-                    session_id=request.session_id,
-                    status="failed",
-                    total_reward=None,
-                    step_count=0,
-                    terminated=True,
-                    truncated=False,
-                    error_text=error_text,
-                    metrics={
-                        "runtime": "rjob",
-                        "rjob_name": job_name,
-                        "rjob_status": terminal_status,
-                        "result_artifact_path": artifact_path_text,
-                        "logs_tail": tail(logs_text),
-                    },
-                )
+                break
+            except Exception as exc:
+                errors[result_source] = str(exc)
+        else:
+            if logs_text is None:
+                return None
+            artifact_path_text = result_artifact_path(request)
+            candidates = [str(path) for path in result_artifact_candidates(request, artifact_path_text)]
+            error_text = (
+                f"RJob {job_name} finished with status={terminal_status}, "
+                f"but no SimulationStartResult JSON could be parsed: {errors['stdout']}; "
+                f"artifact_error={errors['artifact']}"
+            )
+            if candidates:
+                error_text += f"; artifact_candidates={candidates}"
+            return SimulationStartResult(
+                session_id=request.session_id,
+                status="failed",
+                total_reward=None,
+                step_count=0,
+                terminated=True,
+                truncated=False,
+                error_text=error_text,
+                metrics={**metrics, "result_artifact_path": artifact_path_text},
+            )
 
         result.metrics = dict(result.metrics or {})
-        result.metrics.update(
-            {
-                "runtime": "rjob",
-                "rjob_name": job_name,
-                "rjob_status": terminal_status,
-                "logs_tail": tail(logs_text),
-                "result_source": result_source,
-            }
-        )
+        result.metrics.update(metrics, result_source=result_source)
         if artifact_source_path:
             result.metrics["result_artifact_path"] = artifact_source_path
-        if stdout_parse_error:
-            result.metrics["stdout_parse_error"] = stdout_parse_error
+        if errors.get("stdout"):
+            result.metrics["stdout_parse_error"] = errors["stdout"]
 
         if terminal_status in RJOB_FAILED_STATUSES and result.status == "succeeded":
             result.status = "failed"

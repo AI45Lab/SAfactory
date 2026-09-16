@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import time
@@ -18,6 +19,7 @@ from bundle_materializer import BundleSpec, materialize_bundle, parse_bundle_spe
 from image_archive_loader import (
     ImageArchive,
     load_image_archives,
+    parse_image_archive_bundle,
     parse_image_archives,
 )
 
@@ -84,6 +86,8 @@ class RunSpec:
     capture_http: bool = False
     bundle: BundleSpec | None = None
     agent_runtime: AgentRuntime | None = None
+    agent_env: dict[str, str] = field(default_factory=dict)
+    harbor_env: dict[str, str] = field(default_factory=dict, repr=False)
     image_archives: tuple[ImageArchive, ...] = ()
 
     @property
@@ -187,6 +191,7 @@ class NestedDocker:
             key: value for key, value in self.env.items() if key not in MODEL_ENV_NAMES
         }
         harbor_env.update(model_connection_env(spec))
+        harbor_env.update(spec.harbor_env)
         with spec.harbor_log_path.open("ab") as log:
             self.harbor_process = subprocess.Popen(
                 harbor_command(spec),
@@ -287,9 +292,12 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
     dataset = dataset if isinstance(dataset, dict) else {}
 
     session_id = _required_text(request.get("session_id"), "session_id")
-    bundle = parse_bundle_spec(dataset, params)
+    archive_bundle = parse_image_archive_bundle(dataset, params)
+    bundle = None if archive_bundle is not None else parse_bundle_spec(dataset, params)
     task_path: Path | None = None
-    if bundle is None:
+    if archive_bundle is not None:
+        task_path = archive_bundle.task_path
+    elif bundle is None:
         task_path = Path(
             _required_text(
                 _param(dataset, params, "task_path", "/tmp/safactory-harbor-task"),
@@ -309,18 +317,31 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
         raise RuntimeError(f"invalid SAfactory gateway URL: {gateway_url!r}")
 
     agent_runtime_config = params.get("agent_runtime")
+    agent_env_config = params.get("agent_env")
     image_archives_config = params.get("image_archives")
     reasoning_effort_config = params.get("reasoning_effort")
     agent_import_path_config = params.get("agent_import_path")
     capture_http_config = params.get("capture_http", False)
     agent = _required_text(
         params.get("agent")
-        if agent_runtime_config is not None or reasoning_effort_config is not None
+        if (
+            agent_runtime_config is not None
+            or reasoning_effort_config is not None
+            or agent_env_config is not None
+        )
         else _param(dataset, params, "agent", "oracle"),
         "agent",
     )
     agent_runtime = _parse_agent_runtime(agent_runtime_config, agent)
+    agent_env = _parse_agent_env(agent_env_config)
     image_archives = parse_image_archives(image_archives_config)
+    if archive_bundle is not None:
+        if image_archives:
+            raise RuntimeError(
+                "image_archives cannot be combined with "
+                "an image archive bundle_type"
+            )
+        image_archives = archive_bundle.image_archives
     reasoning_effort = _parse_reasoning_effort(reasoning_effort_config, agent)
     agent_import_path = _optional_text(agent_import_path_config)
     if agent_import_path is not None and ":" not in agent_import_path:
@@ -349,7 +370,13 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
         raise RuntimeError(f"{RESULT_PATH_ENV} is required")
     result_path = Path(result_path_text)
     job_name = ("safactory-" + _safe_name(session_id).lower())[:63].strip("-")
-    default_task_id = bundle.task if bundle is not None else task_path.name
+    default_task_id = (
+        bundle.task
+        if bundle is not None
+        else archive_bundle.task
+        if archive_bundle is not None
+        else task_path.name
+    )
     return RunSpec(
         session_id=session_id,
         task_id=_required_text(dataset.get("task_id") or default_task_id, "task_id"),
@@ -367,6 +394,8 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
         capture_http=capture_http,
         bundle=bundle,
         agent_runtime=agent_runtime,
+        agent_env=agent_env,
+        harbor_env=dict(archive_bundle.harbor_env) if archive_bundle is not None else {},
         image_archives=image_archives,
     )
 
@@ -419,6 +448,8 @@ def harbor_command(spec: RunSpec) -> list[str]:
         )
     if spec.capture_http:
         command.extend(["--ak", "capture_http=true"])
+    for name, value in sorted(spec.agent_env.items()):
+        command.extend(["--ae", f"{name}={value}"])
     command.extend(
         [
             "--env",
@@ -431,6 +462,7 @@ def harbor_command(spec: RunSpec) -> list[str]:
             str(spec.jobs_root),
             "--job-name",
             spec.harbor_job_name,
+            "--yes",
             "--quiet",
         ]
     )
@@ -705,6 +737,26 @@ def _param(
     if params.get(name) is not None:
         return params[name]
     return default
+
+
+def _parse_agent_env(value: Any) -> dict[str, str]:
+    """Read explicit Agent variables without changing Gateway-owned credentials."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError("agent_env must be an object")
+    result: dict[str, str] = {}
+    for name, item in value.items():
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError("agent_env keys must be valid environment variable names")
+        if name in MODEL_ENV_NAMES:
+            raise ValueError(f"agent_env.{name} is managed by the SAfactory Gateway")
+        if not isinstance(item, str):
+            raise TypeError(f"agent_env.{name} must be a string; quote YAML values")
+        if "\x00" in item:
+            raise ValueError(f"agent_env.{name} must not contain NUL")
+        result[name] = item
+    return result
 
 
 def _parse_agent_runtime(value: Any, agent: str) -> AgentRuntime | None:
