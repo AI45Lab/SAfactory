@@ -222,58 +222,6 @@ class TelemetryRecorder:
                 self._truncated_sessions.discard(key)
             return len(seq_keys) + len(latest_keys) + len(truncated_keys)
 
-    async def enqueue_session_close(
-        self,
-        binding: GatewaySessionBinding,
-        *,
-        is_session_completed: bool,
-    ) -> None:
-        now = datetime.now(timezone.utc)
-        seq_id = await self._next_seq(binding.session_id, binding.model or "")
-        record = GatewayTelemetryRecord(
-            event_type="gateway_session_close",
-            request_id=f"close_{binding.session_id}_{seq_id}",
-            session_id=binding.session_id,
-            seq_id=seq_id,
-            endpoint="session/close",
-            requested_model=binding.model or "",
-            upstream_base_url=binding.upstream_base_url,
-            status_code=200,
-            error_type=None,
-            error_text=None,
-            is_stream=False,
-            retry_count=0,
-            request_bytes=None,
-            response_bytes=None,
-            prompt_tokens=None,
-            completion_tokens=None,
-            total_tokens=None,
-            ttft_ms=None,
-            output_chunk_count=None,
-            output_bytes=None,
-            upstream_latency_ms=None,
-            gateway_overhead_ms=None,
-            total_latency_ms=0.0,
-            finish_reason=binding.close_reason,
-            client_cancelled=False,
-            upstream_cancelled=False,
-            redaction_policy="sensitive_keys" if self.cfg.redact_sensitive_fields else "none",
-            payload_sampled=False,
-            messages=[],
-            request="",
-            request_method=None,
-            request_url=None,
-            request_headers={},
-            response=binding.close_reason or "gateway_close",
-            created_at=now,
-            completed_at=now,
-            max_steps=self.cfg.max_steps,
-            is_truncated=binding.truncated,
-            is_session_completed=is_session_completed,
-            truncate_reason=binding.truncate_reason,
-        )
-        await self._enqueue(binding, record)
-
     async def record_synthetic_stop(
         self,
         ctx: GatewayRequestContext,
@@ -559,10 +507,7 @@ class TelemetryRecorder:
         record: GatewayTelemetryRecord,
     ) -> None:
         async def _write() -> None:
-            if record.event_type == "gateway_session_close":
-                await self.storage.record_session_close(binding, record)
-            else:
-                await self.storage.record_inference_step(binding, record)
+            await self.storage.record_inference_step(binding, record)
 
         timeout_s = max(0.001, float(self.cfg.telemetry_write_timeout_s))
         trace = PerfTrace(

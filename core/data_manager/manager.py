@@ -293,6 +293,27 @@ class DataManager:
             normalized.append(item)
         return await self._strategy.insert_session_step_rows(normalized)
 
+    async def upsert_session_step_rows(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Upsert fully constructed logical rows through the configured DAO."""
+        normalized: List[Dict[str, Any]] = []
+        seen_keys: set[tuple[str, str]] = set()
+        for row in rows:
+            item = dict(row)
+            item["job_id"] = str(item.get("job_id") or self.job_id)
+            item["record_id"] = str(item.get("record_id") or "")
+            if not item["job_id"] or not item["record_id"]:
+                raise ValueError("session-step upsert requires non-empty job_id and record_id")
+            key = (item["job_id"], item["record_id"])
+            if key in seen_keys:
+                raise ValueError(f"duplicate session-step upsert key: {key!r}")
+            seen_keys.add(key)
+            item["meta_json"] = _metadata_object(item.get("meta_json"))
+            normalized.append(item)
+        return await self._strategy.upsert_session_step_rows(normalized)
+
     async def mark_records_completed(self, record_ids: List[str]) -> int:
         """Compatibility wrapper for exact-ID lifecycle updates."""
         return await self.update_session_step_rows(
@@ -305,12 +326,16 @@ class DataManager:
         session_id: str,
         *,
         job_id: Optional[str] = None,
+        step_id: Optional[int] = None,
+        llm_model: Optional[str] = None,
         checkout_latest: bool = False,
     ) -> List[Dict[str, Any]]:
         """Return persisted rows for one session in trajectory order."""
         return await self._strategy.list_session_step_rows(SessionStepQuery(
             job_id=job_id or self.job_id or None,
             session_id=session_id,
+            step_id=step_id,
+            llm_model=llm_model,
             checkout_latest=checkout_latest,
         ))
 

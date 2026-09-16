@@ -6,6 +6,7 @@ __pycache__/
 
 # Local IDE state
 .idea/
+.vscode/
 
 # Runtime logs and local SQLite storage
 logs/
@@ -27,6 +28,7 @@ tmp/
 *.local.yaml
 /gateway/config.local.boyue.yaml
 /gateway/config.local.s3.yaml
+AGENTS.md
 
 # Local Harbor dataset tooling
 /env/harbor/generate_vulhub_dataset.py

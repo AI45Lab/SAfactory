@@ -20,7 +20,6 @@ from gateway.config import GatewayConfig
 from gateway.models import GatewaySessionBinding, GatewayTelemetryRecord
 from gateway.trajectory_builder import (
     build_gateway_step_row,
-    select_latest_trajectory_record_ids,
 )
 
 GATEWAY_STORAGE_NAMESPACE = "gateway"
@@ -48,7 +47,6 @@ class GatewayStorage:
         self._sessions: dict[tuple[str, str], _CachedSession] = {}
         self._environments: dict[str, _SessionEnvironment] = {}
         self._patched_environment_sessions: set[str] = set()
-        self._latest_record_ids: dict[tuple[str, str], str] = {}
         self._lock = asyncio.Lock()
 
     @classmethod
@@ -322,18 +320,8 @@ class GatewayStorage:
         self,
         batch: list[tuple[GatewaySessionBinding, GatewayTelemetryRecord]],
     ) -> None:
-        """Persist an ordered telemetry batch, flushing inference rows before close events."""
-        inference_batch: list[tuple[GatewaySessionBinding, GatewayTelemetryRecord]] = []
-        for binding, record in batch:
-            if record.event_type != "gateway_session_close":
-                inference_batch.append((binding, record))
-                continue
-            if inference_batch:
-                await self.record_inference_steps_batch(inference_batch)
-                inference_batch = []
-            await self.record_session_close(binding, record)
-        if inference_batch:
-            await self.record_inference_steps_batch(inference_batch)
+        """Persist an ordered telemetry batch."""
+        await self.record_inference_steps_batch(batch)
 
     async def record_inference_steps_batch(
         self,
@@ -402,12 +390,7 @@ class GatewayStorage:
                         provider_meta=provider_meta,
                     ))
             with trace.span("storage.record_steps_batch", table="session_steps"):
-                record_ids = await self.data_manager.insert_session_step_rows(steps)
-
-            async with self._lock:
-                for (_, record), record_id in zip(batch, record_ids):
-                    if record_id:
-                        self._latest_record_ids[(record.session_id, record.requested_model)] = record_id
+                await self.data_manager.insert_session_step_rows(steps)
             elapsed_ms = (time.perf_counter() - started) * 1000
             log.info(
                 "Gateway storage record_step batch complete: records=%d elapsed_ms=%.2f",
@@ -415,99 +398,6 @@ class GatewayStorage:
                 elapsed_ms,
             )
             trace.emit_summary(status="success", elapsed_ms=elapsed_ms)
-        except asyncio.CancelledError:
-            trace.emit_summary(status="cancelled", error_type="CancelledError")
-            raise
-        except Exception as exc:
-            trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
-            raise
-
-    async def record_session_close(
-        self,
-        binding: GatewaySessionBinding,
-        record: GatewayTelemetryRecord,
-    ) -> None:
-        started = time.perf_counter()
-        trace = PerfTrace(
-            "gateway.storage.record_session_close",
-            logger=log,
-            context={
-                "session_id": binding.session_id,
-                "reason": binding.close_reason,
-                "is_session_completed": record.is_session_completed,
-            },
-        )
-        try:
-            sealed = (
-                binding.close_completion_mode == "seal"
-                or binding.close_reason == "rollout_sealed"
-            )
-            terminal = record.is_session_completed or sealed
-            with trace.span("models_for_session"):
-                models = await self._models_for_session(binding)
-            trace.update_context(model_count=len(models), models=models)
-            log.info(
-                "Gateway storage session_close begin: session_id=%s models=%s reason=%s completed=%s",
-                binding.session_id,
-                models,
-                binding.close_reason,
-                record.is_session_completed,
-            )
-            async with self._lock:
-                record_ids = [
-                    record_id
-                    for (session_id, model), record_id in self._latest_record_ids.items()
-                    if session_id == binding.session_id and (not models or model in models)
-                ]
-            close_strategy = "known_record_ids"
-            if not record_ids:
-                close_strategy = "query_then_select"
-                rows = await self.data_manager.list_session_steps(
-                    binding.session_id,
-                    job_id=binding.job_id,
-                    checkout_latest=True,
-                )
-                record_ids = select_latest_trajectory_record_ids(rows, models=models)
-            trace.update_context(
-                record_id_count=len(record_ids),
-                close_strategy=close_strategy,
-            )
-            if not record_ids:
-                elapsed_ms = (time.perf_counter() - started) * 1000
-                log.info(
-                    "Gateway storage session_close skipped: session_id=%s has no trajectory records",
-                    binding.session_id,
-                )
-                trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_count=0)
-                return
-
-            updates: dict[str, Any] = {"is_terminal": bool(terminal)}
-            if record.is_session_completed:
-                updates["is_session_completed"] = True
-            elif not sealed:
-                updates.update(
-                    is_session_completed=False,
-                    step_reward=0.0,
-                    reward=None,
-                )
-            with trace.span(
-                "storage.update_session_lifecycle",
-                table="session_steps",
-                record_count=len(record_ids),
-            ):
-                updated_count = await self.data_manager.update_session_step_rows(
-                    job_id=binding.job_id,
-                    record_ids=record_ids,
-                    updates=updates,
-                )
-            elapsed_ms = (time.perf_counter() - started) * 1000
-            log.info(
-                "Gateway storage session_close complete: session_id=%s updated_count=%d elapsed_ms=%.2f",
-                binding.session_id,
-                updated_count,
-                elapsed_ms,
-            )
-            trace.emit_summary(status="success", elapsed_ms=elapsed_ms, updated_count=updated_count)
         except asyncio.CancelledError:
             trace.emit_summary(status="cancelled", error_type="CancelledError")
             raise
@@ -527,7 +417,6 @@ class GatewayStorage:
         targets = set(session_ids)
         async with self._lock:
             session_keys = [key for key in self._sessions if key[0] in targets]
-            record_keys = [key for key in self._latest_record_ids if key[0] in targets]
             environments = [session_id for session_id in targets if session_id in self._environments]
             patched = [
                 session_id
@@ -536,32 +425,16 @@ class GatewayStorage:
             ]
             for key in session_keys:
                 self._sessions.pop(key, None)
-            for key in record_keys:
-                self._latest_record_ids.pop(key, None)
             for session_id in environments:
                 self._environments.pop(session_id, None)
             for session_id in patched:
                 self._patched_environment_sessions.discard(session_id)
-            return len(session_keys) + len(record_keys) + len(environments) + len(patched)
+            return len(session_keys) + len(environments) + len(patched)
 
     async def close(self) -> None:
         log.info("Gateway storage close begin")
         await self.data_manager.close()
         log.info("Gateway storage close complete")
-
-    async def _models_for_session(self, binding: GatewaySessionBinding) -> list[str]:
-        models = set(binding.llm_step_count_by_model)
-        if binding.model:
-            models.add(binding.model)
-
-        async with self._lock:
-            models.update(
-                model
-                for session_id, model in self._sessions
-                if session_id == binding.session_id and model
-            )
-
-        return sorted(models)
 
     async def _evict_expired(self) -> None:
         if self.cfg.session_cache_ttl_s <= 0:
@@ -575,7 +448,6 @@ class GatewayStorage:
             ]
             for cache_key in expired:
                 self._sessions.pop(cache_key, None)
-                self._latest_record_ids.pop(cache_key, None)
 
     @staticmethod
     def _metadata(record: GatewayTelemetryRecord) -> dict[str, Any]:

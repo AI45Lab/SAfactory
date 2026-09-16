@@ -2,7 +2,7 @@
 
 Safactory v2 通过 `core.data_manager` 记录任务行和 session 行。默认本地后端是 `sqlite://env_trajs.db`；cloud 模式交给 `wt-data-gateway` 默认配置。
 
-存储边界保持精简：Gateway 负责构造轨迹行及选择 session close 的目标行，Evaluator 负责行分类与奖励提交，Manager 负责未评测 session 的兜底完成逻辑，SQLite/Cloud strategy 只负责行持久化。YAML 聚合和消息图片持久化仍保留在 `core.data_manager`。
+存储边界保持精简：Gateway 负责构造轨迹行并在 session close 时 drain/flush，Evaluator 负责行分类及最终奖励 upsert，Manager 负责未评测 session 的兜底完成逻辑，SQLite/Cloud strategy 只负责行持久化。YAML 聚合和消息图片持久化仍保留在 `core.data_manager`。
 
 使用 SQLite 时，这两处必须一致：
 
@@ -48,7 +48,7 @@ storage_config:
 
 ### `session_steps`
 
-每个 gateway inference、直接轨迹 step 或 evaluation summary 一行；session close 会原位更新选中的轨迹行。
+每个 gateway inference、直接轨迹 step 或 evaluation summary 一行。Session close 不修改数据行；评测完成后，`RewardCommitter` 将最终奖励和完成状态 upsert 到最后一个成功轨迹 step。
 
 | 字段 | 含义 |
 |------|------|
@@ -79,7 +79,6 @@ storage_config:
 | 类型 | 标记 | 可训练 | 产生方 |
 |------|------|--------|--------|
 | Gateway inference | `event_type = gateway_inference` | 通常为 `false`；reward commit 可能将有效轨迹行标成 trainable。 | `gateway.storage` telemetry。 |
-| Gateway close | `event_type = gateway_session_close` | `false` | Gateway close telemetry。 |
 | Evaluation summary | `event_type = evaluation_summary` | `false` | 没有 trainable row 时由 `RewardCommitter` 写入。 |
 | Runtime/direct step | 没有特殊 event type | 记录为 trainable 时为 `true` | 自定义 runtime 或 data manager 调用方。 |
 

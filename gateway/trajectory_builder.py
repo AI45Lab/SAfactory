@@ -3,16 +3,9 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Optional
 
 from gateway.models import GatewaySessionBinding, GatewayTelemetryRecord
-
-
-NON_TRAJECTORY_EVENT_TYPES = {
-    "gateway_session_close",
-    "episode_summary",
-    "evaluation_summary",
-}
 
 
 def build_gateway_step_row(
@@ -55,44 +48,8 @@ def build_gateway_step_row(
         "step_reward": 0.0,
         "reward": None,
         "meta_json": meta_json,
-        "is_terminal": bool(record.is_truncated),
+        "is_terminal": False,
         "is_truncated": bool(record.is_truncated),
         "is_session_completed": False,
         "is_trainable": False,
     }
-
-
-def select_latest_trajectory_record_ids(
-    rows: Iterable[Dict[str, Any]],
-    *,
-    models: Iterable[str] = (),
-) -> list[str]:
-    requested_models = {str(model) for model in models if model}
-    latest: Dict[str, Dict[str, Any]] = {}
-    for row in rows:
-        meta_json = row.get("meta_json")
-        if not isinstance(meta_json, dict):
-            meta_json = {}
-        if meta_json.get("event_type") in NON_TRAJECTORY_EVENT_TYPES:
-            continue
-        model = str(row.get("llm_model") or "")
-        if requested_models and model not in requested_models:
-            continue
-        previous = latest.get(model)
-        current_key = (
-            int(row.get("step_id") or 0),
-            str(row.get("created_at") or ""),
-            str(row.get("record_id") or row.get("id") or ""),
-        )
-        previous_key = (
-            int(previous.get("step_id") or 0),
-            str(previous.get("created_at") or ""),
-            str(previous.get("record_id") or previous.get("id") or ""),
-        ) if previous else None
-        if previous_key is None or current_key > previous_key:
-            latest[model] = row
-    return [
-        str(row.get("record_id") or row.get("id"))
-        for row in latest.values()
-        if row.get("record_id") or row.get("id")
-    ]

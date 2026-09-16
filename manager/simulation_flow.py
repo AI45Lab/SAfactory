@@ -22,7 +22,6 @@ from evaluator.factory import build_evaluation_service
 from evaluator.gateway_client import GatewayClient
 from evaluator.reward_committer import RewardCommitter
 from evaluator.service import EvaluationService
-from evaluator.trajectory_reader import TrajectoryReader
 from .agent_start_client import AgentStartClient
 from .manager import AgentPoolManager
 from .resume_cleanup import cleanup_resume_artifacts
@@ -216,13 +215,15 @@ class SimulationFlow:
     async def clear_resume_gateway_session_cache(self) -> None:
         if self.data_manager is None:
             raise RuntimeError("data manager is not prepared")
-        rows = await self.data_manager.get_all_environments(self.cfg.job_id)
+        rows = await self.data_manager.list_environment_rows(
+            job_id=self.cfg.job_id,
+            finished=False,
+            is_deleted=False,
+        )
         session_ids = [
             str(row.get("env_id"))
             for row in rows
             if row.get("env_id")
-            and not bool(row.get("finished"))
-            and not bool(row.get("is_deleted"))
         ]
         if not session_ids:
             return
@@ -312,11 +313,7 @@ class SimulationFlow:
         if self.cfg.evaluation_enabled:
             log.info("EVAL FLOW enabled: rule evaluator only")
             self.evaluation_service = build_evaluation_service(
-                trajectory_reader=TrajectoryReader(
-                    db_url=self.cfg.db_url,
-                    storage_type=self.cfg.storage_type,
-                    data_manager=self.data_manager,
-                ),
+                trajectory_reader=None,
                 max_concurrency=self.cfg.max_workers or self.cfg.warm_pool_size,
             )
             evaluation_service = self.evaluation_service
