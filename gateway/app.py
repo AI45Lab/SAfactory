@@ -724,7 +724,6 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             task = asyncio.create_task(
                 _finalize_session_close(
                     binding=binding,
-                    completion_mode=completion_mode,
                     resolver=resolver,
                     telemetry=telemetry,
                     cfg=cfg,
@@ -1572,7 +1571,6 @@ async def _shutdown_stream_finalize_tasks(
 async def _finalize_session_close(
     *,
     binding: GatewaySessionBinding,
-    completion_mode: str,
     resolver: SessionResolver,
     telemetry: TelemetryRecorder,
     cfg: GatewayConfig,
@@ -1587,10 +1585,6 @@ async def _finalize_session_close(
                 binding,
                 cfg.session_close_timeout_s,
             )
-        await telemetry.enqueue_session_close(
-            binding,
-            is_session_completed=completion_mode == "complete",
-        )
         await telemetry.wait_for_session_flush(binding)
         return session_drained
 

@@ -393,6 +393,73 @@ class SqliteStrategy(StorageStrategy):
             await SessionStep.bulk_create(records)
         return record_ids
 
+    async def upsert_session_step_rows(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Atomically upsert complete rows by the globally unique record_id."""
+        await self.init()
+        if not rows:
+            return []
+        if self._write_buffer:
+            await self._write_buffer.flush_model(SessionStep, operation="create")
+
+        records: List[SessionStep] = []
+        record_ids: List[str] = []
+        for row in rows:
+            record_id = str(row["record_id"])
+            record_ids.append(record_id)
+            messages = row.get("messages", [])
+            request = row.get("request")
+            response = row.get("response", "")
+            records.append(SessionStep(
+                record_id=record_id,
+                session_id=str(row.get("session_id") or ""),
+                step_id=int(row.get("step_id") or 0),
+                env_name=str(row.get("env_name") or ""),
+                llm_model=str(row.get("llm_model") or ""),
+                group_id=str(row.get("group_id") or ""),
+                job_id=str(row["job_id"]),
+                messages=(
+                    messages
+                    if isinstance(messages, str)
+                    else json.dumps(messages, ensure_ascii=False, default=str)
+                ),
+                request=(
+                    request
+                    if request is None or isinstance(request, str)
+                    else json.dumps(request, ensure_ascii=False, default=str)
+                ),
+                response=(
+                    response
+                    if isinstance(response, str)
+                    else json.dumps(response, ensure_ascii=False, default=str)
+                ),
+                step_reward=float(row.get("step_reward") or 0.0),
+                reward=row.get("reward"),
+                meta_json=json.dumps(
+                    _json_object(row.get("meta_json")),
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                is_terminal=bool(row.get("is_terminal", False)),
+                is_truncated=bool(row.get("is_truncated", False)),
+                is_session_completed=bool(row.get("is_session_completed", False)),
+                is_trainable=bool(row.get("is_trainable", False)),
+            ))
+
+        await SessionStep.bulk_create(
+            records,
+            on_conflict=["record_id"],
+            update_fields=[
+                "session_id", "step_id", "env_name", "llm_model", "group_id",
+                "messages", "request", "response", "step_reward", "reward",
+                "meta_json", "is_terminal", "is_truncated",
+                "is_session_completed", "is_trainable",
+            ],
+        )
+        return record_ids
+
     async def list_session_step_rows(
         self,
         query: SessionStepQuery,

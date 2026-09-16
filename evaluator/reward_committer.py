@@ -105,14 +105,14 @@ class RewardCommitter:
             EvalStatus.TRUNCATED,
             EvalStatus.TRUNCATED.value,
         }
-        rows, terminal = await self._read_reward_target(session_id)
+        rows, target = await self._read_reward_target(session_id)
         log.info(
-            "EVAL REWARD rows: session=%s total_rows=%d terminal_found=%s",
+            "EVAL REWARD rows: session=%s total_rows=%d target_found=%s",
             session_id,
             len(rows),
-            terminal is not None,
+            target is not None,
         )
-        if terminal is None:
+        if target is None:
             metadata = self._build_reward_metadata(
                 session_id=session_id,
                 eval_result=eval_result,
@@ -121,8 +121,11 @@ class RewardCommitter:
             summary = _existing_eval_summary_row(rows, session_id)
             if summary is None:
                 reference = rows[-1] if rows else {}
-                record_ids = await self.data_manager.insert_session_step_rows([{
-                    "record_id": str(uuid.uuid4()),
+                record_ids = await self.data_manager.upsert_session_step_rows([{
+                    "record_id": str(uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"safactory:evaluation-summary:{self.data_manager.job_id}:{session_id}",
+                    )),
                     "session_id": session_id,
                     "env_id": session_id,
                     "step_id": _next_step_id(rows),
@@ -143,7 +146,7 @@ class RewardCommitter:
                 }])
                 recorded = len(record_ids)
             else:
-                recorded = await _update_persisted_row(
+                recorded = await _upsert_persisted_row(
                     self.data_manager,
                     summary,
                     {
@@ -154,7 +157,7 @@ class RewardCommitter:
                             summary_metadata,
                         ),
                         "is_terminal": True,
-                        **({"is_truncated": True} if truncated else {}),
+                        "is_truncated": truncated,
                         "is_session_completed": True,
                     },
                 )
@@ -174,16 +177,16 @@ class RewardCommitter:
             session_id=session_id,
             eval_result=eval_result,
         )
-        meta_json = _merge_meta_json(terminal.get("meta_json"), metadata)
-        updated = await _update_persisted_row(
+        meta_json = _merge_meta_json(target.get("meta_json"), metadata)
+        updated = await _upsert_persisted_row(
             self.data_manager,
-            terminal,
+            target,
             {
                 "step_reward": eval_result.normalized_score_10,
                 "reward": eval_result.normalized_score_10,
                 "meta_json": meta_json,
                 "is_terminal": True,
-                **({"is_truncated": True} if truncated else {}),
+                "is_truncated": truncated,
                 "is_session_completed": True,
             },
         )
@@ -231,12 +234,16 @@ class RewardCommitter:
                 if attempt < self.db_read_retries:
                     await asyncio.sleep(self.db_buffer_interval_s)
             log.warning(
-                "EVAL REWARD gateway target not visible after retries; using DB fallback: "
+                "EVAL REWARD gateway target not visible after retries: "
                 "session=%s model=%s step_id=%s retries=%d",
                 session_id,
                 self.llm_model,
                 target_step_id,
                 self.db_read_retries,
+            )
+            raise RuntimeError(
+                "Cannot commit evaluation reward: Gateway target step "
+                f"{target_step_id} is not visible for session {session_id}"
             )
 
         rows = await self.data_manager.list_session_steps(
@@ -307,22 +314,12 @@ def _load_meta_json(value: Any) -> dict[str, Any]:
     return parsed
 
 
-async def _update_persisted_row(
+async def _upsert_persisted_row(
     data_manager: Any,
     row: dict[str, Any],
     updates: dict[str, Any],
 ) -> int:
-    update_rows = getattr(data_manager, "update_session_step_rows", None)
-    if callable(update_rows):
-        return await update_rows(
-            job_id=row.get("job_id") or None,
-            session_id=str(row.get("session_id") or ""),
-            step_id=int(row.get("step_id") or 0),
-            llm_model=str(row.get("llm_model") or "") or None,
-            updates=updates,
-        )
-    return await data_manager.update_session_step(
-        str(row.get("session_id") or ""),
-        int(row.get("step_id") or 0),
-        updates,
-    )
+    complete_row = dict(row)
+    complete_row["record_id"] = str(row.get("record_id") or row.get("id") or "")
+    complete_row.update(updates)
+    return len(await data_manager.upsert_session_step_rows([complete_row]))
