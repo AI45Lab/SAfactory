@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -6,14 +7,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from qwen_vl_utils import process_vision_info
 from slime.utils.processing_utils import encode_image_for_rollout_engine
 
+from chat_template_adapter import BASE_CHAT_HISTORY, ChatTemplateAdapter, create_adapter
+
 
 logger = logging.getLogger(__name__)
 THINK_BLOCK_RE = re.compile(r"\s*<think>.*?</think>\s*", re.DOTALL)
-
-BASE_CHAT_HISTORY = [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "I am a user."},
-]
 
 
 @dataclass
@@ -39,15 +37,14 @@ class PreparedPrompt:
 
 
 class TrajectoryMaskBuilder:
-    def __init__(self, tokenizer, processor: Any = None) -> None:
+    def __init__(self, tokenizer, processor: Any = None, adapter: Optional[ChatTemplateAdapter] = None) -> None:
         self.tokenizer = tokenizer
         self.processor = processor
         self.session_roots: Dict[str, MessageNode] = {}
-        self.base_messages_str = self.tokenizer.apply_chat_template(
-            BASE_CHAT_HISTORY,
-            add_generation_prompt=False,
-            tokenize=False,
+        self.adapter = adapter or create_adapter(
+            os.environ.get("LOSS_MASK_TYPE", ""), tokenizer, processor
         )
+        self.base_messages_str = self.adapter.base_messages_str
         self.generation_tokens = self._init_generation_tokens()
         self.suffix = self._init_suffix_tokens()
 
@@ -75,6 +72,16 @@ class TrajectoryMaskBuilder:
             add_generation_prompt=False,
             tokenize=True,
         )
+        # Some tokenizer versions return BatchEncoding (or a batched tensor)
+        # here instead of a flat list of token IDs.
+        if hasattr(test_tokens, "input_ids"):
+            test_tokens = test_tokens.input_ids
+        elif isinstance(test_tokens, dict):
+            test_tokens = test_tokens["input_ids"]
+        if hasattr(test_tokens, "tolist"):
+            test_tokens = test_tokens.tolist()
+        if test_tokens and isinstance(test_tokens[0], (list, tuple)):
+            test_tokens = test_tokens[0]
         for idx in range(len(test_tokens) - 1, -1, -1):
             if test_tokens[idx] == eos_id:
                 return list(test_tokens[idx + 1 :])
@@ -214,14 +221,16 @@ class TrajectoryMaskBuilder:
         return list(input_ids), mm_train_inputs
 
     def _render_message_delta_str(self, model_input_message: Dict[str, Any]) -> str:
-        single_message_chat_template_str = self.tokenizer.apply_chat_template(
-            BASE_CHAT_HISTORY + [model_input_message],
-            add_generation_prompt=False,
-            tokenize=False,
-        )
-        if not single_message_chat_template_str.startswith(self.base_messages_str):
-            raise ValueError("failed to extract single-message template fragment")
-        return single_message_chat_template_str[len(self.base_messages_str) :]
+        """Render a single message's template fragment via the adapter."""
+        return self.adapter.render_message_delta(model_input_message)
+
+    def _render_first_system_delta_str(
+        self,
+        model_input_message: Dict[str, Any],
+        tools: List[Dict[str, Any]],
+    ) -> str:
+        """Render the first system message WITH tools via the adapter."""
+        return self.adapter.render_first_system_delta(model_input_message, tools)
 
     def _build_mm_train_inputs_for_images(self, images: List[Any]) -> Optional[Dict[str, Any]]:
         if self.processor is None or not images:
@@ -352,6 +361,7 @@ class TrajectoryMaskBuilder:
         tokens: List[int],
         images: List[Any],
         image_data: List[str],
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[MessageNode, List[Dict[str, Any]], str, List[int], List[Any], List[str]]:
         model_input_message = self._message_for_model_input(raw_message)
         next_model_input_messages = list(model_input_messages)
@@ -366,7 +376,10 @@ class TrajectoryMaskBuilder:
         next_image_data.extend(new_image_data)
         delta_mm_train_inputs = self._build_mm_train_inputs_for_images(new_images)
 
-        delta_message_str = self._render_message_delta_str(model_input_message)
+        if tools is not None:
+            delta_message_str = self._render_first_system_delta_str(model_input_message, tools)
+        else:
+            delta_message_str = self._render_message_delta_str(model_input_message)
         next_messages_str = messages_str + delta_message_str
         delta_tokens, _ = self._build_mm_inputs(delta_message_str, new_images)
         delta_tokens = list(delta_tokens)
@@ -400,16 +413,24 @@ class TrajectoryMaskBuilder:
         output_ids: List[int],
         assistant_text: str,
         finish_reason: Optional[str],
+        assistant_message: Optional[Dict[str, Any]] = None,
     ) -> MessageNode:
         del finish_reason
-        assistant_message = {"role": "assistant", "content": assistant_text}
-        model_input_message = self._message_for_model_input(assistant_message)
+        # If caller provides a pre-parsed assistant_message (OpenAI format with
+        # tool_calls, list content), use it as raw_message so _message_matches
+        # can compare it against DB messages during get_training_info. The
+        # raw assistant_text is still used for token/mask computation.
+        if assistant_message is not None:
+            raw_message = assistant_message
+        else:
+            raw_message = {"role": "assistant", "content": assistant_text}
+        model_input_message = self._message_for_model_input(raw_message)
         delta_message_str = self._render_message_delta_str(model_input_message)
         delta_tokens = list(self.generation_tokens) + list(output_ids) + list(self.suffix)
         delta_response_mask = [0] * len(self.generation_tokens) + [1] * len(output_ids) + [0] * len(self.suffix)
 
         node = MessageNode(
-            raw_message=assistant_message,
+            raw_message=raw_message,
             model_input_message=model_input_message,
             delta_message_str=delta_message_str,
             delta_tokens=delta_tokens,
@@ -425,12 +446,20 @@ class TrajectoryMaskBuilder:
         self,
         session_id: str,
         messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[MessageNode, List[Dict[str, Any]], str, List[int], List[Any], List[str]]:
         node, matched, model_input_messages, messages_str, tokens, _response_mask, images, image_data, _mm_train_inputs = self._match_prefix(
             session_id,
             messages,
         )
-        for message in messages[matched:]:
+        # Some models (e.g. Qwen) inject a `<tools>...</tools>` system block
+        # only into the FIRST system message of the rendered prompt. To get it
+        # into the recorded input_ids (so the training mask aligns with what
+        # sglang actually rendered), render the session's first system message
+        # standalone WITH tools; every other message uses the normal delta.
+        first_tools = tools if (matched == 0 and not node.children and self.adapter.needs_tools_on_first_system_only()) else None
+        for idx, message in enumerate(messages[matched:]):
+            msg_tools = first_tools if (idx == 0 and first_tools is not None and message.get("role") == "system") else None
             node, model_input_messages, messages_str, tokens, images, image_data = self._add_prompt_message(
                 node,
                 message,
@@ -439,6 +468,7 @@ class TrajectoryMaskBuilder:
                 tokens,
                 images,
                 image_data,
+                tools=msg_tools,
             )
         return node, model_input_messages, messages_str, tokens, images, image_data
 
@@ -446,10 +476,12 @@ class TrajectoryMaskBuilder:
         self,
         session_id: str,
         messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> PreparedPrompt:
         node, model_input_messages, messages_str, tokens, _images, image_data = self._ensure_path(
             session_id,
             messages,
+            tools=tools,
         )
         input_ids = list(tokens)
         input_ids.extend(self.generation_tokens)
@@ -468,6 +500,7 @@ class TrajectoryMaskBuilder:
         output_logprobs: List[List[Any]],
         assistant_text: str,
         finish_reason: Optional[str] = None,
+        assistant_message: Optional[Dict[str, Any]] = None,
     ) -> MessageNode:
         del output_logprobs
         return self._append_assistant_message(
@@ -475,6 +508,7 @@ class TrajectoryMaskBuilder:
             output_ids=list(output_ids),
             assistant_text=assistant_text,
             finish_reason=finish_reason,
+            assistant_message=assistant_message,
         )
 
     def get_training_info(

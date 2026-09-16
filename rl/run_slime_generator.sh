@@ -100,10 +100,18 @@ if (( RL_GROUP_SIZE <= 0 || RL_ROLLOUT_GROUP_BATCH_SIZE <= 0 || RL_GLOBAL_BATCH_
 fi
 
 if [[ -z "${AIEVOBOX_RUN_DIR:-}" ]]; then
-  export AIEVOBOX_RUN_DIR="${LOG_ROOT}/$(date +%Y%m%d-%H%M%S)"
+  # Reuse the buffer_server's run dir if it already created one (written to
+  # .current_run by run_buffer_server.sh). This keeps all logs (buffer_server,
+  # gateway, slime, timing) in the same directory.
+  if [[ -f "${LOG_ROOT}/.current_run" ]]; then
+    export AIEVOBOX_RUN_DIR="$(cat "${LOG_ROOT}/.current_run")"
+  else
+    export AIEVOBOX_RUN_DIR="${LOG_ROOT}/$(date +%Y%m%d-%H%M%S)"
+  fi
 fi
 mkdir -p "${AIEVOBOX_RUN_DIR}"
 printf '%s\n' "${AIEVOBOX_RUN_DIR}" > "${LOG_ROOT}/.current_run"
+export SAFACTORY_TIMING_LOG="${AIEVOBOX_RUN_DIR}/timing.jsonl"
 
 ROLLOUT_BUFFER_URL="http://${BUFFER_SERVER_HOST}:${BUFFER_SERVER_PORT}"
 LLM_PROXY_URL="http://${LLM_PROXY_HOST}:${LLM_PROXY_PORT}"
@@ -112,6 +120,8 @@ export ROLLOUT_BUFFER_URL LLM_PROXY_URL
 export WANDB_MODE
 export PYTHONUNBUFFERED
 export PYTORCH_CUDA_ALLOC_CONF
+export PYTORCH_ALLOC_CONF
+export TRAJ_TRUNCATION_MAX_SEQ_LEN
 export MODEL_ARGS_ROTARY_BASE
 
 source "${MODEL_SCRIPT}"
@@ -151,7 +161,8 @@ ROLLOUT_ARGS=(
   --num-rollout "${NUM_ROLLOUT}"
   --rollout-batch-size "${RL_ROLLOUT_GROUP_BATCH_SIZE}"
   --n-samples-per-prompt "${RL_GROUP_SIZE}"
-  --rollout-max-response-len "${LLM_MAX_LENGTH}"
+  --rollout-num-process "${ROLLOUT_NUM_PROCESS:-${RL_GLOBAL_BATCH_SIZE}}"
+  --rollout-max-response-len "${ROLLOUT_MAX_RESPONSE_LEN:-32768}"
   --rollout-temperature "${LLM_TEMPERATURE}"
   --global-batch-size "${RL_GLOBAL_BATCH_SIZE}"
   --loss-mask-type "${LOSS_MASK_TYPE}"
@@ -166,6 +177,7 @@ MEGATRON_ARGS=(
   --tensor-model-parallel-size "${TP_SIZE}"
   --pipeline-model-parallel-size "${PP_SIZE}"
   --context-parallel-size "${CP_SIZE}"
+  --sequence-parallel
   --expert-model-parallel-size "${EP_SIZE}"
   --expert-tensor-parallel-size "${ETP_SIZE}"
   --recompute-granularity "${RECOMPUTE_GRANULARITY}"
@@ -177,6 +189,16 @@ MEGATRON_ARGS=(
   --attention-softmax-in-fp32
   --attention-backend "${ATTENTION_BACKEND}"
 )
+if [[ -n "${DECODER_LAST_PIPELINE_NUM_LAYERS:-}" ]]; then
+  MEGATRON_ARGS+=(--decoder-last-pipeline-num-layers "${DECODER_LAST_PIPELINE_NUM_LAYERS}")
+fi
+# CPU offload optimizer: moves fp32 master weights + Adam states (~81GB at TP=4)
+# to CPU, leaving only bf16 weights + bf16 grad (~27GB) on GPU. Critical for
+# 27B model on 140GB GPUs where weights+optimizer would otherwise OOM.
+# Toggle via OPTIMIZER_CPU_OFFLOAD (default: true for 27B on 8-card TP=4).
+if is_true "${OPTIMIZER_CPU_OFFLOAD:-true}"; then
+  MEGATRON_ARGS+=(--optimizer-cpu-offload --use-precision-aware-optimizer)
+fi
 
 TRAIN_ARGS=(
   --max-tokens-per-gpu "${MAX_TOKENS_PER_GPU}"
@@ -195,8 +217,13 @@ GRPO_ARGS=(
   --advantage-estimator "${ADVANTAGE_ESTIMATOR}"
   --entropy-coef "${ENTROPY_COEF}"
   --eps-clip "${EPS_CLIP}"
-  --eps-clip-high "${EPS_CLIP_HIGH}"
+  --kl-loss-coef "${KL_LOSS_COEF:-0.00}"
+  --kl-loss-type "${KL_LOSS_TYPE:-low_var_kl}"
+  --kl-coef "${KL_COEF:-0.00}"
 )
+if [[ -n "${EPS_CLIP_HIGH:-}" ]]; then
+  GRPO_ARGS+=(--eps-clip-high "${EPS_CLIP_HIGH}")
+fi
 if is_true "${USE_OPD:-false}"; then
   GRPO_ARGS+=(--use-opd --opd-type "${OPD_TYPE:-sglang}" --opd-kl-coef "${OPD_KL_COEF:-1.0}")
 fi
@@ -254,10 +281,86 @@ fi
 if is_true "${SGLANG_ENABLE_MIXED_CHUNK:-false}"; then
   SGLANG_ARGS+=(--sglang-enable-mixed-chunk)
 fi
+# Prefix (RadixAttention) caching: reuse KV cache for shared prompt prefixes
+# (system prompt, task template, conversation history across multi-turn agent
+# steps). Big win for PatchEval where every episode shares the same system
+# prompt and the same task description across GRPO samples. Without this the
+# SGLang log shows #cached-token: 0 on every prefill. Default on; disable via
+# SGLANG_ENABLE_PREFIX_CACHING=false.
+if is_true "${SGLANG_ENABLE_PREFIX_CACHING:-true}"; then
+  SGLANG_ARGS+=(--sglang-enable-prefix-caching)
+fi
+
+# Mamba/GDN scheduler strategy: official Qwen3.5-27B uses extra_buffer to
+# avoid illegal memory access in mamba_pool allocation.
+SGLANG_ARGS+=(--sglang-mamba-scheduler-strategy "${SGLANG_MAMBA_SCHEDULER_STRATEGY:-extra_buffer}")
+
+# EAGLE speculative decoding: official Qwen3.5-27B uses EAGLE for faster decode.
+if [[ -n "${SGLANG_SPECULATIVE_ALGORITHM:-}" ]]; then
+  SGLANG_ARGS+=(
+    --sglang-speculative-algorithm "${SGLANG_SPECULATIVE_ALGORITHM}"
+    --sglang-speculative-num-steps "${SGLANG_SPECULATIVE_NUM_STEPS:-3}"
+    --sglang-speculative-eagle-topk "${SGLANG_SPECULATIVE_EAGLE_TOPK:-1}"
+    --sglang-speculative-num-draft-tokens "${SGLANG_SPECULATIVE_NUM_DRAFT_TOKENS:-4}"
+  )
+fi
+
+# Router policy: how the SGLang router distributes requests across engines.
+#   cache_aware (sglang default) — greedy per-request prefix match; under high
+#                     concurrency it scatters one session's turns across
+#                     engines, so ~78% of prefills recompute the full prompt
+#                     (cached-token=0). Wastes the multi-engine capacity.
+#   manual (chosen here) — sticky-session routing via the X-SMG-Routing-Key
+#                     header that llm_proxy now sends. Each session_id is pinned
+#                     to one worker and stays there (only remaps if that worker
+#                     dies). Stronger stickiness than consistent_hashing, ideal
+#                     for fixed-engine RL rollouts. Supported since SGLang Model
+#                     Gateway v0.3.1 (PR #15907, 2025-12-27); the installed
+#                     sglang_router 0.3.2 has it. `consistent_hashing` is a
+#                     newer CLI choice (PR #17972, 2026-02-15) NOT in 0.3.2, so do
+#                     NOT set SGLANG_ROUTER_POLICY=consistent_hashing on this
+#                     build (argparse will reject it and crash startup).
+#                     Override via SGLANG_ROUTER_POLICY if needed.
+SGLANG_ARGS+=(--router-policy "${SGLANG_ROUTER_POLICY:-manual}")
+
+# Colocate mode: training (Megatron) and inference (SGLang) share the SAME GPUs.
+# Required for big models on few GPUs (e.g. 27B on a single 8-card node): the
+# dedicated-pool split (actor + rollout = NUM_GPUS) would need ~16 cards for 27B,
+# but colocate time-shares 8 cards via CPU offload between rollout/train phases.
+# When on, --rollout-num-gpus is ignored (auto = actor GPUs) and --offload is
+# forced by the trainer. Set SLIME_COLOCATE=1 to enable.
+COLOCATE_ARGS=()
+ROLLOUT_NUM_GPUS_ARG=""
+if is_true "${SLIME_COLOCATE:-false}"; then
+  COLOCATE_ARGS=(--colocate)
+  # In colocate mode, --rollout-num-gpus is auto-set to actor GPUs.
+  # Don't pass it (matches official Qwen3.5-27B script).
+  echo "  Colocate: ON (train+rollout share all actor GPUs)"
+else
+  ROLLOUT_NUM_GPUS_ARG="--rollout-num-gpus ${ROLLOUT_NUM_GPUS}"
+fi
 
 RAY_RUNTIME_PYTHONPATH="${SLIME_HOME}:${AIEVOBOX_ROOT}/rl:${AIEVOBOX_ROOT}:${MEGATRON_HOME}"
 if [[ -n "${PYTHONPATH:-}" ]]; then
   RAY_RUNTIME_PYTHONPATH="${RAY_RUNTIME_PYTHONPATH}:${PYTHONPATH}"
+fi
+
+# Colocate mode requires torch_memory_saver for both training and rollout engines.
+# The training actor sets LD_PRELOAD in actor_group.py, but the sglang rollout
+# engine does NOT — without it, torch_memory_saver fails to initialize
+# (_TorchMemorySaverImpl crashes). Compute the .so path and inject it into the
+# Ray runtime env so sglang engines also get the hook.
+TMS_HOOK_SO=""
+if is_true "${SLIME_COLOCATE:-false}"; then
+  TMS_HOOK_SO=$(python3 -c "
+import torch_memory_saver, os
+p = os.path.join(os.path.dirname(os.path.dirname(torch_memory_saver.__file__)),
+                 'torch_memory_saver_hook_mode_preload.abi3.so')
+print(p if os.path.exists(p) else '')
+" 2>/dev/null || echo "")
+  if [[ -z "${TMS_HOOK_SO}" ]]; then
+    echo "WARNING: torch_memory_saver_hook_mode_preload.abi3.so not found; colocate may fail"
+  fi
 fi
 
 RUNTIME_ENV_JSON="{\
@@ -284,7 +387,14 @@ RUNTIME_ENV_JSON="{\
     \"OPD_TEACHER_MAX_CONCURRENCY\": \"${OPD_TEACHER_MAX_CONCURRENCY:-}\",\
     \"OPD_TEACHER_TIMEOUT_SECONDS\": \"${OPD_TEACHER_TIMEOUT_SECONDS:-}\",\
     \"WANDB_MODE\": \"${WANDB_MODE}\",\
-    \"WANDB_DIR\": \"${WANDB_DIR}\"\
+    \"WANDB_DIR\": \"${WANDB_DIR}\",\
+    \"NCCL_IB_DISABLE\": \"${NCCL_IB_DISABLE:-1}\",\
+    \"NCCL_NET\": \"${NCCL_NET:-Socket}\",\
+    \"NCCL_SOCKET_IFNAME\": \"${NCCL_SOCKET_IFNAME:-bond0}\",\
+    \"PYTORCH_CUDA_ALLOC_CONF\": \"${PYTORCH_CUDA_ALLOC_CONF}\",\
+    \"PYTORCH_ALLOC_CONF\": \"${PYTORCH_ALLOC_CONF}\",\
+    \"TRAJ_TRUNCATION_MAX_SEQ_LEN\": \"${TRAJ_TRUNCATION_MAX_SEQ_LEN:-8192}\",\
+    \"LOSS_MASK_TYPE\": \"${LOSS_MASK_TYPE:-qwen3_5}\"\
   }\
 }"
 
@@ -310,14 +420,22 @@ RAY_START_ARGS=(start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "${NU
 if [[ -n "${RAY_PORT:-}" ]]; then
   RAY_START_ARGS+=(--port "${RAY_PORT}")
 fi
-"${RAY_BIN}" "${RAY_START_ARGS[@]}"
+# Multi-node: pre-build the Ray cluster manually (head + `ray start --address`
+# on workers), then run with SKIP_RAY_START=1 so this script reuses the existing
+# cluster instead of `ray start --head` (which would restart Ray and drop the
+# workers). Also set CLEANUP_BEFORE_RUN=false so the pre-started cluster survives.
+if is_true "${SKIP_RAY_START:-false}"; then
+  echo "SKIP_RAY_START=1: reusing existing Ray cluster at ${RAY_ADDRESS} (multi-node)"
+else
+  "${RAY_BIN}" "${RAY_START_ARGS[@]}"
+fi
 
 "${RAY_BIN}" job submit --address="${RAY_ADDRESS}" \
   --runtime-env-json="${RUNTIME_ENV_JSON}" \
   -- "${PYTHON_BIN}" "${TRAIN_ENTRYPOINT}" \
   --actor-num-nodes "${ACTOR_NUM_NODES}" \
   --actor-num-gpus-per-node "${ACTOR_NUM_GPUS_PER_NODE}" \
-  --rollout-num-gpus "${ROLLOUT_NUM_GPUS}" \
+  ${ROLLOUT_NUM_GPUS_ARG} \
   "${MODEL_ARGS[@]}" \
   "${MEGATRON_ARGS[@]}" \
   "${CKPT_ARGS[@]}" \
@@ -327,5 +445,6 @@ fi
   "${WANDB_ARGS[@]}" \
   "${TRAIN_ARGS[@]}" \
   "${SGLANG_ARGS[@]}" \
+  "${COLOCATE_ARGS[@]}" \
   "${TEACHER_ARGS[@]}" \
   2>&1 | tee "${AIEVOBOX_RUN_DIR}/slime.log"

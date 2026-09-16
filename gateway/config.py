@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, fields
+import os
+from dataclasses import dataclass, fields, replace
 from typing import Any
 
 import yaml
 
 DEFAULT_SQLITE_DB_URL = "sqlite://env_trajs.db"
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
 
 
 @dataclass(frozen=True)
@@ -56,6 +65,7 @@ class GatewayConfig:
     drain_timeout_s: int = 30
     session_close_timeout_s: float = 90.0
     session_close_retry_after_s: int = 10
+    default_max_tokens: int = 32768
     storage_type: str = "sqlite"
     storage_config: dict[str, Any] | None = None
     llm_routes: dict[str, LLMRouteConfig] | None = None
@@ -104,6 +114,13 @@ class GatewayConfig:
 def load_gateway_config(path: str | None = None) -> GatewayConfig:
     file_data = _load_file(path) if path else {}
     cfg = _dict_to_config(file_data)
+
+    # Env-var overrides (centralized here so app.py never reads os.environ for
+    # gateway config). GATEWAY_DEFAULT_MAX_TOKENS overrides the file value; <=0
+    # disables default-token injection.
+    env_max_tokens = os.environ.get("GATEWAY_DEFAULT_MAX_TOKENS")
+    if env_max_tokens is not None and env_max_tokens.strip() != "":
+        cfg = replace(cfg, default_max_tokens=_safe_int(env_max_tokens, cfg.default_max_tokens))
 
     storage_config = _storage_config_for(cfg.storage_type, cfg.storage_config)
     llm_routes = cfg.llm_routes or _default_routes()
