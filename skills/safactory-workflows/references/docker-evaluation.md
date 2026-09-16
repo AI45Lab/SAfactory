@@ -84,8 +84,11 @@ After a run, inspect:
 
 Common failures:
 
-- `--llm-model` does not match a Gateway route key.
-- Gateway base URL points to an LLM proxy instead of `/v1/sessions`.
-- Docker image or mounted runner path is missing.
-- Gateway and Launcher write to different storage backends.
-- Runner exits non-zero for benchmark-level failure instead of returning a failed result.
+- `--llm-model` does not match a Gateway route key. *(safactory-side: Gateway/launcher configuration)*
+- Gateway base URL points to an LLM proxy instead of `/v1/sessions`. *(safactory-side)*
+- Docker image or mounted runner path is missing. *(config-side: environment wiring)*
+- Gateway and Launcher write to different storage backends. *(safactory-side)*
+- Runner exits non-zero for benchmark-level failure instead of returning a failed result. *(env-side: protocol violation)*
+- `rule evaluator not found for environment` — `--enable-evaluation` was set but `rule_evaluator.py` is absent; the episode is then marked failed. *(config-side)*
+
+For a fuller symptom → owning-side → first-action table, see the "Failure triage" section of [environment-integration.md](environment-integration.md); `check_environment.py --env env/<name>` performs the static subset automatically.

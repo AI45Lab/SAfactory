@@ -7,14 +7,16 @@ container:
     command: "python /tmp/safactory-__ENV_NAME__/runner.py"
   mounts:
     # Docker bind sources are resolved from the repository root when the
-    # launcher/live_smoke helper is run there.
+    # launcher/live_smoke helper is run there; runner_entrypoint.source is
+    # resolved from this config file's directory.
     - source: __ENV_ROOT__/__ENV_NAME__/adapter.py
       target: /tmp/safactory-__ENV_NAME__/adapter.py
       mode: ro
-    # Mount native benchmark assets read by the current case.  If the dataset
-    # is remote, replace this with the image's own path or remove the mount.
+    # Mount the dataset directory read-only.  Absolute file paths stored in
+    # dataset rows (see env/prmeval's frames field) must point inside a mount
+    # target — keep them in sync with this path.
     - source: __ENV_ROOT__/__ENV_NAME__/datasets
-      target: /workspace/Safactory/datasets/__ENV_NAME__
+      target: /tmp/safactory-__ENV_NAME__/datasets
       mode: ro
     - source: ./results
       target: /workspace/Safactory/results

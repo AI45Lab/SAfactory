@@ -7,21 +7,34 @@ container:
     command: "python /tmp/safactory-__ENV_NAME__/runner.py"
   env:
     PYTHONDONTWRITEBYTECODE: "1"
+    # The cluster injects corporate proxies that break loopback Gateway
+    # access; blank them unless the environment needs egress.
+    HTTP_PROXY: ""
+    HTTPS_PROXY: ""
+    ALL_PROXY: ""
+    http_proxy: ""
+    https_proxy: ""
+    all_proxy: ""
+    NO_PROXY: ""
+    no_proxy: ""
 rjob:
   name_prefix: __ENV_NAME__
+  private_machine: Group
   image_pull_policy: IfNotPresent
   no_packaging: true
   cleanup_on_finish: true
   keep_failed_jobs: true
   resources:
-    cpu: 1
+    cpu: 2
     gpu: 0
-    memory_in_mb: 1024
+    memory_in_mb: 4096
+  mount_config:
+    # Replace CLUSTER_STORAGE with a location visible to the RJob cluster.
+    - "gpfs://CLUSTER_STORAGE/SAfactory/results:/app/results"
+    # Mount the dataset directory at the same container path as the Docker
+    # start config so dataset-row absolute paths resolve identically.
+    - "gpfs://CLUSTER_STORAGE/SAfactory/env/__ENV_NAME__/datasets:/tmp/safactory-__ENV_NAME__/datasets"
   embedded_files:
+    # runner.py is embedded automatically from runner_entrypoint.source.
     - source: ./adapter.py
       target: /tmp/safactory-__ENV_NAME__/adapter.py
-  # Add cluster-accessible result storage via mount_config/mount for live runs.
-  mount_config:
-    # Replace CLUSTER_STORAGE with a path visible to the RJob cluster.
-    - "gpfs://CLUSTER_STORAGE/SAfactory/results:/app/results"
-    - "gpfs://CLUSTER_STORAGE/SAfactory/env/__ENV_NAME__/datasets:/tmp/safactory-__ENV_NAME__/datasets"

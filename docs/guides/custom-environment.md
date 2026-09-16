@@ -32,10 +32,9 @@ Agents and benchmarks mostly differ in the runner and evaluator:
 Create the guide-derived files with:
 
 ```bash
-python skills/safactory-workflows/scripts/scaffold_environment.py myagent --mode docker
-# Use --mode rjob to mark RJob as the first deployment target.
-# Both Docker and RJob config pairs are generated; add --enable-evaluation only
-# when evaluation is requested.
+python skills/safactory-workflows/scripts/scaffold_environment.py myagent
+# Both Docker and RJob config pairs are always generated; add --enable-evaluation
+# only when evaluation is requested.
 ```
 
 The [templates](../../skills/safactory-workflows/assets/environment/) keep protocol handling in `runner.py` and environment logic in `adapter.py:run_case`. Fill that hook and the YAML values; keep the protocol shell unchanged. For benchmarks, replace the generated greeting with the existing native single-case command and output mapping. The scaffolder refuses to overwrite existing directories. Its sample request/dataset verifies the scaffold only; replace those examples with representative cases before claiming integration success.
@@ -123,6 +122,13 @@ The runner should print a failed result and exit `0` when the task fails in a co
 
 For predictable parsing, keep stdout reserved for the result JSON. Send diagnostic logs to stderr. For long remote runs, the runner may also write the same result object to the path in `SAFACTORY_RESULT_PATH`; Safactory parses stdout first and falls back to that artifact path when stdout does not contain parseable JSON.
 
+Two invariants are checked automatically by
+`skills/safactory-workflows/scripts/validate_environment.py` and
+`check_environment.py`: `env_params.results_root` must equal the results mount
+target declared in the matching start file, and absolute file paths stored
+inside dataset rows (for example PRMEval's `frames` field) must point under a
+container mount target so they resolve identically in Docker and RJob runs.
+
 ## 2. Read The Request
 
 Safactory passes `SimulationStartRequest` both on stdin and in `SAFACTORY_START_REQUEST_JSON`.
@@ -158,6 +164,8 @@ Important fields:
 | `SAFACTORY_GATEWAY_SESSION_URL_CONTAINER` | Container-friendly session URL. Local `localhost` addresses are rewritten to `host.docker.internal`. |
 | `SAFACTORY_ROUTE_MODEL` | Route model inferred from dataset, `env_params`, or request. |
 | `SAFACTORY_MODEL_REF` | Provider-style model reference, for example `safactory/<route>`. |
+| `SAFACTORY_NATIVE_PARALLEL` | Whether the runtime may run native cases in parallel. |
+| `SAFACTORY_OUTPUT_SUBDIR` | Per-episode output subdirectory hint under the results root. |
 | `OPENROUTER_BASE_URL` | Alias for the container-friendly gateway session URL. |
 
 ## 3. Return The Result
@@ -219,7 +227,8 @@ environments:
     dataset_load_mode: eager
     env_params:
       task_family: myagent
-      output_root: /workspace/Safactory/results/myagent
+      # Must equal the results mount target in myagent_start.yaml.
+      results_root: /workspace/Safactory/results
 ```
 
 Create `env/myagent/datasets/tasks.jsonl`:
@@ -242,7 +251,7 @@ environments:
     env_params:
       task_family: mybench
       bench_root: /workspace/MyBench
-      output_root: /workspace/Safactory/results/mybench
+      results_root: /workspace/Safactory/results
 ```
 
 ```jsonl

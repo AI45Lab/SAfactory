@@ -1,4 +1,5 @@
 """Behavioral checks for the portable onboarding templates and owned test services."""
+import asyncio
 import contextlib
 import importlib.util
 import io
@@ -15,6 +16,7 @@ from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL = REPO_ROOT / "skills" / "safactory-workflows"
+sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(SKILL / "scripts"))
 from contract_smoke import run_smoke
 from live_smoke import run_live
@@ -28,34 +30,39 @@ class EnvironmentSkillTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
 
-    def create(self, mode="docker", evaluation=False):
-        path = scaffold("mybench", mode, self.root, evaluation)
+    def create(self, evaluation=False):
+        path = scaffold("mybench", self.root, evaluation)
         return path, json.loads((path / "request.smoke.json").read_text())
 
     def test_scaffold_preserves_existing_files_and_validates_name(self):
         path, _ = self.create()
         for name in (
-            "runner.py", "adapter.py", "mybench_config.yaml", "mybench_start.yaml",
+            "runner.py", "adapter.py", "README.md", "mybench_config.yaml", "mybench_start.yaml",
             "mybench_config.rjob.yaml", "mybench_start.rjob.yaml", "request.smoke.json",
         ):
             self.assertTrue((path / name).exists(), name)
+        self.assertTrue((path / "results" / ".gitkeep").exists())
         (path / "adapter.py").write_text("user code")
         with self.assertRaises(FileExistsError):
-            scaffold("mybench", "rjob", self.root, True)
+            scaffold("mybench", self.root, True)
         self.assertEqual((path / "adapter.py").read_text(), "user code")
         self.assertFalse((path / "rule_evaluator.py").exists())
         rjob_config = (path / "mybench_config.rjob.yaml").read_text()
         self.assertIn("RJob cluster", rjob_config)
-        self.assertIn("output_root: /app/results/mybench", rjob_config)
+        self.assertIn("results_root: /app/results", rjob_config)
         docker_start = (path / "mybench_start.yaml").read_text()
         self.assertIn(f"{path / 'adapter.py'}", docker_start)
         self.assertIn(f"{path / 'datasets'}", docker_start)
+        self.assertIn("/tmp/safactory-mybench/datasets", docker_start)
+        rjob_start = (path / "mybench_start.rjob.yaml").read_text()
+        self.assertIn("private_machine: Group", rjob_start)
+        self.assertIn('HTTP_PROXY: ""', rjob_start)
         for name in ("../escape", "bad-name", "bad\nname"):
             with self.assertRaises(ValueError):
-                scaffold(name, "docker", self.root)
+                scaffold(name, self.root)
 
     def test_both_input_transports_work_without_evaluation_or_cluster(self):
-        path, request = self.create(mode="rjob")
+        path, request = self.create()
         self.assertFalse((path / "rule_evaluator.py").exists())
         # Even a present evaluator must never be imported by integration-only execution.
         (path / "rule_evaluator.py").write_text("raise RuntimeError('evaluation was invoked')")
@@ -164,22 +171,36 @@ class EnvironmentSkillTests(unittest.TestCase):
 
     def test_optional_evaluator_hook_rejects_missing_and_invalid_scores(self):
         path, _ = self.create(evaluation=True)
+        # Load evaluator/eval_types.py directly: importing the evaluator package
+        # pulls heavy runtime dependencies irrelevant to the hook contract.
+        types_spec = importlib.util.spec_from_file_location(
+            "evaluator.eval_types", REPO_ROOT / "evaluator" / "eval_types.py")
+        types_module = importlib.util.module_from_spec(types_spec)
+        sys.modules.setdefault("evaluator", importlib.util.module_from_spec(
+            importlib.util.spec_from_file_location("evaluator", REPO_ROOT / "evaluator" / "__init__.py")))
+        sys.modules["evaluator"].__path__ = [str(REPO_ROOT / "evaluator")]
+        sys.modules["evaluator.eval_types"] = types_module
+        types_spec.loader.exec_module(types_module)
         spec = importlib.util.spec_from_file_location("fixture_evaluator", path / "rule_evaluator.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         request = SimpleNamespace(session_id="one", env_params={"dataset": {}},
                                   start_result=SimpleNamespace(metrics={"score": 0.7}))
+
+        def evaluate(**kwargs):
+            return asyncio.run(module.evaluate_rule(**kwargs))
+
         kwargs = dict(request=request, spec=SimpleNamespace(eval_id="rule"), trajectory=None)
-        self.assertEqual(module.evaluate_rule(**kwargs)["status"], "failed")
+        self.assertEqual(evaluate(**kwargs).status, "failed")
         module.score_metrics = lambda metrics, dataset, trajectory: (metrics["score"], metrics["score"] * 10, "fixture scale")
         for raw in (0.0, 0.7, 1.0):
             request.start_result.metrics = {"score": raw}
-            result = module.evaluate_rule(**kwargs)
-            self.assertEqual(result["status"], "succeeded")
-            self.assertEqual(result["normalized_score_10"], raw * 10)
+            result = evaluate(**kwargs)
+            self.assertEqual(result.status, "succeeded")
+            self.assertEqual(result.normalized_score_10, raw * 10)
         for metrics in ({}, {"score": float("nan")}, {"score": float("inf")}, {"score": 2}):
             request.start_result.metrics = metrics
-            self.assertEqual(module.evaluate_rule(**kwargs)["status"], "failed")
+            self.assertEqual(evaluate(**kwargs).status, "failed")
 
     def live_fixture(self):
         with socket.socket() as sock:

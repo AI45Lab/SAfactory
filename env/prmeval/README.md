@@ -20,6 +20,20 @@ repository root (as `live_smoke.py` requires). Its bind sources therefore use
 `./env/prmeval/...`; the RJob config instead resolves embedded-file sources
 relative to its own config file and uses cluster-visible storage.
 
+## Verification
+
+One command runs the static consistency checks plus the contract smoke
+(see `skills/safactory-workflows/references/environment-integration.md`):
+
+```bash
+# Static + contract, with the fixture adapter (PRMEval wheel not required):
+python skills/safactory-workflows/scripts/check_environment.py --env env/prmeval \
+  --fixture-adapter skills/safactory-workflows/assets/environment/adapter.py
+
+# Static checks only:
+python skills/safactory-workflows/scripts/validate_environment.py env/prmeval
+```
+
 ## Fast local contract check
 
 The full PRMEval wheel and model are not needed to validate the SAfactory

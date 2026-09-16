@@ -40,7 +40,6 @@ def run_case(
     job_id = _required_text(request.get("job_id"), "job_id")
     results_root = _first_text(
         env_params.get("results_root"),
-        os.environ.get("SAFACTORY_RESULTS_ROOT"),
         "/tmp/safactory-prmeval-results",
     )
     run_name = _safe_path_part(f"{job_id}-{session_id}")

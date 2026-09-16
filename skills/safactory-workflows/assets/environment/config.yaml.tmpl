@@ -4,8 +4,17 @@ environments:
     env_num: 1
     dataset: ./datasets/smoke.jsonl
     dataset_load_mode: eager
-    # env_params is serialized into SimulationStartRequest and passed to the
-    # runner for every dataset row. Keep runtime configuration here.
+    # env_params is serialized into the SimulationStartRequest and delivered to
+    # the runner inside the container for every dataset row; static container
+    # env vars are not a replacement for it.
     env_params:
       task_family: __ENV_NAME__
-      output_root: /workspace/Safactory/results/__ENV_NAME__
+      # Must equal the results mount target in __ENV_NAME___start.yaml so
+      # SAFACTORY_RESULT_PATH artifacts land on the shared results volume.
+      results_root: /workspace/Safactory/results
+      # Native benchmark configuration goes here and is passed through to
+      # adapter.py verbatim (see env/prmeval's prmeval: block).  The model
+      # base_url/api key are injected per episode via session_url; keep only
+      # benchmark knobs here.
+      # __ENV_NAME__:
+      #   ...native options...

@@ -99,7 +99,7 @@ Ask only for missing information needed by the next dependent step.
 
 </details>
 
-See [Custom Environments](docs/guides/custom-environment.md) and the skill's [integration reference](skills/safactory-workflows/references/environment-integration.md) for the templates, single-command test helpers, and Docker/RJob deployment settings. If your Agent cannot discover local skills automatically, include `skills/safactory-workflows/` explicitly in the prompt.
+See [Custom Environments](docs/guides/custom-environment.md) and the skill's [integration reference](skills/safactory-workflows/references/environment-integration.md) for the templates and Docker/RJob deployment settings. Verify any environment with one command — `python skills/safactory-workflows/scripts/check_environment.py --env env/<name>` — which runs static consistency checks, a contract smoke test against an owned mock endpoint, and an optional live stage, labeling each failure with the side that owns it. If your Agent cannot discover local skills automatically, include `skills/safactory-workflows/` explicitly in the prompt.
 
 ## <a id="quick-start"></a>🚀 Quick Start
 

@@ -6,7 +6,7 @@ Safactory only supports environment-local Python rule evaluation. When evaluatio
 <agent-root>/<env_name>/rule_evaluator.py
 ```
 
-The default agent root is `env`. For an environment named `mybench`, the file must be `env/mybench/rule_evaluator.py`. If the file does not exist, evaluation is skipped for that environment. No YAML registration, `env_params` evaluator setting, or separate evaluation config is required.
+The default agent root is `env`. For an environment named `mybench`, the file must be `env/mybench/rule_evaluator.py`. If the file does not exist while `--enable-evaluation` is set, the episode is marked as failed with `rule evaluator not found` — omit the flag for integration-only runs. No YAML registration, `env_params` evaluator setting, or separate evaluation config is required.
 
 ## Runtime Flow
 

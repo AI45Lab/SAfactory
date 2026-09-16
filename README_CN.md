@@ -97,7 +97,7 @@ runner.py 保留协议处理，adapter.py 只填写单 case 的数据映射、Ga
 
 </details>
 
-固定模板、单命令测试 helper 和 Docker/RJob 配置见[自定义环境指南](docs/guides/custom-environment_CN.md)和 skill 的[接入参考](skills/safactory-workflows/references/environment-integration.md)。如果 Agent 不支持自动发现本地 skill，请在 prompt 中显式写出 `skills/safactory-workflows/` 路径。
+固定模板和 Docker/RJob 配置见[自定义环境指南](docs/guides/custom-environment_CN.md)和 skill 的[接入参考](skills/safactory-workflows/references/environment-integration.md)。任意环境可用一条命令完成验证：`python skills/safactory-workflows/scripts/check_environment.py --env env/<name>`，它会依次执行静态一致性检查、基于自有 mock 端点的契约冒烟以及可选的 live 阶段，并为每条失败标注归属方（配置侧 / 环境侧 / 框架侧）。如果 Agent 不支持自动发现本地 skill，请在 prompt 中显式写出 `skills/safactory-workflows/` 路径。
 
 ## <a id="quick-start"></a>🚀 快速开始
 

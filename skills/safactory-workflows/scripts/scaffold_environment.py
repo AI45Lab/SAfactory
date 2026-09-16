@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Copy the guide-derived templates without overwriting an existing environment."""
+"""Scaffold a new environment from the guide-derived standard templates.
+
+Generates the fixed file set (both Docker and RJob config pairs) without
+overwriting an existing environment.  The standard reference is env/prmeval.
+"""
 import argparse
 from pathlib import Path
 import re
@@ -7,11 +11,9 @@ import re
 ASSETS = Path(__file__).resolve().parents[1] / "assets" / "environment"
 
 
-def scaffold(name, mode, env_root, enable_evaluation=False):
+def scaffold(name, env_root, enable_evaluation=False):
     if not re.fullmatch(r"[a-z][a-z0-9_]*", name):
         raise ValueError("name must start with a lowercase letter and contain only a-z, 0-9, _")
-    if mode not in {"docker", "rjob"}:
-        raise ValueError("mode must be docker or rjob")
     env_root = Path(env_root)
     env_root.mkdir(parents=True, exist_ok=True)
     destination = env_root / name
@@ -24,9 +26,10 @@ def scaffold(name, mode, env_root, enable_evaluation=False):
         env_root_ref = f"./{env_root_ref}"
     sources = {
         "runner.py": "runner.py", "adapter.py": "adapter.py",
+        "README.md": "README.md.tmpl",
         "request.smoke.json": "request.smoke.json.tmpl",
-        # Docker is the base contract.  RJob adds two files; generating both
-        # pairs up front keeps an environment portable between deployment modes.
+        # Docker is the base contract.  RJob adds two files; the fixed file
+        # set always includes both pairs so an environment stays portable.
         f"{name}_config.yaml": "config.yaml.tmpl",
         f"{name}_start.yaml": "start.docker.yaml.tmpl",
         f"{name}_config.rjob.yaml": "config.rjob.yaml.tmpl",
@@ -46,23 +49,25 @@ def scaffold(name, mode, env_root, enable_evaluation=False):
         '{"task_id": "hello-001", "prompt": "Write one short greeting."}\n', encoding="utf-8"
     )
     (destination / "results").mkdir()
+    (destination / "results" / ".gitkeep").write_text("", encoding="utf-8")
     return destination
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("name")
-    parser.add_argument("--mode", required=True, choices=["docker", "rjob"])
     parser.add_argument("--env-root", type=Path, default=Path("env"))
     parser.add_argument("--enable-evaluation", action="store_true")
     args = parser.parse_args()
-    path = scaffold(args.name, args.mode, args.env_root, args.enable_evaluation)
+    path = scaffold(args.name, args.env_root, args.enable_evaluation)
     print(
-        f"Created {path} for {args.mode} (Docker and RJob config pairs included). "
+        f"Created {path} (Docker and RJob config pairs included). "
         "Fill adapter.py and deployment values; replace the example dataset."
     )
     if args.enable_evaluation:
         print("Fill score_metrics in rule_evaluator.py before running evaluation.")
+    print("Next steps, from the repository root:")
+    print(f"  python skills/safactory-workflows/scripts/check_environment.py --env {path}")
 
 
 if __name__ == "__main__":

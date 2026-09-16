@@ -30,8 +30,8 @@ Agent 和 benchmark 的差别主要体现在 runner 和 evaluator：
 ## 1. 从固定模板开始
 
 ```bash
-python skills/safactory-workflows/scripts/scaffold_environment.py myagent --mode docker
-# 如果首个目标是 RJob，可改用 --mode rjob；两种模式的 config/start 文件都会生成。
+python skills/safactory-workflows/scripts/scaffold_environment.py myagent
+# Docker 与 RJob 两套 config/start 文件固定都会生成。
 # 只有需要评测时才追加 --enable-evaluation。
 ```
 
@@ -120,6 +120,11 @@ if __name__ == "__main__":
 
 为了让解析稳定，stdout 最好只输出结果 JSON，诊断日志写到 stderr。对于较长的远程运行，runner 也可以把同一份结果对象写到 `SAFACTORY_RESULT_PATH` 指向的文件中。Safactory 会先解析 stdout，如果 stdout 中没有可解析的 JSON，再从该 artifact 路径读取结果。
 
+以下两条不变量由 `skills/safactory-workflows/scripts/validate_environment.py` 和
+`check_environment.py` 自动检查：`env_params.results_root` 必须与对应 start 文件中
+results 挂载目标一致；数据集行内存放绝对路径的字段（例如 PRMEval 的 `frames`）必须
+落在某个容器挂载目标之下，以保证在 Docker 与 RJob 两种模式下解析一致。
+
 ## 2. 读取 Request
 
 Safactory 会通过 stdin 和 `SAFACTORY_START_REQUEST_JSON` 同时传入 `SimulationStartRequest`。
@@ -155,6 +160,8 @@ Safactory 会通过 stdin 和 `SAFACTORY_START_REQUEST_JSON` 同时传入 `Simul
 | `SAFACTORY_GATEWAY_SESSION_URL_CONTAINER` | 容器可访问的 session URL。本地 `localhost` 地址会改写为 `host.docker.internal`。 |
 | `SAFACTORY_ROUTE_MODEL` | 从 dataset、`env_params` 或 request 推断出的 route model。 |
 | `SAFACTORY_MODEL_REF` | Provider 风格的模型引用，例如 `safactory/<route>`。 |
+| `SAFACTORY_NATIVE_PARALLEL` | 运行时是否可以并行执行原生 case。 |
+| `SAFACTORY_OUTPUT_SUBDIR` | 结果根目录下的按 episode 输出子目录提示。 |
 | `OPENROUTER_BASE_URL` | 容器可访问 gateway session URL 的别名。 |
 
 ## 3. 返回 Result
@@ -216,7 +223,8 @@ environments:
     dataset_load_mode: eager
     env_params:
       task_family: myagent
-      output_root: /workspace/Safactory/results/myagent
+      # 必须与 myagent_start.yaml 中的 results 挂载目标一致。
+      results_root: /workspace/Safactory/results
 ```
 
 创建 `env/myagent/datasets/tasks.jsonl`：
@@ -239,7 +247,7 @@ environments:
     env_params:
       task_family: mybench
       bench_root: /workspace/MyBench
-      output_root: /workspace/Safactory/results/mybench
+      results_root: /workspace/Safactory/results
 ```
 
 ```jsonl

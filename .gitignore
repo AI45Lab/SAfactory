@@ -32,3 +32,4 @@ AGENTS.md
 
 # Local Harbor dataset tooling
 /env/harbor/generate_vulhub_dataset.py
+.zcode/
