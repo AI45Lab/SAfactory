@@ -1,6 +1,6 @@
 # Docker Evaluation Workflow
 
-Use this reference when the user asks to run evaluation for an SAfactory environment in Docker mode.
+Use this reference when the user asks to run evaluation for an SAfactory environment in Docker mode. Integration-only requests use `environment-integration.md` and omit evaluation.
 
 Canonical docs:
 
@@ -28,7 +28,7 @@ Check these before running:
 - Environment config exists: `env/<env>/<env>_config.yaml`.
 - Start config exists: `env/<env>/<env>_start.yaml`.
 - Required image, dataset, and runner files are available.
-- Gateway is running at a session root such as `http://127.0.0.1:8000/v1/sessions`.
+- A Gateway config is ready for the helper to start, or an existing Gateway is reachable at its session root.
 - The requested model route key exists in Gateway `llm_routes`.
 - Gateway storage and Launcher `--db-path` point to the same backend when telemetry/results are expected in the same DB.
 - `rule_evaluator.py` exists if the user expects `--enable-evaluation` reward output.
@@ -40,15 +40,16 @@ Do not add private `base_url` or `api_key` values to committed files. Use placeh
 Use the root README as the command source. For a generic environment:
 
 ```bash
-python launcher.py \
+python skills/safactory-workflows/scripts/live_smoke.py \
+  --gateway-config gateway/config.local.yaml -- \
   --mode docker \
   --agent-config env/<env>/<env>_config.yaml \
   --agent-start-config env/<env>/<env>_start.yaml \
   --gateway-base-url http://127.0.0.1:8000/v1/sessions \
   --llm-model <route_key> \
   --enable-evaluation \
-  --db-path sqlite:///<env>_eval.db \
-  --job-id <env>-docker-smoke
+  --job-id <env>-docker-smoke \
+  --pool-size 1 --max-workers 1
 ```
 
 Use a small dataset, small sample count, or smoke-test config when available. Avoid launching a full benchmark unless the user explicitly asks for it.
@@ -70,13 +71,7 @@ llm_routes:
 
 4. Ensure `--llm-model` equals the selected route key.
 
-Start Gateway with:
-
-```bash
-python -m gateway --config gateway/config.local.yaml
-```
-
-If Gateway is already running, verify the session root and route key instead of starting a second server on the same port.
+The helper command above starts Gateway, waits for `/readyz`, runs Launcher, and cleans up its own processes on completion/failure/timeout. It uses the configured SQLite URI unless an identical `--db-path` is supplied. No separate terminal is required. If Gateway is already running, verify readiness, the session root, route key, and storage, then invoke `launcher.py` directly. The helper refuses to take over an occupied port.
 
 ## Result Checks
 

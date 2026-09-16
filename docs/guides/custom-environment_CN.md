@@ -10,26 +10,36 @@
 
 Launcher 会为每一行 dataset 创建独立的 `job_environments` 记录、`session_id` 和 gateway session，然后用同一个镜像和 runner 执行这一行。这样模型调用、gateway 记录、运行时输出和评测 reward 都会绑定到同一个 session。接入 benchmark 时，不要让 runner 在一个 episode 里循环整个 benchmark dataset。应该让每个 benchmark case 对应一行 dataset，由 Safactory 按行独立调度。
 
-通常需要准备运行时镜像、runner、任务配置、启动配置和（有评分时）rule evaluator。接入的边界是 SAfactory adapter 的输入/输出处理：benchmark 单 case 的执行和评测逻辑应当已经存在于 benchmark harness 或 Docker 镜像中，接入时不重写这部分逻辑。
+通常需要准备运行时镜像、runner、任务配置和启动配置。只有本次明确需要评测时才添加可选的 rule evaluator；原生 benchmark 有分数并不意味着接入必须包含评测。接入的边界是 SAfactory adapter 的输入/输出处理：benchmark 单 case 的执行和评测逻辑应当已经存在于 benchmark harness 或 Docker 镜像中，接入时不重写这部分逻辑。
 
-接入新环境前，先运行根目录 README 中的标准 Geo3K Docker smoke test。它可以先验证 Gateway、模型 route、存储、Docker 权限和 evaluator 链路是否正常。基线跑通后，再以 `env/geo3k` 作为完整 runtime 参考：它包含 dataset 加载、runner、Docker 启动配置和 rule evaluation。
+先进行本地 adapter 契约测试，无需 Docker、已启动的 Gateway、模型凭据或内部 RJob 集群。部署条件具备后再进行真实 smoke test。Geo3K 基线可用于排查公共基础设施问题，不是接入的前置门槛；`env/geo3k` 可作为环境特定逻辑的参考。
 
 | 组件 | 位置 | 作用 | 示例 |
 |------|------|------|------|
-| 运行时镜像 | agent config 中的 `env_image`。RJob 部署可以在 start config 中覆盖。 | 包含 agent 或 benchmark 依赖、harness，以及 runner 需要的语言运行时。 | `myagent-image:latest`、`mybench-image:latest` |
+| 运行时镜像 | 任务配置中的 `env_image`。RJob 配置通常改为集群可拉取的镜像。 | 包含 agent 或 benchmark 依赖、harness，以及 runner 需要的语言运行时。 | `myagent-image:latest`、`mybench-image:latest` |
 | Runner entrypoint | 通常是 `env/<name>/runner.py` 或 `env/<name>/runner.mjs`，由 `container.runner_entrypoint.command` 调用。 | 连接 Safactory 与原生 agent 或 benchmark。它读取 request，取出 `env_params.dataset`，通过 gateway 调用被测模型，执行一个任务或 case，并返回结果 JSON。 | `python /tmp/safactory-mybench-runner.py` |
 | 任务配置 | `env/<name>/<name>_config.yaml`，通过 `--agent-config` 传入。RJob 模式另提供 `<name>_config.rjob.yaml`。 | 定义任务行：`env_name`、`env_image`、`dataset`、`env_num` 和 `env_params`。每行 dataset 对应一个 case/episode。 | `env/mybench/mybench_config.yaml`、`env/mybench/mybench_config.rjob.yaml` |
 | 启动配置 | `env/<name>/<name>_start.yaml`，通过 `--agent-start-config` 传入。RJob 模式另提供 `<name>_start.rjob.yaml`。 | 定义同名运行时如何启动：runner entrypoint、工作目录、环境变量、Docker 或 RJob 参数以及挂载。`agent_name` 必须匹配 `env_name`。 | `env/mybench/mybench_start.yaml`、`env/mybench/mybench_start.rjob.yaml` |
-| Rule evaluator | 可选，常见路径为 `env/<name>/rule_evaluator.py`。 | 把运行时写入的原始 `metrics` 和 gateway 轨迹转换为 Safactory 的 0 到 10 分。简单冒烟测试可以省略，benchmark 通常建议提供。 | `env/mybench/rule_evaluator.py` |
+| Rule evaluator | 可选，常见路径为 `env/<name>/rule_evaluator.py`。 | 把运行时写入的原始 `metrics` 和 gateway 轨迹转换为 Safactory 的 0 到 10 分。仅接入时可以省略，即使 benchmark 自带分数；通过 `--enable-evaluation` 显式开启评测。 | `env/mybench/rule_evaluator.py` |
 
 Agent 和 benchmark 的差别主要体现在 runner 和 evaluator：
 
 - Agent 运行时通常把 `env_params.dataset` 转换为 prompt、工具任务或交互流程。评测使用自定义 rule evaluator。
-- Benchmark 运行时通常包装已有 benchmark harness。runner 只处理当前 dataset 行对应的单个 case，把原生分数、通过状态、原因和输出路径写入 `metrics`，再由 `rule_evaluator.py` 统一换算成 Safactory reward。
+- Benchmark 运行时通常包装已有 benchmark harness。runner 只处理当前 dataset 行对应的单个 case，把可用的原生输出和路径写入 `metrics`；需要评测时再保留评分信息，供 `rule_evaluator.py` 换算 reward。
 
-## 1. 编写 Runner
+## 1. 从固定模板开始
 
-创建 `env/myagent/runner.py`：
+```bash
+python skills/safactory-workflows/scripts/scaffold_environment.py myagent --mode docker
+# 如果首个目标是 RJob，可改用 --mode rjob；两种模式的 config/start 文件都会生成。
+# 只有需要评测时才追加 --enable-evaluation。
+```
+
+[模板目录](../../skills/safactory-workflows/assets/environment/)将协议处理固定在 `runner.py`，环境逻辑放在 `adapter.py:run_case`。填写 hook 和 YAML 参数，保留协议外壳。接入 benchmark 时，把示例问候替换成已有的原生单 case 命令和输出映射。脚手架拒绝覆盖已有目录；示例 request/dataset 只能验证脚手架，必须换成有代表性的 case 才能证明接入有效。
+
+可选的 `rule_evaluator.py` 只需填写 `score_metrics`；没有配置评分映射时会明确失败。仅接入不需要评分字段。完整文件职责和命令见[接入 workflow](../../skills/safactory-workflows/references/environment-integration.md)。
+
+下面的紧凑示例用于解释 runner 协议；新接入文件应从模板创建：
 
 ```python
 #!/usr/bin/env python3
@@ -177,7 +187,7 @@ Safactory 会通过 stdin 和 `SAFACTORY_START_REQUEST_JSON` 同时传入 `Simul
 | `error_text` | 否 | 运行时错误的详细信息。 |
 | `metrics` | 否 | 适配器自定义 JSON 对象。benchmark 输出和文件路径建议放在这里。 |
 
-对于 benchmark，`metrics` 是 runner 和 `rule_evaluator.py` 之间最主要的接口。请保存足够信息，让评测阶段不需要重新运行 case 就能打分：
+需要评测时，`metrics` 是 runner 和 `rule_evaluator.py` 的主要接口。请保存足够信息，让评测不必重新运行 case；仅接入时不要求这些评分字段：
 
 ```json
 {
@@ -243,6 +253,8 @@ environments:
 
 启动配置描述 Safactory 分配镜像后如何执行 runner。`container.runner_entrypoint.command` 会针对每一行 dataset 执行一次。它必须读取 request JSON，并返回 result JSON。
 
+Docker 的 `container.mounts[].source` 按启动 Launcher 时的当前工作目录解析；本仓库的命令从仓库根目录执行，因此模板会使用 `./env/<name>/...` 指向环境目录。`runner_entrypoint.source` 以及 RJob 的 `embedded_files[].source` 则按各自 start 配置文件所在目录解析，二者不要混用。
+
 当 `container.runner_entrypoint.source` 指向本地文件时，该路径会相对 start config 文件解析。Docker 会把它挂载到 `target`，RJob 会通过 RJob runtime config 嵌入或分发该文件。`command` 应该执行 target 路径上的文件。
 
 创建 `env/myagent/myagent_start.yaml`：
@@ -305,34 +317,75 @@ container:
 `rjob.embedded_files` 中，镜像和结果存储必须能被 RJob 集群访问，Gateway URL
 也不能使用 `127.0.0.1` 或 `localhost`。详见[RJob 模式](../internal/rjob-mode_CN.md)。
 
-## 6. 运行冒烟测试
+### 环境参数如何透传
 
-先启动 gateway，然后以单 worker、单并发运行最小测试。命令形态应与 Geo3K smoke test 一致，只替换环境路径和 route key：
+`env_params` 是 benchmark 的运行时配置。Launcher 会把展开后的完整对象
+（包括当前 dataset 行）放入 `SimulationStartRequest` 的 stdin 和
+`SAFACTORY_START_REQUEST_JSON`，固定的 runner 再原样传给 `adapter.py`。
+路径、开关、超时、原生命令参数和 benchmark 特有配置都应放在这里。
+
+`container.env`/`rjob.env` 只用于静态进程环境变量（例如 `NO_PROXY`），episode
+启动时会和 Launcher 注入的 `SAFACTORY_*` 变量合并。不要在提交的 start YAML
+中重复 dataset 或写入密钥。如果原生程序只能读取环境变量，应由 adapter 从
+`request['env_params']` 派生后传给子进程。
+
+### PRMEval 标准目录
+
+`env/prmeval/` 是这套分层的仓库内示例：
+
+```text
+env/prmeval/
+  runner.py                 # 固定协议外壳
+  adapter.py                # 单行 PRMEval 调用
+  rule_evaluator.py         # 可选的 MSE -> 0..10 映射
+  prmeval_config.yaml       # Docker 镜像、任务行和 env_params
+  prmeval_start.yaml        # Docker 命令和挂载
+  prmeval_config.rjob.yaml  # RJob 镜像、任务行和 env_params
+  prmeval_start.rjob.yaml   # RJob 资源、嵌入文件和挂载
+  datasets/samples.jsonl
+```
+
+接入其他 benchmark 时保持 runner 外壳稳定，把原生逻辑放到 adapter；RJob
+的两个文件只增加集群相关的镜像、存储和资源设置。`env/prmeval/README.md`
+说明了各文件职责和快速契约检查命令。
+
+## 6. 本地验证与真实 Smoke Test
+
+先将 `request.smoke.json` 填成单个 case 及其环境参数：
 
 ```bash
-python launcher.py \
+python skills/safactory-workflows/scripts/contract_smoke.py \
+  --runner env/myagent/runner.py \
+  --request env/myagent/request.smoke.json \
+  --require-model-call
+```
+
+如果本地没有原生依赖，可追加
+`--adapter path/to/adapter_fixture.py`，把明确的 fixture 复制到 runner 旁边。
+这只验证 SAfactory 协议和 Gateway 路由，不代表 benchmark 原生逻辑可用。
+
+追加 `--input-mode env` 再验证环境变量输入。helper 自动启动本地非流式 chat mock，检查结果 JSON 和 session 一致性，不依赖 Gateway 服务或集群。原生依赖需要本地可用，或在环境测试中明确用 fixture 替代；这不能证明镜像、挂载、真实 Gateway 落库或 RJob 调度可用。应补充原生命令失败和输出映射测试，并报告 mock 的范围。
+
+真实镜像、数据、route 和 runtime 可用后，下面的单条命令负责启动 Gateway、等待 ready、运行 Launcher、清理自身进程。请在仓库根目录执行，任务配置只包含 1–2 个 case：
+
+```bash
+python skills/safactory-workflows/scripts/live_smoke.py \
+  --gateway-config gateway/config.local.yaml -- \
   --mode docker \
   --agent-config env/myagent/myagent_config.yaml \
   --agent-start-config env/myagent/myagent_start.yaml \
-  --gateway-base-url http://127.0.0.1:8000/v1/sessions \
   --llm-model YOUR_ROUTE_KEY \
-  --db-path sqlite://env_trajs.db \
   --job-id myagent-docker-smoke \
-  --pool-size 1 \
-  --max-workers 1 \
-  --max-steps 10
+  --pool-size 1 --max-workers 1 --max-steps 10
 ```
 
-重点检查：
+省略 `--db-path` 时，helper 使用 Gateway 的 SQLite URI。若 Gateway 已运行，应检查其 ready、route 和存储后直接调用 `launcher.py`；helper 不接管已占用端口。RJob 同样先执行本地契约测试；集群可用后再使用 `.rjob.yaml`、全局 `--rjob-config`、一致的存储和集群可达 Gateway URL 做真实部署验证。RJob 参数见[接入 workflow](../../skills/safactory-workflows/references/environment-integration.md)。
 
-- `logs/<run>/main.log`：launcher 和 scheduler 事件。
-- `logs/<run>/gateway.log`：gateway 事件。
-- `logs/<run>/gateway_requests.jsonl`：请求和响应记录。
-- `results/` 下该适配器自己的输出目录。
+仅接入的真实运行检查 runner JSON、原生输出、完成状态及 Gateway 请求/轨迹记录。helper 的 Gateway 日志为 `logs/smoke/gateway.log`，其他日志按配置路径查看。省略 `--enable-evaluation`，不要求最终归一化 reward；本地契约、真实部署和评测结果分别报告。未评分时 `total_reward: 0.0` 只满足返回协议，不代表评测结果。
 
 ## 可选评测
 
-添加 `env/myagent/rule_evaluator.py`，并使用 `--enable-evaluation` 启动
+需要评测时，从[评测器模板](../../skills/safactory-workflows/assets/environment/rule_evaluator.py)创建 `env/myagent/rule_evaluator.py`，填写 `score_metrics`，再使用 `--enable-evaluation` 启动
 launcher。系统根据 `agent_root` 和 `env_name` 自动发现该文件，不从
 `env_params` 读取 evaluator 注册信息。
 

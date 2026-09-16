@@ -5,17 +5,25 @@ container:
   # Build from the repository root: docker build -t safactory-prmeval:0.2.0 env/prmeval
   workdir: /workspace
   runner_entrypoint:
-    source: ./
-    target: /tmp/safactory-prmeval
+    source: ./runner.py
+    target: /tmp/safactory-prmeval/runner.py
     command: "python /tmp/safactory-prmeval/runner.py"
 
   mounts:
+    # The runner is mounted automatically from runner_entrypoint.source.
+    # Docker bind sources are resolved from the repository root by the
+    # launcher/live_smoke workflow.
+    - source: ./env/prmeval/adapter.py
+      target: /tmp/safactory-prmeval/adapter.py
+      mode: ro
+    - source: ./env/prmeval/datasets
+      target: /tmp/safactory-prmeval/datasets
+      mode: ro
     - source: ./results
       target: /workspace/Safactory/results
       mode: rw
 
   env:
-    # The Gateway accepts this placeholder; do not put a provider key here.
     PYTHONDONTWRITEBYTECODE: "1"
     NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
     no_proxy: host.docker.internal,localhost,127.0.0.1,::1

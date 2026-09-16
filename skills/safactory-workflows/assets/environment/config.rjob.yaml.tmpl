@@ -1,0 +1,12 @@
+environments:
+  - env_name: __ENV_NAME__
+    # Replace with an image tag that the RJob cluster can pull.
+    env_image: __ENV_NAME__-image:latest
+    env_num: 1
+    dataset: ./datasets/smoke.jsonl
+    dataset_load_mode: eager
+    # env_params is serialized into SimulationStartRequest and passed to the
+    # runner for every dataset row. Keep runtime configuration here.
+    env_params:
+      task_family: __ENV_NAME__
+      output_root: /app/results/__ENV_NAME__

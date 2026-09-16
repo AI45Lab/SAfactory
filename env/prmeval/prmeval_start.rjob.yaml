@@ -1,6 +1,6 @@
 agent_name: prmeval
 container:
-  workdir: /tmp
+  workdir: /workspace
   runner_entrypoint:
     source: ./runner.py
     target: /tmp/safactory-prmeval/runner.py
@@ -27,6 +27,11 @@ rjob:
     gpu: 0
     memory_in_mb: 4096
   mount_config:
-    - "gpfs://gpfs1/liuyicong/SAfactory/results:/app/results"
-    # Mount each GPFS source once; the startup command links the alternate frame path.
-    - "gpfs://gpfs1/liuyicong/SAfactory/env/prmeval/datasets:/tmp/safactory-prmeval/datasets"
+    # Replace CLUSTER_STORAGE with a location visible to the RJob cluster.
+    - "gpfs://CLUSTER_STORAGE/SAfactory/results:/app/results"
+    # Mount the dataset directory at the path stored in samples.jsonl.
+    - "gpfs://CLUSTER_STORAGE/SAfactory/env/prmeval/datasets:/tmp/safactory-prmeval/datasets"
+  embedded_files:
+    # runner.py is embedded automatically from runner_entrypoint.source.
+    - source: ./adapter.py
+      target: /tmp/safactory-prmeval/adapter.py

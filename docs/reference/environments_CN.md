@@ -6,13 +6,14 @@ SAfactory v2 将每个环境视为外部 agent runtime。一个 runtime 由以�
 - agent start config：Docker、RJob 或 Sandbox 的启动细节；
 - 可选的 `rule_evaluator.py`：rollout 后的 reward 转换。
 
-用于新用户上手、smoke test、评测和 RL 示例的标准环境是 **Geo3K**。
+用于端到端 smoke test、评测和 RL 示例的标准环境仍是 **Geo3K**。接入新 benchmark 时，目录结构应参考基于模板的 **PRMEval**，而环境特定行为可参考 Geo3K。
 
 ## 环境矩阵
 
 | 环境 | `env_name` / `agent_name` | 领域 | Config | Start config | Runtime 模式 | Evaluator |
 |------|----------------------------|------|--------|--------------|--------------|-----------|
 | Geo3K | `geo3k` | 几何 / VLM QA | `env/geo3k/geo3k_config.yaml` | `env/geo3k/geo3k_start.yaml` | Docker；RL 模板 | `env/geo3k/rule_evaluator.py` |
+| PRMEval | `prmeval` | Progress benchmark harness | `env/prmeval/prmeval_config.yaml` / `.rjob.yaml` | `env/prmeval/prmeval_start.yaml` / `.rjob.yaml` | Docker；RJob | `env/prmeval/rule_evaluator.py` |
 | OpenClaw | `openclaw` | 通用 OpenClaw CLI 任务 | `env/openclaw/openclaw_config.yaml` | `env/openclaw/openclaw_start.yaml` | Docker | 可选 |
 | OpenRT | `openrt` | 安全 / red-team benchmark | `env/openrt/openrt_config.yaml` | `env/openrt/openrt_start.yaml` | Docker | `env/openrt/rule_evaluator.py` |
 | OpenRT RJob | `openrt` | 远程 OpenRT benchmark | `env/openrt/openrt_config.rjob.yaml` | `env/openrt/openrt_start.rjob.yaml` | RJob | `env/openrt/rule_evaluator.py` |

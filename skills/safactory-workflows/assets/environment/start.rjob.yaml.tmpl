@@ -1,0 +1,27 @@
+agent_name: __ENV_NAME__
+container:
+  workdir: /workspace
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-__ENV_NAME__/runner.py
+    command: "python /tmp/safactory-__ENV_NAME__/runner.py"
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+rjob:
+  name_prefix: __ENV_NAME__
+  image_pull_policy: IfNotPresent
+  no_packaging: true
+  cleanup_on_finish: true
+  keep_failed_jobs: true
+  resources:
+    cpu: 1
+    gpu: 0
+    memory_in_mb: 1024
+  embedded_files:
+    - source: ./adapter.py
+      target: /tmp/safactory-__ENV_NAME__/adapter.py
+  # Add cluster-accessible result storage via mount_config/mount for live runs.
+  mount_config:
+    # Replace CLUSTER_STORAGE with a path visible to the RJob cluster.
+    - "gpfs://CLUSTER_STORAGE/SAfactory/results:/app/results"
+    - "gpfs://CLUSTER_STORAGE/SAfactory/env/__ENV_NAME__/datasets:/tmp/safactory-__ENV_NAME__/datasets"

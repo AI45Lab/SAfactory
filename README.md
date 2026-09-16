@@ -51,81 +51,55 @@ https://github.com/user-attachments/assets/4c551b27-ce4d-4fc8-8df6-d6dc8100cc88
 
 ## <a id="agent-skill"></a>🧩 Agent Skill Quick Start
 
-This repository includes a lightweight Agent skill that helps an Agent onboard a benchmark and run a minimal evaluation through the standard workflow:
+This repository includes an Agent skill for template-based environment integration, local contract tests, optional Docker/RJob evaluation, and GRPO/RL workflows:
 
 ```text
 skills/safactory-workflows/SKILL.md
 ```
 
-This skill currently covers onboarding a new benchmark and running a minimal single-case evaluation in Docker or RJob mode.
-
 ### <a id="benchmark-onboarding-prompt"></a>Benchmark Onboarding Prompt
 
-Before onboarding, prepare:
+Provide the benchmark source, one-row dataset schema, 1–2 representative cases, native single-case command, and native output format. Specify Docker or RJob deployment when known. **Integration alone does not require evaluation, a score/reward definition, a running Gateway, or an internal cluster.** Only provide scoring details when evaluation is requested.
 
-1. Prepare **1–2 test cases** and make sure the benchmark's native single-case command works independently.
-2. Choose the mode to onboard: `docker` (local image) or `rjob` (cluster RJob).
-3. Prepare and provide the Agent with:
-
-   - environment name;
-   - local benchmark source path or link;
-   - path to the test dataset;
-   - the native single-case command, or the corresponding section in the benchmark README;
-   - an accessible Docker image address;
-   - native benchmark result/output file path or naming rule;
-   - native score/reward location, range, and pass condition.
-
-4. We recommend filling in the provided prompt and sending it to the Agent. The Agent will inspect the benchmark source/README and SAfactory docs, then implement the adapter, configs, and evaluator.
-5. The Agent runs a minimal smoke test with 1–2 cases. Onboarding is complete when the runner result JSON, native benchmark output file, Gateway trajectory, and final `0–10` reward are all present and traceable to the same case.
-
-RJob users also need to prepare a Gateway URL. Do not use `localhost` or `127.0.0.1` as the Gateway address from an RJob container.
+The Agent copies fixed runner/config templates, fills the environment hooks, and runs local contract tests with an owned mock model endpoint. Native dependencies must be available locally or represented by explicit test fixtures. Live deployment is a separate check when image/data/model/runtime access is available; a helper starts and stops Gateway without a second terminal. RJob live runs additionally require an existing cluster configuration and a cluster-reachable Gateway URL.
 
 <details>
 <summary>Expand to get the Benchmark Onboarding Prompt</summary>
 
 ```text
-Use skills/safactory-workflows to onboard the following benchmark into SAfactory.
+Use skills/safactory-workflows to onboard this benchmark into SAfactory.
 
-[Execution mode] (required; choose one)
-- mode: [docker / rjob]
+[Goal]
+- evaluation: [disabled (default, integration only) / enabled]
+- target deployment mode: [docker / rjob / decide after adapter inspection]
+- validation: [local contract first / also run live deployment when available]
 
 [Benchmark]
-- environment name (for example, mybench): ____________________
-- benchmark source or checkout path/repository: ____________________
-- dataset path: ____________________
-- one dataset-row schema/field description: ____________________
-- 1–2 smoke-test case IDs or dataset rows: ____________________
-- native single-case benchmark command: ____________________
-- if the command is defined in a README, file and section: ____________________
-- Docker image, if one already exists: ____________________
+- environment name: ____________________
+- source or checkout path/repository: ____________________
+- dataset path and one-row schema: ____________________
+- 1–2 case IDs/rows: ____________________
+- native single-case command, or README file/section: ____________________
+- Docker image, if available: ____________________
+- native result/output path and format: ____________________
 
-[Results and scoring]
-- native benchmark result/output file path or naming rule: ____________________
-- field or file containing the native score/reward: ____________________
-- score/reward range, meaning, and pass condition: ____________________
+[Only if evaluation is enabled]
+- native score field/file, range, meaning, and pass condition: ____________________
 
-[Scope]
-- Start with only the 1–2 cases above.
-- Implement the SAfactory adapter boundary: read the request, take
-  env_params.dataset, call the model through the Gateway, invoke the existing
-  native single-case command, read its result, and return a
-  SimulationStartResult JSON object.
-- Do not rewrite the benchmark single-case execution or evaluation logic
-  already inside the Docker image.
-- Report and verify the runner result JSON, native benchmark output file,
-  Gateway trajectory, and final 0–10 reward.
-
-First inspect the benchmark source/README and
-docs/guides/custom-environment.md, then edit the files required by the selected
-mode. If information is missing, ask only for that field; do not guess the
-benchmark command or scoring rule.
+Start from the fixed templates based on docs/guides/custom-environment.md.
+Keep protocol handling in runner.py and fill adapter.py with single-case row
+mapping, Gateway model routing, native command execution, and output collection.
+Do not reimplement native benchmark solving/scoring logic.
+Only add rule_evaluator.py and --enable-evaluation if evaluation is enabled.
+Run local contract checks without requiring Gateway or RJob cluster setup.
+Report fixtures used, native output mapping, and which checks actually passed;
+keep local contract, live deployment, and evaluation results distinct.
+Ask only for missing information needed by the next dependent step.
 ```
 
 </details>
 
-The Agent owns the SAfactory adapter boundary, not the benchmark's internal single-case logic. See [Custom Environments](docs/guides/custom-environment.md) and the skill's [integration reference](skills/safactory-workflows/references/environment-integration.md) for file responsibilities, the runner/result contract, and Docker/RJob differences.
-
-When you use this skill, the Agent reads `docs/guides/`, `docs/reference/`, and the root README as needed, using the standard `env/geo3k/` environment as its reference implementation. You only need to provide the benchmark information listed above; if your Agent cannot discover local skills automatically, include `skills/safactory-workflows/` explicitly in the prompt.
+See [Custom Environments](docs/guides/custom-environment.md) and the skill's [integration reference](skills/safactory-workflows/references/environment-integration.md) for the templates, single-command test helpers, and Docker/RJob deployment settings. If your Agent cannot discover local skills automatically, include `skills/safactory-workflows/` explicitly in the prompt.
 
 ## <a id="quick-start"></a>🚀 Quick Start
 

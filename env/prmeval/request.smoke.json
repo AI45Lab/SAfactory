@@ -1,0 +1,34 @@
+{
+  "job_id": "prmeval-contract",
+  "session_id": "prmeval-case-001",
+  "agent_name": "prmeval",
+  "agent_id": "case-001",
+  "group_id": "",
+  "gateway_base_url": "http://127.0.0.1:8000/v1/sessions",
+  "model": "contract-model",
+  "temperature": 0.0,
+  "max_steps": 10,
+  "storage_type": "sqlite",
+  "storage_config": {},
+  "env_params": {
+    "dataset": {
+      "schema_version": "bench.record.v1",
+      "id": "prmeval-contract-001",
+      "task": "Move the object.",
+      "frames": [
+        [[[0, 0, 0]]],
+        [[[127, 127, 127]]],
+        [[[255, 255, 255]]]
+      ],
+      "quality_label": "successful",
+      "partial_success": 1.0,
+      "target_progress": [0.0, 0.5, 1.0]
+    },
+    "results_root": "/tmp/safactory-prmeval-results",
+    "prmeval": {
+      "sampling": {"base_frames": 3, "eval_types": ["progress"]},
+      "infer": {"name": "openai_compatible"},
+      "metrics": ["progress"]
+    }
+  }
+}

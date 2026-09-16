@@ -51,7 +51,7 @@ https://github.com/user-attachments/assets/4c551b27-ce4d-4fc8-8df6-d6dc8100cc88
 
 ## <a id="agent-skill"></a>🧩 Agent Skill 快速上手
 
-仓库内置了一个轻量 Agent skill，用于帮助 Agent 按标准 workflow 接入 benchmark 并完成最小评测：
+仓库内置 Agent skill，支持从固定模板接入环境、本地契约测试、可选的 Docker/RJob 评测，以及 GRPO/RL workflow：
 
 ```text
 skills/safactory-workflows/SKILL.md
@@ -59,68 +59,45 @@ skills/safactory-workflows/SKILL.md
 
 ### <a id="benchmark-onboarding-prompt"></a>Benchmark 接入 Prompt
 
-接入前需要准备：
+请提供 benchmark 源码、单条 dataset row 格式、1–2 个代表性 case、原生单 case 命令和输出格式。已知时注明 Docker 或 RJob 部署模式。**仅接入不要求评测、score/reward 定义、已启动的 Gateway 或内部集群。** 只有需要评测时才提供评分信息。
 
-1. 准备 **1–2 个测试 case**，并确保 benchmark 原生的单 case 命令可以独立运行。
-2. 选择需要接入的模式：`docker`（本地镜像）或 `rjob`（集群 RJob）。
-3. 准备并告知Agent下方信息：
-
-   - environment name；
-   - benchmark 源码本地路径或链接；
-   - 测试 dataset 所在路径；
-   - benchmark 原生单 case 执行命令，或源码 README 中对应的章节；
-   - 可访问的Docker image地址；
-   - benchmark 原生结果输出文件的路径/命名规则；
-   - 原生 score/reward 所在位置、取值范围和通过条件。
-
-4. 建议使用提供的Prompt将信息填写好后发送给 Agent。Agent 会先检查 benchmark 源码/README 和 SAfactory 文档，再实现 adapter、配置文件和评测器。
-5. Agent 用 1–2 个 case 运行最小 smoke test。完成接入的验收标准是：runner result JSON、benchmark 原生结果文件、Gateway 轨迹和最终 `0–10` reward 都能找到并相互对应。
-
-RJob 用户还需要准备 Gateway 地址；不要把 `localhost` 或 `127.0.0.1` 作为 RJob 容器访问 Gateway 的地址。
+Agent 会复制固定 runner/config 模板，填写环境 hook，并使用自动管理的 mock 模型端点执行本地契约测试。原生依赖需要本地可用或有明确的测试 fixture。镜像、数据、模型和 runtime 可用后再做真实部署验证；helper 负责 Gateway 启停，无需另开终端。RJob 真实运行还需要已有集群配置及集群可达的 Gateway URL。
 
 <details>
 <summary>展开获取接入 Prompt</summary>
 
 ```text
-请使用 skills/safactory-workflows，将下面的 benchmark 接入 SAfactory。
-
-【接入模式】（必填，只能选一个）
-- mode: [docker / rjob]
-
-【Benchmark 信息】
-- environment name（例如 mybench）: ____________________
-- Benchmark 源码或 checkout 路径/仓库地址: ____________________
-- 数据集路径: ____________________
-- 单条 dataset row 的格式/字段说明: ____________________
-- 用于 smoke test 的 1–2 个 case ID 或 dataset row: ____________________
-- Benchmark 原生单 case 执行命令: ____________________
-- 如果命令来自 README，请填写文件和章节: ____________________
-- 对应的 Docker image（如已有）: ____________________
-
-【结果与评分】
-- Benchmark 原生测评结果输出文件路径/命名规则: ____________________
-- 原生 score/reward 所在字段或文件: ____________________
-- score/reward 的取值范围、含义和通过条件: ____________________
+请使用 skills/safactory-workflows，将以下 benchmark 接入 SAfactory。
 
 【本次目标】
-- 先只接入并验证上面 1–2 个 case。
-- 请实现 SAfactory adapter 的输入/输出处理：读取 request，取出
-  env_params.dataset，通过 Gateway 调用模型，调用已有的 benchmark
-  单 case 命令，读取结果并返回 SimulationStartResult JSON。
-- 不要重写 Docker image 内已有的 benchmark 单 case 运行/评测逻辑。
-- 请确认并报告：runner result JSON、benchmark 原生结果文件、Gateway
-  轨迹以及最终 0–10 reward 的位置和内容。
+- evaluation: [disabled（默认，仅接入）/ enabled]
+- 目标部署模式: [docker / rjob / 检查 adapter 后再确定]
+- 验证范围: [先做本地契约验证 / 条件具备时也做真实部署验证]
 
-请先检查 benchmark 的源码/README 和 SAfactory 的
-docs/guides/custom-environment_CN.md，再开始修改。请按所选 mode 创建或适配
-所需文件；如果信息不足，请只询问缺失字段，不要猜测 benchmark 命令或评分规则。
+【Benchmark 信息】
+- environment name: ____________________
+- 源码或 checkout 路径/仓库地址: ____________________
+- 数据集路径和单条 row 格式: ____________________
+- 1–2 个 case ID/row: ____________________
+- 原生单 case 命令，或 README 文件/章节: ____________________
+- Docker image（如已有）: ____________________
+- 原生结果输出路径和格式: ____________________
+
+【仅在启用评测时填写】
+- 原生分数字段/文件、范围、含义、通过条件: ____________________
+
+从基于 docs/guides/custom-environment.md 的固定模板开始。
+runner.py 保留协议处理，adapter.py 只填写单 case 的数据映射、Gateway 模型
+配置、原生命令调用和输出收集。不要重写 benchmark 内部的解题/评分逻辑。
+仅在启用评测时添加 rule_evaluator.py 和 --enable-evaluation。
+先运行本地契约检查，不要求手动启动 Gateway 或配置 RJob 集群。
+报告使用的 fixture、原生输出映射及实际通过的检查；区分本地契约、真实部署
+和评测结果。仅询问下一步依赖的缺失信息。
 ```
 
 </details>
 
-Agent 的接入范围是 SAfactory adapter 的边界处理，不包括重写 benchmark 镜像内部的单 case 运行逻辑。完整的文件职责、runner/result 契约、Docker/RJob 差异见[自定义环境指南](docs/guides/custom-environment_CN.md)和 skill 的[接入参考](skills/safactory-workflows/references/environment-integration.md)。
-
-使用这个 skill 时，Agent 会按需读取 `docs/guides/`、`docs/reference/` 和根 README，并优先参考标准环境 `env/geo3k/`。你只需要提供上面列出的 benchmark 信息；如果 Agent 不支持自动发现本地 skill，请在 prompt 中显式写出 `skills/safactory-workflows/` 路径。
+固定模板、单命令测试 helper 和 Docker/RJob 配置见[自定义环境指南](docs/guides/custom-environment_CN.md)和 skill 的[接入参考](skills/safactory-workflows/references/environment-integration.md)。如果 Agent 不支持自动发现本地 skill，请在 prompt 中显式写出 `skills/safactory-workflows/` 路径。
 
 ## <a id="quick-start"></a>🚀 快速开始
 

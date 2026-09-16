@@ -1,0 +1,28 @@
+agent_name: __ENV_NAME__
+container:
+  workdir: /workspace
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-__ENV_NAME__/runner.py
+    command: "python /tmp/safactory-__ENV_NAME__/runner.py"
+  mounts:
+    # Docker bind sources are resolved from the repository root when the
+    # launcher/live_smoke helper is run there.
+    - source: __ENV_ROOT__/__ENV_NAME__/adapter.py
+      target: /tmp/safactory-__ENV_NAME__/adapter.py
+      mode: ro
+    # Mount native benchmark assets read by the current case.  If the dataset
+    # is remote, replace this with the image's own path or remove the mount.
+    - source: __ENV_ROOT__/__ENV_NAME__/datasets
+      target: /workspace/Safactory/datasets/__ENV_NAME__
+      mode: ro
+    - source: ./results
+      target: /workspace/Safactory/results
+      mode: rw
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
+    no_proxy: host.docker.internal,localhost,127.0.0.1,::1
+  extra_args:
+    - --add-host=host.docker.internal:host-gateway
+  idle_command: "tail -f /dev/null"

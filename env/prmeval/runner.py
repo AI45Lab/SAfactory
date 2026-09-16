@@ -1,127 +1,78 @@
-"""PRMEval runner 模板：第一步，只读取 SAfactory request。
+#!/usr/bin/env python3
+"""Fixed SAfactory protocol shell for the PRMEval environment.
 
-本文件可独立运行，只依赖 Python 标准库。当前 succeeded 仅表示请求读取
-成功；metrics.evaluation_executed=False 表示尚未执行 PRMEval 评测。
+Keep this file benchmark-agnostic.  PRMEval-specific behavior lives in
+``adapter.py`` so the same contract can be copied to another benchmark.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
-import sys
 from pathlib import Path
+import sys
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
-
-from prmeval.core import EvalConfig, Evaluator  # type: ignore
-
-RESULT_JSON_PREFIX = "SAFACTORY_RESULT_JSON "
-RESULT_PATH_ENV = "SAFACTORY_RESULT_PATH"
 
 
 def read_request() -> dict[str, Any]:
     raw = sys.stdin.read().strip() or os.environ.get("SAFACTORY_START_REQUEST_JSON", "")
     if not raw:
-        raise RuntimeError("missing SimulationStartRequest JSON")
-    data = json.loads(raw)
-    if not isinstance(data, dict):
-        raise TypeError("SimulationStartRequest must be a JSON object")
-    return data
+        raise ValueError("missing SimulationStartRequest JSON")
+    request = json.loads(raw)
+    if not isinstance(request, dict):
+        raise ValueError("SimulationStartRequest must be a JSON object")
+    return request
 
 
-def test_read_request():
-    import json
+def run_episode(request: dict[str, Any]) -> dict[str, Any]:
+    session_id = _required_text(request.get("session_id"), "session_id")
+    env_params = request.get("env_params")
+    if not isinstance(env_params, dict):
+        raise TypeError("env_params must be a JSON object")
+    task = env_params.get("dataset")
+    if not isinstance(task, dict):
+        raise TypeError("env_params.dataset must be a JSON object")
 
-    with open(
-        "./config.json",
-        "r",
-        encoding="utf-8",
-    ) as f:
-        data = json.load(f)
+    session_url = _first_text(
+        os.environ.get("SAFACTORY_GATEWAY_SESSION_URL_CONTAINER"),
+        _gateway_session_url(request, session_id),
+        os.environ.get("OPENROUTER_BASE_URL"),
+        os.environ.get("OPENAI_BASE_URL"),
+    )
+    if not session_url:
+        raise ValueError("cannot resolve Gateway session URL")
 
-    return data
+    # Import the environment hook lazily: protocol checks remain runnable on a
+    # workstation without PRMEval's optional dependencies.
+    with contextlib.redirect_stdout(sys.stderr):
+        from adapter import run_case
 
-
-def post_process_result(result: dict[str, Any], session_id, job_id) -> dict[str, Any]:
-    """在写入 stdout 之前，可在此处对 result 做最后处理，例如：
-    - 补充 metrics 中的评测结果；
-    - 对 result 中的敏感信息做脱敏处理；
-    - 对 result 中的浮点数做精度截断。
-    """
-
-    # 下一步：使用 dataset、prmeval_settings 和上述模型参数构建评测输入。
-    # 完整的其他字段仍可从 request 获取，例如 request.get("metadata", {})。
-    # 此处只返回输入摘要，避免把完整图像数组写进日志。
+        metrics, step_count = run_case(request, task, session_url)
+    if not isinstance(metrics, dict):
+        raise TypeError("adapter.run_case metrics must be a JSON object")
+    if type(step_count) is not int or step_count < 0:
+        raise ValueError("adapter.run_case step_count must be a nonnegative integer")
+    json.dumps(metrics, ensure_ascii=False, allow_nan=False)
     return {
         "session_id": session_id,
         "status": "succeeded",
         "total_reward": 0.0,
-        "step_count": 0,
+        "step_count": step_count,
         "terminated": True,
         "truncated": False,
         "error_text": None,
-        "metrics": result["metrics"]["progress"],
+        "metrics": metrics,
     }
-
-
-def post_process_config(config: dict[str, Any], request) -> dict[str, Any]:
-    # Use the session route so the gateway can associate inference with this episode.
-
-    session_id = _required_text(request.get("session_id"), "session_id")
-    base_url = _resolve_base_url(request, session_id)
-    model = os.environ.get("SAFACTORY_ROUTE_MODEL") or request["model"]
-
-    config["infer"]["model_id"] = model
-    config["infer"]["base_url"] = base_url
-
-    return config
-
-
-def run_episode(request: dict[str, Any]) -> dict[str, Any]:
-    """从完整 request 取出业务输入；后续在这里接入 PRMEval。"""
-    # 1. 调度信息：由 SAfactory 为本次任务生成。
-    job_id = request["job_id"]
-    session_id = request["session_id"]
-    if not isinstance(session_id, str) or not session_id.strip():
-        raise ValueError("session_id must be a non-empty string")
-
-    # 2. 任务输入：dataset 是当前 JSONL 行，不是整个数据集。
-    env_params = request.get("env_params")
-    if not isinstance(env_params, dict):
-        raise TypeError("env_params must be a JSON object")
-    dataset = env_params["dataset"]
-    output_path = Path("/tmp/safactory-prmeval-tempfile/temp_sample.jsonl")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        with output_path.open("w", encoding="utf-8") as f:
-            f.write(json.dumps(dataset, ensure_ascii=False) + "\n")
-        # 3. PRMEval 执行
-        prmeval_config = env_params.get("prmeval", {})
-        if not isinstance(dataset, dict) or not isinstance(prmeval_config, dict):
-            raise TypeError(
-                "env_params.dataset and env_params.prmeval must be JSON objects"
-            )
-        prmeval_config = post_process_config(prmeval_config, request)
-        prmeval_config = EvalConfig.model_validate(prmeval_config)
-        summary = Evaluator(prmeval_config).run()
-        result = post_process_result(summary, session_id, job_id)
-
-        return result
-
-    finally:
-        output_path.unlink(missing_ok=True)
 
 
 def main() -> int:
     session_id = os.environ.get("SAFACTORY_SESSION_ID", "")
     try:
         request = read_request()
-        # request = test_read_request()
-        # print(request)
-        session_id = request.get("session_id", session_id)
+        session_id = str(request.get("session_id") or session_id)
         result = run_episode(request)
-    except Exception as exc:
+    except Exception as exc:  # Runtime failures are represented in the result JSON.
         result = {
             "session_id": session_id,
             "status": "failed",
@@ -130,43 +81,42 @@ def main() -> int:
             "terminated": True,
             "truncated": False,
             "error_text": str(exc),
-            "metrics": {"stage": "request_received", "evaluation_executed": False},
+            "metrics": {},
         }
-    # stdout 专用于 SAfactory 结果协议；调试信息应写到 stderr。
     _write_result(result)
     return 0
 
 
 def _write_result(result: dict[str, Any]) -> None:
-    _persist_result_artifact(result)
-    print(RESULT_JSON_PREFIX + json.dumps(result, ensure_ascii=False), flush=True)
+    artifact = str(os.environ.get("SAFACTORY_RESULT_PATH") or "").strip()
+    if artifact:
+        try:
+            path = Path(artifact)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(result, ensure_ascii=False, allow_nan=False) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            print(f"SAFACTORY_RUNNER_DIAGNOSTIC result_artifact_write_failed: {exc}", file=sys.stderr)
+    print(json.dumps(result, ensure_ascii=False, allow_nan=False), flush=True)
 
 
-def _persist_result_artifact(result: dict[str, Any]) -> None:
-    raw_path = str(os.environ.get(RESULT_PATH_ENV) or "").strip()
-    if not raw_path:
-        return
-    try:
-        path = Path(raw_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_name(path.name + ".tmp")
-        tmp_path.write_text(
-            json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-        tmp_path.replace(path)
-    except Exception as exc:
-        print(
-            f"SAFACTORY_RUNNER_DIAGNOSTIC result_artifact_write_failed: {exc}",
-            file=sys.stderr,
-            flush=True,
-        )
+def _gateway_session_url(request: dict[str, Any], session_id: str) -> str:
+    base = str(request.get("gateway_base_url") or "").rstrip("/")
+    if not base:
+        return ""
+    # request_env normally performs this rewrite.  Keep the fallback useful
+    # when the runner is invoked by hand or by a local contract test.
+    from urllib.parse import urlsplit, urlunsplit
 
-
-def _required_text(value: Any, name: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        raise RuntimeError(f"SimulationStartRequest missing {name}")
-    return text
+    parts = urlsplit(base)
+    if parts.hostname in {"127.0.0.1", "localhost", "::1"}:
+        netloc = "host.docker.internal"
+        if parts.port is not None:
+            netloc = f"{netloc}:{parts.port}"
+        base = urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment)).rstrip("/")
+    return f"{base}/{session_id}"
 
 
 def _first_text(*values: Any) -> str:
@@ -177,58 +127,12 @@ def _first_text(*values: Any) -> str:
     return ""
 
 
-def _containerize_local_gateway_url(url: str) -> str:
-    try:
-        parts = urlsplit(str(url))
-    except Exception:
-        return str(url)
-    if parts.hostname not in {"127.0.0.1", "localhost", "::1"}:
-        return str(url)
-    netloc = "host.docker.internal"
-    if parts.port is not None:
-        netloc = f"{netloc}:{parts.port}"
-    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
-
-
-def _gateway_session_url(request: dict[str, Any], session_id: str) -> str:
-    base = str(request.get("gateway_base_url") or "").rstrip("/")
-    if not base:
-        return ""
-    return _containerize_local_gateway_url(f"{base}/{session_id}")
-
-
-def _resolve_base_url(request: dict[str, Any], session_id: str) -> str:
-    base_url = _first_text(
-        os.environ.get("SAFACTORY_GATEWAY_SESSION_URL_CONTAINER"),
-        _gateway_session_url(request, session_id),
-        os.environ.get("OPENROUTER_BASE_URL"),
-        os.environ.get("OPENAI_BASE_URL"),
-    )
-    if not base_url:
-        raise RuntimeError(
-            "geo3k runner could not resolve an OpenAI-compatible base URL"
-        )
-    return base_url
+def _required_text(value: Any, name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"SimulationStartRequest missing {name}")
+    return text
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except Exception as exc:
-        print(
-            json.dumps(
-                {
-                    "session_id": os.environ.get("SAFACTORY_SESSION_ID", ""),
-                    "status": "failed",
-                    "total_reward": 0.0,
-                    "step_count": 0,
-                    "terminated": True,
-                    "truncated": False,
-                    "error_text": str(exc),
-                    "metrics": {},
-                },
-                ensure_ascii=False,
-            ),
-            flush=True,
-        )
-        raise SystemExit(0)
+    raise SystemExit(main())

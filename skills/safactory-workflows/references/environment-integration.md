@@ -1,150 +1,102 @@
-# Benchmark / Environment Integration Workflow
+# Environment integration
 
-Use this reference when the user asks to add a benchmark, custom environment, or new task suite to SAfactory. The detailed runtime contract is defined by `docs/guides/custom-environment.md` and `docs/guides/custom-environment_CN.md`; this file turns it into an agent workflow.
+Read `docs/guides/custom-environment.md` for the request/result and deployment contracts. This workflow separates adapter validation, live deployment, and optional evaluation.
 
-## Intake gate
+## Intake and scope
 
-Do not start implementation until the request identifies:
+Infer the environment name, source, one-row schema, 1–2 cases, native single-case command, and native output format. Ask only for missing information needed by the next dependent step. Deployment mode/image can remain pending during shared adapter work. Reward fields and scoring rules are needed only for evaluation or training. A benchmark with native scores can still be integrated without enabling evaluation.
 
-- mode: `docker` or `rjob`;
-- environment name;
-- benchmark source/check-out path;
-- dataset path and one-row shape;
-- 1–2 smoke-test rows/case IDs;
-- native single-case command or the benchmark README section that defines it;
-- existing Docker image, if any;
-- native result/output file location;
-- native score/reward location and scale.
+Keep native execution and scoring in the existing harness. The adapter maps one `env_params.dataset` row, routes model calls through the current session, invokes one native case, collects output, and emits the runtime result. Do not run a full benchmark inside a single episode.
 
-The user-facing copy/paste prompt is in the root `README_CN.md` / `README.md` under “Benchmark 接入 / Benchmark Onboarding Prompt”. If information is missing, ask only for the missing field. The first deliverable is one working single-case pipeline, not a full benchmark batch.
+## Copy the fixed templates
 
-## Scope boundary
+Run from the repository root. The scaffolder always emits the shared Docker
+pair and the additional RJob pair so the same adapter can be promoted later:
 
-The adapter owns only the SAfactory boundary:
-
-- parse `SimulationStartRequest`;
-- map `env_params.dataset` to one native case;
-- call the model through the session-aware Gateway;
-- invoke the native command that already exists in the image/harness;
-- find/read the native result;
-- emit the SAfactory result JSON and `metrics`.
-
-Do not reimplement benchmark case-solving logic, scoring logic already provided by the benchmark, or image internals as part of onboarding. If the native single-case command does not work independently, report that as a blocker or request explicit scope expansion.
-
-## Files to create or adapt
-
-For environment `mybench`, create the selected-mode files below under `env/mybench/`.
-
-| File | Required | What it does |
-|---|---:|---|
-| `runner.py`, `runner.mjs`, or `runner.sh` | yes | Reads the request, gets `env_params.dataset`, calls the current Gateway session, runs one native case, reads the native result, and prints one `SimulationStartResult` JSON. |
-| `mybench_config.yaml` | Docker mode | Defines `env_name`, `env_image`, `dataset`, `env_num`, `env_params`, and dataset loading options. Each dataset row is one episode. |
-| `mybench_start.yaml` | Docker mode | Defines `container.runner_entrypoint`, workdir, env vars, Docker mounts/args, and `agent_name`; `agent_name` must equal `env_name`. |
-| `mybench_config.rjob.yaml` | RJob mode | RJob variant of the task config. Keep dataset-row and `env_params` semantics aligned with the Docker config. |
-| `mybench_start.rjob.yaml` | RJob mode | RJob variant of the start config, including `rjob:` resources, cleanup, embedded files, and cluster-accessible mounts. |
-| `rule_evaluator.py` | scored benchmark | Converts runtime `metrics` and trajectory information into a `0–10` reward. Auto-discovered at `env/mybench/rule_evaluator.py`; do not add an evaluator path to YAML. |
-| `Dockerfile` | optional | Builds a dedicated image when no suitable image exists. It is not a place to rewrite the benchmark's native case logic. |
-
-RJob mode still needs the runner and evaluator. The two `.rjob.yaml` files are additional mode-specific deployment configs, not replacements for the runtime contract.
-
-## Runner contract
-
-The runner must:
-
-1. read JSON from stdin or `SAFACTORY_START_REQUEST_JSON`;
-2. use `request.session_id` and `SAFACTORY_GATEWAY_SESSION_URL_CONTAINER` (or the request's session URL) for model calls;
-3. read the current row from `request.env_params.dataset`;
-4. pass that row to the native single-case command without looping over the dataset;
-5. capture native score/pass/failure/output path in `metrics`;
-6. print exactly one result object like:
-
-```json
-{
-  "session_id": "same-session-id",
-  "status": "succeeded",
-  "total_reward": 0.0,
-  "step_count": 1,
-  "terminated": true,
-  "truncated": false,
-  "error_text": null,
-  "metrics": {
-    "bench_case_id": "case-001",
-    "bench_score": 0.73,
-    "bench_passed": true,
-    "bench_reason": "all required checks passed",
-    "bench_output_path": "/workspace/Safactory/results/mybench/case-001.json"
-  }
-}
+```bash
+python skills/safactory-workflows/scripts/scaffold_environment.py mybench --mode docker
+# `--mode rjob` records that the first deployment target is RJob; both pairs are still emitted.
+# Append --enable-evaluation only when scoring is requested.
 ```
 
-Keep diagnostics on stderr. A controlled task failure should be represented by a failed result; a non-zero process exit is reserved for runtime/infrastructure failure in JSON result mode.
+The generated Docker mount sources are rooted at the launcher working
+directory (the repository root in the commands below). Runner sources and
+RJob embedded-file sources remain relative to their start-config file. Keep
+these two path bases distinct; using `./adapter.py` as a Docker mount from the
+repository root would point at `SAfactory/adapter.py`, not `env/mybench/adapter.py`.
 
-## Config patterns
+The scaffolder refuses to overwrite an existing environment. For existing integrations, copy/adapt individual templates after inspecting the current files.
 
-Docker task config:
+| Output | Template / customization |
+|---|---|
+| `runner.py` | `assets/environment/runner.py`: fixed request parsing, session URL selection, result serialization, artifact output, and controlled-failure handling. |
+| `adapter.py` | `assets/environment/adapter.py`: fill `run_case(request, task, session_url)`, returning `(metrics, step_count)`. Replace the guide's greeting example with the native single-case invocation. |
+| `<name>_config.yaml` | `assets/environment/config.yaml.tmpl`: fill the Docker image, dataset, and env parameters. The example dataset has one row. |
+| `<name>_config.rjob.yaml` | `assets/environment/config.rjob.yaml.tmpl`: repeat task rows with an image tag pullable by the RJob cluster. Keep the shared `env_params` schema. |
+| `<name>_start.yaml` | `assets/environment/start.docker.yaml.tmpl`: fill workdir and Docker mounts. Mount runner dependencies beside the runner. |
+| `<name>_start.rjob.yaml` | `assets/environment/start.rjob.yaml.tmpl`: fill resources, cluster-accessible result storage, and embedded dependencies. The runner source is staged by the runtime; `adapter.py` is explicitly embedded. |
+| `request.smoke.json` | `assets/environment/request.smoke.json.tmpl`: fill one real case and its environment parameters for local tests. |
+| `rule_evaluator.py` | Optional `assets/environment/rule_evaluator.py`: fill only `score_metrics`; keep discovery/interface/failed-result handling. |
 
-```yaml
-environments:
-  - env_name: mybench
-    env_image: mybench-image:latest
-    env_num: 1
-    dataset: ./datasets/cases.jsonl
-    dataset_load_mode: eager
-    env_params:
-      task_family: mybench
-      bench_root: /workspace/MyBench
-      output_root: /workspace/Safactory/results/mybench
+All asset paths above are relative to the skill directory. If extra adapter modules are needed, include them in Docker mounts and RJob embedded files. A Dockerfile is optional when no suitable image exists; derive it from the native harness's dependencies without moving case logic into it.
+
+The fixed runner has no benchmark imports until it invokes the hook. Its stdout contains exactly one result. Python diagnostic output is redirected to stderr; native subprocesses must use `capture_output=True` or explicitly send stdout to stderr. Controlled exceptions yield `status: failed`, an `error_text`, and process exit 0. Successful execution is `status: succeeded` even if an optional native score is low. Integration-only results keep `total_reward: 0.0`; there is no required score/pass field in metrics.
+
+## Local validation (no cluster required)
+
+Fill `request.smoke.json` with a representative row and configure `adapter.py` to invoke the native harness. Run the same tests for Docker and RJob targets:
+
+```bash
+python skills/safactory-workflows/scripts/contract_smoke.py \
+  --runner env/mybench/runner.py \
+  --request env/mybench/request.smoke.json \
+  --require-model-call
+
+# If native dependencies are not installed locally, copy an explicit fixture
+# adapter for protocol-only validation; this does not validate native behavior.
+python skills/safactory-workflows/scripts/contract_smoke.py \
+  --runner env/mybench/runner.py --adapter path/to/adapter_fixture.py \
+  --request env/mybench/request.smoke.json --require-model-call
+
+# Independently test environment-variable input with empty stdin:
+python skills/safactory-workflows/scripts/contract_smoke.py \
+  --runner env/mybench/runner.py \
+  --request env/mybench/request.smoke.json \
+  --input-mode env --require-model-call
 ```
 
-Docker start config:
+The helper starts a mock HTTP endpoint on an ephemeral loopback port, routes this one request to it, runs the Python runner with a timeout, checks session identity and result types, checks the result artifact if written, and shuts down the endpoint. It emits a `local-contract-only` summary, not a Gateway trajectory or evaluation reward. It uses only Python's standard library; it does not import Launcher or the RJob SDK.
 
-```yaml
-agent_name: mybench
-container:
-  workdir: /workspace/MyBench
-  runner_entrypoint:
-    source: ./runner.py
-    target: /tmp/safactory-mybench-runner.py
-    command: "python /tmp/safactory-mybench-runner.py"
-  mounts:
-    - source: ./results
-      target: /workspace/Safactory/results
-      mode: rw
-  env:
-    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
-    no_proxy: host.docker.internal,localhost,127.0.0.1,::1
-  extra_args:
-    - --add-host=host.docker.internal:host-gateway
-  idle_command: "tail -f /dev/null"
+`--response path/to/response.json` supplies a native-compatible non-streaming chat response. The built-in response is a fixture greeting. Streaming, tool protocols beyond chat JSON, other runner languages, or image-only harness dependencies need environment-specific tests/fixtures. Explicitly stub the native command in those tests and state what was mocked; do not add a production runner switch that fabricates a passing benchmark result. A scaffold greeting passing is not evidence that the benchmark integration works.
+
+Use 1–2 real-row-shaped fixtures and check that each maps to the intended native command and output. Include a controlled native failure (`--expect-status failed`, without requiring a model call if failure precedes it), malformed requests, and stdout isolation. Inspect mapped metrics/output paths as well as the helper summary. When evaluation is requested, add fixture tests for the scoring hook covering success, low/zero score, and missing/invalid metrics. The evaluator must not execute the native case again.
+
+Validate selected-mode YAML and relative source paths with the repository config loaders when dependencies are available. For RJob, inspect the rendered runtime command/embedded files without submitting; installing an internal cluster is not a prerequisite for local adapter validation. Document any unverified config checks.
+
+## Live validation with an owned Gateway
+
+Only this stage needs the actual image, dataset, model route/credentials, and Docker or an existing configured RJob cluster. Do not require a Geo3K live baseline before local work. A baseline can help diagnose shared infrastructure if a live run fails.
+
+Use a task config containing only 1–2 cases; `env_num`, `--pool-size`, and `--max-workers` do not limit dataset length. Preserve the user's Gateway config and verify the route and storage. This single command owns Gateway startup/readiness/shutdown and propagates Launcher failures:
+
+```bash
+python skills/safactory-workflows/scripts/live_smoke.py \
+  --gateway-config gateway/config.local.yaml \
+  --run-timeout 600 -- \
+  --mode docker \
+  --agent-config env/mybench/mybench_config.yaml \
+  --agent-start-config env/mybench/mybench_start.yaml \
+  --llm-model YOUR_ROUTE_KEY \
+  --job-id mybench-docker-smoke \
+  --pool-size 1 --max-workers 1 --max-steps 10
 ```
 
-RJob start config keeps the `container.runner_entrypoint` contract but adds, for example:
+The helper passes the Gateway's SQLite URI to Launcher if `--db-path` is omitted. Explicit storage and route mismatches fail before starting processes. It requires a free Gateway port; if a Gateway is already running, verify its readiness, routes, and storage, then use `launcher.py` directly. It never stops a Gateway it did not start. Local helper process cleanup does not replace Launcher/Docker/RJob resource cleanup; inspect runtime resources if a timeout interrupts a job.
 
-```yaml
-rjob:
-  name_prefix: mybench
-  image_pull_policy: IfNotPresent
-  no_packaging: true
-  cleanup_on_finish: true
-  resources:
-    cpu: 1
-    gpu: 0
-    memory_in_mb: 1024
-  embedded_files:
-    - source: ./runner.py
-      target: /tmp/safactory-mybench-runner.py
-  mount_config:
-    - "gpfs://CLUSTER_STORAGE/results:/workspace/Safactory/results"
-```
+For a live RJob run, use `--mode rjob`, `--rjob-config` and both `.rjob.yaml` files, set matching `--storage-type`, and pass `--gateway-base-url http://GATEWAY_HOST:8000/v1/sessions` reachable from the cluster. The helper can start a Gateway on the current host; that host must already be reachable from the cluster. Check that any `gateway_base_url` in the global RJob config agrees, as it can override the CLI value. See `docs/internal/rjob-mode.md` for cluster settings. Local tests do not validate cluster networking, mounts, image pulls, or submission.
 
-Do not copy local Docker bind mounts into RJob. RJob images and mounted storage must be accessible from the cluster, and a local runner dependency must be listed in `rjob.embedded_files`.
+Integration-only live checks inspect runner JSON, native outputs, Gateway request/trajectory records, and completed runtime rows. Omit `--enable-evaluation`; do not demand an evaluator or final normalized reward. For evaluation requests, implement/test the optional evaluator and append `--enable-evaluation` to the Launcher arguments, then inspect the final `0–10` reward as well.
 
-## Validation
+## Report the evidence
 
-1. Run or otherwise verify the native command on the 1–2 supplied cases first.
-2. Build/pull the selected-mode image and verify the Gateway is reachable from the runtime.
-3. Run one-worker smoke evaluation with `--enable-evaluation`.
-4. Verify all four artifacts: runner result JSON, native benchmark output file, Gateway trajectory/request log, and final `0–10` reward.
-5. For RJob, also verify the global `--rjob-config`, cluster storage, image pull, and non-loopback Gateway URL.
-
-Use the root README commands as the command source. Replace `YOUR_ROUTE_KEY` with an actual Gateway `llm_routes` key; never commit private routes or credentials.
+State which cases ran, which dependencies/model responses were fixtures, and which level passed: local contract, live deployment, and (if requested) evaluation. Local adapter validation can finish while cluster verification is pending. If the user requested live deployment, list its precise blocker and ready-to-run command without presenting local success as live success.
