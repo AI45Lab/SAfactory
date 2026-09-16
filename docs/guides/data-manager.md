@@ -2,7 +2,7 @@
 
 Safactory records task rows and session rows through `core.data_manager`. The default local backend is SQLite at `sqlite://env_trajs.db`; cloud mode delegates to `wt-data-gateway` defaults.
 
-The storage boundary is intentionally narrow: Gateway constructs trajectory rows and owns session-close selection, Evaluator classifies rows and commits rewards, Manager handles the unevaluated-session fallback, and SQLite/Cloud strategies only perform row persistence. YAML aggregation and message-image persistence remain in `core.data_manager`.
+The storage boundary is intentionally narrow: Gateway constructs trajectory rows and drains/flushes them on session close, Evaluator classifies rows and upserts final rewards, Manager handles the unevaluated-session fallback, and SQLite/Cloud strategies only perform row persistence. YAML aggregation and message-image persistence remain in `core.data_manager`.
 
 For SQLite, keep these values identical:
 
@@ -48,7 +48,7 @@ One row per scheduled environment instance.
 
 ### `session_steps`
 
-One row per gateway inference, direct trajectory step, or evaluation summary. Session close updates the selected trajectory row in place.
+One row per gateway inference, direct trajectory step, or evaluation summary. Session close does not mutate data rows; after evaluation, `RewardCommitter` upserts the final reward and completion state into the last successful trajectory step.
 
 | Field | Meaning |
 |-------|---------|
@@ -79,7 +79,6 @@ The row type is usually determined by `meta_json.event_type` and `is_trainable`.
 | Type | Marker | Trainable | Produced by |
 |------|--------|-----------|-------------|
 | Gateway inference | `event_type = gateway_inference` | Usually `false`; may be marked trainable by reward commit when it is a valid trajectory row. | `gateway.storage` telemetry. |
-| Gateway close | `event_type = gateway_session_close` | `false` | Gateway close telemetry. |
 | Evaluation summary | `event_type = evaluation_summary` | `false` | `RewardCommitter` when no trainable row exists. |
 | Runtime/direct step | no special event type | `true` when recorded as trainable | Custom runtimes or data manager callers. |
 

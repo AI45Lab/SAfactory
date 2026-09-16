@@ -724,7 +724,6 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             task = asyncio.create_task(
                 _finalize_session_close(
                     binding=binding,
-                    completion_mode=completion_mode,
                     resolver=resolver,
                     telemetry=telemetry,
                     cfg=cfg,
@@ -1164,6 +1163,10 @@ def _upstream_latency_ms_from_exception(exc: Exception) -> float | None:
         return None
 
 
+def _stream_completed(summary: dict[str, Any]) -> bool:
+    return summary.get("status") == "completed"
+
+
 async def _stream_and_finalize(
     *,
     opened: StreamForwardContext,
@@ -1232,10 +1235,16 @@ async def _stream_and_finalize(
                 )
             yield chunk
     except asyncio.CancelledError:
-        client_cancelled = True
-        status_code = 499
-        error_text = "client cancelled streaming response"
-        log.warning("Gateway stream client cancelled: request_id=%s", ctx.request_id)
+        if _stream_completed(stream_response_body):
+            log.info(
+                "Gateway stream closed after completion: request_id=%s",
+                ctx.request_id,
+            )
+        else:
+            client_cancelled = True
+            status_code = 499
+            error_text = "client cancelled streaming response"
+            log.warning("Gateway stream client cancelled: request_id=%s", ctx.request_id)
         raise
     except Exception as exc:
         upstream_cancelled = True
@@ -1562,7 +1571,6 @@ async def _shutdown_stream_finalize_tasks(
 async def _finalize_session_close(
     *,
     binding: GatewaySessionBinding,
-    completion_mode: str,
     resolver: SessionResolver,
     telemetry: TelemetryRecorder,
     cfg: GatewayConfig,
@@ -1577,10 +1585,6 @@ async def _finalize_session_close(
                 binding,
                 cfg.session_close_timeout_s,
             )
-        await telemetry.enqueue_session_close(
-            binding,
-            is_session_completed=completion_mode == "complete",
-        )
         await telemetry.wait_for_session_flush(binding)
         return session_drained
 

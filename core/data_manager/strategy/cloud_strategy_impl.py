@@ -487,8 +487,8 @@ class CloudStrategy(StorageStrategy):
         return env_id
 
     async def get_all_environments(self, job_id: Optional[str] = None) -> List[Dict]:
-        """Get all environments from cache"""
-        return self._list_env_configs(job_id=job_id)
+        """Get all environments from the config store."""
+        return await self.list_environment_rows(EnvironmentQuery(job_id=job_id))
 
     async def get_environment_by_env_id(self, env_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve one environment config from cache or cloud EnvConfigManager."""
@@ -534,7 +534,9 @@ class CloudStrategy(StorageStrategy):
             clauses.append(f"env_id = '{_escape_sql_literal(query.env_id)}'")
         if query.after_id:
             clauses.append(f"id > {int(query.after_id)}")
-        filter_query = " AND ".join(clauses) or None
+        if query.finished is not None:
+            clauses.append(f"finished = {str(query.finished).lower()}")
+        filter_query = " AND ".join(clauses)
         page_size = max(100, query.limit or 1000)
         effective_offset = max(0, query.offset)
         normalized: List[Dict[str, Any]] = []
@@ -556,8 +558,6 @@ class CloudStrategy(StorageStrategy):
                         "cloud environment pagination requires EnvConfigManager "
                         "to return the physical id column"
                     )
-                if query.finished is not None and _truthy_bool(row.get("finished")) != query.finished:
-                    continue
                 if query.is_deleted is not None and _truthy_bool(row.get("is_deleted")) != query.is_deleted:
                     continue
                 env_id = str(row.get("env_id") or "")
@@ -713,8 +713,8 @@ class CloudStrategy(StorageStrategy):
         if row.get("request") is not None:
             meta_json.setdefault("request", row["request"])
         record = LandingRecord(
-            dataset_type=CLOUD_DATASET_TYPE,
-            dt=date.today().isoformat(),
+            dataset_type=str(row.get("dataset_type") or CLOUD_DATASET_TYPE),
+            dt=str(row.get("dt") or date.today().isoformat()),
             id=record_id,
             session_id=str(row.get("session_id") or ""),
             step_id=int(row.get("step_id") or 0),
@@ -725,8 +725,19 @@ class CloudStrategy(StorageStrategy):
             reward=row.get("reward"),
             messages=self._messages_to_landing_value(row.get("messages", [])),
             response=self._response_to_landing_value(row.get("response", "")),
-            ground_truth_answer=None,
-            reference_answer=None,
+            chosen_trace=(
+                row.get("chosen_trace")
+                if row.get("chosen_trace") is None or isinstance(row.get("chosen_trace"), str)
+                else json.dumps(row["chosen_trace"], ensure_ascii=False, default=str)
+            ),
+            rejected_trace=(
+                row.get("rejected_trace")
+                if row.get("rejected_trace") is None or isinstance(row.get("rejected_trace"), str)
+                else json.dumps(row["rejected_trace"], ensure_ascii=False, default=str)
+            ),
+            ground_truth_answer=row.get("ground_truth_answer"),
+            reference_answer=row.get("reference_answer"),
+            search_text=row.get("search_text"),
             agent_model=str(row.get("llm_model") or ""),
             env_name=str(row.get("env_name") or ""),
             is_terminal=bool(row.get("is_terminal", False)),
@@ -734,6 +745,8 @@ class CloudStrategy(StorageStrategy):
             is_session_completed=bool(row.get("is_session_completed", False)),
             is_trainable=bool(row.get("is_trainable", False)),
             meta_json=json.dumps(meta_json, ensure_ascii=False, default=str),
+            tags=row.get("tags"),
+            blob_manifest=row.get("blob_manifest") or [],
         )
         return record, record_id
 
@@ -763,6 +776,37 @@ class CloudStrategy(StorageStrategy):
                 records,
                 trace_context={"record_count": len(records)},
             )
+        return record_ids
+
+    async def upsert_session_step_rows(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Upsert complete landing rows using the SDK's native merge path."""
+        await self.init()
+        if not rows:
+            return []
+        if self._enable_buffer:
+            await self._flush_records()
+
+        records: List[Any] = []
+        record_ids: List[str] = []
+        for row in rows:
+            record, record_id = self._landing_record_from_row(row)
+            records.append(record)
+            record_ids.append(record_id)
+            self._record_job_ids[record_id] = str(row["job_id"])
+
+        upsert = getattr(self.client, "upsert_landing_batch", None)
+        if not callable(upsert):
+            raise RuntimeError("Cloud session-step upsert requires wt-data-platform-sdk>=0.6.2")
+        await self._timed_db_call(
+            "upsert_landing_batch",
+            upsert,
+            records,
+            match_columns=["job_id", "id"],
+            trace_context={"record_count": len(records)},
+        )
         return record_ids
 
     async def list_session_step_rows(
@@ -797,10 +841,12 @@ class CloudStrategy(StorageStrategy):
             raise ValueError("cloud session-step query requires at least one filter")
 
         columns = [
-            "id", "session_id", "step_id", "env_id", "env_name", "agent_model",
-            "job_id", "messages", "response", "step_reward", "reward", "meta_json",
-            "is_terminal", "is_truncated", "is_session_completed", "is_trainable",
-            "created_at",
+            "dataset_type", "dt", "id", "session_id", "step_id", "env_id",
+            "env_name", "agent_model", "job_id", "messages", "response",
+            "chosen_trace", "rejected_trace", "ground_truth_answer",
+            "reference_answer", "search_text", "step_reward", "reward", "meta_json",
+            "tags", "blob_manifest", "is_terminal", "is_truncated",
+            "is_session_completed", "is_trainable", "created_at",
         ]
         cloud_rows = await self._timed_db_call(
             "filter_landing",
@@ -882,33 +928,6 @@ class CloudStrategy(StorageStrategy):
             trace_context={"job_id": job_id, "field_count": len(normalized)},
         )
         return len(query.record_ids) or int(bool(query.record_id)) or 1
-
-    def get_env_configs(
-        self,
-        limit: Optional[int] = None,
-        offset: int = 0,
-        job_id: Optional[str] = None,
-    ) -> List[Dict]:
-        """Synchronous scheduler reader for cached cloud environment configs."""
-        configs = [
-            row for row in self._list_env_configs(job_id=job_id)
-            if not _truthy_bool(row.get("finished", False))
-        ]
-        start = max(0, int(offset or 0))
-        if limit is None:
-            return configs[start:]
-        end = start + max(0, int(limit))
-        return configs[start:end]
-
-    def _list_env_configs(self, job_id: Optional[str] = None) -> List[Dict]:
-        rows: List[Dict] = []
-        for index, config in enumerate(self._env_configs.values(), start=1):
-            row = self._normalize_env_config(config)
-            row.setdefault("id", index)
-            if job_id and str(row.get("job_id") or "") != str(job_id):
-                continue
-            rows.append(row)
-        return rows
 
     def _normalize_env_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
         row = dict(config)
@@ -1150,7 +1169,10 @@ class CloudStrategy(StorageStrategy):
             dataset_type=CLOUD_DATASET_TYPE,
             cursor=after_id,
             checkout_latest=True,
-            where_sql="job_id = '{}' AND is_terminal = True".format(_escape_sql_literal(job_id)),
+            where_sql=(
+                "job_id = '{}' AND is_terminal = True AND is_session_completed = True"
+                .format(_escape_sql_literal(job_id))
+            ),
             limit=limit,
             deserialize_json=True,
         )
@@ -1199,7 +1221,8 @@ class CloudStrategy(StorageStrategy):
         
         last_cursor = self.client.get_max_created_at(
             where_sql=(
-                "dataset_type = '{}' AND job_id = '{}' AND is_terminal = True"
+                "dataset_type = '{}' AND job_id = '{}' AND "
+                "is_terminal = True AND is_session_completed = True"
                 .format(CLOUD_DATASET_TYPE, _escape_sql_literal(job_id))
             ),
         )

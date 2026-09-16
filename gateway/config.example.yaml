@@ -38,10 +38,10 @@ telemetry:
   payload_sample_rate: 1.0
   redact_sensitive_fields: true
   batch_size: 200
-  flush_interval_ms: 100
+  flush_interval_ms: 10000
   # Cloud telemetry is accepted into bounded, session-sharded queues and written in batches.
   async_cloud_writes: true
-  writer_count: 4
+  writer_count: 1
 
 request_log:
   enabled: true
