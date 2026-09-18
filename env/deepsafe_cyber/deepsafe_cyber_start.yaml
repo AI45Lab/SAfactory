@@ -1,0 +1,68 @@
+agent_name: deepsafe_cyber
+
+container:
+  platform: linux/amd64
+  workdir: /opt/deepsafe-cyber
+
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-deepsafe_cyber/runner.py
+    command: "python /tmp/safactory-deepsafe_cyber/runner.py"
+
+  mounts:
+    # Docker bind sources are resolved from the launcher working directory
+    # (normally this repository root). runner_entrypoint.source is relative to
+    # this start config instead.
+    - source: ./env/deepsafe_cyber/adapter.py
+      target: /tmp/safactory-deepsafe_cyber/adapter.py
+      mode: ro
+    - source: ./env/deepsafe_cyber/operator/run.yaml
+      target: /opt/operator/run.yaml
+      mode: ro
+    - source: /mnt/shared-storage-user/trustcyberdata
+      target: /mnt/shared-storage-user/trustcyberdata
+      mode: ro
+    # Native envelopes and SAfactory result artifacts both persist in the
+    # repository-wide results directory. The second mount preserves deepsafe's
+    # required /opt/deepsafe-cyber/runs path.
+    - source: ./results/deepsafe_cyber
+      target: /mnt/shared-storage-user/adpc-share/chenxinquan/SAfactory/results/deepsafe_cyber
+      mode: rw
+    - source: ./results/deepsafe_cyber
+      target: /opt/deepsafe-cyber/runs
+      mode: rw
+    - source: ./env/deepsafe_cyber/batch-output
+      target: /opt/deepsafe-cyber/configs/deepsafe_cyber/batch-output
+      mode: rw
+
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    HTTP_PROXY: http://httpproxy-headless.kubebrain.svc.pjlab.local:3128
+    HTTPS_PROXY: http://httpproxy-headless.kubebrain.svc.pjlab.local:3128
+    http_proxy: http://httpproxy-headless.kubebrain.svc.pjlab.local:3128
+    https_proxy: http://httpproxy-headless.kubebrain.svc.pjlab.local:3128
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1,10.0.0.0/8,100.96.0.0/12,172.16.0.0/12,192.168.0.0/16,.pjlab.local,.pjlab.org.cn,.pjh-service.org.cn
+    no_proxy: host.docker.internal,localhost,127.0.0.1,::1,10.0.0.0/8,100.96.0.0/12,172.16.0.0/12,192.168.0.0/16,.pjlab.local,.pjlab.org.cn,.pjh-service.org.cn
+
+  extra_args:
+    # SAfactory appends `<image> sh -lc <idle_command>` to `docker run`.
+    # deepsafe-cyber's native ENTRYPOINT, however, executes `dockerd "$@"`,
+    # so passing the shell command through would make dockerd receive invalid
+    # arguments. Clear the image ENTRYPOINT and launch its DinD script from the
+    # idle shell; the adapter also polls `docker info`.
+    - --user=0
+    - --entrypoint=
+    - --privileged
+    - --cgroupns=host
+    - --cpus=10
+    - --memory=20g
+    - --add-host=host.docker.internal:host-gateway
+    - --volume=deepsafe-cyber-dind-data:/var/lib/docker
+
+  # Keep the shell as PID 1 so stopping the SAfactory container also stops the
+  # nested dockerd started by the native entrypoint script.
+  idle_command: >-
+    /opt/deepsafe-cyber/packaging/linux-amd64/entrypoint.sh &
+    daemon_pid=$!;
+    trap 'kill -TERM "$daemon_pid" 2>/dev/null || true; wait "$daemon_pid" 2>/dev/null || true' TERM INT;
+    wait "$daemon_pid"

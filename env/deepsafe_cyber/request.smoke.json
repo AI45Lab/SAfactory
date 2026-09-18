@@ -1,0 +1,26 @@
+{
+  "job_id": "deepsafe_cyber-contract",
+  "session_id": "deepsafe_cyber-case-001",
+  "agent_id": "case-001",
+  "group_id": "",
+  "gateway_base_url": "http://unused.invalid/v1/sessions",
+  "model": "contract-model",
+  "temperature": 0.0,
+  "max_steps": 10,
+  "storage_type": "sqlite",
+  "storage_config": {},
+  "env_params": {
+    "task_family": "deepsafe-cyber",
+    "results_root": "/tmp/deepsafe-cyber-contract-results",
+    "dataset": {"task": "CVE-2021-23376"},
+    "deepsafe_cyber": {
+                    "workspace": ".",
+                    "binary": "/opt/deepsafe-cyber/.runtime/bin/deepsafe-cyber",
+      "run_yaml_template": "env/deepsafe_cyber/operator/run.yaml",
+      "runs_subdir": "contract",
+      "docker_health_timeout_s": 1,
+      "environment_preflight_timeout_s": 1,
+      "task_time_limit_s": 5
+    }
+  }
+}

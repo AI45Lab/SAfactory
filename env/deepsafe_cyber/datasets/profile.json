@@ -1,0 +1,8 @@
+{
+  "profile": "patcheval-verified-v1",
+  "upstream": "bytedance/PatchEval",
+  "release": "patcheval-fe6f402a-official-230",
+  "task_count": 230,
+  "row_schema": {"required": ["task"]},
+  "representative_cases": ["CVE-2021-23376", "CVE-2021-23363"]
+}
