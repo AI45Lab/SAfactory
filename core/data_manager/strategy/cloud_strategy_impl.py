@@ -525,6 +525,14 @@ class CloudStrategy(StorageStrategy):
         self._env_configs[str(config["env_id"])] = config
         return dict(config)
 
+    async def clear_environment_cache(self, env_ids: List[str]) -> int:
+        """Clear cached environment configs without changing persisted state."""
+        removed = 0
+        for env_id in env_ids:
+            if self._env_configs.pop(env_id, None) is not None:
+                removed += 1
+        return removed
+
     async def list_environment_rows(self, query: EnvironmentQuery) -> List[Dict[str, Any]]:
         """Read environment rows from the authoritative config store."""
         await self.init()
@@ -614,6 +622,8 @@ class CloudStrategy(StorageStrategy):
             clauses.append(f"id > {int(query.after_id)}")
         if query.finished is not None:
             clauses.append(f"finished = {str(query.finished).lower()}")
+        if query.is_deleted is not None:
+            clauses.append(f"is_deleted = {str(query.is_deleted).lower()}")
         return " AND ".join(clauses)
 
     async def insert_environment_rows(self, rows: List[Dict[str, Any]]) -> List[str]:

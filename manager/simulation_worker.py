@@ -8,8 +8,6 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-import httpx
-
 from core.data_manager.load_yaml import materialize_dataset_env_params
 from core.data_manager.contracts import SessionContext
 from core.data_manager.manager import DataManager
@@ -295,7 +293,8 @@ class SimulationWorkerGroup:
                 if self.gateway_client is not None:
                     with trace.span("gateway_finalize"):
                         gateway_finalized = await self._finalize_gateway_session(
-                            result,
+                            result.session_id,
+                            rollout_status=result.status,
                             completion_mode=completion_mode,
                             worker_id=worker_id,
                             agent_key=agent_key,
@@ -324,10 +323,7 @@ class SimulationWorkerGroup:
                         )
                     result.total_reward = 0.0
                     with trace.span("mark_environment_finished"):
-                        await self._mark_environment_finished_and_clean_gateway(
-                            lease.agent_id,
-                            result.session_id,
-                        )
+                        await self.data_manager.mark_environment_finished(lease.agent_id)
                     release_reusable = False
                 elif self.evaluation_service is not None and self.reward_committer is not None:
                     with trace.span("eval_discover_rule"):
@@ -370,10 +366,7 @@ class SimulationWorkerGroup:
                                 )
                             result.total_reward = eval_result.normalized_score_10
                             with trace.span("mark_environment_finished"):
-                                await self._mark_environment_finished_and_clean_gateway(
-                                    lease.agent_id,
-                                    result.session_id,
-                                )
+                                await self.data_manager.mark_environment_finished(lease.agent_id)
                         else:
                             result.status = "failed"
                             result.error_text = eval_result.error_text or eval_result.reason
@@ -391,10 +384,7 @@ class SimulationWorkerGroup:
                         job_id=self.cfg.job_id,
                         llm_model=self.cfg.llm_model,
                     )
-                    await self._mark_environment_finished_and_clean_gateway(
-                        lease.agent_id,
-                        result.session_id,
-                    )
+                    await self.data_manager.mark_environment_finished(lease.agent_id)
                     release_reusable = None
 
                 with trace.span("store_result"):
@@ -426,6 +416,17 @@ class SimulationWorkerGroup:
                     self._results[agent_key] = _StoredResult(result.status, result.total_reward)
             finally:
                 try:
+                    if self.gateway_client is not None and session is not None:
+                        if not gateway_finalized:
+                            gateway_finalized = await self._finalize_gateway_session(
+                                session.session_id,
+                                rollout_status=result.status if result is not None else "cancelled",
+                                completion_mode="abort",
+                                worker_id=worker_id,
+                                agent_key=agent_key,
+                                trace=trace,
+                            )
+                        await self._clean_gateway_session(session.session_id)
                     if result is not None:
                         with trace.span("record_circuit_result"):
                             await self._record_circuit_result(result, worker_id=worker_id, agent_key=agent_key)
@@ -524,8 +525,9 @@ class SimulationWorkerGroup:
 
     async def _finalize_gateway_session(
         self,
-        result: SimulationStartResult,
+        session_id: str,
         *,
+        rollout_status: str,
         completion_mode: str,
         worker_id: int,
         agent_key: str,
@@ -541,52 +543,43 @@ class SimulationWorkerGroup:
         try:
             if trace is None:
                 await self.gateway_client.close_session(
-                    result.session_id,
+                    session_id,
                     reason=reason,
                     completion_mode=completion_mode,
                 )
             else:
                 with trace.span("gateway_close_session"):
                     await self.gateway_client.close_session(
-                        result.session_id,
+                        session_id,
                         reason=reason,
                         completion_mode=completion_mode,
                     )
             return True
-        except httpx.HTTPError as exc:
+        except Exception as exc:
             log.warning(
                 "worker=%d agent=%s gateway session finalization failed; preserving rollout status=%s "
                 "session_id=%s error=%s",
                 worker_id,
                 agent_key,
-                result.status,
-                result.session_id,
+                rollout_status,
+                session_id,
                 exc,
             )
             return False
 
-    async def _mark_environment_finished_and_clean_gateway(
-        self,
-        env_id: str,
-        session_id: str,
-    ) -> None:
-        await self.data_manager.mark_environment_finished(env_id)
+    async def _clean_gateway_session(self, session_id: str) -> None:
         if self.gateway_client is None:
             return
         try:
             cleaned = await self.gateway_client.clean_session(session_id)
             log.info(
-                "gateway session cleaned after environment completion: "
-                "env_id=%s session_id=%s status=%s",
-                env_id,
+                "gateway session cleaned after worker completion: session_id=%s status=%s",
                 session_id,
                 cleaned.get("status") if isinstance(cleaned, dict) else "cleaned",
             )
         except Exception as exc:
             log.warning(
-                "gateway session clean failed after environment completion: "
-                "env_id=%s session_id=%s error=%s",
-                env_id,
+                "gateway session clean failed after worker completion: session_id=%s error=%s",
                 session_id,
                 exc,
             )

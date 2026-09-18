@@ -93,6 +93,10 @@ class DataManager:
         """Retrieve one environment config by env_id."""
         return await self._strategy.get_environment_by_env_id(env_id)
 
+    async def clear_environment_cache(self, env_ids: List[str]) -> int:
+        """Clear backend-local environment cache entries."""
+        return await self._strategy.clear_environment_cache(env_ids)
+
     async def mark_environment_finished(self, env_id: str) -> int:
         """Mark one environment completed for this job."""
         updated = await self._strategy.update_environment_rows(
