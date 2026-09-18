@@ -212,21 +212,6 @@ def _meta_json_object(meta_json: Any) -> Dict[str, Any]:
     return meta
 
 
-def _truthy_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
-    try:
-        if value != value:
-            return False
-    except Exception:
-        pass
-    return bool(value)
-
-
 def _response_text(value: Any) -> str:
     """Extract training text without discarding non-text model output."""
     if value is None:
@@ -558,8 +543,6 @@ class CloudStrategy(StorageStrategy):
                         "cloud environment pagination requires EnvConfigManager "
                         "to return the physical id column"
                     )
-                if query.is_deleted is not None and _truthy_bool(row.get("is_deleted")) != query.is_deleted:
-                    continue
                 env_id = str(row.get("env_id") or "")
                 if env_id:
                     self._env_configs[env_id] = row
@@ -622,8 +605,6 @@ class CloudStrategy(StorageStrategy):
             clauses.append(f"id > {int(query.after_id)}")
         if query.finished is not None:
             clauses.append(f"finished = {str(query.finished).lower()}")
-        if query.is_deleted is not None:
-            clauses.append(f"is_deleted = {str(query.is_deleted).lower()}")
         return " AND ".join(clauses)
 
     async def insert_environment_rows(self, rows: List[Dict[str, Any]]) -> List[str]:
@@ -643,7 +624,6 @@ class CloudStrategy(StorageStrategy):
                 "image": str(row.get("image") or ""),
                 "group_id": str(row.get("group_id") or ""),
                 "finished": bool(row.get("finished", False)),
-                "is_deleted": bool(row.get("is_deleted", False)),
                 "created_at": int(row.get("created_at") or time.time()),
             }
             configs.append(config)
@@ -657,7 +637,7 @@ class CloudStrategy(StorageStrategy):
         updates: Dict[str, Any],
     ) -> int:
         await self.init()
-        allowed = {"env_name", "env_params", "image", "group_id", "finished", "is_deleted"}
+        allowed = {"env_name", "env_params", "image", "group_id", "finished"}
         unknown = set(updates) - allowed
         if unknown:
             raise ValueError(f"Unknown environment update fields: {sorted(unknown)}")
