@@ -51,33 +51,53 @@ https://github.com/user-attachments/assets/4c551b27-ce4d-4fc8-8df6-d6dc8100cc88
 
 ## <a id="agent-skill"></a>🧩 Agent Skill 快速上手
 
-仓库内置了一个轻量 Agent skill，用于帮助 Agent 按标准 workflow 使用 SAfactory：
+仓库内置 Agent skill，支持从固定模板接入环境、本地契约测试、可选的 Docker/RJob 评测，以及 GRPO/RL workflow：
 
 ```text
 skills/safactory-workflows/SKILL.md
 ```
 
-它覆盖三类高频请求：
+### <a id="benchmark-onboarding-prompt"></a>Benchmark 接入 Prompt
 
-- 接入新的 benchmark 或自定义环境到 SAfactory；
-- 用 Docker 模式运行指定环境的测评；
-- 启动指定环境的 GRPO / RL 训练。
+请提供 benchmark 源码、单条 dataset row 格式、1–2 个代表性 case、原生单 case 命令和输出格式。已知时注明 Docker 或 RJob 部署模式。**仅接入不要求评测、score/reward 定义、已启动的 Gateway 或内部集群。** 只有需要评测时才提供评分信息。
 
-使用 Agent 时，可以直接这样提问：
+Agent 会复制固定 runner/config 模板，填写环境 hook，并使用自动管理的 mock 模型端点执行本地契约测试。原生依赖需要本地可用或有明确的测试 fixture。镜像、数据、模型和 runtime 可用后再做真实部署验证；helper 负责 Gateway 启停，无需另开终端。RJob 真实运行还需要已有集群配置及集群可达的 Gateway URL。
 
-```text
-请使用 skills/safactory-workflows，帮我把这个 benchmark 接入 SAfactory。
-```
+<details>
+<summary>展开获取接入 Prompt</summary>
 
 ```text
-请使用 safactory-workflows skill，用 Docker 模式跑 geo3k 测评。
+请使用 skills/safactory-workflows，将以下 benchmark 接入 SAfactory。
+
+【本次目标】
+- evaluation: [disabled（默认，仅接入）/ enabled]
+- 目标部署模式: [docker / rjob / 检查 adapter 后再确定]
+- 验证范围: [先做本地契约验证 / 条件具备时也做真实部署验证]
+
+【Benchmark 信息】
+- environment name: ____________________
+- 源码或 checkout 路径/仓库地址: ____________________
+- 数据集路径和单条 row 格式: ____________________
+- 1–2 个 case ID/row: ____________________
+- 原生单 case 命令，或 README 文件/章节: ____________________
+- Docker image（如已有）: ____________________
+- 原生结果输出路径和格式: ____________________
+
+【仅在启用评测时填写】
+- 原生分数字段/文件、范围、含义、通过条件: ____________________
+
+从基于 docs/guides/custom-environment.md 的固定模板开始。
+runner.py 保留协议处理，adapter.py 只填写单 case 的数据映射、Gateway 模型
+配置、原生命令调用和输出收集。不要重写 benchmark 内部的解题/评分逻辑。
+仅在启用评测时添加 rule_evaluator.py 和 --enable-evaluation。
+先运行本地契约检查，不要求手动启动 Gateway 或配置 RJob 集群。
+报告使用的 fixture、原生输出映射及实际通过的检查；区分本地契约、真实部署
+和评测结果。仅询问下一步依赖的缺失信息。
 ```
 
-```text
-请使用 safactory-workflows skill，启动 my_env 环境的 GRPO 训练。
-```
+</details>
 
-该 skill 不替代文档，而是引导 Agent 按需读取 `docs/guides/`、`docs/reference/` 和根 README，并优先参考标准环境 `env/geo3k/`。如果你的 Agent 支持本地 skill 搜索，可以把 `skills/safactory-workflows/` 加入其 skill 搜索路径；否则在请求中显式写出该路径即可。
+固定模板和 Docker/RJob 配置见[自定义环境指南](docs/guides/custom-environment_CN.md)和 skill 的[接入参考](skills/safactory-workflows/references/environment-integration.md)。任意环境可用一条命令完成验证：`python skills/safactory-workflows/scripts/check_environment.py --env env/<name>`，它会依次执行静态一致性检查、基于自有 mock 端点的契约冒烟以及可选的 live 阶段，并为每条失败标注归属方（配置侧 / 环境侧 / 框架侧）。如果 Agent 不支持自动发现本地 skill，请在 prompt 中显式写出 `skills/safactory-workflows/` 路径。
 
 ## <a id="quick-start"></a>🚀 快速开始
 

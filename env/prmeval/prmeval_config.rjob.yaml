@@ -10,7 +10,8 @@ environments:
       prmeval:
         sampling:
           dataset_name: rbm_1m_ood_test
-          paths: [/tmp/safactory-prmeval-tempfile/temp_sample.jsonl]
+          # adapter.py replaces paths with a temporary one-row JSONL per episode.
+          paths: []
           base_frames: 8
           progress_type: absolute_first_frame
         infer:

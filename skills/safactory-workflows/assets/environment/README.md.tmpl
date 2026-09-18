@@ -1,0 +1,37 @@
+# env/__ENV_NAME__
+
+Benchmark integration for SAfactory.  Layout follows the standard reference
+`env/prmeval/`; the file responsibilities are fixed:
+
+| File | Responsibility |
+| --- | --- |
+| `runner.py` | Fixed SAfactory protocol shell. Standard part — do not edit per benchmark; replace wholesale when the protocol evolves. |
+| `adapter.py` | The only file with benchmark logic. Fill `run_case(request, task, session_url)` for one dataset row. |
+| `__ENV_NAME___config.yaml` | Docker task config: image, dataset, `env_params` passed through to the container per row. |
+| `__ENV_NAME___start.yaml` | Docker container startup: entrypoint, mounts, env, network. |
+| `__ENV_NAME___config.rjob.yaml` | RJob task config (same schema as Docker, cluster-pullable image). |
+| `__ENV_NAME___start.rjob.yaml` | RJob startup: container block plus cluster resources, `mount_config`, `embedded_files`. |
+| `rule_evaluator.py` | Optional score mapping. Required only with `--enable-evaluation` (its absence then fails the episode). |
+| `request.smoke.json` | One-case request fixture for local contract checks. |
+| `datasets/` | One row = one episode. Absolute paths inside rows must point under a mount target. |
+
+## Verify the integration
+
+From the repository root:
+
+```bash
+# Static consistency checks (file set, names, config <-> start <-> dataset invariants)
+python skills/safactory-workflows/scripts/validate_environment.py env/__ENV_NAME__
+
+# Static + contract smoke (owned mock model endpoint; no Gateway/Docker/cluster needed)
+python skills/safactory-workflows/scripts/check_environment.py --env env/__ENV_NAME__
+
+# Live deployment check (starts and stops Gateway, runs launcher.py); RJob also
+# needs cluster access and a cluster-reachable --gateway-base-url.
+python skills/safactory-workflows/scripts/check_environment.py --env env/__ENV_NAME__ --live '-- --agent-config env/__ENV_NAME__/__ENV_NAME___config.yaml --agent-start-config env/__ENV_NAME__/__ENV_NAME___start.yaml --llm-model <route> ...'
+```
+
+Native dependencies must be installed locally for the contract check, or pass
+`--fixture-adapter <path>` to verify the protocol shell only.  See
+`skills/safactory-workflows/references/environment-integration.md` for the
+full workflow and the failure-triage table.

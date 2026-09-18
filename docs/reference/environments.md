@@ -6,13 +6,14 @@ SAfactory v2 treats each environment as an external agent runtime. A runtime is 
 - an agent start config: Docker, RJob, or Sandbox startup details for the runtime;
 - an optional `rule_evaluator.py`: reward conversion after rollout.
 
-The standard environment for onboarding, smoke tests, evaluation, and RL examples is **Geo3K**.
+The standard end-to-end environment for smoke tests, evaluation, and RL examples is **Geo3K**. For new benchmark onboarding, use the template-based **PRMEval** layout as the structural reference and keep Geo3K as a behavior-specific example.
 
 ## Environment Matrix
 
 | Environment | `env_name` / `agent_name` | Domain | Config | Start config | Runtime modes | Evaluator |
 |-------------|----------------------------|--------|--------|--------------|---------------|-----------|
 | Geo3K | `geo3k` | Geometry / VLM QA | `env/geo3k/geo3k_config.yaml` | `env/geo3k/geo3k_start.yaml` | Docker; RL template | `env/geo3k/rule_evaluator.py` |
+| PRMEval | `prmeval` | Progress benchmark harness | `env/prmeval/prmeval_config.yaml` / `.rjob.yaml` | `env/prmeval/prmeval_start.yaml` / `.rjob.yaml` | Docker; RJob | `env/prmeval/rule_evaluator.py` |
 | OpenClaw | `openclaw` | General OpenClaw CLI tasks | `env/openclaw/openclaw_config.yaml` | `env/openclaw/openclaw_start.yaml` | Docker | Optional |
 | OpenRT | `openrt` | Safety / red-team benchmark | `env/openrt/openrt_config.yaml` | `env/openrt/openrt_start.yaml` | Docker | `env/openrt/rule_evaluator.py` |
 | OpenRT RJob | `openrt` | Remote OpenRT benchmark | `env/openrt/openrt_config.rjob.yaml` | `env/openrt/openrt_start.rjob.yaml` | RJob | `env/openrt/rule_evaluator.py` |
