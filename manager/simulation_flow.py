@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlsplit
 
 import requests
@@ -13,6 +13,7 @@ import requests
 from core.data_manager.manager import DataManager
 from core.data_manager.yaml_aggregator import (
     all_env_yaml_load,
+    delete_resume_session_steps,
     is_job_db_processing_done,
     sync_configs_to_db,
     wait_for_pending_inserts,
@@ -52,6 +53,7 @@ class SimulationFlow:
         self.gateway_client: Optional[GatewayClient] = None
         self.evaluation_service: Optional[EvaluationService] = None
         self.reward_committer: Optional[RewardCommitter] = None
+        self._resume_session_ids: List[str] = []
         self._shutdown_started = False
 
     async def run(self) -> SimulationRunSummary:
@@ -117,11 +119,16 @@ class SimulationFlow:
             **storage_config,
         )
 
-        yaml_config_list = all_env_yaml_load(env_root=self.cfg.agent_root, env_config=self.cfg.agent_config)
-        yaml_config_list = expand_rl_group_size(yaml_config_list, self.cfg.rl_group_size)
-        yaml_config_list = expand_rl_epoch(yaml_config_list, self.cfg.rl_epoch)
+        yaml_config_list = []
+        if not self.cfg.resume:
+            yaml_config_list = all_env_yaml_load(
+                env_root=self.cfg.agent_root,
+                env_config=self.cfg.agent_config,
+            )
+            yaml_config_list = expand_rl_group_size(yaml_config_list, self.cfg.rl_group_size)
+            yaml_config_list = expand_rl_epoch(yaml_config_list, self.cfg.rl_epoch)
 
-        await sync_configs_to_db(
+        resume_environments = await sync_configs_to_db(
             self.data_manager,
             yaml_config_list,
             self.cfg.storage_type,
@@ -130,6 +137,11 @@ class SimulationFlow:
             rebuild_table=self.cfg.rebuild_table,
             resume=self.cfg.resume,
         )
+        self._resume_session_ids = list(dict.fromkeys(
+            str(row.get("env_id") or "").strip()
+            for row in resume_environments
+            if str(row.get("env_id") or "").strip()
+        ))
         self.manager_cfg = build_manager_runtime_config(self.cfg)
         if self.cfg.resume and self.cfg.mode == "rjob":
             await cleanup_resume_artifacts(
@@ -137,7 +149,15 @@ class SimulationFlow:
                 model=self.cfg.llm_model,
                 data_manager=self.data_manager,
                 manager_cfg=self.manager_cfg,
+                environment_rows=resume_environments,
             )
+        if self.cfg.resume:
+            await delete_resume_session_steps(
+                self.data_manager,
+                job_id=self.cfg.job_id,
+                environment_rows=resume_environments,
+            )
+        resume_environments.clear()
         log.info(
             "storage prepared: job_id=%s base_pool_size=%d warm_pool_size=%d startup_submit_count=%d followup_submit_batch=%d",
             self.cfg.job_id,
@@ -213,18 +233,7 @@ class SimulationFlow:
         )
 
     async def clear_resume_gateway_session_cache(self) -> None:
-        if self.data_manager is None:
-            raise RuntimeError("data manager is not prepared")
-        rows = await self.data_manager.list_environment_rows(
-            job_id=self.cfg.job_id,
-            finished=False,
-            is_deleted=False,
-        )
-        session_ids = [
-            str(row.get("env_id"))
-            for row in rows
-            if row.get("env_id")
-        ]
+        session_ids = self._resume_session_ids
         if not session_ids:
             return
         client = GatewayClient(gateway_base_url=self.cfg.gateway_base_url)
@@ -232,6 +241,7 @@ class SimulationFlow:
             result = await client.clear_session_cache(session_ids)
         finally:
             await client.aclose()
+            self._resume_session_ids = []
         log.info(
             "gateway resume session cache cleared: job_id=%s sessions=%d removed=%s",
             self.cfg.job_id,

@@ -69,6 +69,11 @@ class StorageStrategy(ABC):
         pass
 
     @abstractmethod
+    async def list_environment_refs(self, query: EnvironmentQuery) -> List[Dict[str, Any]]:
+        """List only id/env_id/env_name for lightweight workflow coordination."""
+        pass
+
+    @abstractmethod
     async def insert_environment_rows(self, rows: List[Dict[str, Any]]) -> List[str]:
         """Insert environment rows and return their env_ids."""
         pass

@@ -1,5 +1,6 @@
 import asyncio
 from importlib import import_module
+import inspect
 import json
 import logging
 import os
@@ -527,16 +528,7 @@ class CloudStrategy(StorageStrategy):
     async def list_environment_rows(self, query: EnvironmentQuery) -> List[Dict[str, Any]]:
         """Read environment rows from the authoritative config store."""
         await self.init()
-        clauses = []
-        if query.job_id:
-            clauses.append(f"job_id = '{_escape_sql_literal(query.job_id)}'")
-        if query.env_id:
-            clauses.append(f"env_id = '{_escape_sql_literal(query.env_id)}'")
-        if query.after_id:
-            clauses.append(f"id > {int(query.after_id)}")
-        if query.finished is not None:
-            clauses.append(f"finished = {str(query.finished).lower()}")
-        filter_query = " AND ".join(clauses)
+        filter_query = self._environment_filter_query(query)
         page_size = max(100, query.limit or 1000)
         effective_offset = max(0, query.offset)
         normalized: List[Dict[str, Any]] = []
@@ -570,6 +562,59 @@ class CloudStrategy(StorageStrategy):
             if len(page) < page_size:
                 break
         return normalized
+
+    async def list_environment_refs(self, query: EnvironmentQuery) -> List[Dict[str, Any]]:
+        """Read resume identity fields without populating the full config cache."""
+        await self.init()
+        # wt_sdk v0.6.2 get_env_configs materializes every column before it
+        # paginates. Use its projection-capable query boundary for resume.
+        filter_table = getattr(self.env_manager, "_filter_table", None)
+        if not callable(filter_table):
+            raise RuntimeError(
+                "Cloud resume requires the projection-capable EnvConfigManager "
+                "provided by wt-data-platform-sdk>=0.6.2"
+            )
+        kwargs: Dict[str, Any] = {
+            "query": self._environment_filter_query(query),
+            "limit": query.limit if not query.after_id and not query.offset else None,
+            "columns": ["id", "env_id", "env_name"],
+        }
+        if "checkout_latest" in inspect.signature(filter_table).parameters:
+            kwargs["checkout_latest"] = True
+        result = await asyncio.to_thread(filter_table, **kwargs)
+        rows = result.to_dict(orient="records") if hasattr(result, "to_dict") else result
+        refs: List[Dict[str, Any]] = []
+        for config in rows or []:
+            row = dict(config)
+            if row.get("id") is None:
+                raise RuntimeError(
+                    "cloud environment pagination requires EnvConfigManager "
+                    "to return the physical id column"
+                )
+            refs.append({
+                "id": row["id"],
+                "env_id": row.get("env_id"),
+                "env_name": row.get("env_name"),
+            })
+        refs.sort(key=lambda row: int(row["id"]))
+        if query.offset:
+            refs = refs[query.offset:]
+        if query.limit is not None:
+            refs = refs[:query.limit]
+        return refs
+
+    @staticmethod
+    def _environment_filter_query(query: EnvironmentQuery) -> str:
+        clauses = []
+        if query.job_id:
+            clauses.append(f"job_id = '{_escape_sql_literal(query.job_id)}'")
+        if query.env_id:
+            clauses.append(f"env_id = '{_escape_sql_literal(query.env_id)}'")
+        if query.after_id:
+            clauses.append(f"id > {int(query.after_id)}")
+        if query.finished is not None:
+            clauses.append(f"finished = {str(query.finished).lower()}")
+        return " AND ".join(clauses)
 
     async def insert_environment_rows(self, rows: List[Dict[str, Any]]) -> List[str]:
         await self.init()
@@ -622,7 +667,7 @@ class CloudStrategy(StorageStrategy):
         operation: str,
         job_id: str,
         landing_filter: str,
-    ) -> List[Dict[str, Any]]:
+    ) -> int:
         guard = CloudDeleteGuard(
             client=self.client,
             db_uri=self.db_url,
@@ -650,13 +695,12 @@ class CloudStrategy(StorageStrategy):
             if job_id:
                 clauses.insert(0, f"job_id = '{_escape_sql_literal(job_id)}'")
             landing_filter = " AND ".join(clauses)
-            rows = await self._preflight_destructive_delete(
+            selected = await self._preflight_destructive_delete(
                 operation="delete_session_step_rows",
                 job_id=job_id,
                 landing_filter=landing_filter,
             )
-            await asyncio.to_thread(self.client.delete_landing, landing_filter)
-            return len(rows)
+            return await self._delete_landing_rows(landing_filter, selected)
         session_ids = list(query.session_ids)
         if query.session_id:
             session_ids.append(query.session_id)
@@ -672,13 +716,29 @@ class CloudStrategy(StorageStrategy):
         if not clauses:
             raise ValueError("job_id or session_ids is required for cloud deletion")
         landing_filter = " AND ".join(clauses)
-        rows = await self._preflight_destructive_delete(
+        selected = await self._preflight_destructive_delete(
             operation="delete_session_step_rows",
             job_id=job_id,
             landing_filter=landing_filter,
         )
-        await asyncio.to_thread(self.client.delete_landing, landing_filter)
-        return len(rows)
+        return await self._delete_landing_rows(landing_filter, selected)
+
+    async def _delete_landing_rows(self, landing_filter: str, selected: int) -> int:
+        if not selected:
+            return 0
+        result = await asyncio.to_thread(self.client.delete_landing, landing_filter)
+        deleted = (
+            int(result)
+            if isinstance(result, int) and not isinstance(result, bool)
+            else selected
+        )
+        log.info(
+            "Cloud landing delete completed: selected_rows=%d deleted_rows=%d filter=%s",
+            selected,
+            deleted,
+            landing_filter,
+        )
+        return deleted
 
     async def delete_job_rows(self, job_id: str) -> None:
         await self.init()

@@ -128,6 +128,24 @@ class DataManager:
             is_deleted=is_deleted,
         ))
 
+    async def list_environment_refs(
+        self,
+        *,
+        job_id: Optional[str] = None,
+        after_id: int = 0,
+        limit: Optional[int] = None,
+        finished: Optional[bool] = None,
+        is_deleted: Optional[bool] = None,
+    ) -> List[Dict[str, Any]]:
+        """Query only the environment identity fields needed by resume cleanup."""
+        return await self._strategy.list_environment_refs(EnvironmentQuery(
+            job_id=job_id or self.job_id,
+            after_id=max(0, int(after_id)),
+            limit=None if limit is None else max(0, int(limit)),
+            finished=finished,
+            is_deleted=is_deleted,
+        ))
+
     async def insert_environment_rows(self, rows: List[Dict[str, Any]]) -> List[str]:
         """Insert environment rows through the configured DAO."""
         normalized = []

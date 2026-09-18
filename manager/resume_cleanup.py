@@ -4,11 +4,11 @@ import asyncio
 import logging
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Sequence
 
 from clusters.rjob_cluster import RJobClusterBackend
 
-from .episode_common import result_session_dir_candidates
+from .episode_common import safe_path_part
 
 log = logging.getLogger("manager.resume_cleanup")
 
@@ -19,18 +19,25 @@ async def cleanup_resume_artifacts(
     model: str,
     data_manager: Any,
     manager_cfg: Dict[str, Any],
+    environment_rows: Sequence[Dict[str, Any]] | None = None,
+    results_root: Path | None = None,
     rjob_backend: RJobClusterBackend | None = None,
 ) -> List[Path]:
     """Remove stale RJobs and result paths for unfinished resume sessions."""
-    rows = await data_manager.list_environment_rows(
-        job_id=job_id,
-        finished=False,
-        is_deleted=False,
+    rows = (
+        list(environment_rows)
+        if environment_rows is not None
+        else await _load_environment_refs(data_manager, job_id=job_id)
     )
+    if not rows:
+        log.info("resume cleanup skipped: job_id=%s unfinished=0", job_id)
+        return []
+
     owned_backend = rjob_backend is None
     backend = rjob_backend or RJobClusterBackend(
         cluster_cfg=dict(manager_cfg.get("cluster") or {})
     )
+    root = Path(results_root) if results_root is not None else Path.cwd() / "results"
     removed: List[Path] = []
 
     try:
@@ -38,19 +45,6 @@ async def cleanup_resume_artifacts(
             session_id = str(row.get("env_id") or "").strip()
             if not session_id:
                 continue
-            env_params = row.get("env_params") if isinstance(row.get("env_params"), dict) else {}
-            result_paths = [
-                path
-                for path in result_session_dir_candidates(
-                    job_id=job_id,
-                    session_id=session_id,
-                    env_params=env_params,
-                )
-                if path.exists() or path.is_symlink()
-            ]
-            if not result_paths:
-                continue
-
             agent_name = str(row.get("env_name") or "").strip()
             if not agent_name:
                 raise RuntimeError(
@@ -63,27 +57,41 @@ async def cleanup_resume_artifacts(
                 job_id=job_id,
                 session_id=session_id,
             )
-            for path in result_paths:
-                await asyncio.to_thread(_remove_result_path, path)
-                removed.append(path)
+            result_path = (
+                root
+                / safe_path_part(job_id)
+                / safe_path_part(session_id)
+            )
+            if result_path.exists() or result_path.is_symlink():
+                await asyncio.to_thread(_remove_result_path, result_path)
+                removed.append(result_path)
             log.info(
-                "resume cleanup completed: job_id=%s session_id=%s rjobs=%s result_paths=%s",
+                "resume cleanup completed: job_id=%s session_id=%s rjobs=%s result_path=%s",
                 job_id,
                 session_id,
                 cleaned_jobs,
-                [str(path) for path in result_paths],
+                str(result_path),
             )
     finally:
         if owned_backend:
             await backend.close()
 
     log.info(
-        "resume result preflight completed: job_id=%s unfinished=%d removed_paths=%d",
+        "resume artifact cleanup completed: job_id=%s unfinished=%d removed_paths=%d",
         job_id,
         len(rows),
         len(removed),
     )
     return removed
+
+
+async def _load_environment_refs(data_manager: Any, *, job_id: str) -> List[Dict[str, Any]]:
+    """Lightweight path for direct callers; the launcher reuses rows it already read."""
+    return await data_manager.list_environment_refs(
+        job_id=job_id,
+        finished=False,
+        is_deleted=False,
+    )
 
 
 def _remove_result_path(path: Path) -> None:
