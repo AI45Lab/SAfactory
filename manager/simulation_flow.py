@@ -25,7 +25,10 @@ from evaluator.reward_committer import RewardCommitter
 from evaluator.service import EvaluationService
 from .agent_start_client import AgentStartClient
 from .manager import AgentPoolManager
-from .resume_cleanup import cleanup_resume_artifacts
+from .resume_cleanup import (
+    cleanup_resume_artifacts,
+    select_generated_resume_environments,
+)
 from .simulation_config import (
     build_manager_runtime_config,
     expand_rl_epoch,
@@ -142,26 +145,32 @@ class SimulationFlow:
             rebuild_table=self.cfg.rebuild_table,
             resume=self.cfg.resume,
         )
-        self._resume_session_ids = list(dict.fromkeys(
-            str(row.get("env_id") or "").strip()
-            for row in resume_environments
-            if str(row.get("env_id") or "").strip()
-        ))
         self.manager_cfg = build_manager_runtime_config(self.cfg)
+        cleanup_environments = resume_environments
         if self.cfg.resume and self.cfg.mode == "rjob":
+            cleanup_environments = select_generated_resume_environments(
+                job_id=self.cfg.job_id,
+                results_root=Path(self.cfg.resume_clean_files_root),
+                environment_rows=resume_environments,
+            )
             await cleanup_resume_artifacts(
                 job_id=self.cfg.job_id,
                 model=self.cfg.llm_model,
                 data_manager=self.data_manager,
                 manager_cfg=self.manager_cfg,
                 results_root=Path(self.cfg.resume_clean_files_root),
-                environment_rows=resume_environments,
+                environment_rows=cleanup_environments,
             )
+        self._resume_session_ids = list(dict.fromkeys(
+            str(row.get("env_id") or "").strip()
+            for row in cleanup_environments
+            if str(row.get("env_id") or "").strip()
+        ))
         if self.cfg.resume:
             await delete_resume_session_steps(
                 self.data_manager,
                 job_id=self.cfg.job_id,
-                environment_rows=resume_environments,
+                environment_rows=cleanup_environments,
             )
         resume_environments.clear()
         log.info(

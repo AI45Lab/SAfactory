@@ -13,6 +13,38 @@ from .episode_common import safe_path_part
 log = logging.getLogger("manager.resume_cleanup")
 
 
+def select_generated_resume_environments(
+    *,
+    job_id: str,
+    results_root: Path,
+    environment_rows: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return unique unfinished environments that have generated result paths."""
+    root = _resolve_results_root(results_root)
+    targets: Dict[Path, Dict[str, Any]] = {}
+    for row in environment_rows:
+        session_id = str(row.get("env_id") or "").strip()
+        if not session_id:
+            continue
+        result_path = root / safe_path_part(job_id) / safe_path_part(session_id)
+        if not (result_path.exists() or result_path.is_symlink()):
+            continue
+        existing = targets.get(result_path)
+        if existing is not None:
+            existing_session_id = str(existing.get("env_id") or "").strip()
+            if existing_session_id != session_id:
+                raise RuntimeError(
+                    "resume result path collision: "
+                    f"{existing_session_id!r} and {session_id!r} map to {result_path}"
+                )
+            continue
+        target = dict(row)
+        target["job_id"] = job_id
+        target["env_id"] = session_id
+        targets[result_path] = target
+    return list(targets.values())
+
+
 async def cleanup_resume_artifacts(
     *,
     job_id: str,
@@ -29,24 +61,29 @@ async def cleanup_resume_artifacts(
         if environment_rows is not None
         else await _load_environment_refs(data_manager, job_id=job_id)
     )
-    if not rows:
-        log.info("resume cleanup skipped: job_id=%s unfinished=0", job_id)
+    root = _resolve_results_root(results_root)
+    targets = select_generated_resume_environments(
+        job_id=job_id,
+        results_root=root,
+        environment_rows=rows,
+    )
+    if not targets:
+        log.info(
+            "resume cleanup skipped: job_id=%s unfinished=%d generated=0",
+            job_id,
+            len(rows),
+        )
         return []
 
     owned_backend = rjob_backend is None
     backend = rjob_backend or RJobClusterBackend(
         cluster_cfg=dict(manager_cfg.get("cluster") or {})
     )
-    root = Path(results_root).expanduser().resolve(strict=False)
-    if root.parent == root or not root.is_dir():
-        raise ValueError(f"invalid resume results root: {root}")
     removed: List[Path] = []
 
     try:
-        for row in rows:
+        for row in targets:
             session_id = str(row.get("env_id") or "").strip()
-            if not session_id:
-                continue
             agent_name = str(row.get("env_name") or "").strip()
             if not agent_name:
                 raise RuntimeError(
@@ -79,10 +116,12 @@ async def cleanup_resume_artifacts(
             await backend.close()
 
     log.info(
-        "resume artifact cleanup completed: job_id=%s root=%s unfinished=%d removed_paths=%d",
+        "resume artifact cleanup completed: job_id=%s root=%s unfinished=%d "
+        "generated=%d removed_paths=%d",
         job_id,
         root,
         len(rows),
+        len(targets),
         len(removed),
     )
     return removed
@@ -95,6 +134,13 @@ async def _load_environment_refs(data_manager: Any, *, job_id: str) -> List[Dict
         finished=False,
         is_deleted=False,
     )
+
+
+def _resolve_results_root(results_root: Path) -> Path:
+    root = Path(results_root).expanduser().resolve(strict=False)
+    if root.parent == root or not root.is_dir():
+        raise ValueError(f"invalid resume results root: {root}")
+    return root
 
 
 def _remove_result_path(path: Path) -> None:
