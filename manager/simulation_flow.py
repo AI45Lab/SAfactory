@@ -39,6 +39,7 @@ log = logging.getLogger("manager.simulation_flow")
 
 _GATEWAY_ENV_ROW_POLL_INTERVAL_S = 30.0
 _GATEWAY_ENV_ROW_MAX_ATTEMPTS = 10
+_UPSERT_FLUSH_INTERVAL_S = 10.0
 
 
 class SimulationFlow:
@@ -104,6 +105,10 @@ class SimulationFlow:
             "enable_buffer": self.cfg.enable_buffer,
             "buffer_size": self.cfg.buffer_size,
             "flush_interval": self.cfg.flush_interval,
+            "enable_upsert_batching": self.cfg.enable_buffer,
+            "upsert_batch_size": self.cfg.buffer_size,
+            "upsert_flush_interval": _UPSERT_FLUSH_INTERVAL_S,
+            "upsert_queue_size": max(100, self.cfg.buffer_size * 2),
         }
         if self.cfg.storage_type == "sqlite":
             storage_config["db_url"] = self.cfg.db_url

@@ -6,6 +6,7 @@ from typing import Optional, List, Dict, Any
 from core.data_manager.contracts import EnvironmentQuery, SessionContext, SessionStepQuery
 from core.data_manager.strategy.base_strategy import StorageStrategy
 from core.data_manager.strategy_factory import StorageFactory
+from core.data_manager.upsert_batcher import SessionStepUpsertBatcher
 
 log = logging.getLogger("core.data_manager.manager")
 
@@ -19,6 +20,11 @@ class DataManager:
         self,
         job_id: str,
         storage_type: str = "sqlite",
+        *,
+        enable_upsert_batching: bool = False,
+        upsert_batch_size: int = 100,
+        upsert_flush_interval: float = 10.0,
+        upsert_queue_size: int = 1000,
         **storage_config
     ):
         self.job_id = job_id
@@ -44,6 +50,17 @@ class DataManager:
             error_msg = f"Failed to initialize storage strategy '{storage_type}' due to an internal error."
             log.error("%s Original Error: %s", error_msg, e)
             raise RuntimeError(error_msg) from e
+
+        self._upsert_batcher = (
+            SessionStepUpsertBatcher(
+                self._strategy.upsert_session_step_rows,
+                batch_size=upsert_batch_size,
+                flush_interval=upsert_flush_interval,
+                queue_size=upsert_queue_size,
+            )
+            if enable_upsert_batching
+            else None
+        )
 
     async def init(self) -> None:
         """Initialize the storage strategy"""
@@ -334,6 +351,8 @@ class DataManager:
             seen_keys.add(key)
             item["meta_json"] = _metadata_object(item.get("meta_json"))
             normalized.append(item)
+        if self._upsert_batcher is not None:
+            return await self._upsert_batcher.submit(normalized)
         return await self._strategy.upsert_session_step_rows(normalized)
 
     async def mark_records_completed(self, record_ids: List[str]) -> int:
@@ -464,7 +483,11 @@ class DataManager:
 
     async def close(self) -> None:
         """Close the storage strategy"""
-        await self._strategy.close()
+        try:
+            if self._upsert_batcher is not None:
+                await self._upsert_batcher.close()
+        finally:
+            await self._strategy.close()
     
     async def fetch_done_steps_with_context(
         self,
