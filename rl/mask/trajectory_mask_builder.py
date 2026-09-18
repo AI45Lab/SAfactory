@@ -75,6 +75,10 @@ class TrajectoryMaskBuilder:
             add_generation_prompt=False,
             tokenize=True,
         )
+        if not isinstance(test_tokens, list):
+            test_tokens = test_tokens["input_ids"]
+        if test_tokens and isinstance(test_tokens[0], list):
+            test_tokens = test_tokens[0]
         for idx in range(len(test_tokens) - 1, -1, -1):
             if test_tokens[idx] == eos_id:
                 return list(test_tokens[idx + 1 :])
