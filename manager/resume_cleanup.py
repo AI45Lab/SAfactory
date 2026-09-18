@@ -19,8 +19,8 @@ async def cleanup_resume_artifacts(
     model: str,
     data_manager: Any,
     manager_cfg: Dict[str, Any],
+    results_root: Path,
     environment_rows: Sequence[Dict[str, Any]] | None = None,
-    results_root: Path | None = None,
     rjob_backend: RJobClusterBackend | None = None,
 ) -> List[Path]:
     """Remove stale RJobs and result paths for unfinished resume sessions."""
@@ -37,7 +37,9 @@ async def cleanup_resume_artifacts(
     backend = rjob_backend or RJobClusterBackend(
         cluster_cfg=dict(manager_cfg.get("cluster") or {})
     )
-    root = Path(results_root) if results_root is not None else Path.cwd() / "results"
+    root = Path(results_root).expanduser().resolve(strict=False)
+    if root.parent == root or not root.is_dir():
+        raise ValueError(f"invalid resume results root: {root}")
     removed: List[Path] = []
 
     try:
@@ -77,8 +79,9 @@ async def cleanup_resume_artifacts(
             await backend.close()
 
     log.info(
-        "resume artifact cleanup completed: job_id=%s unfinished=%d removed_paths=%d",
+        "resume artifact cleanup completed: job_id=%s root=%s unfinished=%d removed_paths=%d",
         job_id,
+        root,
         len(rows),
         len(removed),
     )

@@ -5,6 +5,7 @@ import inspect
 import logging
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import httpx
@@ -32,6 +33,12 @@ from .types import (
 )
 
 log = logging.getLogger("manager.simulation_worker")
+
+
+@dataclass(frozen=True, slots=True)
+class _StoredResult:
+    status: str
+    total_reward: Optional[float]
 
 
 class _SimulationCircuitBreaker:
@@ -145,8 +152,7 @@ class SimulationWorkerGroup:
         self.evaluation_service = evaluation_service
         self.reward_committer = reward_committer
         self.worker_count = self._derive_worker_count()
-        self._results: Dict[str, SimulationStartResult] = {}
-        self._results_lock = asyncio.Lock()
+        self._results: Dict[str, _StoredResult] = {}
         self._circuit_breaker = _SimulationCircuitBreaker(cfg)
 
     async def run_all(self) -> SimulationRunSummary:
@@ -174,8 +180,7 @@ class SimulationWorkerGroup:
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
 
-        async with self._results_lock:
-            results = dict(self._results)
+        results = self._results
 
         if not results:
             return SimulationRunSummary(
@@ -393,8 +398,7 @@ class SimulationWorkerGroup:
                     release_reusable = None
 
                 with trace.span("store_result"):
-                    async with self._results_lock:
-                        self._results[agent_key] = result
+                    self._results[agent_key] = _StoredResult(result.status, result.total_reward)
             except asyncio.CancelledError:
                 cancelled = True
                 release_reusable = False
@@ -419,8 +423,7 @@ class SimulationWorkerGroup:
                     result.error_text = str(exc)
                 release_reusable = False
                 with trace.span("store_failed_result"):
-                    async with self._results_lock:
-                        self._results[agent_key] = result
+                    self._results[agent_key] = _StoredResult(result.status, result.total_reward)
             finally:
                 try:
                     if result is not None:

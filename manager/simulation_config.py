@@ -194,6 +194,23 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
     resume = bool(getattr(args, "resume", False))
     if resume and not requested_job_id:
         raise ValueError("--resume requires an explicit --job-id")
+    resume_clean_files_root = str(
+        getattr(args, "resume_clean_files_root", "") or ""
+    ).strip()
+    if resume and mode == "rjob":
+        if not resume_clean_files_root:
+            raise ValueError(
+                "RJob --resume requires --resume-clean-files-root"
+            )
+        root = Path(resume_clean_files_root).expanduser().resolve(strict=False)
+        if root.parent == root:
+            raise ValueError("--resume-clean-files-root must not be the filesystem root")
+        if not root.is_dir():
+            raise ValueError(
+                "--resume-clean-files-root must be an existing directory: "
+                f"{root}"
+            )
+        resume_clean_files_root = str(root)
 
     rjob_section = (
         load_rjob_global_config(str(getattr(args, "rjob_config", "") or ""))
@@ -332,6 +349,7 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         max_workers=max_workers,
         rebuild_table=bool(args.rebuild_table),
         resume=resume,
+        resume_clean_files_root=resume_clean_files_root,
         confirm_cloud_delete_job_id=str(
             getattr(args, "confirm_cloud_delete_job_id", "") or ""
         ).strip(),

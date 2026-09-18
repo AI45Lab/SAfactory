@@ -149,6 +149,7 @@ class SimulationFlow:
                 model=self.cfg.llm_model,
                 data_manager=self.data_manager,
                 manager_cfg=self.manager_cfg,
+                results_root=Path(self.cfg.resume_clean_files_root),
                 environment_rows=resume_environments,
             )
         if self.cfg.resume:

@@ -656,8 +656,11 @@ class CloudStrategy(StorageStrategy):
         for row in rows:
             env_id = str(row.get("env_id") or "")
             if env_id and await asyncio.to_thread(self.env_manager.update_config, env_id, updates):
-                cached = self._env_configs.setdefault(env_id, dict(row))
-                cached.update(updates)
+                if updates.get("finished") is True:
+                    self._env_configs.pop(env_id, None)
+                else:
+                    cached = self._env_configs.setdefault(env_id, dict(row))
+                    cached.update(updates)
                 updated += 1
         return updated
 
