@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlsplit
 
 import requests
@@ -13,6 +13,7 @@ import requests
 from core.data_manager.manager import DataManager
 from core.data_manager.yaml_aggregator import (
     all_env_yaml_load,
+    delete_resume_session_steps,
     is_job_db_processing_done,
     sync_configs_to_db,
     wait_for_pending_inserts,
@@ -24,7 +25,10 @@ from evaluator.reward_committer import RewardCommitter
 from evaluator.service import EvaluationService
 from .agent_start_client import AgentStartClient
 from .manager import AgentPoolManager
-from .resume_cleanup import cleanup_resume_artifacts
+from .resume_cleanup import (
+    cleanup_resume_artifacts,
+    select_generated_resume_environments,
+)
 from .simulation_config import (
     build_manager_runtime_config,
     expand_rl_epoch,
@@ -38,6 +42,7 @@ log = logging.getLogger("manager.simulation_flow")
 
 _GATEWAY_ENV_ROW_POLL_INTERVAL_S = 30.0
 _GATEWAY_ENV_ROW_MAX_ATTEMPTS = 10
+_UPSERT_FLUSH_INTERVAL_S = 10.0
 
 
 class SimulationFlow:
@@ -52,6 +57,7 @@ class SimulationFlow:
         self.gateway_client: Optional[GatewayClient] = None
         self.evaluation_service: Optional[EvaluationService] = None
         self.reward_committer: Optional[RewardCommitter] = None
+        self._resume_session_ids: List[str] = []
         self._shutdown_started = False
 
     async def run(self) -> SimulationRunSummary:
@@ -102,6 +108,10 @@ class SimulationFlow:
             "enable_buffer": self.cfg.enable_buffer,
             "buffer_size": self.cfg.buffer_size,
             "flush_interval": self.cfg.flush_interval,
+            "enable_upsert_batching": self.cfg.enable_buffer,
+            "upsert_batch_size": self.cfg.buffer_size,
+            "upsert_flush_interval": _UPSERT_FLUSH_INTERVAL_S,
+            "upsert_queue_size": max(100, self.cfg.buffer_size * 2),
         }
         if self.cfg.storage_type == "sqlite":
             storage_config["db_url"] = self.cfg.db_url
@@ -117,11 +127,16 @@ class SimulationFlow:
             **storage_config,
         )
 
-        yaml_config_list = all_env_yaml_load(env_root=self.cfg.agent_root, env_config=self.cfg.agent_config)
-        yaml_config_list = expand_rl_group_size(yaml_config_list, self.cfg.rl_group_size)
-        yaml_config_list = expand_rl_epoch(yaml_config_list, self.cfg.rl_epoch)
+        yaml_config_list = []
+        if not self.cfg.resume:
+            yaml_config_list = all_env_yaml_load(
+                env_root=self.cfg.agent_root,
+                env_config=self.cfg.agent_config,
+            )
+            yaml_config_list = expand_rl_group_size(yaml_config_list, self.cfg.rl_group_size)
+            yaml_config_list = expand_rl_epoch(yaml_config_list, self.cfg.rl_epoch)
 
-        await sync_configs_to_db(
+        resume_environments = await sync_configs_to_db(
             self.data_manager,
             yaml_config_list,
             self.cfg.storage_type,
@@ -131,13 +146,33 @@ class SimulationFlow:
             resume=self.cfg.resume,
         )
         self.manager_cfg = build_manager_runtime_config(self.cfg)
+        cleanup_environments = resume_environments
         if self.cfg.resume and self.cfg.mode == "rjob":
+            cleanup_environments = select_generated_resume_environments(
+                job_id=self.cfg.job_id,
+                results_root=Path(self.cfg.resume_clean_files_root),
+                environment_rows=resume_environments,
+            )
             await cleanup_resume_artifacts(
                 job_id=self.cfg.job_id,
                 model=self.cfg.llm_model,
                 data_manager=self.data_manager,
                 manager_cfg=self.manager_cfg,
+                results_root=Path(self.cfg.resume_clean_files_root),
+                environment_rows=cleanup_environments,
             )
+        self._resume_session_ids = list(dict.fromkeys(
+            str(row.get("env_id") or "").strip()
+            for row in cleanup_environments
+            if str(row.get("env_id") or "").strip()
+        ))
+        if self.cfg.resume:
+            await delete_resume_session_steps(
+                self.data_manager,
+                job_id=self.cfg.job_id,
+                environment_rows=cleanup_environments,
+            )
+        resume_environments.clear()
         log.info(
             "storage prepared: job_id=%s base_pool_size=%d warm_pool_size=%d startup_submit_count=%d followup_submit_batch=%d",
             self.cfg.job_id,
@@ -213,18 +248,7 @@ class SimulationFlow:
         )
 
     async def clear_resume_gateway_session_cache(self) -> None:
-        if self.data_manager is None:
-            raise RuntimeError("data manager is not prepared")
-        rows = await self.data_manager.list_environment_rows(
-            job_id=self.cfg.job_id,
-            finished=False,
-            is_deleted=False,
-        )
-        session_ids = [
-            str(row.get("env_id"))
-            for row in rows
-            if row.get("env_id")
-        ]
+        session_ids = self._resume_session_ids
         if not session_ids:
             return
         client = GatewayClient(gateway_base_url=self.cfg.gateway_base_url)
@@ -232,6 +256,7 @@ class SimulationFlow:
             result = await client.clear_session_cache(session_ids)
         finally:
             await client.aclose()
+            self._resume_session_ids = []
         log.info(
             "gateway resume session cache cleared: job_id=%s sessions=%d removed=%s",
             self.cfg.job_id,
