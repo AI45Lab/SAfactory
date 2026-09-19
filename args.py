@@ -227,9 +227,9 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
         default=True,
         help="Stop scheduling new episodes when recent rollout failures/timeouts exceed configured thresholds.",
     )
-    parser.add_argument("--circuit-breaker-window", type=int, default=50)
-    parser.add_argument("--circuit-breaker-min-samples", type=int, default=20)
-    parser.add_argument("--circuit-breaker-failure-rate", type=float, default=0.8)
+    parser.add_argument("--circuit-breaker-window", type=int, default=300)
+    parser.add_argument("--circuit-breaker-min-samples", type=int, default=300)
+    parser.add_argument("--circuit-breaker-failure-rate", type=float, default=0.99)
     parser.add_argument("--circuit-breaker-timeout-rate", type=float, default=0.5)
     parser.add_argument("--circuit-breaker-consecutive-timeouts", type=int, default=5)
 

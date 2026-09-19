@@ -97,8 +97,20 @@ def parse_image_archive_bundle(
             if common_package_dir_text
             else package_dir
         )
+        task_root_text = str(
+            _param(dataset, params, "bundle_task_root", "") or ""
+        ).strip()
+        task_root = (
+            Path(task_root_text).resolve()
+            if task_root_text
+            else package_dir
+        )
+        if not task_root.is_dir():
+            raise RuntimeError(f"Bundle task root does not exist: {task_root}")
+        if task_root == Path(task_root.anchor):
+            raise RuntimeError("Bundle task root must not be a filesystem root")
         return _parse_propentbench_archive_bundle(
-            package_dir, task, common_package_dir
+            package_dir, task, common_package_dir, task_root
         )
     manifest_path = _bundle_path(package_dir, "manifest.json")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -170,17 +182,28 @@ def parse_image_archive_bundle(
 
 
 def _parse_propentbench_archive_bundle(
-    package_dir: Path, task: str, common_package_dir: Path
+    package_dir: Path,
+    task: str,
+    common_package_dir: Path,
+    task_root: Path,
 ) -> ImageArchiveBundle:
     if not re.fullmatch(r"CVE-\d{4}-\d{4,}", task):
         raise RuntimeError(f"PropEntBench archive bundle task is not a CVE: {task}")
 
-    task_path = _bundle_path(package_dir, task)
+    task_path = _bundle_path(
+        package_dir, task, allowed_roots=(task_root,)
+    )
+    if task_path.name != task:
+        raise RuntimeError(
+            f"PropEntBench task resolves to unexpected name: {task_path}"
+        )
     task_toml_path = task_path / "task.toml"
     compose_path = task_path / "environment/docker-compose.yaml"
     archive_path = task_path / "images.tar.gz"
     digest_path = task_path / "PREBUILT-IMAGE-SHA256"
-    flag_path = _bundle_path(package_dir, f"run/{task}.json")
+    flag_path = _bundle_path(
+        package_dir, f"run/{task}.json", allowed_roots=(task_root,)
+    )
     required_paths = (task_toml_path, compose_path, archive_path, digest_path, flag_path)
     missing = [str(path) for path in required_paths if not path.is_file()]
     if missing:
@@ -241,7 +264,10 @@ def _parse_propentbench_archive_bundle(
     )
     agent_archive = ImageArchive(
         source=_required_sized_bundle_file(
-            agent_root, agent_relative, agent_size
+            agent_root,
+            agent_relative,
+            agent_size,
+            allowed_roots=(task_root,),
         ),
         sha256=agent_sha256,
         size_bytes=agent_size,
@@ -401,17 +427,26 @@ def _sha256_text(value: Any, name: str) -> str:
     return sha256
 
 
-def _required_bundle_file(package_dir: Path, relative: str) -> Path:
-    path = _bundle_path(package_dir, relative)
+def _required_bundle_file(
+    package_dir: Path,
+    relative: str,
+    allowed_roots: tuple[Path, ...] = (),
+) -> Path:
+    path = _bundle_path(package_dir, relative, allowed_roots=allowed_roots)
     if not path.is_file():
         raise RuntimeError(f"Bundle file does not exist: {path}")
     return path
 
 
 def _required_sized_bundle_file(
-    package_dir: Path, relative: str, size_bytes: int
+    package_dir: Path,
+    relative: str,
+    size_bytes: int,
+    allowed_roots: tuple[Path, ...] = (),
 ) -> Path:
-    path = _required_bundle_file(package_dir, relative)
+    path = _required_bundle_file(
+        package_dir, relative, allowed_roots=allowed_roots
+    )
     if path.stat().st_size != size_bytes:
         raise RuntimeError(
             f"Bundle file size mismatch: {path}; "
@@ -459,11 +494,19 @@ def _task_name(value: str) -> str:
     return value
 
 
-def _bundle_path(package_dir: Path, relative: str) -> Path:
+def _bundle_path(
+    package_dir: Path,
+    relative: str,
+    allowed_roots: tuple[Path, ...] = (),
+) -> Path:
     if not relative or Path(relative).is_absolute():
         raise RuntimeError(f"Invalid bundle-relative path: {relative!r}")
     root = package_dir.resolve()
     path = (root / relative).resolve()
-    if path != root and root not in path.parents:
+    roots = (root, *(allowed_root.resolve() for allowed_root in allowed_roots))
+    if path not in roots and not any(
+        path != allowed_root and allowed_root in path.parents
+        for allowed_root in roots
+    ):
         raise RuntimeError(f"Bundle path escapes package root: {relative!r}")
     return path
