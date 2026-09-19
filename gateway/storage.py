@@ -386,14 +386,6 @@ class GatewayStorage:
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
 
-    async def flush_session(self, binding: GatewaySessionBinding) -> None:
-        """Flush any DAO buffer and force a latest-snapshot read for one session."""
-        await self.data_manager.list_session_steps(
-            binding.session_id,
-            job_id=binding.job_id,
-            checkout_latest=True,
-        )
-
     async def clear_session_cache(self, session_ids: list[str]) -> int:
         targets = set(session_ids)
         async with self._lock:
