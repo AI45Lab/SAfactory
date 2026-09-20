@@ -15,6 +15,7 @@ log = logging.getLogger("yaml_aggregator")
 
 _insert_tasks: Set[asyncio.Task] = set()
 _job_db_processing_done: Dict[str, bool] = {}
+_RESUME_CLEANUP_BATCH_SIZE = 100
 
 
 def set_job_db_processing_done(job_id: str, done: bool) -> None:
@@ -129,36 +130,40 @@ async def sync_configs_to_db(
     *,
     rebuild_table: bool = False,
     resume: bool = False,
-) -> None:
+) -> List[Dict[str, Any]]:
     """Synchronize configs without leaking a connection or backend client."""
     if storage_type not in {"sqlite", "cloud"}:
         raise ValueError(f"Unknown storage type: {storage_type}")
     if rebuild_table and resume:
         raise ValueError("--rebuild-table and --resume cannot be used together")
 
+    job_id = str(data_manager.job_id or "").strip()
+    if resume and not job_id:
+        raise ValueError("resume requires an explicit job_id")
     await data_manager.init()
-    job_id = data_manager.job_id
     set_job_db_processing_done(job_id, False)
     try:
-        existing = await data_manager.list_environment_rows(job_id=job_id, limit=1)
-        if existing and resume:
-            unfinished = await data_manager.list_environment_rows(
+        existing = await data_manager.list_environment_refs(job_id=job_id, limit=1)
+        if resume:
+            if not existing:
+                raise RuntimeError(
+                    f"cannot resume job_id={job_id!r}: no existing environment rows found"
+                )
+
+            unfinished = await data_manager.list_environment_refs(
                 job_id=job_id,
                 finished=False,
+                is_deleted=False,
             )
-            unfinished_ids = [
-                str(row.get("env_id") or "")
-                for row in unfinished
-                if row.get("env_id")
-            ]
-            if unfinished_ids:
-                await data_manager.delete_session_step_rows(
-                    job_id=job_id,
-                    session_ids=unfinished_ids,
-                )
+
             set_job_db_processing_done(job_id, True)
-            log.info("Resuming existing job_id=%s; finished environments will be skipped", job_id)
-            return
+            log.info(
+                "Resume environment preflight: job_id=%s unfinished=%d; "
+                "finished environments will be skipped",
+                job_id,
+                len(unfinished),
+            )
+            return unfinished
         if existing and not rebuild_table:
             raise RuntimeError(
                 f"job_id={job_id!r} already exists; use --resume to continue it "
@@ -188,9 +193,50 @@ async def sync_configs_to_db(
             len(remaining),
             job_id,
         )
+        return []
     except Exception:
         set_job_db_processing_done(job_id, True)
         raise
+
+
+async def delete_resume_session_steps(
+    data_manager: Any,
+    *,
+    job_id: str,
+    environment_rows: List[Dict[str, Any]],
+) -> int:
+    """Count and delete unfinished-session trajectories in bounded batches."""
+    deleted_steps = 0
+    batch_number = 0
+    for index in range(0, len(environment_rows), _RESUME_CLEANUP_BATCH_SIZE):
+        batch = environment_rows[index:index + _RESUME_CLEANUP_BATCH_SIZE]
+        session_ids = list(dict.fromkeys(
+            str(row.get("env_id") or "").strip()
+            for row in batch
+            if str(row.get("env_id") or "").strip()
+        ))
+        if not session_ids:
+            continue
+        batch_number += 1
+        deleted = await data_manager.delete_session_step_rows(
+            job_id=job_id,
+            session_ids=session_ids,
+        )
+        deleted_steps += deleted
+        log.info(
+            "Resume trajectory cleanup batch: job_id=%s batch=%d sessions=%d rows=%d",
+            job_id,
+            batch_number,
+            len(session_ids),
+            deleted,
+        )
+    log.info(
+        "Resume trajectory cleanup completed: job_id=%s sessions=%d rows=%d",
+        job_id,
+        len(environment_rows),
+        deleted_steps,
+    )
+    return deleted_steps
 
 
 def _expand_environment_rows(job_id: str, yaml_configs: List[Dict]) -> List[Dict[str, Any]]:

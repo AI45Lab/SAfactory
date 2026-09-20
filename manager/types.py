@@ -81,6 +81,7 @@ class SimulationRunConfig:
     max_workers: Optional[int] = None
     rebuild_table: bool = False
     resume: bool = False
+    resume_clean_files_root: str = ""
     confirm_cloud_delete_job_id: str = ""
     confirm_production: bool = False
     enable_buffer: bool = True

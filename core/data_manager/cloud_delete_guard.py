@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any, Dict, List
+from typing import Any
 
 
 log = logging.getLogger("core.data_manager.cloud_delete_guard")
@@ -39,8 +39,8 @@ class CloudDeleteGuard:
         operation: str,
         job_id: str,
         landing_filter: str,
-    ) -> List[Dict[str, Any]]:
-        """Verify the exact landing target before deletion."""
+    ) -> int:
+        """Verify the exact target and count matching rows using only their ids."""
         normalized_job_id = str(job_id or "").strip()
         if not normalized_job_id:
             raise CloudDestructiveOperationError(
@@ -52,20 +52,21 @@ class CloudDeleteGuard:
                 "could not both be resolved explicitly"
             )
 
-        landing_rows = _rows_as_dicts(await asyncio.to_thread(
-            self.client.query_data,
-            filter_query=landing_filter,
-            limit=None,
-            partition=normalized_job_id,
-            checkout_latest=True,
-            deserialize_json=False,
-            table=self.landing_table,
-        ))
         profile = str(os.environ.get("WT_SDK_PROFILE") or "").strip().lower()
         production = (
             profile in {"prod", "production"}
             or self.landing_table == "wind_tunnel_landing"
         )
+        landing_row_count = _row_count(await asyncio.to_thread(
+            self.client.query_data,
+            filter_query=landing_filter,
+            limit=None,
+            columns=["id"],
+            partition=normalized_job_id,
+            checkout_latest=True,
+            deserialize_json=False,
+            table=self.landing_table,
+        ))
         log.warning(
             "Cloud delete preflight: operation=%s profile=%s db_uri=%s "
             "landing_table=%s job_id=%s landing_rows=%d filter=%s",
@@ -74,10 +75,9 @@ class CloudDeleteGuard:
             self.db_uri,
             self.landing_table,
             normalized_job_id,
-            len(landing_rows),
+            landing_row_count,
             landing_filter,
         )
-
         if self.confirmed_job_id != normalized_job_id:
             raise CloudDestructiveOperationError(
                 f"{operation} refused for cloud job_id={normalized_job_id!r}; pass "
@@ -90,17 +90,15 @@ class CloudDeleteGuard:
                 f"{operation} refused for production target "
                 f"{self.landing_table!r}; --confirm-production is required"
             )
-        return landing_rows
+        return landing_row_count
 
 
-def _rows_as_dicts(value: Any) -> List[Dict[str, Any]]:
+def _row_count(value: Any) -> int:
     if value is None:
-        return []
-    if hasattr(value, "to_dict"):
-        try:
-            value = value.to_dict(orient="records")
-        except TypeError:
-            value = value.to_dict()
+        return 0
     if isinstance(value, dict):
-        return [dict(value)]
-    return [dict(row) for row in value]
+        return 1
+    try:
+        return len(value)
+    except TypeError:
+        return sum(1 for _ in value)

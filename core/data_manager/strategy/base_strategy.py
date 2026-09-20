@@ -63,9 +63,18 @@ class StorageStrategy(ABC):
         """Retrieve one active environment by env_id."""
         pass
 
+    async def clear_environment_cache(self, env_ids: List[str]) -> int:
+        """Clear backend-local environment cache entries, if any."""
+        return 0
+
     @abstractmethod
     async def list_environment_rows(self, query: EnvironmentQuery) -> List[Dict[str, Any]]:
         """List environment rows using backend-neutral filters."""
+        pass
+
+    @abstractmethod
+    async def list_environment_refs(self, query: EnvironmentQuery) -> List[Dict[str, Any]]:
+        """List only id/env_id/env_name for lightweight workflow coordination."""
         pass
 
     @abstractmethod

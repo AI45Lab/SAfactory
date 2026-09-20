@@ -251,6 +251,21 @@ class SqliteStrategy(StorageStrategy):
 
     async def list_environment_rows(self, query: EnvironmentQuery) -> List[Dict[str, Any]]:
         await self.init()
+        rows = self._environment_query(query)
+        rows = rows.order_by("id").offset(query.offset)
+        if query.limit is not None:
+            rows = rows.limit(query.limit)
+        return [self._environment_to_dict(env) for env in await rows]
+
+    async def list_environment_refs(self, query: EnvironmentQuery) -> List[Dict[str, Any]]:
+        await self.init()
+        rows = self._environment_query(query).order_by("id").offset(query.offset)
+        if query.limit is not None:
+            rows = rows.limit(query.limit)
+        return list(await rows.values("id", "env_id", "env_name"))
+
+    @staticmethod
+    def _environment_query(query: EnvironmentQuery):
         rows = JobEnvironment.all()
         if query.job_id:
             rows = rows.filter(job_id=query.job_id)
@@ -262,10 +277,7 @@ class SqliteStrategy(StorageStrategy):
             rows = rows.filter(finished=query.finished)
         if query.is_deleted is not None:
             rows = rows.filter(is_deleted=query.is_deleted)
-        rows = rows.order_by("id").offset(query.offset)
-        if query.limit is not None:
-            rows = rows.limit(query.limit)
-        return [self._environment_to_dict(env) for env in await rows]
+        return rows
 
     async def insert_environment_rows(self, rows: List[Dict[str, Any]]) -> List[str]:
         await self.init()
@@ -326,7 +338,14 @@ class SqliteStrategy(StorageStrategy):
             rows = rows.filter(record_id=query.record_id)
         if query.record_ids:
             rows = rows.filter(record_id__in=query.record_ids)
-        return await rows.delete()
+        selected = await rows.count()
+        log.info(
+            "Session-step delete preflight: job_id=%s sessions=%d rows=%d",
+            query.job_id or self.job_id,
+            len(query.session_ids) + int(bool(query.session_id)),
+            selected,
+        )
+        return await rows.delete() if selected else 0
 
     async def delete_job_rows(self, job_id: str) -> None:
         await self.init()
