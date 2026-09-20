@@ -200,9 +200,6 @@ class TelemetryRecorder:
                 _SessionFlushBarrier(binding.session_id, future)
             )
             await future
-        flush_session = getattr(self.storage, "flush_session", None)
-        if callable(flush_session):
-            await flush_session(binding)
 
     async def latest_success_step_id(self, session_id: str, model: str) -> int | None:
         async with self._lock:

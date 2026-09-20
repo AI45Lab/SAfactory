@@ -194,36 +194,17 @@ class GatewayStorage:
         return resolved
 
     async def _load_environment_config(self, env_id: str) -> dict[str, Any] | None:
-        lookup = getattr(self.data_manager, "get_environment_by_env_id", None)
-        if callable(lookup):
-            maybe_environment = lookup(env_id)
-            environment = await maybe_environment if inspect.isawaitable(maybe_environment) else maybe_environment
-            return environment if isinstance(environment, dict) else None
-
-        get_all = getattr(self.data_manager, "get_all_environments", None)
-        if not callable(get_all):
-            return None
-
-        maybe_environments = get_all()
-        environments = await maybe_environments if inspect.isawaitable(maybe_environments) else maybe_environments
-        if not isinstance(environments, list):
-            return None
-
-        for environment in environments:
-            if not isinstance(environment, dict):
-                continue
-            if str(environment.get("env_id") or "") == env_id:
-                return environment
-        return None
+        environment = await self.data_manager.get_environment_by_env_id(env_id)
+        return environment if isinstance(environment, dict) else None
 
     async def count_environment_rows(self, job_id: str) -> int:
         """Return the number of unfinished, active environment rows for a job."""
-        rows = await self.data_manager.list_environment_rows(
+        refs = await self.data_manager.list_environment_refs(
             job_id=job_id,
             finished=False,
             is_deleted=False,
         )
-        return len(rows)
+        return len(refs)
 
     @staticmethod
     def _environment_from_mapping(environment: dict[str, Any] | None) -> _SessionEnvironment | None:
@@ -405,14 +386,6 @@ class GatewayStorage:
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
 
-    async def flush_session(self, binding: GatewaySessionBinding) -> None:
-        """Flush any DAO buffer and force a latest-snapshot read for one session."""
-        await self.data_manager.list_session_steps(
-            binding.session_id,
-            job_id=binding.job_id,
-            checkout_latest=True,
-        )
-
     async def clear_session_cache(self, session_ids: list[str]) -> int:
         targets = set(session_ids)
         async with self._lock:
@@ -429,7 +402,8 @@ class GatewayStorage:
                 self._environments.pop(session_id, None)
             for session_id in patched:
                 self._patched_environment_sessions.discard(session_id)
-            return len(session_keys) + len(environments) + len(patched)
+            removed = len(session_keys) + len(environments) + len(patched)
+        return removed + await self.data_manager.clear_environment_cache(list(targets))
 
     async def close(self) -> None:
         log.info("Gateway storage close begin")

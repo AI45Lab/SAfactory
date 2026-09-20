@@ -57,6 +57,14 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
         ),
     )
     parser.add_argument(
+        "--resume-clean-files-root",
+        default="",
+        help=(
+            "Launcher-visible results root required by RJob resume cleanup. "
+            "Only <root>/<job_id>/<session_id> directories are removed."
+        ),
+    )
+    parser.add_argument(
         "--confirm-cloud-delete-job-id",
         default="",
         help=(
