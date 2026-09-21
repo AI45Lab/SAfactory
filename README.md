@@ -51,33 +51,55 @@ https://github.com/user-attachments/assets/4c551b27-ce4d-4fc8-8df6-d6dc8100cc88
 
 ## <a id="agent-skill"></a>🧩 Agent Skill Quick Start
 
-This repository includes a lightweight Agent skill that helps agents use SAfactory through the standard workflows:
+This repository includes an Agent skill for template-based environment integration, local contract tests, optional Docker/RJob evaluation, and GRPO/RL workflows:
 
 ```text
 skills/safactory-workflows/SKILL.md
 ```
 
-It covers three common requests:
+### <a id="benchmark-onboarding-prompt"></a>Benchmark Onboarding Prompt
 
-- onboard a new benchmark or custom environment into SAfactory;
-- run Docker-mode evaluation for a selected environment;
-- start GRPO / RL training for a selected environment.
+Provide the benchmark source, one-row dataset schema, 1–2 representative cases, native single-case command, and native output format. Specify Docker or RJob deployment when known. **Integration alone does not require evaluation, a score/reward definition, a running Gateway, or an internal cluster.** Only provide scoring details when evaluation is requested.
 
-When working with an Agent, use prompts such as:
+The Agent copies fixed runner/config templates, fills the environment hooks, and runs local contract tests with an owned mock model endpoint. Native dependencies must be available locally or represented by explicit test fixtures. Live deployment is a separate check when image/data/model/runtime access is available; a helper starts and stops Gateway without a second terminal. RJob live runs additionally require an existing cluster configuration and a cluster-reachable Gateway URL.
 
-```text
-Use skills/safactory-workflows to help me onboard this benchmark into SAfactory.
-```
+<details>
+<summary>Expand to get the Benchmark Onboarding Prompt</summary>
 
 ```text
-Use the safactory-workflows skill to run geo3k evaluation in Docker mode.
+Use skills/safactory-workflows to onboard this benchmark into SAfactory.
+
+[Goal]
+- evaluation: [disabled (default, integration only) / enabled]
+- target deployment mode: [docker / rjob / decide after adapter inspection]
+- validation: [local contract first / also run live deployment when available]
+
+[Benchmark]
+- environment name: ____________________
+- source or checkout path/repository: ____________________
+- dataset path and one-row schema: ____________________
+- 1–2 case IDs/rows: ____________________
+- native single-case command, or README file/section: ____________________
+- Docker image, if available: ____________________
+- native result/output path and format: ____________________
+
+[Only if evaluation is enabled]
+- native score field/file, range, meaning, and pass condition: ____________________
+
+Start from the fixed templates based on docs/guides/custom-environment.md.
+Keep protocol handling in runner.py and fill adapter.py with single-case row
+mapping, Gateway model routing, native command execution, and output collection.
+Do not reimplement native benchmark solving/scoring logic.
+Only add rule_evaluator.py and --enable-evaluation if evaluation is enabled.
+Run local contract checks without requiring Gateway or RJob cluster setup.
+Report fixtures used, native output mapping, and which checks actually passed;
+keep local contract, live deployment, and evaluation results distinct.
+Ask only for missing information needed by the next dependent step.
 ```
 
-```text
-Use the safactory-workflows skill to start GRPO training for my_env.
-```
+</details>
 
-The skill does not replace the docs. It guides the Agent to read `docs/guides/`, `docs/reference/`, and the root README as needed, while using the standard `env/geo3k/` environment as the reference implementation. If your Agent supports local skill discovery, add `skills/safactory-workflows/` to its skill search path; otherwise mention this path explicitly in the request.
+See [Custom Environments](docs/guides/custom-environment.md) and the skill's [integration reference](skills/safactory-workflows/references/environment-integration.md) for the templates and Docker/RJob deployment settings. Verify any environment with one command — `python skills/safactory-workflows/scripts/check_environment.py --env env/<name>` — which runs static consistency checks, a contract smoke test against an owned mock endpoint, and an optional live stage, labeling each failure with the side that owns it. If your Agent cannot discover local skills automatically, include `skills/safactory-workflows/` explicitly in the prompt.
 
 ## <a id="quick-start"></a>🚀 Quick Start
 

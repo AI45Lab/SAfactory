@@ -6,7 +6,7 @@ Safactory 只保留环境内的 Python 规则评测。开启评测后，系统�
 <agent-root>/<env_name>/rule_evaluator.py
 ```
 
-默认 `agent-root` 是 `env`。例如环境名为 `mybench` 时，评测文件必须是 `env/mybench/rule_evaluator.py`。文件不存在时，该环境跳过评测；不需要在 YAML、`env_params` 或单独的 evaluation config 中注册路径。
+默认 `agent-root` 是 `env`。例如环境名为 `mybench` 时，评测文件必须是 `env/mybench/rule_evaluator.py`。注意：在启用 `--enable-evaluation` 的情况下文件不存在时，该 episode 会被直接判为失败（`rule evaluator not found`）；仅做接入验证时请勿加该开关。不需要在 YAML、`env_params` 或单独的 evaluation config 中注册路径。
 
 ## 运行链路
 

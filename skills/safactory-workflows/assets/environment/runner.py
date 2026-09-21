@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""Fixed SAfactory protocol shell for the PRMEval environment.
+"""Fixed SAfactory protocol shell.  Standard part: do not edit per benchmark.
 
-Keep this file benchmark-agnostic.  PRMEval-specific behavior lives in
-``adapter.py`` so the same contract can be copied to another benchmark.
+This file is copied unchanged into every environment (see ``env/prmeval``).
+It owns only the SAfactory runtime contract: reading the
+SimulationStartRequest, resolving the Gateway session URL, invoking the
+environment hook, and emitting exactly one result JSON on stdout plus the
+optional ``SAFACTORY_RESULT_PATH`` artifact.  Benchmark-specific behavior
+lives in ``adapter.py:run_case``.  When the protocol evolves, replace this
+whole file mechanically instead of editing around benchmark logic.
 """
 
 from __future__ import annotations
@@ -43,8 +48,10 @@ def run_episode(request: dict[str, Any]) -> dict[str, Any]:
     if not session_url:
         raise ValueError("cannot resolve Gateway session URL")
 
-    # Import the environment hook lazily: protocol checks remain runnable on a
-    # workstation without PRMEval's optional dependencies.
+    # Import the environment hook lazily and with stdout guarded: native
+    # libraries may print, and stdout must contain exactly one result JSON.
+    # Protocol checks stay runnable without the adapter's native dependencies
+    # by swapping in a fixture adapter (contract_smoke --adapter).
     with contextlib.redirect_stdout(sys.stderr):
         from adapter import run_case
 
@@ -98,6 +105,7 @@ def _write_result(result: dict[str, Any]) -> None:
                 encoding="utf-8",
             )
         except Exception as exc:
+            # Keep the stdout result intact; the framework parses stdout first.
             print(f"SAFACTORY_RUNNER_DIAGNOSTIC result_artifact_write_failed: {exc}", file=sys.stderr)
     print(json.dumps(result, ensure_ascii=False, allow_nan=False), flush=True)
 

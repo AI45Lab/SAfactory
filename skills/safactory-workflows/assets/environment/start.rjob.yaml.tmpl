@@ -1,12 +1,14 @@
-agent_name: prmeval
+agent_name: __ENV_NAME__
 container:
   workdir: /workspace
   runner_entrypoint:
     source: ./runner.py
-    target: /tmp/safactory-prmeval/runner.py
-    command: python /tmp/safactory-prmeval/runner.py
+    target: /tmp/safactory-__ENV_NAME__/runner.py
+    command: "python /tmp/safactory-__ENV_NAME__/runner.py"
   env:
     PYTHONDONTWRITEBYTECODE: "1"
+    # The cluster injects corporate proxies that break loopback Gateway
+    # access; blank them unless the environment needs egress.
     HTTP_PROXY: ""
     HTTPS_PROXY: ""
     ALL_PROXY: ""
@@ -16,7 +18,7 @@ container:
     NO_PROXY: ""
     no_proxy: ""
 rjob:
-  name_prefix: prmeval
+  name_prefix: __ENV_NAME__
   private_machine: Group
   image_pull_policy: IfNotPresent
   no_packaging: true
@@ -29,9 +31,10 @@ rjob:
   mount_config:
     # Replace CLUSTER_STORAGE with a location visible to the RJob cluster.
     - "gpfs://CLUSTER_STORAGE/SAfactory/results:/app/results"
-    # Mount the dataset directory at the path stored in samples.jsonl.
-    - "gpfs://CLUSTER_STORAGE/SAfactory/env/prmeval/datasets:/tmp/safactory-prmeval/datasets"
+    # Mount the dataset directory at the same container path as the Docker
+    # start config so dataset-row absolute paths resolve identically.
+    - "gpfs://CLUSTER_STORAGE/SAfactory/env/__ENV_NAME__/datasets:/tmp/safactory-__ENV_NAME__/datasets"
   embedded_files:
     # runner.py is embedded automatically from runner_entrypoint.source.
     - source: ./adapter.py
-      target: /tmp/safactory-prmeval/adapter.py
+      target: /tmp/safactory-__ENV_NAME__/adapter.py
