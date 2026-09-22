@@ -9,7 +9,11 @@ from typing import Any
 from core.data_manager.manager import DataManager
 from core.perf_trace import PerfTrace
 from evaluator.eval_types import EvalResult, EvalStatus, to_jsonable
-from evaluator.trajectory_policy import metadata_from_row, select_reward_target
+from evaluator.trajectory_policy import (
+    NON_TRAJECTORY_EVENT_TYPES,
+    metadata_from_row,
+    select_reward_target,
+)
 
 log = logging.getLogger("evaluator.reward_committer")
 
@@ -146,7 +150,7 @@ class RewardCommitter:
                 }])
                 recorded = len(record_ids)
             else:
-                recorded = await _upsert_persisted_row(
+                recorded = await _patch_persisted_row(
                     self.data_manager,
                     summary,
                     {
@@ -178,7 +182,7 @@ class RewardCommitter:
             eval_result=eval_result,
         )
         meta_json = _merge_meta_json(target.get("meta_json"), metadata)
-        updated = await _upsert_persisted_row(
+        updated = await _patch_persisted_row(
             self.data_manager,
             target,
             {
@@ -200,6 +204,19 @@ class RewardCommitter:
         session_id: str,
     ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
         use_gateway_target = self.gateway_client is not None and bool(self.llm_model)
+        columns = [
+            "record_id",
+            "session_id",
+            "step_id",
+            "env_name",
+            "llm_model",
+            "group_id",
+            "job_id",
+            "created_at",
+            "meta_json",
+        ]
+        if self.storage_type == "cloud":
+            columns.append("dataset_type")
         target_step_id: int | None = None
         if use_gateway_target:
             try:
@@ -223,6 +240,7 @@ class RewardCommitter:
                     job_id=self.data_manager.job_id,
                     step_id=target_step_id,
                     llm_model=self.llm_model,
+                    columns=columns,
                     checkout_latest=True,
                 )
                 target = select_reward_target(
@@ -231,6 +249,23 @@ class RewardCommitter:
                 )
                 if target is not None:
                     return rows, target
+                if any(
+                    not metadata_from_row(row).get("synthetic_stop")
+                    and metadata_from_row(row).get("event_type")
+                    not in NON_TRAJECTORY_EVENT_TYPES | {"gateway_inference"}
+                    for row in rows
+                ):
+                    rows = await self.data_manager.list_session_steps(
+                        session_id,
+                        job_id=self.data_manager.job_id,
+                        step_id=target_step_id,
+                        llm_model=self.llm_model,
+                        columns=[*columns, "messages", "response"],
+                        checkout_latest=True,
+                    )
+                    target = select_reward_target(rows, require_http_200=True)
+                    if target is not None:
+                        return rows, target
                 if attempt < self.db_read_retries:
                     await asyncio.sleep(self.db_buffer_interval_s)
             log.warning(
@@ -249,14 +284,32 @@ class RewardCommitter:
         rows = await self.data_manager.list_session_steps(
             session_id,
             job_id=self.data_manager.job_id,
+            columns=columns,
             checkout_latest=True,
         )
-
-        return rows, select_reward_target(
+        target = select_reward_target(
             rows,
             llm_model=self.llm_model if use_gateway_target else None,
             require_http_200=use_gateway_target,
         )
+        if target is None and any(
+            not metadata_from_row(row).get("synthetic_stop")
+            and metadata_from_row(row).get("event_type")
+            not in NON_TRAJECTORY_EVENT_TYPES | {"gateway_inference"}
+            for row in rows
+        ):
+            rows = await self.data_manager.list_session_steps(
+                session_id,
+                job_id=self.data_manager.job_id,
+                columns=[*columns, "messages", "response"],
+                checkout_latest=True,
+            )
+            target = select_reward_target(
+                rows,
+                llm_model=self.llm_model if use_gateway_target else None,
+                require_http_200=use_gateway_target,
+            )
+        return rows, target
 
     def _build_reward_metadata(self, *, session_id: str, eval_result: EvalResult) -> str:
         return json.dumps(
@@ -314,12 +367,36 @@ def _load_meta_json(value: Any) -> dict[str, Any]:
     return parsed
 
 
-async def _upsert_persisted_row(
+async def _patch_persisted_row(
     data_manager: Any,
     row: dict[str, Any],
     updates: dict[str, Any],
 ) -> int:
-    complete_row = dict(row)
-    complete_row["record_id"] = str(row.get("record_id") or row.get("id") or "")
-    complete_row.update(updates)
-    return len(await data_manager.upsert_session_step_rows([complete_row]))
+    record_id = str(row.get("record_id") or row.get("id") or "")
+    job_id = str(row.get("job_id") or data_manager.job_id or "")
+    patch = {
+        "job_id": job_id,
+        "record_id": record_id,
+        "dataset_type": str(row.get("dataset_type") or "RL"),
+        "created_at": row.get("created_at"),
+        **updates,
+    }
+    await data_manager.patch_session_step_rows([patch])
+    persisted = await data_manager.list_session_steps(
+        str(row.get("session_id") or ""),
+        job_id=job_id,
+        record_id=record_id,
+        columns=["record_id", *updates.keys()],
+        checkout_latest=True,
+    )
+    if len(persisted) != 1:
+        return 0
+    actual = persisted[0]
+    for field, expected in updates.items():
+        value = actual.get(field)
+        if field == "meta_json":
+            if _load_meta_json(value) != _load_meta_json(expected):
+                return 0
+        elif value != expected:
+            return 0
+    return 1

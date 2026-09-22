@@ -479,6 +479,32 @@ class SqliteStrategy(StorageStrategy):
         )
         return record_ids
 
+    async def patch_session_step_rows(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Patch existing rows by immutable job_id and record_id."""
+        await self.init()
+        if not rows:
+            return []
+        if self._write_buffer:
+            await self._write_buffer.flush_model(SessionStep, operation="create")
+
+        updated_ids: List[str] = []
+        async with in_transaction() as connection:
+            for row in rows:
+                updates = self._normalize_session_step_updates({
+                    key: value
+                    for key, value in row.items()
+                    if key not in {"job_id", "record_id", "dataset_type", "created_at"}
+                })
+                if updates and await SessionStep.filter(
+                    job_id=str(row["job_id"]),
+                    record_id=str(row["record_id"]),
+                ).using_db(connection).update(**updates):
+                    updated_ids.append(str(row["record_id"]))
+        return updated_ids
+
     async def list_session_step_rows(
         self,
         query: SessionStepQuery,
@@ -507,9 +533,25 @@ class SqliteStrategy(StorageStrategy):
             rows = rows.filter(is_terminal=query.is_terminal)
         if query.is_trainable is not None:
             rows = rows.filter(is_trainable=query.is_trainable)
-        rows = rows.order_by("step_id", "id")
+        rows = (
+            rows.order_by("-step_id", "-id")
+            if query.latest_first
+            else rows.order_by("step_id", "id")
+        )
         if query.limit is not None:
             rows = rows.limit(query.limit)
+        if query.columns:
+            valid_fields = set(SessionStep._meta.fields_map)
+            unknown = set(query.columns) - valid_fields
+            if unknown:
+                raise ValueError(f"Unknown SessionStep projection fields: {sorted(unknown)}")
+            values = await rows.values(*query.columns)
+            for row in values:
+                if "meta_json" in row:
+                    row["meta_json"] = _json_object(row["meta_json"])
+                if "created_at" in row and row["created_at"] is not None:
+                    row["created_at"] = row["created_at"].isoformat()
+            return values
         return [self._session_step_to_dict(row) for row in await rows]
 
     async def update_session_step_rows(
