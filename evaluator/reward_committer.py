@@ -378,7 +378,6 @@ async def _patch_persisted_row(
         "job_id": job_id,
         "record_id": record_id,
         "dataset_type": str(row.get("dataset_type") or "RL"),
-        "created_at": row.get("created_at"),
         **updates,
     }
     await data_manager.patch_session_step_rows([patch])

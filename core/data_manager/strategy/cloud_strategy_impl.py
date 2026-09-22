@@ -881,7 +881,8 @@ class CloudStrategy(StorageStrategy):
             values: Dict[str, Any] = {
                 "dataset_type": str(row.get("dataset_type") or CLOUD_DATASET_TYPE),
                 "id": record_id,
-                "created_at": int(row.get("created_at") or time.time()),
+                # Required by LandingRecord; SDK partial upsert excludes it.
+                "created_at": 0,
                 "job_id": job_id,
             }
             for field in (

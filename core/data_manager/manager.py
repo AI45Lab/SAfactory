@@ -360,7 +360,7 @@ class DataManager:
         rows: List[Dict[str, Any]],
     ) -> List[str]:
         """Patch explicitly supplied reward fields on existing session-step rows."""
-        identity_fields = {"job_id", "record_id", "dataset_type", "created_at"}
+        identity_fields = {"job_id", "record_id", "dataset_type"}
         reward_fields = {
             "step_reward", "reward", "meta_json", "is_terminal",
             "is_truncated", "is_session_completed",
