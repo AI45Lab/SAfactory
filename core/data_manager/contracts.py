@@ -48,6 +48,8 @@ class SessionStepQuery:
     llm_model: Optional[str] = None
     after_id: int = 0
     limit: Optional[int] = None
+    latest_first: bool = False
     is_terminal: Optional[bool] = None
     is_trainable: Optional[bool] = None
     checkout_latest: bool = False
+    columns: tuple[str, ...] = ()

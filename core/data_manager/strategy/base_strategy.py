@@ -115,6 +115,14 @@ class StorageStrategy(ABC):
         pass
 
     @abstractmethod
+    async def patch_session_step_rows(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Patch reward fields by job_id and record_id without inserting."""
+        pass
+
+    @abstractmethod
     async def list_session_step_rows(
         self,
         query: SessionStepQuery,

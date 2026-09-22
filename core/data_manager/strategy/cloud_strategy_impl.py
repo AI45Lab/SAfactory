@@ -862,6 +862,58 @@ class CloudStrategy(StorageStrategy):
         )
         return record_ids
 
+    async def patch_session_step_rows(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Patch existing landing rows without rewriting wide payload columns."""
+        await self.init()
+        if not rows:
+            return []
+        if self._enable_buffer:
+            await self._flush_records()
+
+        records: List[Any] = []
+        record_ids: List[str] = []
+        for row in rows:
+            record_id = str(row["record_id"])
+            job_id = str(row["job_id"])
+            values: Dict[str, Any] = {
+                "dataset_type": str(row.get("dataset_type") or CLOUD_DATASET_TYPE),
+                "id": record_id,
+                # Required by LandingRecord; SDK partial upsert excludes it.
+                "created_at": 0,
+                "job_id": job_id,
+            }
+            for field in (
+                "step_reward",
+                "reward",
+                "is_terminal",
+                "is_truncated",
+                "is_session_completed",
+            ):
+                if field in row:
+                    values[field] = row[field]
+            if "meta_json" in row:
+                meta_json = _meta_json_object(row["meta_json"])
+                values["meta_json"] = json.dumps(meta_json, ensure_ascii=False, default=str)
+            records.append(LandingRecord(**values))
+            record_ids.append(record_id)
+            self._record_job_ids[record_id] = job_id
+
+        upsert = getattr(self.client, "upsert_landing_batch", None)
+        if not callable(upsert):
+            raise RuntimeError("Cloud session-step patch requires wt-data-platform-sdk>=0.6.3")
+        await self._timed_db_call(
+            "upsert_landing_batch",
+            upsert,
+            records,
+            match_columns=["job_id", "id"],
+            insert_missing=False,
+            trace_context={"record_count": len(records), "partial": True},
+        )
+        return record_ids
+
     async def list_session_step_rows(
         self,
         query: SessionStepQuery,
@@ -893,7 +945,7 @@ class CloudStrategy(StorageStrategy):
         if not clauses:
             raise ValueError("cloud session-step query requires at least one filter")
 
-        columns = [
+        default_columns = [
             "dataset_type", "dt", "id", "session_id", "step_id", "env_id",
             "env_name", "agent_model", "job_id", "messages", "response",
             "chosen_trace", "rejected_trace", "ground_truth_answer",
@@ -901,28 +953,45 @@ class CloudStrategy(StorageStrategy):
             "tags", "blob_manifest", "is_terminal", "is_truncated",
             "is_session_completed", "is_trainable", "created_at",
         ]
+        column_map = {
+            "record_id": "id",
+            "llm_model": "agent_model",
+            "group_id": "meta_json",
+            "request": "meta_json",
+        }
+        columns = list(dict.fromkeys(
+            column_map.get(column, column)
+            for column in query.columns
+        )) if query.columns else default_columns
         cloud_rows = await self._timed_db_call(
             "filter_landing",
             self.client.query_data,
             filter_query=" AND ".join(clauses),
-            limit=query.limit or 10000,
+            limit=query.limit if query.limit is not None else 10000,
             columns=columns,
             partition=query.job_id or None,
+            order_by="step_id" if query.latest_first else None,
+            ascending=not query.latest_first,
             checkout_latest=query.checkout_latest,
             deserialize_json=True,
             trace_context={"job_id": query.job_id, "session_id": query.session_id},
         )
         rows: List[Dict[str, Any]] = []
         for cloud_row in cloud_rows or []:
-            meta_json = _meta_json_object(cloud_row.get("meta_json"))
             row = {key: cloud_row.get(key) for key in columns if key != "meta_json"}
-            row["record_id"] = row.get("id")
-            row["llm_model"] = row.pop("agent_model", None)
-            row["messages"] = _json_value(row.get("messages"), [])
-            row["response"] = _json_value(row.get("response"), row.get("response"))
-            row["meta_json"] = meta_json
-            row["group_id"] = meta_json.get("group_id")
-            row["request"] = meta_json.get("request")
+            if "id" in row:
+                row["record_id"] = row.get("id")
+            if "agent_model" in row:
+                row["llm_model"] = row.pop("agent_model")
+            if "messages" in row:
+                row["messages"] = _json_value(row.get("messages"), [])
+            if "response" in row:
+                row["response"] = _json_value(row.get("response"), row.get("response"))
+            if "meta_json" in columns:
+                meta_json = _meta_json_object(cloud_row.get("meta_json"))
+                row["meta_json"] = meta_json
+                row["group_id"] = meta_json.get("group_id")
+                row["request"] = meta_json.get("request")
             rows.append(row)
             if row.get("record_id") and row.get("job_id"):
                 self._record_job_ids[str(row["record_id"])] = str(row["job_id"])
@@ -930,7 +999,7 @@ class CloudStrategy(StorageStrategy):
             int(row.get("step_id") or 0),
             str(row.get("created_at") or ""),
             str(row.get("record_id") or ""),
-        ))
+        ), reverse=query.latest_first)
         return rows
 
     async def update_session_step_rows(

@@ -355,6 +355,43 @@ class DataManager:
             return await self._upsert_batcher.submit(normalized)
         return await self._strategy.upsert_session_step_rows(normalized)
 
+    async def patch_session_step_rows(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Patch explicitly supplied reward fields on existing session-step rows."""
+        identity_fields = {"job_id", "record_id", "dataset_type"}
+        reward_fields = {
+            "step_reward", "reward", "meta_json", "is_terminal",
+            "is_truncated", "is_session_completed",
+        }
+        normalized: List[Dict[str, Any]] = []
+        seen_keys: set[tuple[str, str]] = set()
+        field_shape: set[str] | None = None
+        for row in rows:
+            item = dict(row)
+            unknown = set(item) - identity_fields - reward_fields
+            if unknown:
+                raise ValueError(f"Unknown session-step patch fields: {sorted(unknown)}")
+            supplied = set(item) & reward_fields
+            if not supplied:
+                raise ValueError("session-step patch requires at least one reward field")
+            if field_shape is not None and supplied != field_shape:
+                raise ValueError("session-step patches in one batch must use the same fields")
+            field_shape = supplied
+            item["job_id"] = str(item.get("job_id") or self.job_id)
+            item["record_id"] = str(item.get("record_id") or "")
+            if not item["job_id"] or not item["record_id"]:
+                raise ValueError("session-step patch requires non-empty job_id and record_id")
+            key = (item["job_id"], item["record_id"])
+            if key in seen_keys:
+                raise ValueError(f"duplicate session-step patch key: {key!r}")
+            seen_keys.add(key)
+            if "meta_json" in item:
+                item["meta_json"] = _metadata_object(item["meta_json"])
+            normalized.append(item)
+        return await self._strategy.patch_session_step_rows(normalized)
+
     async def mark_records_completed(self, record_ids: List[str]) -> int:
         """Compatibility wrapper for exact-ID lifecycle updates."""
         return await self.update_session_step_rows(
@@ -367,16 +404,26 @@ class DataManager:
         session_id: str,
         *,
         job_id: Optional[str] = None,
+        record_id: Optional[str] = None,
+        record_ids: Optional[List[str]] = None,
         step_id: Optional[int] = None,
         llm_model: Optional[str] = None,
+        limit: Optional[int] = None,
+        latest_first: bool = False,
+        columns: Optional[List[str]] = None,
         checkout_latest: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Return persisted rows for one session in trajectory order."""
+        """Return persisted rows for one session in the requested order."""
         return await self._strategy.list_session_step_rows(SessionStepQuery(
             job_id=job_id or self.job_id or None,
             session_id=session_id,
+            record_id=record_id,
+            record_ids=tuple(record_ids or ()),
             step_id=step_id,
             llm_model=llm_model,
+            limit=None if limit is None else max(0, int(limit)),
+            latest_first=bool(latest_first),
+            columns=tuple(columns or ()),
             checkout_latest=checkout_latest,
         ))
 
