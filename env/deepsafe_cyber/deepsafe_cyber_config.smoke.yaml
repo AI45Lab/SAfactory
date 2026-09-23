@@ -1,0 +1,21 @@
+environments:
+  - env_name: deepsafe_cyber
+    env_image: registry-v2.h.pjlab.org.cn/ailab-ai4good2/deepsafe-cyber:0.1.0
+    env_num: 1
+    dataset: ./datasets/smoke.jsonl
+    dataset_load_mode: eager
+    env_params:
+      task_family: deepsafe-cyber
+      results_root: /mnt/shared-storage-user/adpc-share/chenxinquan/SAfactory/results/deepsafe_cyber
+      deepsafe_cyber:
+        workspace: /opt/deepsafe-cyber
+        binary: /opt/deepsafe-cyber/.runtime/bin/deepsafe-cyber
+        run_yaml_template: /opt/operator/run.yaml
+        results_root: /opt/deepsafe-cyber/runs
+        runs_subdir: safactory-smoke
+        provider_type: openai-responses
+        provider_credential_profile: safactory-gateway
+        model_profile: safactory-gateway-responses
+        docker_health_timeout_s: 600
+        environment_preflight_timeout_s: 3600
+        task_time_limit_s: 18000

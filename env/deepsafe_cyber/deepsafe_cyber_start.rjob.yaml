@@ -1,0 +1,53 @@
+agent_name: deepsafe_cyber
+
+container:
+  workdir: /opt/deepsafe-cyber
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-deepsafe_cyber/runner.py
+    command: "sh /tmp/safactory-deepsafe_cyber/rjob_entrypoint.sh"
+
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    HTTP_PROXY: http://httpproxy-headless.kubebrain.svc.pjlab.local:3128
+    HTTPS_PROXY: http://httpproxy-headless.kubebrain.svc.pjlab.local:3128
+    http_proxy: http://httpproxy-headless.kubebrain.svc.pjlab.local:3128
+    https_proxy: http://httpproxy-headless.kubebrain.svc.pjlab.local:3128
+    NO_PROXY: localhost,127.0.0.1,::1,10.0.0.0/8,100.96.0.0/12,172.16.0.0/12,192.168.0.0/16,.pjlab.local,.pjlab.org.cn,.pjh-service.org.cn,.svc,.cluster.local
+    no_proxy: localhost,127.0.0.1,::1,10.0.0.0/8,100.96.0.0/12,172.16.0.0/12,192.168.0.0/16,.pjlab.local,.pjlab.org.cn,.pjh-service.org.cn,.svc,.cluster.local
+
+rjob:
+  name_prefix: deepsafe_cyber
+  private_machine: Group
+  image_pull_policy: IfNotPresent
+  no_packaging: true
+  cleanup_on_finish: true
+  keep_failed_jobs: true
+  privileged: true
+  poll_interval_s: 5
+  termination_grace_period_seconds: 120
+
+  resources:
+    cpu: 10
+    gpu: 0
+    memory_in_mb: 20480
+    custom_resources:
+      - brainpp.cn/fuse=1
+
+  # Sources follow the gpfs2 mappings used by existing RJob environments.
+  # The persistent dind-data directory reuses loaded PatchEval layers across
+  # sequential RJobs; rjob_entrypoint.sh serializes access with flock.
+  mount_config:
+    - "gpfs://gpfs2/trustcyberdata:/mnt/shared-storage-user/trustcyberdata"
+    - "gpfs://gpfs2/adpc-share/chenxinquan/SAfactory/results/deepsafe_cyber:/mnt/shared-storage-user/adpc-share/chenxinquan/SAfactory/results/deepsafe_cyber"
+    - "gpfs://gpfs2/adpc-share/chenxinquan/SAfactory/env/deepsafe_cyber/batch-output:/opt/deepsafe-cyber/configs/deepsafe_cyber/batch-output"
+    - "gpfs://gpfs2/adpc-share/chenxinquan/SAfactory/env/deepsafe_cyber/dind-data:/var/lib/docker"
+
+  embedded_files:
+    # runner.py is embedded automatically from runner_entrypoint.source.
+    - source: ./adapter.py
+      target: /tmp/safactory-deepsafe_cyber/adapter.py
+    - source: ./operator/run.yaml
+      target: /opt/operator/run.yaml
+    - source: ./rjob_entrypoint.sh
+      target: /tmp/safactory-deepsafe_cyber/rjob_entrypoint.sh

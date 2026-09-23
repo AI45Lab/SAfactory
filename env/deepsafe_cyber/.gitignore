@@ -1,0 +1,9 @@
+# Runtime outputs stay local to the environment and must never be committed.
+__pycache__/
+*.py[cod]
+batch-output/*
+!batch-output/.gitkeep
+dind-data/*
+!dind-data/.gitkeep
+results/*
+!results/.gitkeep

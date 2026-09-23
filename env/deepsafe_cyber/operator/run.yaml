@@ -1,0 +1,19 @@
+schema: deepsafe-cyber.run-config.v1
+benchmark:
+  name: patcheval
+  task: CVE-2021-23376
+  variant: verified
+dataset_profile: patcheval-verified-v1
+# Gateway currently exposes chat/completions. dsh-headless supplies the native
+# Responses-to-Chat bridge, avoiding a direct /responses dependency.
+harness_profile: dsh-headless
+model_profile: safactory-gateway-responses
+provider_credential_profile: safactory-gateway
+environment_profile: benchmark-default
+execution_policy:
+  epoch: 1
+  concurrency: 1
+  compose_network_mode: bridge
+  environment_preflight_timeout_seconds: 3600
+  task_time_limit_seconds: 18000
+runs_root: /opt/deepsafe-cyber/runs/safactory
