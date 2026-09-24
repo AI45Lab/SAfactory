@@ -567,9 +567,14 @@ def parse_harbor_result(
     raw_reward = rewards.get(spec.reward_key)
     reward = _numeric_reward(raw_reward)
 
-    errors, agent_timed_out = _trial_errors(trial)
-    if return_code != 0 and not timed_out:
-        errors.append(f"harbor process exited with status {return_code}")
+    trial_errors = _trial_errors(trial)
+    warnings: list[str] = []
+    fatal_errors: list[str] = []
+    process_error = (
+        f"harbor process exited with status {return_code}"
+        if return_code != 0 and not timed_out
+        else None
+    )
     cancel_reason: str | None = None
     if timed_out:
         cancel_reason = (
@@ -580,18 +585,28 @@ def parse_harbor_result(
         cancelled_trials = stats.get("n_cancelled_trials")
         if cancelled_trials:
             cancel_reason += f"; Harbor reported {cancelled_trials} cancelled trial(s)"
-        errors.append(cancel_reason)
+        fatal_errors.append(cancel_reason)
     if reward is None and not timed_out:
-        errors.append(
+        fatal_errors.append(
             f"verifier did not produce numeric reward {spec.reward_key!r}; "
             f"available rewards={sorted(rewards)}"
         )
 
+    if reward is not None and not timed_out:
+        warnings.extend(trial_errors)
+        if process_error is not None:
+            warnings.append(process_error)
+    else:
+        fatal_errors.extend(trial_errors)
+        if process_error is not None:
+            fatal_errors.append(process_error)
+
     trajectory_paths = _trajectory_paths(trial_dir)
     trajectories = [str(path) for path in trajectory_paths]
     step_count = _trajectory_step_count(trajectory_paths)
-    truncated = timed_out or agent_timed_out
-    succeeded = not errors and not truncated
+    truncated = timed_out
+    succeeded = reward is not None and not truncated
+    errors = [*fatal_errors, *warnings]
     metrics = {
         "bench": "harbor",
         "task_id": spec.task_id,
@@ -605,6 +620,8 @@ def parse_harbor_result(
         "harbor_reward": reward,
         "harbor_rewards": rewards,
         "harbor_errors": errors,
+        "harbor_fatal_errors": fatal_errors,
+        "harbor_warnings": warnings,
         "harbor_return_code": return_code,
         "harbor_job_result_path": str(job_result_path),
         "harbor_trial_result_path": (
@@ -626,21 +643,18 @@ def parse_harbor_result(
         "step_count": step_count,
         "terminated": not truncated,
         "truncated": truncated,
-        "error_text": "; ".join(errors) if errors else None,
+        "error_text": "; ".join(fatal_errors) if fatal_errors else None,
         "metrics": metrics,
     }
 
 
-def _trial_errors(trial: dict[str, Any]) -> tuple[list[str], bool]:
+def _trial_errors(trial: dict[str, Any]) -> list[str]:
     errors: list[str] = []
-    agent_timed_out = False
 
     def add(value: Any, location: str) -> None:
-        nonlocal agent_timed_out
         if not isinstance(value, dict):
             return
         kind = str(value.get("exception_type") or "Exception")
-        agent_timed_out = agent_timed_out or kind == "AgentTimeoutError"
         message = str(value.get("exception_message") or "").strip()
         errors.append(f"{location}: {kind}: {message}".rstrip())
 
@@ -652,7 +666,7 @@ def _trial_errors(trial: dict[str, Any]) -> tuple[list[str], bool]:
                 add(
                     step.get("exception_info"), f"step {step.get('step_name') or index}"
                 )
-    return errors, agent_timed_out
+    return errors
 
 
 def _failure(
