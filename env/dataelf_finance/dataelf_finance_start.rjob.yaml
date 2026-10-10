@@ -1,0 +1,51 @@
+agent_name: dataelf_finance
+
+container:
+  workdir: /workspace
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-dataelf_finance/runner.py
+    command: "python /tmp/safactory-dataelf_finance/runner.py"
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    HTTP_PROXY: ""
+    HTTPS_PROXY: ""
+    ALL_PROXY: ""
+    http_proxy: ""
+    https_proxy: ""
+    all_proxy: ""
+    NO_PROXY: ""
+    no_proxy: ""
+
+rjob:
+  name_prefix: dataelf_finance
+  # "Group" restricts scheduling to the charged group's private machines;
+  # the CPU quota groups here (evobox_cpu_task / evobox_cpu) have none, so
+  # all 20 jobs came up Unschedulable. "no" uses the group's public pool.
+  private_machine: "no"
+  image_pull_policy: IfNotPresent
+  no_packaging: true
+  cleanup_on_finish: true
+  keep_failed_jobs: true
+  resources:
+    # Episodes are model-wait bound (smoke-2: ~100% of wall time in model
+    # calls); 4 CPU / 8 GB fits 20 concurrent jobs into one CPU quota group.
+    cpu: 4
+    gpu: 0
+    memory_in_mb: 8192
+  mount_config:
+    # gpfs1/evobox-share/<user> maps to /mnt/shared-storage-user/evobox-share/<user>
+    # (same pattern as env/geo3k and env/livecvebench rjob mounts), so the
+    # launcher host and the cluster see the same files.
+    - "gpfs://gpfs1/evobox-share/chenbei/SAfactory/results:/app/results"
+    # Dataset rows (id/task/entity_id): mirrors the docker twin's datasets
+    # mount so /tmp/safactory-dataelf_finance/datasets exists in-cluster too.
+    - "gpfs://gpfs1/evobox-share/chenbei/SAfactory/env/dataelf_finance/datasets:/tmp/safactory-dataelf_finance/datasets"
+    # DDR-Bench 10-K raw data directory (contains the 1.1 GB
+    # 10k_financial_data.db); linked, never copied.
+    # Keep in sync with env_params.dataelf.db_path in the .rjob.yaml config.
+    - "gpfs://gpfs1/evobox-share/chenbei/DDR_Bench/data/10k/raw:/workspace/DDR_Bench/data/10k/raw"
+  embedded_files:
+    # runner.py is embedded automatically from runner_entrypoint.source.
+    - source: ./adapter.py
+      target: /tmp/safactory-dataelf_finance/adapter.py

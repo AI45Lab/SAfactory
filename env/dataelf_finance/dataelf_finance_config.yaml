@@ -1,0 +1,64 @@
+environments:
+  - env_name: dataelf_finance
+    # Built from env/dataelf_finance/Dockerfile (context = the DataElf
+    # checkout; see the Dockerfile header for the exact build command).
+    # Replace with a cluster-pullable registry path for live RJob runs.
+    env_image: dataelf_finance-image:latest
+    env_num: 1
+    # 100 rows = full ddr_10k benchmark entity set; one row = one episode.
+    dataset: ./datasets/ddr10k_bench_100.jsonl
+    dataset_load_mode: eager
+    # env_params is serialized into the SimulationStartRequest and delivered to
+    # the runner inside the container for every dataset row; static container
+    # env vars are not a replacement for it.
+    env_params:
+      task_family: dataelf_finance
+      # Must equal the results mount target in dataelf_finance_start.yaml
+      # (/app/results — the framework's fixed SAFACTORY_RESULT_PATH root in
+      # manager/episode_common.py, same as the rjob twin) so backup result
+      # artifacts and native job workspaces land on the shared results volume.
+      results_root: /app/results
+      # Native benchmark knobs. The model endpoint is injected per episode via
+      # session_url; no provider URLs or credentials live here.
+      dataelf:
+        # DataElf checkout baked into the image at /opt/DataElf.
+        repo_root: /opt/DataElf
+        benchmark: ddr_10k
+        # Container path of the DDR-Bench 10-K SQLite database. The database
+        # is bind-mounted read-only and linked (never copied) into each job
+        # workspace by DataElf's finance connector.
+        db_path: /workspace/DDR_Bench/data/10k/raw/10k_financial_data.db
+        tools:
+          sql: true
+          python: true
+          web: false
+        # Native budgets. Real explorations run 1.5h+ (smoke-2 took 1h35m);
+        # a 1h budget truncated smoke-1 mid-run. Mirror the smoke/rjob
+        # configs: 4h budget + raised pi HTTP idle timeout.
+        max_tool_calls: 600
+        max_runtime_seconds: 14400
+        # Strip cumulative message_update snapshots from pi_events.jsonl
+        # (deltas + message_end remain): one smoke episode wrote 370 MB,
+        # >98% of it redundant snapshot frames.
+        compact_stream_events: true
+        pi_settings:
+          httpIdleTimeoutMs: 900000
+      # ---- Evaluation stage (manager-side, after each episode) ----
+      # LLM judges exceed the framework's 60 s rule-evaluator default; this
+      # generic knob is read by manager/simulation_worker.py after spec
+      # discovery (no benchmark branch).
+      eval_timeout_s: 900
+      # Deployment facts only for the rule evaluator: where the host-side
+      # dataelf_eval checkout lives (judge endpoints and reward modes are
+      # read from THERE by the reward calculator, in eval/config.yaml —
+      # not here) and how container artifact paths map to host ones
+      # (shared results volume mounts). The rule evaluator ONLY produces
+      # the RL training reward (benchmarks/<bench>/reward_calculator.py);
+      # official benchmark scoring is replayed post-hoc by dataelf_eval
+      # over the preserved per-episode artifacts.
+      dataelf_eval:
+        root: /mnt/shared-storage-user/evobox-share/chenbei/dataelf_eval
+        # Must equal env_params.results_root above (the results mount
+        # target), same as the rjob twin.
+        container_results_root: /app/results
+        host_results_root: /mnt/shared-storage-user/evobox-share/chenbei/SAfactory/results

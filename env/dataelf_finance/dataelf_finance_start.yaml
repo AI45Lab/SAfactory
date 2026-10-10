@@ -1,0 +1,39 @@
+agent_name: dataelf_finance
+
+container:
+  workdir: /workspace
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-dataelf_finance/runner.py
+    command: "python /tmp/safactory-dataelf_finance/runner.py"
+  mounts:
+    # Docker bind sources are resolved from the repository root when the
+    # launcher/live_smoke helper is run there; runner_entrypoint.source is
+    # resolved from this config file's directory.
+    - source: ./env/dataelf_finance/adapter.py
+      target: /tmp/safactory-dataelf_finance/adapter.py
+      mode: ro
+    # Dataset rows carry only case identity (id/task/entity_id); mounted for
+    # transparency and future row enrichment.
+    - source: ./env/dataelf_finance/datasets
+      target: /tmp/safactory-dataelf_finance/datasets
+      mode: ro
+    - source: ./results
+      # /app/results matches the framework's fixed SAFACTORY_RESULT_PATH
+      # root (manager/episode_common.py) and the rjob twin, so the backup
+      # result artifact reaches the host in docker mode too.
+      target: /app/results
+      mode: rw
+    # 1.1 GB DDR-Bench 10-K SQLite database: read-only bind mount, linked
+    # (symlinked) into each DataElf job workspace — never copied.
+    # Keep in sync with env_params.dataelf.db_path in dataelf_finance_config.yaml.
+    - source: /mnt/shared-storage-user/evobox-share/chenbei/DDR_Bench/data/10k/raw
+      target: /workspace/DDR_Bench/data/10k/raw
+      mode: ro
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
+    no_proxy: host.docker.internal,localhost,127.0.0.1,::1
+  extra_args:
+    - --add-host=host.docker.internal:host-gateway
+  idle_command: "tail -f /dev/null"

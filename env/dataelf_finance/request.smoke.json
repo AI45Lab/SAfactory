@@ -1,0 +1,32 @@
+{
+  "job_id": "dataelf_finance-contract",
+  "session_id": "dataelf_finance-case-6201",
+  "agent_name": "dataelf_finance",
+  "agent_id": "case-6201",
+  "group_id": "",
+  "gateway_base_url": "http://unused.invalid/v1/sessions",
+  "model": "contract-model",
+  "temperature": 0.0,
+  "max_steps": 10,
+  "storage_type": "sqlite",
+  "storage_config": {},
+  "env_params": {
+    "dataset": {
+      "id": "6201__entity",
+      "task": "Analyze company with CIK 6201",
+      "entity_id": "6201"
+    },
+    "results_root": "/tmp/safactory-dataelf-finance-results",
+    "dataelf": {
+      "repo_root": "/mnt/shared-storage-user/evobox-share/chenbei/DataElf",
+      "benchmark": "ddr_10k",
+      "db_path": "/mnt/shared-storage-user/evobox-share/chenbei/DDR_Bench/data/10k/raw/10k_financial_data.db",
+      "tools": {
+        "sql": true,
+        "python": true,
+        "web": false
+      },
+      "compact_stream_events": true
+    }
+  }
+}
