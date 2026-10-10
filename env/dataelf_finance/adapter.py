@@ -136,7 +136,11 @@ def run_case(
             os.killpg(process.pid, signal.SIGKILL)  # pgid == pid via start_new_session
         except ProcessLookupError:
             pass
-        stdout, stderr = process.communicate()
+        try:
+            stdout, stderr = process.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = "", ""
     # Native stdout/stderr stay out of the runner's stdout; keep a copy on
     # disk on every path (including the timeout kill) for post-mortem.
     _write_text(episode_dir / "dataelf_stdout.log", stdout or "")
