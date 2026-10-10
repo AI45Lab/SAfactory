@@ -14,7 +14,6 @@ responsibilities are fixed:
 | `dataelf_finance_config.rjob.yaml` / `dataelf_finance_start.rjob.yaml` | RJob mirror with cluster placeholders (`CLUSTER_STORAGE`, registry image). |
 | `rule_evaluator.py` | Fixed evaluation-protocol shell: unified case interface, registry dispatch into `dataelf_eval`, generic judge fallback. |
 | `datasets/ddr10k_bench_100.jsonl` | 100 rows, one per episode (`id`/`task`/`entity_id`); the prompt/tool surface is generated natively by DataElf's `ddr_10k` benchmark config. |
-| `datasets/ddr10k_bench_20.jsonl` | Same row format, first 20 entities — subset for shorter runs. |
 
 ## Case mapping (adapter.py)
 
