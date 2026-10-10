@@ -46,8 +46,10 @@ environments:
       # ---- Evaluation stage (manager-side, after each episode) ----
       # LLM judges exceed the framework's 60 s rule-evaluator default; this
       # generic knob is read by manager/simulation_worker.py after spec
-      # discovery (no benchmark branch).
-      eval_timeout_s: 900
+      # discovery (no benchmark branch). 3600 covers the judge worst case
+      # (attempts x timeout x ceil(2*pairs/concurrency)) with the
+      # dataelf_eval-side defaults.
+      eval_timeout_s: 3600
       # Deployment facts only for the rule evaluator: where the host-side
       # dataelf_eval checkout lives (judge endpoints and reward modes are
       # read from THERE by the reward calculator, in eval/config.yaml —

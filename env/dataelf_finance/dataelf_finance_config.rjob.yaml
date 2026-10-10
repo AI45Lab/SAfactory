@@ -39,8 +39,10 @@ environments:
       # the reward calculator from <dataelf_eval root>/eval/config.yaml
       # (see dataelf_finance_config.yaml). The rule evaluator ONLY produces
       # the RL training reward; official scoring is replayed post-hoc by
-      # dataelf_eval. Unregistered benchmarks fail loudly.
-      eval_timeout_s: 900
+      # dataelf_eval. Unregistered benchmarks fail loudly. eval_timeout_s
+      # is read by manager/simulation_worker.py after spec discovery
+      # (see dataelf_finance_config.yaml); 3600 covers the judge worst case.
+      eval_timeout_s: 3600
       dataelf_eval:
         root: /mnt/shared-storage-user/evobox-share/chenbei/dataelf_eval
         # Must equal env_params.results_root above (the RJob results mount
