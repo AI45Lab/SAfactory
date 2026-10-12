@@ -1,0 +1,69 @@
+environments:
+  - env_name: dataelf_finance
+    # Built from env/dataelf_finance/Dockerfile (context = the DataElf
+    # checkout; see the Dockerfile header for the exact build command).
+    # Replace with a cluster-pullable registry path for live RJob runs.
+    env_image: dataelf_finance-image:v0.4
+    env_num: 1
+    # 100 rows = full ddr_10k benchmark entity set; one row = one episode.
+    dataset: ./datasets/ddr10k_bench_100.jsonl
+    dataset_load_mode: eager
+    # env_params is serialized into the SimulationStartRequest and delivered to
+    # the runner inside the container for every dataset row; static container
+    # env vars are not a replacement for it.
+    env_params:
+      task_family: dataelf_finance
+      # Must equal the results mount target in dataelf_finance_start.yaml
+      # (/app/results — the framework's fixed SAFACTORY_RESULT_PATH root in
+      # manager/episode_common.py, same as the rjob twin) so backup result
+      # artifacts and native job workspaces land on the shared results volume.
+      results_root: /app/results
+      # Native benchmark knobs. The model endpoint is injected per episode via
+      # session_url; no provider URLs or credentials live here.
+      dataelf:
+        # DataElf checkout baked into the image at /opt/DataElf.
+        repo_root: /opt/DataElf
+        benchmark: ddr_10k
+        # Container path of the DDR-Bench 10-K SQLite database. The database
+        # is bind-mounted read-only and linked (never copied) into each job
+        # workspace by DataElf's finance connector.
+        db_path: /workspace/DDR_Bench/data/10k/raw/10k_financial_data.db
+        tools:
+          sql: true
+          python: true
+          web: false
+        # Native budgets. Real explorations run 1.5h+ (smoke-2 took 1h35m);
+        # a 1h budget truncated smoke-1 mid-run. Mirror the smoke/rjob
+        # configs: 4h budget + raised pi HTTP idle timeout.
+        max_tool_calls: 600
+        max_runtime_seconds: 14400
+        # Native subprocess cap: 4 h runtime plus 600 s grace. The launcher
+        # also needs the tail scoring and startup budget (see below).
+        run_timeout_seconds: 15000
+        # Strip cumulative message_update snapshots from pi_events.jsonl
+        # (deltas + message_end remain): one smoke episode wrote 370 MB,
+        # >98% of it redundant snapshot frames.
+        compact_stream_events: true
+        pi_settings:
+          httpIdleTimeoutMs: 900000
+      # ---- Reward scoring (in-container, adapter tail stage) ----
+      # Since the 2026-10-12 migration the reward calculator (LLM judge
+      # included) runs INSIDE the episode container at the adapter's tail
+      # stage, via the read-only /opt/dataelf_eval-scoring subset mount (see
+      # dataelf_finance_start.yaml); the host-side rule evaluator only
+      # normalizes the resulting dataelf_eval.reward.v1 document. Judge
+      # endpoints and reward modes are read by the reward calculator from
+      # the mounted eval/config.yaml — not here. Official benchmark scoring
+      # is still replayed post-hoc by dataelf_eval over the preserved
+      # per-episode artifacts (cross-calibration against this training
+      # reward).
+      dataelf_eval:
+        # Must equal the scoring mount target in dataelf_finance_start.yaml.
+        scoring_root: /opt/dataelf_eval-scoring
+        # Budget for the tail-stage scoring (judge fanout) inside the
+        # episode; a blown budget fails the episode instead of hanging the
+        # runner (the daemon scoring thread is abandoned). Judge measured
+        # ~16-18 calls / ~110 s per episode; 1800 s covers a degraded judge
+        # endpoint with retries. Launch with --agent-start-timeout-s 18000:
+        # 15000 s native cap + 1800 s scoring + 1200 s startup/finish margin.
+        scoring_timeout_s: 1800

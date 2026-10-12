@@ -1,0 +1,56 @@
+agent_name: dataelf_finance
+
+container:
+  workdir: /workspace
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-dataelf_finance/runner.py
+    # ABSOLUTE venv python: the framework executes this via `sh -lc` (login
+    # shell), whose /etc/profile resets PATH and drops /opt/DataElf/.venv/bin
+    # — bare `python` resolves to the system interpreter, which lacks the
+    # httpx/PyYAML the in-container scoring needs (V5 2026-10-12 failure).
+    command: "/opt/DataElf/.venv/bin/python /tmp/safactory-dataelf_finance/runner.py"
+  mounts:
+    # Docker bind sources are resolved from the repository root when the
+    # launcher/live_smoke helper is run there; runner_entrypoint.source is
+    # resolved from this config file's directory.
+    - source: ./env/dataelf_finance/adapter.py
+      target: /tmp/safactory-dataelf_finance/adapter.py
+      mode: ro
+    # Dataset rows carry only case identity (id/task/entity_id); mounted for
+    # transparency and future row enrichment.
+    - source: ./env/dataelf_finance/datasets
+      target: /tmp/safactory-dataelf_finance/datasets
+      mode: ro
+    - source: ./results
+      # /app/results matches the framework's fixed SAFACTORY_RESULT_PATH
+      # root (manager/episode_common.py) and the rjob twin, so the backup
+      # result artifact reaches the host in docker mode too.
+      target: /app/results
+      mode: rw
+    # 1.1 GB DDR-Bench 10-K SQLite database: read-only bind mount, linked
+    # (symlinked) into each DataElf job workspace — never copied.
+    # Keep in sync with env_params.dataelf.db_path in dataelf_finance_config.yaml.
+    - source: /mnt/shared-storage-user/evobox-share/chenbei/DDR_Bench/data/10k/raw
+      target: /workspace/DDR_Bench/data/10k/raw
+      mode: ro
+    # In-container scoring subset (2026-10-12 migration): the ddr_10k reward
+    # calculator + judge config ONLY — never the whole dataelf_eval checkout
+    # (the full qa.json must not enter the container; per-entity rubrics
+    # travel inside the dataset rows). Read-only single-file binds; future
+    # benchmarks add their benchmarks/<name>/reward_calculator.py line.
+    # Must stay in sync with env_params.dataelf_eval.scoring_root in
+    # dataelf_finance_config.yaml and the rjob twin's embedded_files.
+    - source: /mnt/shared-storage-user/evobox-share/chenbei/dataelf_eval/benchmarks/ddr_10k/reward_calculator.py
+      target: /opt/dataelf_eval-scoring/benchmarks/ddr_10k/reward_calculator.py
+      mode: ro
+    - source: /mnt/shared-storage-user/evobox-share/chenbei/dataelf_eval/eval/config.yaml
+      target: /opt/dataelf_eval-scoring/eval/config.yaml
+      mode: ro
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    NO_PROXY: host.docker.internal,localhost,127.0.0.1,::1
+    no_proxy: host.docker.internal,localhost,127.0.0.1,::1
+  extra_args:
+    - --add-host=host.docker.internal:host-gateway
+  idle_command: "tail -f /dev/null"

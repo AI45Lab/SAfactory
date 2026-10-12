@@ -1,0 +1,60 @@
+environments:
+  - env_name: dataelf_finance
+    # Build and publish this tag from env/dataelf_finance/Dockerfile before
+    # live RJob runs (see README.md).
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu_task/safactory_bench:dataelf-finance-v0.4
+    env_num: 1
+    dataset: ./datasets/ddr10k_bench_100.jsonl
+    dataset_load_mode: eager
+    env_params:
+      task_family: dataelf_finance
+      # Must equal the results mount target in dataelf_finance_start.rjob.yaml.
+      results_root: /app/results
+      dataelf:
+        # DataElf checkout baked into the image at /opt/DataElf.
+        repo_root: /opt/DataElf
+        benchmark: ddr_10k
+        # Cluster-visible mount of the 1.1 GB SQLite database (see
+        # rjob.mount_config in dataelf_finance_start.rjob.yaml); linked, not
+        # copied, into each job workspace.
+        db_path: /workspace/DDR_Bench/data/10k/raw/10k_financial_data.db
+        tools:
+          sql: true
+          python: true
+          web: false
+        max_tool_calls: 600
+        # Real explorations run 1.5h+ (smoke-2 took 1h35m); the previous 1h
+        # budget truncated smoke-1 mid-run ("Pi CLI timed out after 3600
+        # seconds").
+        max_runtime_seconds: 14400
+        # Native subprocess cap: 4 h runtime plus 600 s grace. The launcher
+        # also needs the tail scoring and startup budget (see below).
+        run_timeout_seconds: 15000
+        # Strip cumulative message_update snapshots from pi_events.jsonl
+        # (see dataelf_finance_config.yaml).
+        compact_stream_events: true
+        # pi's default HTTP idle timeout kills long tool-call gaps (smoke-1
+        # auto-retried because of it); raise to 15 min.
+        pi_settings:
+          httpIdleTimeoutMs: 900000
+      # ---- Reward scoring (in-container, adapter tail stage) ----
+      # Since the 2026-10-12 migration the reward calculator (LLM judge
+      # included) runs INSIDE the episode container at the adapter's tail
+      # stage, via the /opt/dataelf_eval-scoring subset embedded at submit
+      # time (see dataelf_finance_start.rjob.yaml); the host-side rule
+      # evaluator only normalizes the resulting dataelf_eval.reward.v1
+      # document. Judge endpoints and reward modes are read by the reward
+      # calculator from the embedded eval/config.yaml — not here. Official
+      # benchmark scoring is still replayed post-hoc by dataelf_eval
+      # (cross-calibration against this training reward).
+      # Image v0.4 includes the scoring dependencies in the venv and
+      # restores its PATH for login shells used by the launcher.
+      dataelf_eval:
+        # Must equal the scoring mount target in dataelf_finance_start.rjob.yaml.
+        scoring_root: /opt/dataelf_eval-scoring
+        # Budget for the tail-stage scoring (judge fanout) inside the
+        # episode; a blown budget fails the episode instead of hanging the
+        # runner (the daemon scoring thread is abandoned).
+        # Launch with --agent-start-timeout-s 18000: 15000 s native cap
+        # + 1800 s scoring + 1200 s scheduling/startup/finish margin.
+        scoring_timeout_s: 1800
