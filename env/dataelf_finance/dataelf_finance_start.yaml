@@ -5,7 +5,11 @@ container:
   runner_entrypoint:
     source: ./runner.py
     target: /tmp/safactory-dataelf_finance/runner.py
-    command: "python /tmp/safactory-dataelf_finance/runner.py"
+    # ABSOLUTE venv python: the framework executes this via `sh -lc` (login
+    # shell), whose /etc/profile resets PATH and drops /opt/DataElf/.venv/bin
+    # — bare `python` resolves to the system interpreter, which lacks the
+    # httpx/PyYAML the in-container scoring needs (V5 2026-10-12 failure).
+    command: "/opt/DataElf/.venv/bin/python /tmp/safactory-dataelf_finance/runner.py"
   mounts:
     # Docker bind sources are resolved from the repository root when the
     # launcher/live_smoke helper is run there; runner_entrypoint.source is
@@ -29,6 +33,19 @@ container:
     # Keep in sync with env_params.dataelf.db_path in dataelf_finance_config.yaml.
     - source: /mnt/shared-storage-user/evobox-share/chenbei/DDR_Bench/data/10k/raw
       target: /workspace/DDR_Bench/data/10k/raw
+      mode: ro
+    # In-container scoring subset (2026-10-12 migration): the ddr_10k reward
+    # calculator + judge config ONLY — never the whole dataelf_eval checkout
+    # (the full qa.json must not enter the container; per-entity rubrics
+    # travel inside the dataset rows). Read-only single-file binds; future
+    # benchmarks add their benchmarks/<name>/reward_calculator.py line.
+    # Must stay in sync with env_params.dataelf_eval.scoring_root in
+    # dataelf_finance_config.yaml and the rjob twin's embedded_files.
+    - source: /mnt/shared-storage-user/evobox-share/chenbei/dataelf_eval/benchmarks/ddr_10k/reward_calculator.py
+      target: /opt/dataelf_eval-scoring/benchmarks/ddr_10k/reward_calculator.py
+      mode: ro
+    - source: /mnt/shared-storage-user/evobox-share/chenbei/dataelf_eval/eval/config.yaml
+      target: /opt/dataelf_eval-scoring/eval/config.yaml
       mode: ro
   env:
     PYTHONDONTWRITEBYTECODE: "1"

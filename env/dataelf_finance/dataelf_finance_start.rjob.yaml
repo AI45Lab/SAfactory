@@ -5,7 +5,12 @@ container:
   runner_entrypoint:
     source: ./runner.py
     target: /tmp/safactory-dataelf_finance/runner.py
-    command: "python /tmp/safactory-dataelf_finance/runner.py"
+    # ABSOLUTE venv python: rjob executes the command as `sh -lc` (login
+    # shell), whose /etc/profile resets PATH and drops
+    # /opt/DataElf/.venv/bin — bare `python` resolves to the system
+    # interpreter, which lacks the httpx/PyYAML the in-container scoring
+    # needs (V5 2026-10-12 failure; mirror of the docker twin).
+    command: "/opt/DataElf/.venv/bin/python /tmp/safactory-dataelf_finance/runner.py"
   env:
     PYTHONDONTWRITEBYTECODE: "1"
     HTTP_PROXY: ""
@@ -49,3 +54,14 @@ rjob:
     # runner.py is embedded automatically from runner_entrypoint.source.
     - source: ./adapter.py
       target: /tmp/safactory-dataelf_finance/adapter.py
+    # In-container scoring subset (2026-10-12 migration), mirroring the
+    # docker twin's /opt/dataelf_eval-scoring mounts: content is snapshotted
+    # at submit time (naturally read-only). Sources are absolute because
+    # embedded relative sources resolve against the launcher's cwd, and the
+    # dataelf_eval checkout lives beside (not inside) the SAfactory repo.
+    # NEVER embed the full dataelf_eval checkout — the qa.json stays out of
+    # the container (per-entity rubrics travel in the dataset rows).
+    - source: /mnt/shared-storage-user/evobox-share/chenbei/dataelf_eval/benchmarks/ddr_10k/reward_calculator.py
+      target: /opt/dataelf_eval-scoring/benchmarks/ddr_10k/reward_calculator.py
+    - source: /mnt/shared-storage-user/evobox-share/chenbei/dataelf_eval/eval/config.yaml
+      target: /opt/dataelf_eval-scoring/eval/config.yaml

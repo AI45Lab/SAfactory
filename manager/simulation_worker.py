@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-import math
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -130,27 +129,6 @@ class _SimulationCircuitBreaker:
             ]
         ).lower()
         return any(marker in text for marker in cls._TIMEOUT_MARKERS)
-
-
-def _eval_timeout_override(env_params: Dict[str, Any]) -> Optional[float]:
-    """Per-episode rule-eval timeout from ``env_params.eval_timeout_s``.
-
-    Returns None (keep the EvalSpec default) for absent, non-numeric,
-    boolean, non-finite, or non-positive values: a poisoned knob must
-    warn and fall back, never install a 1 s/NaN/inf timeout.
-    """
-    raw = env_params.get("eval_timeout_s")
-    if raw is None:
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError, OverflowError):
-        log.warning("ignoring non-numeric eval_timeout_s %r; keeping framework default", raw)
-        return None
-    if isinstance(raw, bool) or not math.isfinite(value) or value <= 0:
-        log.warning("ignoring invalid eval_timeout_s %r; must be a finite positive number", raw)
-        return None
-    return value
 
 
 class SimulationWorkerGroup:
@@ -366,9 +344,6 @@ class SimulationWorkerGroup:
                         log.debug("worker=%d agent=%s has no rule evaluator; skip evaluation", worker_id, agent_key)
 
                     if eval_spec is not None:
-                        timeout_override = _eval_timeout_override(public_env_params)
-                        if timeout_override is not None:
-                            eval_spec.timeout_s = timeout_override
                         eval_request = EvalRequest(
                             job_id=self.cfg.job_id,
                             session_id=result.session_id,

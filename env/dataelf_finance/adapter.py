@@ -5,6 +5,22 @@ row (one ``<cik>__entity`` case) onto one native ``dataelf run`` invocation
 and collects the native output.  DataElf's own exploration/scoring logic is
 never reimplemented here.
 
+Tail-stage scoring (2026-10-12 migration, benchmark_notes/
+safactory_skill_incontainer_eval_migration.md): after the native run
+succeeds, the adapter scores the episode IN-CONTAINER.  It loads the
+read-only-mounted dataelf_eval scoring subset (``<scoring_root>/benchmarks/
+<benchmark>/reward_calculator.py`` + ``<scoring_root>/eval/config.yaml``),
+calls ``evaluate_case`` with a case dict built from the metrics plus the
+dataset row (whose ``reward_rubric`` carries this entity's checklist), and
+writes the unified ``dataelf_eval.reward.v1`` document into
+``metrics["reward"]``.  The host-side rule evaluator only normalizes it.
+Scoring runs under a daemon-thread budget (``scoring_timeout_s``, default
+1800 s): judge calls share the episode's failure domain and budget, and a
+blown budget fails the episode instead of hanging the runner — daemon
+threads throughout (the calculator's judge fanout included) so process exit
+is never blocked on stuck judge calls.  The full score document is also
+persisted to ``reward_debug.json`` beside the episode artifacts.
+
 Model wiring per episode (no credentials are stored in this repo):
 
 * a per-episode DataElf config is generated and selected via
@@ -23,13 +39,16 @@ Model wiring per episode (no credentials are stored in this repo):
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from typing import Any
 from urllib.parse import urlsplit
@@ -38,7 +57,13 @@ _PROVIDER = "safactory"
 _DEFAULT_TOOLS = {"sql": True, "python": True, "web": False}
 _DEFAULT_MAX_TOOL_CALLS = 600
 _DEFAULT_MAX_RUNTIME_SECONDS = 3600
+_DEFAULT_SCORING_ROOT = "/opt/dataelf_eval-scoring"
+_DEFAULT_SCORING_TIMEOUT_S = 1800
 _STDERR_TAIL_CHARS = 4000
+# Grace for the pipe write-ends to close after the process group is SIGKILLed;
+# a descendant that escaped the group (pi runs in its own session) can hold
+# them open forever, so even the post-kill read must be bounded.
+_KILL_GRACE_SECONDS = 10
 # Keys DataElf resolves from the *process* env over the generated per-episode
 # config (DATAELF_* via _env(), and dataelf/config.py copies _CHILD_ENV_KEYS
 # — PI_CODING_AGENT_DIR etc. — into the child env after the config env block).
@@ -137,7 +162,7 @@ def run_case(
         except ProcessLookupError:
             pass
         try:
-            stdout, stderr = process.communicate(timeout=30)
+            stdout, stderr = process.communicate(timeout=_KILL_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
             process.kill()
             stdout, stderr = "", ""
@@ -191,8 +216,128 @@ def run_case(
     for key in ("evidence_refs", "confidence", "limitations"):
         if key in native_result:
             metrics[key] = native_result[key]
+    metrics["reward"] = _score_episode(
+        env_params, task, metrics,
+        session_id=session_id, job_id=job_id, episode_dir=episode_dir,
+    )
     step_count = _pi_event_count(workspace)
     return metrics, step_count
+
+
+def _score_episode(
+    env_params: dict[str, Any],
+    task: dict[str, Any],
+    metrics: dict[str, Any],
+    *,
+    session_id: str,
+    job_id: str,
+    episode_dir: Path,
+) -> dict[str, Any]:
+    """Score this episode in-container via the mounted dataelf_eval module.
+
+    The case dict follows ``dataelf_eval/eval/REWARD_SCHEMA.md`` §1: native
+    deliverable + artifact paths + the dataset row (whose ``reward_rubric``
+    carries this entity's checklist).  The returned unified reward document
+    (``dataelf_eval.reward.v1``) is written into ``metrics["reward"]`` and
+    persisted to ``reward_debug.json``.  Any scoring failure — module not
+    mounted, case rejected, judge crash, blown budget, non-finite score —
+    fails the episode (scoring shares the rollout's failure domain by
+    design).
+    """
+    scoring = env_params.get("dataelf_eval")
+    if not isinstance(scoring, dict):
+        raise ValueError(
+            "env_params.dataelf_eval must be a JSON object "
+            "(scoring_root/scoring_timeout_s; see dataelf_finance_config.yaml)"
+        )
+    scoring_root = Path(_first_text(scoring.get("scoring_root"), _DEFAULT_SCORING_ROOT))
+    scoring_timeout_s = _int_option(scoring, "scoring_timeout_s", _DEFAULT_SCORING_TIMEOUT_S)
+    benchmark = str(metrics.get("benchmark") or "")
+    module_path = scoring_root / "benchmarks" / benchmark / "reward_calculator.py"
+    if not module_path.is_file():
+        raise RuntimeError(
+            f"in-container scoring module not mounted at {module_path} (expected the "
+            "read-only dataelf_eval scoring subset; see dataelf_finance_start.yaml)"
+        )
+
+    case = {
+        "benchmark": benchmark,
+        "question_id": metrics.get("case_id"),
+        "entity_id": metrics.get("entity_id"),
+        "objective": metrics.get("objective"),
+        "session_id": session_id,
+        "job_id": job_id,
+        "summary": metrics.get("summary"),
+        "key_findings": metrics.get("key_findings"),
+        "artifacts": {
+            "result_file": metrics.get("native_output_path"),
+            "pi_events": metrics.get("pi_events_path"),
+            "workspace": metrics.get("native_workspace"),
+        },
+        # The row is passed verbatim: reward_calculator._checklist reads
+        # row["reward_rubric"] (digest-verified single-case checklist).
+        "row": task,
+        # Points the calculator's _config at the mounted eval/config.yaml
+        # (judge authority; the qa_file fallback string simply won't resolve
+        # in-container and is never reached when the row carries a rubric).
+        "eval_params": {"root": str(scoring_root)},
+    }
+
+    outcome: dict[str, Any] = {}
+
+    def _score() -> None:
+        try:
+            spec = importlib.util.spec_from_file_location(
+                f"dataelf_scoring_{benchmark or 'benchmark'}", module_path
+            )
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"cannot load scoring module {module_path}")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            calculator = getattr(module, "REWARD_CALCULATOR", None)
+            if calculator is None or not hasattr(calculator, "evaluate_case"):
+                raise RuntimeError(f"{module_path} does not export REWARD_CALCULATOR.evaluate_case")
+            outcome["score"] = calculator.evaluate_case(case)
+        except BaseException as exc:  # reported into the episode error below
+            outcome["error"] = f"{type(exc).__name__}: {exc}"
+
+    # Daemon thread + bounded join (NOT ThreadPoolExecutor: its workers are
+    # non-daemon and their atexit join would hang the runner's exit when this
+    # budget fires on stuck judge calls).
+    worker = threading.Thread(target=_score, name="dataelf-reward-scoring", daemon=True)
+    worker.start()
+    worker.join(max(1, scoring_timeout_s))
+
+    debug_path = episode_dir / "reward_debug.json"
+    if worker.is_alive():
+        _write_text(
+            debug_path,
+            json.dumps(
+                {"phase": "timeout", "benchmark": benchmark, "scoring_timeout_s": scoring_timeout_s},
+                ensure_ascii=False, indent=2,
+            ),
+        )
+        raise RuntimeError(
+            f"in-container reward scoring exceeded its {scoring_timeout_s}s budget "
+            "(judge endpoint stuck?); scoring thread abandoned, episode failed"
+        )
+    if "error" in outcome:
+        _write_text(
+            debug_path,
+            json.dumps({"phase": "error", "benchmark": benchmark, "error": outcome["error"]}, ensure_ascii=False, indent=2),
+        )
+        raise RuntimeError(f"in-container reward scoring failed: {outcome['error']}")
+    score = outcome["score"]
+    if not isinstance(score, dict) or score.get("status") != "succeeded":
+        raise RuntimeError(
+            "in-container reward scoring returned a non-succeeded document: "
+            f"{json.dumps(score, default=str)[:500]}"
+        )
+    value = score.get("normalized_score_10")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise RuntimeError(f"in-container reward score normalized_score_10 is not finite: {value!r}")
+    _write_text(debug_path, json.dumps(score, ensure_ascii=False, indent=2, allow_nan=False))
+    return score
 
 
 def _case_identity(task: dict[str, Any]) -> tuple[str, str]:
