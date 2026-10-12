@@ -1,13 +1,21 @@
 environments:
   - env_name: harbor
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:safactory-harbor-runtime-v0.21.0
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:safactory-harbor-runtime-v0.23.0
     env_num: 1
     dataset: ./datasets/harbor_oracle_smoke.jsonl
     dataset_load_mode: eager
 
     env_params:
       task_family: harbor
-      agent: oracle
-      task_path: /tmp/safactory-harbor-task
+      agent: claude-code
+      model: glm-5.2
+      reasoning_effort: max
+      agent_runtime:
+        source: /mnt/shared-storage-gpfs2/trustcyberdata/public/agent_bundles/claude-code-2.1.207-linux-amd64/claude
+        version: "2.1.207"
+      # Forwarded to the Task Agent through Harbor --ae, not just the RJob host.
+      agent_env:
+        NO_PROXY: "100.96.0.0/12,127.0.0.1,100.103.250.127,localhost"
+        no_proxy: "100.96.0.0/12,127.0.0.1,100.103.250.127,localhost"
       reward_key: reward
-      timeout_s: 900
+      timeout_s: 36000

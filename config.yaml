@@ -10,7 +10,7 @@ rjob:
   retries: 3
 
   # Optional but commonly shared across RJob submissions.
-  charged_group: "evobox_proxy"
+  charged_group: "evobox_gpu"
   name_prefix: safactory
   poll_interval_s: 5
   cleanup_on_finish: true
