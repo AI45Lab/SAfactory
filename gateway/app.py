@@ -4,11 +4,12 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Any
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -53,6 +54,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             sorted((cfg.llm_routes or {}).keys()),
         )
         app.state.gateway_ready = False
+        app.state.gateway_instance_id = uuid.uuid4().hex
         app.state.gateway_draining = False
         app.state.gateway_config = cfg
         log.info("Gateway storage init begin")
@@ -687,7 +689,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         status = await resolver.get_status(session_id)
         if status is None:
             return JSONResponse({"error": {"type": "not_found", "message": "session not found"}}, status_code=404)
-        return JSONResponse(status)
+        return JSONResponse({**status, "instance_id": app.state.gateway_instance_id})
 
     async def close_session(session_id: str, request: Request) -> Response:
         resolver: SessionResolver = app.state.gateway_resolver
@@ -758,8 +760,14 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             {
                 "session_id": session_id,
                 "status": "closed",
+                "instance_id": app.state.gateway_instance_id,
                 "drained": binding.close_drained,
-                "telemetry_status": binding.close_telemetry_status or "flushed",
+                "telemetry_status": (
+                    "failed"
+                    if binding.telemetry_write_failed
+                    else binding.close_telemetry_status or "flushed"
+                ),
+                "telemetry_write_failed": binding.telemetry_write_failed,
                 "completion_mode": binding.close_completion_mode or completion_mode,
             }
         )
@@ -893,8 +901,12 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         return JSONResponse(
             {
                 "status": "ready",
+                "instance_id": app.state.gateway_instance_id,
                 "storage_type": cfg.storage_type,
                 "storage_config": _ready_storage_config(cfg),
+                **_ready_storage_state(
+                    cfg, app.state.gateway_storage, app.state.gateway_telemetry
+                ),
                 "max_steps": cfg.max_steps,
             }
         )
@@ -1579,12 +1591,10 @@ async def _finalize_session_close(
     telemetry_status = "timeout"
 
     async def finalize() -> bool:
-        session_drained = True
-        if cfg.close_mode == "soft_close":
-            session_drained = await _wait_for_session_drain(
-                binding,
-                cfg.session_close_timeout_s,
-            )
+        session_drained = await _wait_for_session_drain(
+            binding,
+            cfg.session_close_timeout_s,
+        )
         await telemetry.wait_for_session_flush(binding)
         return session_drained
 
@@ -1605,6 +1615,8 @@ async def _finalize_session_close(
     except Exception:
         log.exception("Gateway session close finalization failed: session_id=%s", binding.session_id)
     finally:
+        if binding.telemetry_write_failed:
+            telemetry_status = "failed"
         await resolver.finish_close_session(
             binding.session_id,
             drained=drained,
@@ -1654,9 +1666,56 @@ async def _wait_for_session_drain(binding: GatewaySessionBinding, drain_timeout_
 def _ready_storage_config(cfg: GatewayConfig) -> dict[str, Any]:
     storage_config = dict(cfg.storage_config or {})
     public: dict[str, Any] = {}
-    if "db_url" in storage_config:
-        public["db_url"] = storage_config["db_url"]
+    if cfg.storage_type == "sqlite" and "db_url" in storage_config:
+        public["db_url"] = _public_storage_reference(storage_config["db_url"])
     return public
+
+
+def _public_storage_reference(value: Any) -> str | None:
+    """Expose storage identity without URL credentials or signed query strings."""
+    if value is None:
+        return None
+    text = str(value)
+    if text.startswith("sqlite://"):
+        return text.split("?", 1)[0].split("#", 1)[0]
+    if "://" not in text:
+        return text
+    parsed = urlsplit(text)
+    netloc = parsed.netloc.rsplit("@", 1)[-1]
+    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+
+
+def _ready_storage_state(
+    cfg: GatewayConfig,
+    storage: GatewayStorage,
+    telemetry: TelemetryRecorder,
+) -> dict[str, Any]:
+    manager = getattr(storage, "data_manager", None)
+    strategy = getattr(manager, "_strategy", None)
+    # Custom storage implementations must not claim durability we cannot inspect.
+    buffer_enabled = getattr(strategy, "_enable_buffer", None)
+    upsert_enabled = (
+        getattr(manager, "_upsert_batcher") is not None
+        if manager is not None and hasattr(manager, "_upsert_batcher")
+        else None
+    )
+    identity: dict[str, Any] = {"namespace": getattr(manager, "job_id", None)}
+    if cfg.storage_type == "sqlite":
+        identity["db_url"] = _public_storage_reference(getattr(strategy, "db_url", None))
+    else:
+        identity.update({
+            field: _public_storage_reference(getattr(strategy, field, None))
+            for field in ("landing_table", "env_config_table")
+        })
+    return {
+        "durability": {
+            "telemetry_mode": cfg.telemetry_mode,
+            "async_cloud_writes": telemetry.async_writes_enabled,
+            "enable_buffer": buffer_enabled if isinstance(buffer_enabled, bool) else None,
+            "enable_upsert_batching": upsert_enabled,
+        },
+        "storage_identity": identity,
+    }
 
 
 def _metric_label(value: str) -> str:

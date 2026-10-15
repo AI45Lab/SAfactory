@@ -22,11 +22,13 @@ from core.perf_trace import PerfTrace
 from evaluator.factory import build_evaluation_service
 from evaluator.gateway_client import GatewayClient
 from evaluator.reward_committer import RewardCommitter
+from evaluator.result_file import ResultFileEvaluatorBackend
 from evaluator.service import EvaluationService
 from .agent_start_client import AgentStartClient
 from .manager import AgentPoolManager
 from .resume_cleanup import (
     cleanup_resume_artifacts,
+    prepare_sandbox_resume,
     select_generated_resume_environments,
 )
 from .simulation_config import (
@@ -147,6 +149,13 @@ class SimulationFlow:
         )
         self.manager_cfg = build_manager_runtime_config(self.cfg)
         cleanup_environments = resume_environments
+        if self.cfg.resume and self.cfg.mode == "sandbox":
+            await self.check_gateway_ready()
+            cleanup_environments, recovery = await prepare_sandbox_resume(
+                cfg=self.cfg, manager_cfg=self.manager_cfg,
+                environment_rows=resume_environments, data_manager=self.data_manager,
+            )
+            self.manager_cfg["cluster"]["sandbox"]["recovery_by_session"] = recovery
         if self.cfg.resume and self.cfg.mode == "rjob":
             cleanup_environments = select_generated_resume_environments(
                 job_id=self.cfg.job_id,
@@ -335,11 +344,12 @@ class SimulationFlow:
             llm_model=self.cfg.llm_model,
         )
         evaluation_service = None
-        if self.cfg.evaluation_enabled:
+        if self.cfg.evaluation_enabled or self.cfg.mode == "sandbox":
             log.info("EVAL FLOW enabled: rule evaluator only")
             self.evaluation_service = build_evaluation_service(
                 trajectory_reader=None,
                 max_concurrency=self.cfg.max_workers or self.cfg.warm_pool_size,
+                backend=ResultFileEvaluatorBackend() if self.cfg.mode == "sandbox" else None,
             )
             evaluation_service = self.evaluation_service
         else:
@@ -411,14 +421,20 @@ class SimulationFlow:
         try:
             payload = json.loads(ready_body)
         except json.JSONDecodeError:
+            if self.cfg.mode == "sandbox":
+                raise RuntimeError("Sandbox requires a Gateway reporting storage durability")
             log.warning("gateway ready response is not JSON; cannot validate shared trajectory DB: %s", ready_url)
             return
         if not isinstance(payload, dict):
+            if self.cfg.mode == "sandbox":
+                raise RuntimeError("Sandbox requires an object Gateway readiness response")
             log.warning("gateway ready response is not an object; cannot validate shared trajectory DB: %s", ready_url)
             return
 
         gateway_storage_type = str(payload.get("storage_type") or "").strip()
         if not gateway_storage_type:
+            if self.cfg.mode == "sandbox":
+                raise RuntimeError("Sandbox Gateway readiness must report storage_type")
             log.warning("gateway ready response has no storage_type; cannot validate shared trajectory DB")
             return
         if gateway_storage_type != self.cfg.storage_type:
@@ -428,12 +444,37 @@ class SimulationFlow:
                 "Start gateway with the same storage backend used by launcher."
             )
 
+        identity = payload.get("storage_identity") or {}
+        if self.cfg.mode == "sandbox":
+            durability = payload.get("durability") or {}
+            instance_id = payload.get("instance_id")
+            if not isinstance(instance_id, str) or not instance_id:
+                raise RuntimeError("Sandbox Gateway readiness must report its instance_id")
+            manager_cfg = getattr(self, "manager_cfg", None)
+            if manager_cfg is not None:
+                manager_cfg["cluster"]["sandbox"]["gateway_instance_id"] = instance_id
+            if not isinstance(identity, dict) or not isinstance(durability, dict):
+                raise RuntimeError("Sandbox Gateway readiness must report storage identity and durability objects")
+            if (
+                durability.get("telemetry_mode") != "strict"
+                or durability.get("async_cloud_writes") is not False
+                or durability.get("enable_buffer") is not False
+                or durability.get("enable_upsert_batching") is not False
+            ):
+                raise RuntimeError("Sandbox requires strict synchronous Gateway writes with storage buffers disabled")
+            if self.cfg.storage_type == "cloud":
+                strategy = getattr(self.data_manager, "_strategy", None)
+                for field in ("landing_table", "env_config_table"):
+                    expected = getattr(strategy, field, None)
+                    if not expected or identity.get(field) != expected:
+                        raise RuntimeError(f"Sandbox Gateway storage identity mismatch: {field}")
         if self.cfg.storage_type != "sqlite":
             return
 
         storage_config = payload.get("storage_config")
         storage_config = storage_config if isinstance(storage_config, dict) else {}
-        gateway_db_url = str(storage_config.get("db_url") or "").strip()
+        reported_db_url = identity.get("db_url") if self.cfg.mode == "sandbox" else storage_config.get("db_url")
+        gateway_db_url = str(reported_db_url or "").strip()
         if not gateway_db_url:
             raise RuntimeError(
                 "gateway ready response does not expose storage_config.db_url. "

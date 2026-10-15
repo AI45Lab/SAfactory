@@ -12,9 +12,10 @@ from core.data_manager.load_yaml import materialize_dataset_env_params
 from core.data_manager.contracts import SessionContext
 from core.data_manager.manager import DataManager
 from core.perf_trace import PerfTrace
+from core.result_artifact import update_json_atomic
 from core.runtime_metadata import strip_internal_env_params
-from evaluator.eval_types import EvalRequest, EvalResult, EvalStatus
-from evaluator.gateway_client import GatewayClient
+from evaluator.eval_types import EvalRequest, EvalResult, EvalSpec, EvalStatus
+from evaluator.gateway_client import GatewayClient, is_durably_closed
 from evaluator.reward_committer import RewardCommitter
 from evaluator.rule_evaluator import discover_rule_eval_spec
 from evaluator.service import EvaluationService
@@ -251,7 +252,7 @@ class SimulationWorkerGroup:
             result: SimulationStartResult | None = None
             release_reusable: bool | None = None
             cancelled = False
-            gateway_finalized = self.gateway_client is None
+            gateway_finalized = self.gateway_client is None and lease.runtime != "sandbox"
             try:
                 log.debug(
                     "worker=%d acquired agent=%s runtime=%s resource=%s reuse=%s",
@@ -274,11 +275,12 @@ class SimulationWorkerGroup:
                 with trace.span("agent_rollout"):
                     result = await self._run_one_episode(lease, session, request, worker_id)
                 metrics = result.metrics if isinstance(result.metrics, dict) else {}
-                if result.truncated or str(metrics.get("timeout_layer") or "") in {
+                timed_out = str(metrics.get("timeout_layer") or "") in {
                     "docker_exec",
                     "sandbox_command",
                     "rjob_wait_terminal",
-                }:
+                }
+                if result.truncated or (timed_out and not (lease.runtime == "sandbox" and metrics.get("execution_error"))):
                     result.status = "truncated"
                     result.truncated = True
                 trace.update_context(
@@ -299,6 +301,7 @@ class SimulationWorkerGroup:
                             worker_id=worker_id,
                             agent_key=agent_key,
                             trace=trace,
+                            lease=lease,
                         )
 
                 if not gateway_finalized:
@@ -307,7 +310,7 @@ class SimulationWorkerGroup:
                     release_reusable = False
                 elif completion_mode == "abort":
                     release_reusable = False
-                elif result.truncated:
+                elif result.truncated and lease.runtime != "sandbox":
                     if self.reward_committer is None:
                         raise RuntimeError("reward committer is required for truncated sessions")
                     with trace.span("reward_commit_truncated"):
@@ -328,9 +331,13 @@ class SimulationWorkerGroup:
                 elif self.evaluation_service is not None and self.reward_committer is not None:
                     with trace.span("eval_discover_rule"):
                         public_env_params = strip_internal_env_params(lease.env_params)
-                        eval_spec = discover_rule_eval_spec(
-                            agent_name=lease.agent_name,
-                            env_root=self.cfg.agent_root,
+                        eval_spec = (
+                            EvalSpec(eval_id="safactory_result_file")
+                            if lease.runtime == "sandbox"
+                            else discover_rule_eval_spec(
+                                agent_name=lease.agent_name,
+                                env_root=self.cfg.agent_root,
+                            )
                         )
                     trace.mark("eval_spec_resolved", eval_spec_found=eval_spec is not None)
                     if eval_spec is not None:
@@ -358,13 +365,19 @@ class SimulationWorkerGroup:
                             eval_status=eval_result.status,
                             eval_score=eval_result.normalized_score_10,
                         )
-                        if eval_result.status == "succeeded":
+                        committable = eval_result.status == "succeeded" or (
+                            lease.runtime == "sandbox" and eval_result.status == "truncated"
+                        )
+                        if committable:
                             with trace.span("reward_commit"):
                                 await self.reward_committer.commit(
                                     session_id=result.session_id,
                                     eval_result=eval_result,
                                 )
                             result.total_reward = eval_result.normalized_score_10
+                            if lease.runtime == "sandbox":
+                                result.status = eval_result.status
+                                result.truncated = eval_result.status == "truncated"
                             with trace.span("mark_environment_finished"):
                                 await self.data_manager.mark_environment_finished(lease.agent_id)
                         else:
@@ -378,6 +391,8 @@ class SimulationWorkerGroup:
                         )
                         release_reusable = False
                 else:
+                    if lease.runtime == "sandbox":
+                        raise RuntimeError("Sandbox sessions require the standard result-file evaluator")
                     await complete_latest_session_step(
                         self.data_manager,
                         session_id=result.session_id,
@@ -389,6 +404,11 @@ class SimulationWorkerGroup:
 
                 with trace.span("store_result"):
                     self._results[agent_key] = _StoredResult(result.status, result.total_reward)
+                if (
+                    lease.runtime == "sandbox" and lease.runtime_handle is not None
+                    and gateway_finalized and result.result_artifact_path
+                ):
+                    lease.runtime_handle.retain = False
             except asyncio.CancelledError:
                 cancelled = True
                 release_reusable = False
@@ -425,8 +445,24 @@ class SimulationWorkerGroup:
                                 worker_id=worker_id,
                                 agent_key=agent_key,
                                 trace=trace,
+                                lease=lease,
                             )
-                        await self._clean_gateway_session(session.session_id)
+                        writer_stopped = lease.runtime != "sandbox"
+                        if lease.runtime == "sandbox":
+                            if lease.runtime_handle is not None:
+                                writer_stopped = getattr(lease.runtime_handle, "execution_stopped", False) is True
+                            else:
+                                runtime_cfg = lease.runtime_config or {}
+                                recovery = runtime_cfg.get("recovery") or {}
+                                reference = recovery.get("runtime_ref") or runtime_cfg.get("runtime_ref") or {}
+                                writer_stopped = reference.get("command_finished") is True
+                        if gateway_finalized and writer_stopped:
+                            await self._clean_gateway_session(session.session_id)
+                        elif gateway_finalized:
+                            log.warning(
+                                "preserving closed Gateway session for unconfirmed Sandbox writer: session_id=%s",
+                                session.session_id,
+                            )
                     if result is not None:
                         with trace.span("record_circuit_result"):
                             await self._record_circuit_result(result, worker_id=worker_id, agent_key=agent_key)
@@ -532,6 +568,7 @@ class SimulationWorkerGroup:
         worker_id: int,
         agent_key: str,
         trace: PerfTrace | None = None,
+        lease: SimulationAgentLease | None = None,
     ) -> bool:
         if self.gateway_client is None:
             return True
@@ -540,21 +577,32 @@ class SimulationWorkerGroup:
             "seal": "rollout_sealed",
             "abort": "system_error",
         }[completion_mode]
+        finalized = False
         try:
             if trace is None:
-                await self.gateway_client.close_session(
+                closed = await self.gateway_client.close_session(
                     session_id,
                     reason=reason,
                     completion_mode=completion_mode,
                 )
             else:
                 with trace.span("gateway_close_session"):
-                    await self.gateway_client.close_session(
+                    closed = await self.gateway_client.close_session(
                         session_id,
                         reason=reason,
                         completion_mode=completion_mode,
                     )
-            return True
+            if not is_durably_closed(closed, session_id=session_id):
+                raise RuntimeError(f"Gateway did not confirm a durable session close: {closed!r}")
+            if lease is not None and lease.runtime == "sandbox":
+                runtime_cfg = lease.runtime_config or {}
+                reference = (runtime_cfg.get("recovery") or {}).get("runtime_ref") or {}
+                if reference.get("gateway_finalized") is not True and (
+                    not runtime_cfg.get("gateway_instance_id")
+                    or closed.get("instance_id") != runtime_cfg["gateway_instance_id"]
+                ):
+                    raise RuntimeError("Gateway restarted during Sandbox execution; trajectory durability is unconfirmed")
+            finalized = True
         except Exception as exc:
             log.warning(
                 "worker=%d agent=%s gateway session finalization failed; preserving rollout status=%s "
@@ -565,7 +613,19 @@ class SimulationWorkerGroup:
                 session_id,
                 exc,
             )
-            return False
+        if lease is not None and lease.runtime == "sandbox":
+            try:
+                runtime_cfg = lease.runtime_config or {}
+                await asyncio.to_thread(
+                    update_json_atomic, runtime_cfg["runtime_ref_path"],
+                    {"gateway_finalized": finalized},
+                    identity={"job_id": self.cfg.job_id, "session_id": session_id,
+                              "attempt_id": runtime_cfg["attempt_id"]},
+                )
+            except Exception:
+                log.warning("Cannot persist Sandbox Gateway close receipt: session_id=%s", session_id, exc_info=True)
+                finalized = False
+        return finalized
 
     async def _clean_gateway_session(self, session_id: str) -> None:
         if self.gateway_client is None:
@@ -634,6 +694,7 @@ class SimulationWorkerGroup:
                 "row_id": lease.row_id,
                 "image": lease.image,
                 "runtime": lease.runtime,
+                "attempt_id": lease.runtime_config.get("attempt_id", ""),
                 "resource_id": lease.resource_id,
                 "resource_name": lease.resource_name,
                 "container_id": lease.container_id,

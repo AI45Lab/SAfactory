@@ -25,6 +25,7 @@ class GatewaySessionBinding:
     close_completion_mode: str | None = None
     close_drained: bool | None = None
     close_telemetry_status: str | None = None
+    telemetry_write_failed: bool = False
     llm_step_count: int = 0
     truncated: bool = False
     truncate_reason: str | None = None
@@ -53,8 +54,14 @@ class GatewaySessionBinding:
         self.status = "closed"
         self.closed_at = closed_at
         self.close_drained = drained
-        self.close_telemetry_status = telemetry_status
+        self.close_telemetry_status = "failed" if self.telemetry_write_failed else telemetry_status
         self.last_seen_at = closed_at
+
+    def mark_telemetry_write_failed(self) -> None:
+        """Keep failed or unconfirmed writes visible even after later writes succeed."""
+        self.telemetry_write_failed = True
+        if self.status == "closed":
+            self.close_telemetry_status = "failed"
 
     def mark_truncated(self, reason: str, closed_at: datetime) -> None:
         self.truncated = True

@@ -1,60 +1,48 @@
 # Sandbox Mode
 
-Sandbox mode is a rollout runtime alongside Docker and RJob. Safactory creates a Brainbox Sandbox Instance through the OpenSandbox SDK, runs the agent entrypoint inside it, and deletes the instance after rollout and optional evaluation.
+Sandbox is a runtime alongside Docker and RJob. The non-environment framework supports AFS publication, SDK file upload, command-stop confirmation, result-file download, file evaluation, Gateway durability checks, and recovery. This change does not modify `env/`: existing environment runners still need migration to the v2 result contract before they can run through this path.
+
+See the [workflow and environment migration design](sandbox-workflow-design_CN.md) and [implemented interfaces](sandbox-implementation-plan_CN.md).
 
 ## Prerequisites
 
-1. Create a Sandbox Environment in advance using `SandboxAPI.md` at the repository root.
-2. Its image must match the agent config `env_image`.
-3. It must expose the command port, `44772` by default.
-4. Configure data and result storage as Environment volumes; local Docker bind mounts are not translated.
-5. The Sandbox must be able to reach `sandbox.gateway_base_url`.
+1. Prepare an Environment using `sandbox/02-environment-api.md`. Its image must match `env_image`, expose port `44772`, and run execd. `sandbox/create_sandbox.py` creates an instance, not an Environment.
+2. Install repository dependencies, Bash, and rclone on H. The SDK version is `opensandbox==0.1.9`. Supply `OPEN_SANDBOX_API_KEY`; set project in platform YAML.
+3. Include `sh`, `base64`, `sha256sum`, runner dependencies, and native verification dependencies in the image. Verify that the Sandbox can reach the shared Gateway URL.
+4. Configure the existing Gateway with `telemetry.mode: strict`, `telemetry.async_cloud_writes: false`, `storage_config.enable_buffer: false`, and `storage_config.enable_upsert_batching: false`. Gateway and launcher must use the same actual storage backend. `/readyz` reports the capabilities checked by the launcher.
 
-Install dependencies and provide credentials:
+## Configuration and launch
 
 ```bash
-pip install -r requirements.txt
+cp config.sandbox.example.yaml sandbox-config.yaml
 export OPEN_SANDBOX_API_KEY='<ak>:<sk>'
 ```
 
-Copy `config.sandbox.example.yaml` and set `project`, `environment_id`, and a cluster-reachable gateway URL. An agent can override the Environment in its start config. Geo3K uses the same runtime contract:
+Use three independent files:
 
-```yaml
-agent_name: geo3k
+- `sandbox-config.yaml`: platform, project, authentication, shared Gateway, AFS WebDAV, and local results directory.
+- `env/<env>/<env>.config.sandbox.yaml`: dataset, image, and business parameters.
+- `env/<env>/<env>.start.sandbox.yaml`: `sandbox:` runner_entrypoint, auxiliary files, resources, and input/output mounts.
 
-container:
-  workdir: /workspace
-  runner_entrypoint:
-    source: ./
-    target: /tmp/safactory-geo3k
-    command: "python /tmp/safactory-geo3k/runner.py"
+The environment files must be created during migration. Upload sources must be individual files. Sources and relative input host paths resolve against the start YAML. Docker bind mounts and RJob mount_config are not translated. AFS inputs are read-only; outputs must include writable `/app/results`. The complete volume list overrides Environment mounts.
 
-sandbox:
-  environment_id: env-geo3k
-  required_mount_paths: [/workspace/Safactory/results]
-```
-
-The local runner source is installed after instance allocation. `container.mounts` remain Docker-only.
-
-Run the flow with:
+After migrating the environment, use the existing launcher:
 
 ```bash
 python launcher.py \
   --mode sandbox \
-  --sandbox-config config.sandbox.yaml \
-  --agent-config env/geo3k/geo3k_config.yaml \
-  --agent-start-config env/geo3k/geo3k_start.yaml \
-  --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
-  --llm-model geo3k_model \
-  --enable-evaluation \
-  --job-id geo3k-sandbox-smoke \
-  --pool-size 1 \
-  --max-workers 1 \
-  --max-steps 10
+  --sandbox-config sandbox-config.yaml \
+  --agent-config env/yourenv/yourenv.config.sandbox.yaml \
+  --agent-start-config env/yourenv/yourenv.start.sandbox.yaml \
+  --job-id yourenv-sandbox-smoke \
+  --llm-model your_model_route \
+  --pool-size 1 --multiplier 1 --max-workers 1
 ```
 
-`--pool-size` controls the number of active instances. The manager fills those leases before workers start, and the Environment capacity must cover that concurrency.
+An explicit `--gateway-base-url` overrides platform YAML; the resolved URL is shared by launcher and Sandbox. File evaluation is mandatory and enabled automatically. Adjust command_timeout_s and --agent-start-timeout-s together for long workloads.
 
-Rule evaluation needs no Sandbox-specific settings. The rule evaluator receives the rollout result and the persisted trajectory after the Gateway session is closed.
+The runner verifies and scores inside the Sandbox, then atomically publishes `/app/results/<job_id>/<session_id>/safactory_result.json`. The host downloads it through SDK `files.read_bytes`, verifies it, and writes `<results.local_root>/<job_id>/<session_id>/safactory_result.json`. Only `evaluation.normalized_score_10` supplies the final score. stdout, exit code, and top-level total_reward are not score fallbacks. Execution errors cannot be hidden by an otherwise valid JSON file.
 
-Brainbox does not implement pause. Set `lifecycle_minutes` long enough to cover rollout, telemetry flush, and evaluation. Use `cleanup_on_finish: false` only for debugging because it preserves quota-consuming instances.
+The warm pool contains `ceil(pool_size × multiplier)` instances. TTL renewal runs while the SDK connection is open; closing a retained instance's connection stops renewal. Retained instances continue consuming quota until platform expiry or deletion.
+
+Resume with the same job id reconciles runtime.json, previous writers, and result files before deleting any unfinished trajectory. Valid local files resume submission; remote files resume download. Only confirmed reruns reset old trajectories. Recovery does not require platform pause/resume support. Unknown execution state, invalid identity, or missing durability confirmation prevents score submission.

@@ -264,6 +264,9 @@ class TelemetryRecorder:
                         isinstance(item, tuple) for item in batch
                     )
                 except asyncio.CancelledError:
+                    for item in batch:
+                        if isinstance(item, tuple):
+                            item[0].mark_telemetry_write_failed()
                     raise
                 except Exception as exc:
                     log.exception(
@@ -276,6 +279,7 @@ class TelemetryRecorder:
                             if not item.future.done():
                                 item.future.set_exception(exc)
                         else:
+                            item[0].mark_telemetry_write_failed()
                             await self._drop("write_failed")
                 finally:
                     for _ in batch:
@@ -297,10 +301,12 @@ class TelemetryRecorder:
             try:
                 await self._write_queue_items(batch, writer_index=writer_index)
                 self.flushed_total += sum(isinstance(item, tuple) for item in batch)
-            except Exception as exc:
+            except (Exception, asyncio.CancelledError) as exc:
                 for item in batch:
                     if isinstance(item, _SessionFlushBarrier) and not item.future.done():
                         item.future.set_exception(exc)
+                    elif isinstance(item, tuple):
+                        item[0].mark_telemetry_write_failed()
                 raise
             finally:
                 for _ in batch:
@@ -487,7 +493,12 @@ class TelemetryRecorder:
             # A timeout around asyncio.to_thread cannot stop the underlying SDK call.
             # Fixed writers bound concurrency, so let each cloud batch finish instead
             # of leaking timed-out writes into the default executor.
-            await self.storage.record_telemetry_batch(batch)
+            try:
+                await self.storage.record_telemetry_batch(batch)
+            except (Exception, asyncio.CancelledError):
+                for binding, _record in batch:
+                    binding.mark_telemetry_write_failed()
+                raise
         else:
             for binding, record in batch:
                 await self._write_record(binding, record)
@@ -525,6 +536,7 @@ class TelemetryRecorder:
                 await asyncio.wait_for(_write(), timeout=timeout_s)
             trace.emit_summary(status="success")
         except asyncio.TimeoutError:
+            binding.mark_telemetry_write_failed()
             trace.emit_summary(status="timeout", timeout_s=timeout_s)
             log.error(
                 "Gateway telemetry write timed out: event_type=%s request_id=%s session_id=%s timeout_s=%.1f",
@@ -534,7 +546,11 @@ class TelemetryRecorder:
                 timeout_s,
             )
             raise
+        except asyncio.CancelledError:
+            binding.mark_telemetry_write_failed()
+            raise
         except Exception as exc:
+            binding.mark_telemetry_write_failed()
             trace.emit_summary(status="failed", error_type=type(exc).__name__, error=str(exc))
             raise
 

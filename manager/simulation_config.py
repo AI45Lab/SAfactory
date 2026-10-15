@@ -4,7 +4,7 @@ import logging
 import math
 import os
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
@@ -37,8 +37,8 @@ _RJOB_DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 _SANDBOX_DEFAULT_CONFIG: Dict[str, Any] = {
-    "domain": "https://h.pjlab.org.cn/brainbox",
-    "protocol": "https",
+    "domain": "deepenv.sandbox.pjlab.org.cn",
+    "protocol": "http",
     "project": "",
     "api_key": "",
     "api_key_env": "OPEN_SANDBOX_API_KEY",
@@ -53,6 +53,8 @@ _SANDBOX_DEFAULT_CONFIG: Dict[str, Any] = {
     "cleanup_on_finish": True,
     "use_server_proxy": True,
     "skip_health_check": False,
+    "afs": {"webdav_url": "http://10.140.95.76:28081"},
+    "results": {"local_root": "./results", "download_timeout_s": 60.0, "download_retries": 3},
 }
 
 
@@ -168,6 +170,16 @@ def _normalize_sandbox_config(section: Dict[str, Any]) -> Dict[str, Any]:
     merged["domain"] = merged["domain"].rstrip("/")
     if merged["domain"].endswith("/v1"):
         raise ValueError("sandbox.domain must not include the /v1 suffix")
+    if "://" in merged["domain"] or "/" in merged["domain"]:
+        raise ValueError("sandbox.domain must be a host without a scheme or path")
+    for key in ("afs", "results"):
+        if not isinstance(merged.get(key), dict):
+            raise ValueError(f"sandbox.{key} must be a mapping")
+        merged[key] = {**_SANDBOX_DEFAULT_CONFIG[key], **merged[key]}
+    results = merged["results"]
+    results["local_root"] = str(Path(str(results["local_root"])).expanduser().resolve())
+    results["download_timeout_s"] = max(1.0, float(results["download_timeout_s"]))
+    results["download_retries"] = max(0, int(results["download_retries"]))
     return merged
 
 
@@ -235,6 +247,19 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
     _validate_gateway_route_key(str(args.llm_model), arg_name="--llm-model")
     agent_config = getattr(args, "agent_config", None)
     agent_start_config = getattr(args, "agent_start_config", None)
+    if mode == "sandbox" and (not agent_config or not agent_start_config):
+        raise ValueError("Sandbox mode requires explicit --agent-config and --agent-start-config")
+    gateway_base_url = str(getattr(args, "gateway_base_url", None) or "").strip()
+    if not gateway_base_url:
+        gateway_base_url = (
+            str(sandbox_section.get("gateway_base_url") or "").strip()
+            if mode == "sandbox"
+            else "http://127.0.0.1:8080/v1/sessions"
+        )
+    if mode == "sandbox" and not gateway_base_url:
+        raise ValueError("Sandbox mode requires sandbox.gateway_base_url or --gateway-base-url")
+    if mode == "sandbox":
+        sandbox_section["gateway_base_url"] = gateway_base_url.rstrip("/")
 
     storage_type = str(args.storage_type or "sqlite").strip().lower()
     db_url = _db_url_for_storage(storage_type, getattr(args, "db_path", None))
@@ -252,7 +277,7 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         startup_submit_count=startup_submit_count,
         followup_submit_batch=followup_submit_batch,
         mode=mode,
-        gateway_base_url=str(args.gateway_base_url).rstrip("/"),
+        gateway_base_url=gateway_base_url.rstrip("/"),
         llm_model=str(args.llm_model),
         llm_temperature=float(args.llm_temperature),
         max_steps=int(args.max_steps),
@@ -354,12 +379,12 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
             getattr(args, "confirm_cloud_delete_job_id", "") or ""
         ).strip(),
         confirm_production=bool(getattr(args, "confirm_production", False)),
-        enable_buffer=bool(args.enable_buffer),
+        enable_buffer=mode != "sandbox" and bool(args.enable_buffer),
         buffer_size=int(args.buffer_size),
         flush_interval=float(args.flush_interval),
         rl_group_size=int(args.rl_group_size),
         rl_epoch=max(1, int(args.rl_epoch)),
-        evaluation_enabled=bool(args.evaluation_enabled),
+        evaluation_enabled=mode == "sandbox" or bool(args.evaluation_enabled),
         circuit_breaker_enabled=bool(getattr(args, "circuit_breaker", True)),
         circuit_breaker_window=_int_at_least(getattr(args, "circuit_breaker_window", 50), default=50, minimum=1),
         circuit_breaker_min_samples=_int_at_least(
@@ -442,7 +467,7 @@ def derive_pool_sizing(
 
 def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
     rjob_cfg = dict(cfg.rjob_config or {})
-    env_types = load_agent_start_config(cfg.agent_start_config)
+    env_types = load_agent_start_config(cfg.agent_start_config, mode=cfg.mode)
     database_cfg: Dict[str, Any] = {"driver": cfg.storage_type}
     if cfg.storage_type == "sqlite":
         database_cfg["sqlite_path"] = cfg.db_url
@@ -479,13 +504,13 @@ def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
                 },
             },
             "rjob": rjob_cfg,
-            "sandbox": dict(cfg.sandbox_config or {}),
+            "sandbox": {**dict(cfg.sandbox_config or {}), "job_id": cfg.job_id},
             "env_types": env_types,
         },
     }
 
 
-def load_agent_start_config(path: Optional[str]) -> Dict[str, Any]:
+def load_agent_start_config(path: Optional[str], *, mode: str = "docker") -> Dict[str, Any]:
     if not path:
         return {}
 
@@ -498,17 +523,21 @@ def load_agent_start_config(path: Optional[str]) -> Dict[str, Any]:
         agents = cfg.get("agents")
         if not isinstance(agents, dict):
             raise ValueError(f"agents must be a mapping in {cfg_path}")
-        return {str(agent_name): _normalize_agent_start_entry(agent_name, spec, cfg_path) for agent_name, spec in agents.items()}
+        return {str(agent_name): _normalize_agent_start_entry(agent_name, spec, cfg_path, mode=mode) for agent_name, spec in agents.items()}
 
     agent_name = str(cfg.get("agent_name") or "").strip()
     if not agent_name:
         raise ValueError(f"agent start config requires agent_name or agents mapping: {cfg_path}")
     return {
-        agent_name: _normalize_agent_start_entry(agent_name, cfg, cfg_path)
+        agent_name: _normalize_agent_start_entry(agent_name, cfg, cfg_path, mode=mode)
     }
 
 
-def _normalize_agent_start_entry(agent_name: Any, spec: Any, cfg_path: Path) -> Dict[str, Any]:
+def _normalize_agent_start_entry(agent_name: Any, spec: Any, cfg_path: Path, *, mode: str = "docker") -> Dict[str, Any]:
+    if mode == "sandbox":
+        if not isinstance(spec, dict) or not isinstance(spec.get("sandbox"), dict):
+            raise ValueError(f"Sandbox start config requires a sandbox mapping in {cfg_path}")
+        return {"sandbox": _normalize_agent_start_sandbox(agent_name, spec, cfg_path)}
     docker = _normalize_agent_start_docker(agent_name, spec, cfg_path)
     return {
         "docker": docker,
@@ -689,7 +718,7 @@ def _normalize_agent_start_sandbox(
     agent_name: Any,
     spec: Any,
     cfg_path: Path,
-    docker: Dict[str, Any],
+    docker: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     if not isinstance(spec, dict):
         raise ValueError(f"agent start config for {agent_name!r} must be a mapping in {cfg_path}")
@@ -697,6 +726,8 @@ def _normalize_agent_start_sandbox(
     if not isinstance(raw, dict):
         raise ValueError(f"sandbox config for {agent_name!r} must be a mapping in {cfg_path}")
 
+    standalone = docker is None
+    docker = docker or {}
     sandbox: Dict[str, Any] = {}
     for key in (
         "environment_id",
@@ -709,6 +740,16 @@ def _normalize_agent_start_sandbox(
     sandbox.setdefault("workdir", str(docker.get("workdir") or ""))
     sandbox.setdefault("run_command", str(docker.get("run_command") or ""))
     sandbox.setdefault("result_mode", str(docker.get("result_mode") or docker.get("run_result_mode") or "json"))
+    if standalone and raw.get("gateway_base_url"):
+        raise ValueError("Configure the shared Gateway in sandbox-config.yaml, not per-agent")
+    runner = _normalize_runner_entrypoint(raw.get("runner_entrypoint"), cfg_path)
+    if runner:
+        command = str(runner.get("command") or "").strip()
+        if sandbox["run_command"] and command and sandbox["run_command"] != command:
+            raise ValueError(f"Conflicting Sandbox runner commands for {agent_name!r}")
+        sandbox["run_command"] = command or sandbox["run_command"]
+    if standalone and sandbox["result_mode"] != "json":
+        raise ValueError("Sandbox mode requires the standard JSON result file")
 
     env = {str(key): str(value) for key, value in dict(docker.get("env") or {}).items()}
     raw_env = raw.get("env", {}) or {}
@@ -741,12 +782,39 @@ def _normalize_agent_start_sandbox(
     if not isinstance(raw_embedded, list):
         raise ValueError(f"sandbox.embedded_files for {agent_name!r} must be a list in {cfg_path}")
     embedded = [_normalize_embedded_file(item, cfg_path) for item in raw_embedded]
-    runner = docker.get("runner_entrypoint") or {}
+    for item, normalized in zip(raw_embedded, embedded):
+        permissions = item.get("permissions", "0644")
+        if not isinstance(permissions, str):
+            raise ValueError("Sandbox file permissions must be quoted strings, for example '0644'")
+        normalized["permissions"] = permissions
+    runner = runner or docker.get("runner_entrypoint") or {}
     if runner.get("source") and runner.get("target"):
         runner_file = {"source": str(runner["source"]), "target": str(runner["target"])}
-        if runner_file not in embedded:
+        raw_runner = raw.get("runner_entrypoint")
+        permissions = raw_runner.get("permissions") if isinstance(raw_runner, dict) else None
+        if permissions is not None and not isinstance(permissions, str):
+            raise ValueError("Sandbox runner permissions must be quoted strings, for example '0755'")
+        matching = next((item for item in embedded if item["source"] == runner_file["source"] and item["target"] == runner_file["target"]), None)
+        if matching is not None and permissions is not None and matching["permissions"] != str(permissions):
+            raise ValueError(f"Conflicting Sandbox runner permissions: {runner_file['target']}")
+        if matching is None:
+            runner_file["permissions"] = str(permissions if permissions is not None else "0644")
             embedded.append(runner_file)
+    for item in embedded:
+        permissions = item["permissions"]
+        if len(permissions) not in {3, 4} or any(char not in "01234567" for char in permissions):
+            raise ValueError(f"Invalid Sandbox file permissions: {permissions!r}")
     sandbox["embedded_files"] = embedded
+    if standalone:
+        targets = set()
+        for item in embedded:
+            target = PurePosixPath(item["target"])
+            if not target.is_absolute() or ".." in target.parts or str(target) in targets:
+                raise ValueError(f"Invalid or duplicate Sandbox file target: {target}")
+            if not Path(item["source"]).is_file():
+                raise ValueError(f"Sandbox upload source is not a file: {item['source']}")
+            targets.add(str(target))
+        sandbox["storage"] = _normalize_sandbox_storage(raw.get("storage"), cfg_path)
 
     required_paths = raw.get("required_mount_paths", []) or []
     if isinstance(required_paths, str):
@@ -755,6 +823,49 @@ def _normalize_agent_start_sandbox(
         raise ValueError(f"sandbox.required_mount_paths for {agent_name!r} must be a list in {cfg_path}")
     sandbox["required_mount_paths"] = [str(path) for path in required_paths]
     return sandbox
+
+
+def _normalize_sandbox_storage(value: Any, cfg_path: Path) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"sandbox.storage must be a mapping in {cfg_path}")
+    storage: Dict[str, Any] = {}
+    targets = set()
+    for kind in ("inputs", "outputs"):
+        entries = value.get(kind, [])
+        if not isinstance(entries, list):
+            raise ValueError(f"sandbox.storage.{kind} must be a list")
+        normalized = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError(f"sandbox.storage.{kind} entries must be mappings")
+            mount = PurePosixPath(str(entry.get("mount_path") or ""))
+            subpath = str(entry.get("afs_subpath") or "")
+            if not mount.is_absolute() or ".." in mount.parts or str(mount) in targets:
+                raise ValueError(f"Invalid or duplicate Sandbox mount: {mount}")
+            if not subpath or subpath.startswith("/") or "\\" in subpath or any(
+                part in {"", ".", ".."} for part in subpath.split("/")
+            ):
+                raise ValueError(f"Invalid project AFS subpath: {subpath!r}")
+            item = {"mount_path": str(mount), "afs_subpath": subpath,
+                    "read_only": _as_bool(entry.get("read_only"), default=kind == "inputs")}
+            if kind == "inputs":
+                source = str(entry.get("host_path") or "").strip()
+                if not source:
+                    raise ValueError("Sandbox inputs require host_path")
+                path = Path(source).expanduser()
+                if not path.is_absolute():
+                    path = cfg_path.parent / path
+                item["host_path"] = str(path.resolve())
+                if not item["read_only"]:
+                    raise ValueError("Sandbox input mounts must set read_only: true")
+            elif item["read_only"]:
+                raise ValueError("Sandbox output mounts must set read_only: false")
+            targets.add(str(mount))
+            normalized.append(item)
+        storage[kind] = normalized
+    if not any(item["mount_path"] == "/app/results" for item in storage["outputs"]):
+        raise ValueError("Sandbox outputs must include a writable /app/results mount")
+    return storage
 
 
 def _copy_non_empty(src: Dict[str, Any], dst: Dict[str, Any], key: str) -> None:
