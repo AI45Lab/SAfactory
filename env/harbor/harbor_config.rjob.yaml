@@ -7,6 +7,11 @@ environments:
 
     env_params:
       task_family: harbor
+      # Self-describing bundle: runner locates the task at
+      # <bundle_root>/<task_id>/<profile_subdir> and loads images via the bundle's
+      # own bin/load_shared_images.py + bin/load_image.py.
+      bundle_root: /mnt/shared-storage-gpfs2/trustcyberdata/private/wuyida/GhAdvDB/batch_20260918
+      # profile_subdir: harbor-runtime-profile   # optional; this is the default
       agent: claude-code
       model: glm-5.2
       reasoning_effort: max

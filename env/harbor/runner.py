@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import math
 import os
 import re
 import signal
 import subprocess
+import sys
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -23,6 +23,15 @@ RESULT_JSON_PREFIX = "SAFACTORY_RESULT_JSON "
 HARBOR_BIN = "/opt/harbor-env/bin/harbor"
 RUNTIME_DIR = Path("/tmp/safactory-harbor")
 CODEX_CONFIG_TARGET = "/opt/safactory-codex-config"
+# Profile subdirectory under <bundle_root>/<task_id>/; configurable per run so an
+# upstream layout change does not require touching the runner.
+DEFAULT_PROFILE_SUBDIR = "harbor-runtime-profile"
+# Shared-image directory under <bundle_root>/, passed to load_shared_images.py.
+# Upstream bundles disagree on the name (_runtime vs shared-images), so it is
+# configurable; the default matches the original self-describing layout.
+DEFAULT_SHARED_SUBDIR = "_runtime"
+# The bundle ships its own loaders; the runner delegates image loading to them.
+BUNDLE_LOADERS = ("load_shared_images.py", "load_image.py")
 CANCELLATION_GRACE_S = 30.0
 CANCELLATION_POLL_S = 1.0
 LOAD_TIMEOUT_S = 1800
@@ -55,33 +64,17 @@ OPENCODE_CHAT_AGENT_IMPORT_PATHS = {
 
 
 @dataclass(frozen=True)
-class ImageArchiveSpec:
-    path: Path
-    expected_images: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class CatalogRecord:
-    data: dict[str, Any] = field(repr=False)
-    catalog_path: Path
-    catalog_sha256: str
-    catalog_line: int
-
-
-@dataclass(frozen=True)
 class TaskRecord:
     task_id: str
     task_path: Path
-    image_archives: tuple[ImageArchiveSpec, ...]
-    runtime_env: tuple[tuple[str, str], ...] = field(repr=False)
-    catalog_record: CatalogRecord
+    bundle_root: Path
 
 
 def _has_controls(text: str) -> bool:
     return any(unicodedata.category(char) in {"Cc", "Cs"} for char in text)
 
 
-def _catalog_text(value: Any, name: str) -> str:
+def _clean_text(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise ValueError(f"{name} must be a non-empty string without outer whitespace")
     if _has_controls(value):
@@ -89,13 +82,12 @@ def _catalog_text(value: Any, name: str) -> str:
     return value
 
 
-def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate JSON key: {key}")
-        result[key] = value
-    return result
+def _path_segment(value: Any, name: str) -> str:
+    """A single safe path segment: no separators, no traversal, no option-leading '-'."""
+    text = _clean_text(value, name)
+    if "/" in text or "\\" in text or text in {".", ".."} or text.startswith("-"):
+        raise ValueError(f"{name} must be a single safe path segment")
+    return text
 
 
 def _runtime_env(value: Any) -> tuple[tuple[str, str], ...]:
@@ -116,86 +108,31 @@ def _runtime_env(value: Any) -> tuple[tuple[str, str], ...]:
     return tuple(sorted(value.items()))
 
 
-def _archive_spec(value: Any, root: Path) -> ImageArchiveSpec:
-    if not isinstance(value, dict):
-        raise ValueError("image archive must be an object")
-    images = value.get("expected_images")
-    if not isinstance(images, list) or not images:
-        raise ValueError("expected_images must be a non-empty array")
-    for image in images:
-        _catalog_text(image, "expected_images entry")
-        if image.startswith("-") or any(char.isspace() for char in image):
-            raise ValueError("expected_images entries must be image references")
-    return ImageArchiveSpec(
-        path=_within(root, value.get("path")),
-        expected_images=tuple(images),
-    )
-
-
-def load_task_catalog(path: Path) -> dict[str, CatalogRecord]:
-    """Index task identities; defer resource parsing to the selected record."""
-    content = path.read_bytes()
-    catalog_sha256 = hashlib.sha256(content).hexdigest()
-    catalog_path = path.resolve()
-    records: dict[str, CatalogRecord] = {}
-    try:
-        lines = content.decode("utf-8").split("\n")
-    except UnicodeDecodeError as error:
-        raise ValueError(f"catalog is not valid UTF-8: {path}") from error
-    for line_number, line in enumerate(lines, 1):
-        if not line.strip():
-            continue
-        try:
-            value = json.loads(line, object_pairs_hook=_unique_object)
-            if not isinstance(value, dict):
-                raise ValueError("catalog record must be an object")
-            task_id = _catalog_text(value.get("task_id"), "task_id")
-            if task_id in records:
-                raise ValueError(f"duplicate task_id: {task_id}")
-            records[task_id] = CatalogRecord(
-                value, catalog_path, catalog_sha256, line_number
-            )
-        except (TypeError, ValueError) as error:
-            raise ValueError(f"catalog line {line_number}: {error}") from error
-    return records
-
-
-def _within(root: Path, value: Any) -> Path:
-    text = _catalog_text(value, "catalog path")
-    relative = Path(text)
-    if relative.is_absolute() or ".." in relative.parts or "\\" in text:
-        raise ValueError("catalog path must be a relative POSIX path without '..'")
-    path = (root / relative).resolve(strict=True)
-    if not path.is_relative_to(root):
-        raise ValueError(f"catalog path escapes allowed root: {relative}")
-    return path
-
-
 def resolve_task_record(
     task_id: str,
-    catalog: dict[str, CatalogRecord],
-    catalog_root: Path,
+    bundle_root: Path,
+    profile_subdir: str,
 ) -> TaskRecord:
-    _catalog_text(task_id, "dataset.task_id")
-    if not catalog_root.is_absolute():
-        raise ValueError("catalog_root must be absolute")
-    root = catalog_root.resolve(strict=True)
+    """Locate one task by convention: <bundle_root>/<task_id>/<profile_subdir>."""
+    task_id = _path_segment(task_id, "dataset.task_id")
+    profile_subdir = _path_segment(profile_subdir, "profile_subdir")
+    if not bundle_root.is_absolute():
+        raise ValueError("bundle_root must be absolute")
+    try:
+        root = bundle_root.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise ValueError(f"bundle_root does not exist: {bundle_root}") from error
     if root == Path(root.anchor) or not root.is_dir():
-        raise ValueError("catalog_root must be a directory other than filesystem root")
-    if task_id not in catalog:
-        raise ValueError(f"task_id not found in catalog: {task_id}")
-    record = catalog[task_id]
-    value = record.data
-    archives = value.get("image_archives")
-    if not isinstance(archives, list):
-        raise ValueError("image_archives must be an array")
-    return TaskRecord(
-        task_id=task_id,
-        task_path=_within(root, value.get("task_path")),
-        image_archives=tuple(_archive_spec(item, root) for item in archives),
-        runtime_env=_runtime_env(value.get("runtime_env")),
-        catalog_record=record,
-    )
+        raise ValueError("bundle_root must be a directory other than filesystem root")
+    for name in BUNDLE_LOADERS:
+        if not (root / "bin" / name).is_file():
+            raise ValueError(f"bundle_root missing loader: bin/{name}")
+    # task_id/profile_subdir are single safe segments, so the path stays inside
+    # bundle_root syntactically. The directory may still be a symlink pointing
+    # outside (e.g. a symlink-farm bundle whose tasks link to a real upstream
+    # delivery); such escapes are permitted on purpose.
+    task_path = root / task_id / profile_subdir
+    return TaskRecord(task_id=task_id, task_path=task_path, bundle_root=root)
 
 
 def validate_task_record(record: TaskRecord) -> None:
@@ -245,17 +182,44 @@ def _docker(env: dict[str, str], *args: str, timeout: int = INSPECT_TIMEOUT_S) -
     return completed.stdout.strip()
 
 
-def load_task_images(record: TaskRecord, docker_env: dict[str, str]) -> list[str]:
-    """Load catalog archives into this episode's daemon and inspect declared tags."""
-    env = _docker_env(docker_env)
-    for archive in record.image_archives:
-        if not archive.path.is_file():
-            raise ValueError(f"image archive is not a regular file: {archive.path}")
-    for archive in record.image_archives:
-        _docker(env, "load", "--input", str(archive.path), timeout=LOAD_TIMEOUT_S)
-        for tag in archive.expected_images:
-            _docker(env, "image", "inspect", "--format", "{{.Id}}", tag)
-    return [str(archive.path) for archive in record.image_archives]
+def load_task_images(spec: RunSpec, docker_env: dict[str, str]) -> None:
+    """Delegate image loading to the bundle's own loader scripts.
+
+    The bundle ships bin/load_shared_images.py (shared <bundle>/_runtime archives)
+    and bin/load_image.py (per-task <bundle>/<task>/images archives); they handle
+    gzip streaming, pre.tar/post.tar inner archives, and overlay max-depth
+    flatten-import. The runner only wires them to this episode's daemon via
+    DOCKER_HOST (already set in docker_env) and runs them isolated (-I) because the
+    bundle is untrusted data.
+    """
+    loader_args = {
+        "load_shared_images.py": [
+            "--runtime-dir",
+            str(spec.bundle_root / spec.shared_images_subdir),
+        ],
+        "load_image.py": ["--root", str(spec.bundle_root), "--task", spec.task_id],
+    }
+    for name in loader_args:
+        if not (spec.bundle_root / "bin" / name).is_file():
+            raise ValueError(f"bundle loader missing: bin/{name}")
+    spec.image_load_log_path.parent.mkdir(parents=True, exist_ok=True)
+    with spec.image_load_log_path.open("ab") as log:
+        for name, args in loader_args.items():
+            script = spec.bundle_root / "bin" / name
+            completed = subprocess.run(
+                [sys.executable, "-I", str(script), *args],
+                env=docker_env,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=LOAD_TIMEOUT_S,
+            )
+            if completed.returncode:
+                raise RuntimeError(
+                    f"{name} failed with status {completed.returncode}; "
+                    f"see {spec.image_load_log_path}"
+                )
 
 
 @dataclass(frozen=True)
@@ -283,6 +247,8 @@ class RunSpec:
     agent_runtime: AgentRuntime | None = None
     codex_config_dir: Path | None = None
     agent_env: dict[str, str] = field(default_factory=dict)
+    runtime_env: tuple[tuple[str, str], ...] = ()
+    shared_images_subdir: str = DEFAULT_SHARED_SUBDIR
 
     @property
     def task_id(self) -> str:
@@ -291,6 +257,10 @@ class RunSpec:
     @property
     def task_path(self) -> Path:
         return self.task_record.task_path
+
+    @property
+    def bundle_root(self) -> Path:
+        return self.task_record.bundle_root
 
     @property
     def preparation_path(self) -> Path:
@@ -311,6 +281,10 @@ class RunSpec:
     @property
     def dockerd_log_path(self) -> Path:
         return self.episode_dir / "infra" / "dockerd.log"
+
+    @property
+    def image_load_log_path(self) -> Path:
+        return self.episode_dir / "infra" / "image-load.log"
 
     @property
     def harbor_log_path(self) -> Path:
@@ -385,7 +359,7 @@ class NestedDocker:
         harbor_env = {
             **self.env,
             **model_connection_env(spec),
-            **dict(spec.task_record.runtime_env),
+            **dict(spec.runtime_env),
         }
         with spec.harbor_log_path.open("ab") as log:
             self.harbor_process = subprocess.Popen(
@@ -455,14 +429,21 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
     dataset = _dict(params.get("dataset"))
 
     session_id = _required_text(request.get("session_id"), "session_id")
-    task_id = _catalog_text(dataset.get("task_id"), "dataset.task_id")
-    catalog_path = Path(_catalog_text(params.get("task_catalog"), "task_catalog"))
-    if not catalog_path.is_absolute():
-        raise ValueError("task_catalog must be absolute")
-    catalog_root = Path(_catalog_text(params.get("catalog_root"), "catalog_root"))
-    task_record = resolve_task_record(
-        task_id, load_task_catalog(catalog_path), catalog_root
+    task_id = _path_segment(dataset.get("task_id"), "dataset.task_id")
+    bundle_root = Path(_clean_text(params.get("bundle_root"), "bundle_root"))
+    if not bundle_root.is_absolute():
+        raise ValueError("bundle_root must be absolute")
+    profile_subdir = _path_segment(
+        params.get("profile_subdir", DEFAULT_PROFILE_SUBDIR), "profile_subdir"
     )
+    shared_images_subdir = _path_segment(
+        params.get("shared_images_subdir", DEFAULT_SHARED_SUBDIR),
+        "shared_images_subdir",
+    )
+    task_record = resolve_task_record(task_id, bundle_root, profile_subdir)
+    # Optional public run-time variables for the Harbor process (no per-task
+    # catalog any more); applies to every task of this run.
+    runtime_env = _runtime_env(params.get("runtime_env", {}))
 
     # The SAfactory launcher/cluster code has already resolved and containerized this URL.
     # Keep only a manual-run fallback; URL validation belongs to the launcher.
@@ -508,6 +489,8 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
         agent_runtime=agent_runtime,
         codex_config_dir=codex_config_dir,
         agent_env=agent_env,
+        runtime_env=runtime_env,
+        shared_images_subdir=shared_images_subdir,
     )
 
 
@@ -730,16 +713,12 @@ def _failure(
     )
 
 
-def _preparation_metrics(spec: RunSpec, loaded_archives: list[str]) -> dict[str, Any]:
-    record = spec.task_record
-    catalog = record.catalog_record
+def _preparation_metrics(spec: RunSpec) -> dict[str, Any]:
     return {
-        "task_id": record.task_id,
-        "task_path": str(record.task_path),
-        "catalog_path": str(catalog.catalog_path),
-        "catalog_sha256": catalog.catalog_sha256,
-        "catalog_line": catalog.catalog_line,
-        "image_archive_paths": loaded_archives,
+        "task_id": spec.task_id,
+        "bundle_root": str(spec.bundle_root),
+        "task_path": str(spec.task_path),
+        "image_load_log_path": str(spec.image_load_log_path),
         "preparation_receipt_path": str(spec.preparation_path),
     }
 
@@ -850,7 +829,6 @@ def main() -> int:
     result_path = Path(result_path_text) if result_path_text else None
     timed_out = False
     task_id: str | None = None
-    loaded_archives: list[str] = []
 
     def stop(signum: int, _frame: Any) -> None:
         nested.cleanup()
@@ -864,18 +842,15 @@ def main() -> int:
         # Parsed before resolve_run_spec so resolve-stage failures still report it.
         dataset = _dict(request.get("env_params")).get("dataset")
         if isinstance(dataset, dict):
-            task_id = _catalog_text(dataset.get("task_id"), "dataset.task_id")
+            task_id = _path_segment(dataset.get("task_id"), "dataset.task_id")
         spec = resolve_run_spec(request)
         spec.episode_dir.mkdir(parents=True, exist_ok=True)
         validate_task_record(spec.task_record)
         nested.start(spec)
-        loaded_archives = load_task_images(spec.task_record, nested.env)
+        load_task_images(spec, nested.env)
         _write_json(
             spec.preparation_path,
-            {
-                **_preparation_metrics(spec, loaded_archives),
-                "status": "prepared",
-            },
+            {**_preparation_metrics(spec), "status": "prepared"},
         )
         return_code, timed_out = nested.run_harbor(spec)
         if timed_out:

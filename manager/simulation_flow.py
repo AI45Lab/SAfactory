@@ -206,7 +206,7 @@ class SimulationFlow:
         last_error = "no response"
 
         def _fetch_count() -> tuple[int, str]:
-            response = requests.get(count_url, timeout=5.0)
+            response = requests.get(count_url, timeout=15.0)
             return response.status_code, response.text
 
         for attempt in range(1, _GATEWAY_ENV_ROW_MAX_ATTEMPTS + 1):
