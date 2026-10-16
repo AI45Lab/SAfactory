@@ -6,8 +6,8 @@ Sandbox 是与 Docker、RJob 平级的运行后端。当前非 ENV 框架已接�
 
 ## 前置准备
 
-1. 按 `sandbox/02-environment-api.md` 准备 Environment，镜像与业务 `env_image` 一致，声明 `44772`，镜像内运行 execd。`sandbox/create_sandbox.py` 创建的是实例，不负责创建 Environment。
-2. H 端安装仓库依赖、Bash 和 rclone；SDK 锁定 `opensandbox==0.1.9`。提供 `OPEN_SANDBOX_API_KEY`，project 在平台配置填写。
+1. 通过平台的 Environment API 或管理端准备模板，镜像与业务 `env_image` 一致，声明 `44772`，镜像内运行 execd。
+2. H 端安装仓库依赖和 rclone；SDK 锁定 `opensandbox==0.1.9`。提供 `OPEN_SANDBOX_API_KEY`，project 在平台配置填写。AFS 发布直接实现在 `clusters/sandbox_cluster.py`，无需 Bash 迁移脚本；`sandbox/` 只作参考，部署包可完全不带该目录。
 3. 镜像提供 `sh`、`base64`、`sha256sum`、runner 和原生验证所需依赖；Sandbox 能访问统一 Gateway URL。
 4. 既有 Gateway 采用 `telemetry.mode: strict`、`telemetry.async_cloud_writes: false`，并关闭 `storage_config.enable_buffer` 和 `enable_upsert_batching`。launcher 与 Gateway 使用相同实际存储，框架通过 `/readyz` 校验。
 

@@ -6,8 +6,8 @@ See the [workflow and environment migration design](sandbox-workflow-design_CN.m
 
 ## Prerequisites
 
-1. Prepare an Environment using `sandbox/02-environment-api.md`. Its image must match `env_image`, expose port `44772`, and run execd. `sandbox/create_sandbox.py` creates an instance, not an Environment.
-2. Install repository dependencies, Bash, and rclone on H. The SDK version is `opensandbox==0.1.9`. Supply `OPEN_SANDBOX_API_KEY`; set project in platform YAML.
+1. Prepare a template through the platform's Environment API or console. Its image must match `env_image`, expose port `44772`, and run execd.
+2. Install repository dependencies and rclone on H. The SDK version is `opensandbox==0.1.9`. Supply `OPEN_SANDBOX_API_KEY`; set project in platform YAML. AFS publication is implemented directly in `clusters/sandbox_cluster.py`. It does not invoke a Bash migration script or import reference Python files. The `sandbox/` reference directory can be omitted entirely from deployment packages.
 3. Include `sh`, `base64`, `sha256sum`, runner dependencies, and native verification dependencies in the image. Verify that the Sandbox can reach the shared Gateway URL.
 4. Configure the existing Gateway with `telemetry.mode: strict`, `telemetry.async_cloud_writes: false`, `storage_config.enable_buffer: false`, and `storage_config.enable_upsert_batching: false`. Gateway and launcher must use the same actual storage backend. `/readyz` reports the capabilities checked by the launcher.
 

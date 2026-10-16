@@ -399,10 +399,15 @@ def start_aievobox_process(data: dict):
     # not set explicitly, derive it from the agent config path:
     # env/<name>/<name>_config.yaml -> env/<name>/<name>_start.yaml.
     if not agent_start_config and agent_config:
-        derived = re.sub(r"_config\.ya?ml$", "_start.yaml", agent_config)
+        derived = re.sub(r"\.config\.sandbox\.ya?ml$", ".start.sandbox.yaml", agent_config)
+        if derived == agent_config:
+            derived = re.sub(r"_config\.ya?ml$", "_start.yaml", agent_config)
         if derived != agent_config and os.path.exists(derived):
             agent_start_config = derived
     mode = get_env("AIEVOBOX_MODE") or "docker"
+    sandbox_config = os.environ.get("AIEVOBOX_SANDBOX_CONFIG")
+    if mode == "sandbox" and not agent_config:
+        raise ValueError("Sandbox mode requires AIEVOBOX_AGENT_CONFIG")
     max_steps = int(get_env("AIEVOBOX_MAX_STEPS") or 10)
     llm_model = get_env("RL_MODEL") or "default"
     llm_temperature = float(get_env("LLM_TEMPERATURE") or 1.0)
@@ -414,6 +419,7 @@ def start_aievobox_process(data: dict):
     cmd = [
         "python3", launcher_script,
         "--mode", mode,
+        *(["--sandbox-config", sandbox_config] if mode == "sandbox" and sandbox_config else []),
         "--db-path", db_url,
         "--storage-type", storage_type,
         *(["--agent-config", agent_config] if agent_config else ["--agent-root", agent_root]),

@@ -47,7 +47,7 @@ def build_gateway_config(*, aievobox_root: str) -> Dict[str, Any]:
         or os.environ.get("AIEVOBOX_POOL_SIZE")
         or 256
     )
-    return {
+    config = {
         "listen_host": "0.0.0.0",
         "listen_port": port,
         "base_session_path": "/v1/sessions",
@@ -68,6 +68,13 @@ def build_gateway_config(*, aievobox_root: str) -> Dict[str, Any]:
             }
         },
     }
+    if os.environ.get("AIEVOBOX_MODE", "docker").strip().lower() == "sandbox":
+        config["storage_config"].update(
+            enable_buffer=False,
+            enable_upsert_batching=False,
+        )
+        config["telemetry"] = {"mode": "strict", "async_cloud_writes": False}
+    return config
 
 
 def _readyz_url() -> str:

@@ -89,9 +89,12 @@ class SandboxEpisodeRunner:
             output = await run_sandbox_command(sandbox, command, timeout_s=timeout_s, on_init=on_init)
         except asyncio.CancelledError:
             stopped = getattr(sandbox, "execution_stopped", False) is True
-            await asyncio.shield(self._update_reference(
-                lease, request, {"command_finished": stopped, "execution_error": "runner cancelled"},
-            ))
+            try:
+                await asyncio.shield(self._update_reference(
+                    lease, request, {"command_finished": stopped, "execution_error": "runner cancelled"},
+                ))
+            except Exception:
+                log.warning("Sandbox cancelled runtime reference update failed: resource=%s", lease.resource_id, exc_info=True)
             if stopped:
                 try:
                     await asyncio.shield(asyncio.wait_for(self._collect_result(lease, request), timeout=self._download_budget(cfg)))

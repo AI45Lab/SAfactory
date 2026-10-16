@@ -436,6 +436,8 @@ class SimulationWorkerGroup:
                     self._results[agent_key] = _StoredResult(result.status, result.total_reward)
             finally:
                 try:
+                    if cancelled:
+                        await self.lease_pool.stop_refills(reason="worker_cancelled")
                     if self.gateway_client is not None and session is not None:
                         if not gateway_finalized:
                             gateway_finalized = await self._finalize_gateway_session(

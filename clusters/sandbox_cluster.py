@@ -7,6 +7,7 @@ import logging
 import os
 import shlex
 import signal
+import stat
 import tempfile
 import uuid
 from collections.abc import Awaitable, Callable
@@ -14,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Dict
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -27,6 +28,16 @@ if TYPE_CHECKING:
     from manager.binding_plan import BindingPlan
 
 log = logging.getLogger("clusters.sandbox_cluster")
+
+
+async def _cleanup_preserving_cancel(cleanup: Awaitable[Any], *, failure: BaseException | None) -> None:
+    """Keep an in-flight cancellation when best-effort cleanup fails."""
+    try:
+        await cleanup
+    except Exception:
+        if not isinstance(failure, asyncio.CancelledError):
+            raise
+        log.warning("Sandbox cleanup failed after cancellation", exc_info=True)
 
 
 class ProjectAfsVolume(dict[str, object]):
@@ -74,23 +85,60 @@ def _storage_volumes(storage: dict) -> list[ProjectAfsVolume] | None:
     return volumes
 
 
+async def _await_afs_cleanup(task: asyncio.Task) -> Any:
+    """Finish bounded cleanup even if its caller receives another cancellation."""
+    cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            cancelled = error
+        except Exception:
+            break
+    try:
+        return task.result()
+    finally:
+        if cancelled is not None:
+            raise cancelled
+
+
 async def _transfer_process(arguments: list[str], *, env: dict[str, str], stdin: bytes | None = None) -> bytes:
     process = await asyncio.create_subprocess_exec(
         *arguments, env=env, stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        start_new_session=True,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True,
     )
+
+    async def stop() -> None:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(process.wait(), 5)
+        except asyncio.TimeoutError:
+            pass
+        # The parent may exit while a child still holds its pipes or writes.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        await process.wait()
+
     try:
         stdout, stderr = await process.communicate(stdin)
-    except BaseException:
-        if process.returncode is None:
-            os.killpg(process.pid, signal.SIGTERM)
-            try:
-                await asyncio.wait_for(process.wait(), 10)
-            except asyncio.TimeoutError:
-                os.killpg(process.pid, signal.SIGKILL)
-                await process.wait()
-        raise
+    except BaseException as original:
+        cleanup = asyncio.create_task(stop())
+        cancelled: asyncio.CancelledError | None = None
+        try:
+            await _await_afs_cleanup(cleanup)
+        except asyncio.CancelledError as error:
+            cancelled = error
+        except BaseException:
+            pass
+        outcome = cancelled or original
+        if not cleanup.done() or cleanup.cancelled() or cleanup.exception() is not None:
+            outcome.afs_writer_stopped = False
+        raise outcome
     if process.returncode:
         detail = stderr.decode("utf-8", errors="replace")[-2000:]
         for name in ("SK", "SECRET_KEY", "RCLONE_CONFIG_AFS_PASS"):
@@ -101,33 +149,164 @@ async def _transfer_process(arguments: list[str], *, env: dict[str, str], stdin:
     return stdout
 
 
+_AFS_PATH_ALIASES = {Path("/mnt/shared-storage-gpfs2"): Path("/mnt/shared-storage-user")}
+_AFS_READY = ".safactory-input-ready"
+_AFS_LOCK = ".safactory-input-publish-lock"
+
+
+def _afs_snapshot(root: Path) -> tuple[dict[str, Path], set[str], bytes]:
+    """Resolve links into one virtual file tree without copying large input bytes."""
+    files: dict[str, Path] = {}
+    directories: set[str] = set()
+
+    def visit(source: Path, relative: PurePosixPath, ancestors: set[Path]) -> None:
+        if relative.parts and relative.parts[0] in {_AFS_READY, _AFS_LOCK}:
+            raise ValueError("Source contains a reserved AFS publication name")
+        if source.is_symlink():
+            target = Path(os.readlink(source))
+            if target.is_absolute():
+                for old, current in _AFS_PATH_ALIASES.items():
+                    if target.is_relative_to(old):
+                        target = current / target.relative_to(old)
+                        break
+            else:
+                target = source.parent / target
+            try:
+                source = target.resolve(strict=True)
+            except (OSError, RuntimeError) as error:
+                raise ValueError(f"Unresolved or cyclic input symlink: {source}") from error
+        mode = source.stat().st_mode
+        if stat.S_ISDIR(mode):
+            if source in ancestors:
+                raise ValueError(f"Input symlink directory cycle: {source}")
+            directories.add(str(relative))
+            for child in sorted(source.iterdir()):
+                visit(child, relative / child.name, ancestors | {source})
+        elif stat.S_ISREG(mode):
+            files[str(relative)] = source
+        else:
+            raise ValueError(f"Unsupported special input file: {source}")
+
+    source_root = root.expanduser().resolve(strict=True)
+    if not source_root.is_dir():
+        raise ValueError(f"AFS input source must be a directory: {root}")
+    visit(source_root, PurePosixPath(), set())
+    inventory = []
+    for relative, source in sorted(files.items()):
+        digest, size = hashlib.sha256(), 0
+        with source.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+                size += len(block)
+        inventory.append({"path": relative, "size": size, "sha256": digest.hexdigest()})
+    manifest = json.dumps({"version": 1, "files": inventory}, sort_keys=True,
+                          separators=(",", ":"), ensure_ascii=False).encode("utf-8") + b"\n"
+    return files, directories, manifest
+
+
+async def _afs_lock_request(client: httpx.AsyncClient, method: str, url: str) -> None:
+    response = await client.request(method, url)
+    expected = {201} if method == "MKCOL" else {200, 204}
+    if response.status_code not in expected:
+        raise RuntimeError(f"AFS publication lock {method} refused (HTTP {response.status_code})")
+
+
+async def _publish_afs_input(item: dict, *, env: dict[str, str], client: httpx.AsyncClient, base_url: str) -> None:
+    source = Path(item["host_path"])
+    files, directories, manifest = await asyncio.to_thread(_afs_snapshot, source)
+    destination = f"afs:{item['afs_subpath']}"
+    lock_url = base_url.rstrip("/") + "/" + quote(str(item["afs_subpath"]), safe="/") + "/" + _AFS_LOCK
+    await _transfer_process(["rclone", "mkdir", destination], env=env)
+    # A failed/unknown MKCOL never proves ownership: do not delete that lock.
+    await _afs_lock_request(client, "MKCOL", lock_url)
+    failure: BaseException | None = None
+    try:
+        listing = json.loads(await _transfer_process(["rclone", "lsjson", destination, "--recursive", "--files-only"], env=env))
+        published = any(entry.get("Path") == _AFS_READY for entry in listing)
+        if published:
+            existing = await _transfer_process(["rclone", "cat", destination + "/" + _AFS_READY], env=env)
+            if existing != manifest:
+                raise RuntimeError("Published AFS input version differs from the complete source manifest; choose a new version")
+        with tempfile.TemporaryDirectory(prefix="safactory-afs-view-") as temporary:
+            view = Path(temporary)
+            for relative in sorted(directories):
+                (view / relative).mkdir(parents=True, exist_ok=True)
+            for relative, path in files.items():
+                (view / relative).symlink_to(path)
+            if not published:
+                await _transfer_process([
+                    "rclone", "copy", str(view), destination, "--copy-links", "--immutable", "--size-only",
+                    "--create-empty-src-dirs", "--transfers", "16", "--checkers", "32",
+                ], env=env)
+            await _transfer_process([
+                "rclone", "check", str(view), destination, "--copy-links", "--download", "--one-way", "--checkers", "32",
+            ], env=env)
+        _, _, current_manifest = await asyncio.to_thread(_afs_snapshot, source)
+        if current_manifest != manifest:
+            raise RuntimeError("Source changed during AFS publication; no ready marker was published")
+        inventory = json.loads(await _transfer_process(["rclone", "lsjson", destination, "--recursive", "--files-only"], env=env))
+        actual: dict[str, int] = {}
+        for entry in inventory:
+            path = entry["Path"]
+            if path == _AFS_READY:
+                continue
+            if path in actual:
+                raise RuntimeError("Duplicate file in AFS input inventory")
+            actual[path] = entry["Size"]
+        expected = {entry["path"]: entry["size"] for entry in json.loads(manifest)["files"]}
+        if actual != expected:
+            raise RuntimeError("AFS input file inventory differs from source; no ready marker was published")
+        if not published:
+            await _transfer_process(["rclone", "rcat", destination + "/" + _AFS_READY], env=env, stdin=manifest)
+            if await _transfer_process(["rclone", "cat", destination + "/" + _AFS_READY], env=env) != manifest:
+                raise RuntimeError("AFS publication manifest read-back mismatch")
+    except BaseException as error:
+        failure = error
+        raise
+    finally:
+        if failure is not None and getattr(failure, "afs_writer_stopped", True) is not True:
+            log.error("Retaining AFS publication lock because transfer termination is unconfirmed")
+        else:
+            cleanup = asyncio.create_task(_afs_lock_request(client, "DELETE", lock_url))
+            try:
+                await _await_afs_cleanup(cleanup)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if failure is None:
+                    raise
+                log.warning("AFS lock cleanup failed; later publication will fail closed", exc_info=True)
+
+
 async def prepare_storage(
     *, inputs: list[dict], outputs: list[dict], project: str,
     webdav_url: str, api_key: str,
 ) -> list[ProjectAfsVolume]:
-    """Publish immutable inputs and prepare output directories; credentials stay on H."""
+    """Publish inputs and prepare AFS mounts using this runtime and rclone only."""
     volumes = _storage_volumes({"inputs": inputs, "outputs": outputs}) or []
-    if ":" not in api_key or not project:
+    parsed = urlsplit(webdav_url)
+    if (parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password
+            or parsed.query or parsed.fragment):
+        raise ValueError("AFS WebDAV URL must be HTTP(S) without credentials/query/fragment")
+    if ":" not in api_key or not project or any(character in project for character in "/@"):
         raise ValueError("AFS staging requires project and OPEN_SANDBOX_API_KEY")
     access, secret = api_key.split(":", 1)
+    if not access or not secret:
+        raise ValueError("AFS staging credentials must contain a nonempty access key and secret")
     child_env = os.environ.copy()
     child_env.update(AK=access, SK=secret)
-    script = Path(__file__).resolve().parents[1] / "sandbox/migrate_gpfs_data_to_afs.sh"
-    for item in inputs:
-        await _transfer_process([
-            "bash", str(script), "--source", str(item["host_path"]),
-            "--dest-subpath", str(item["afs_subpath"]), "--project", project,
-            "--webdav-url", webdav_url, "--publish-once",
-        ], env=child_env)
     obscured = (await _transfer_process(["rclone", "obscure", "-"], env=child_env, stdin=secret.encode())).decode().strip()
     child_env.update(
         RCLONE_CONFIG_AFS_TYPE="webdav", RCLONE_CONFIG_AFS_URL=webdav_url,
         RCLONE_CONFIG_AFS_VENDOR="other", RCLONE_CONFIG_AFS_USER=f"ak_{access}@{project}",
         RCLONE_CONFIG_AFS_PASS=obscured,
     )
-    host = urlsplit(webdav_url).hostname or ""
-    child_env["NO_PROXY"] = ",".join(filter(None, [host, "127.0.0.1", "localhost", child_env.get("NO_PROXY", "")]))
+    child_env["NO_PROXY"] = ",".join(filter(None, [parsed.hostname, "127.0.0.1", "localhost", child_env.get("NO_PROXY", "")]))
     child_env["no_proxy"] = child_env["NO_PROXY"]
+    async with httpx.AsyncClient(auth=(f"ak_{access}@{project}", secret), timeout=30,
+                                follow_redirects=False, trust_env=False) as client:
+        for item in inputs:
+            await _publish_afs_input(item, env=child_env, client=client, base_url=webdav_url)
     for item in outputs:
         await _transfer_process(["rclone", "mkdir", f"afs:{item['afs_subpath']}"], env=child_env)
     return volumes
@@ -203,15 +382,26 @@ async def run_sandbox_command(
         sandbox.execution_stopped = True
         return output
     except BaseException as original:
+        sandbox.retain = True
+        cancelled = isinstance(original, asyncio.CancelledError)
         if command_id:
             cleanup = asyncio.create_task(_interrupt_and_confirm(sandbox, command_id))
             try:
                 await asyncio.shield(asyncio.wait_for(cleanup, timeout=15))
-            except BaseException:
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                log.warning("Sandbox command stop could not be confirmed: %s", command_id, exc_info=True)
+            finally:
                 cleanup.cancel()
                 await asyncio.gather(cleanup, return_exceptions=True)
+        if cancelled:
+            if isinstance(original, asyncio.CancelledError):
+                raise
+            raise asyncio.CancelledError() from original
+        if not isinstance(original, Exception):
+            raise
         if not sandbox.execution_stopped:
-            sandbox.retain = True
             error = RuntimeError("Sandbox writer state is unknown; retained for recovery, automatic rerun is forbidden")
             error.execution_stopped = False
             raise error from original
@@ -616,6 +806,11 @@ class SandboxClusterBackend(ClusterBackend):
                 )
                 handle.execution_stopped = reference.get("command_finished") is True
                 return handle
+        except asyncio.CancelledError as failure:
+            await _cleanup_preserving_cancel(
+                asyncio.shield(connection.close_transport_if_owned()), failure=failure,
+            )
+            raise
         except Exception as exc:
             if not self._is_missing(exc):
                 await connection.close_transport_if_owned()
@@ -653,12 +848,16 @@ class SandboxClusterBackend(ClusterBackend):
             path = self._runtime_path(cfg, session_id)
             if not path.is_file():
                 connection, service = self._connection(cfg)
+                failure: BaseException | None = None
                 try:
                     old_id = await self._find_instance(service, {
                         "job_id": _safe_identity(cfg.get("job_id")), "session_id": session_id,
                     })
+                except BaseException as error:
+                    failure = error
+                    raise
                 finally:
-                    await connection.close_transport_if_owned()
+                    await _cleanup_preserving_cancel(connection.close_transport_if_owned(), failure=failure)
                 if old_id or (path.parent / "safactory_result.json").exists():
                     raise RuntimeError(f"Missing runtime.json for existing Sandbox session {session_id}")
                 rerun_rows.append(row)
@@ -679,6 +878,7 @@ class SandboxClusterBackend(ClusterBackend):
                 continue
             handle = await self._recover_handle(reference, cfg, env_name)
             handle.retain = True
+            failure = None
             try:
                 if getattr(handle, "recovery_reader", False) and reference.get("command_finished") is not True:
                     reference.update(command_finished=True, execution_error="Original Sandbox is gone; runner exit status could not be confirmed")
@@ -723,11 +923,14 @@ class SandboxClusterBackend(ClusterBackend):
                 finally:
                     os.unlink(candidate)
                 recoveries[session_id] = {"kind": "remote", "runtime_ref": reference}
+            except BaseException as error:
+                failure = error
+                raise
             finally:
                 if handle.retain and not getattr(handle, "recovery_reader", False):
-                    await handle.close()
+                    await _cleanup_preserving_cancel(handle.close(), failure=failure)
                 else:
-                    await self._terminate(handle)
+                    await _cleanup_preserving_cancel(self._terminate(handle), failure=failure)
         return rerun_rows, recoveries
 
     async def _validate_environment(self, env_name: str, image: str, cfg: Dict[str, Any]) -> None:
@@ -812,14 +1015,16 @@ class SandboxClusterBackend(ClusterBackend):
                 ), timeout=timeout_s,
             )
             return handle
-        except BaseException:
+        except BaseException as original:
             if sandbox_id is not None:
                 # No business command has started during creation/bootstrap.
                 try:
                     await asyncio.shield(sandbox_service.kill_sandbox(sandbox_id))
                 except Exception:
                     log.warning("failed to clean up Sandbox %s after creation error", sandbox_id, exc_info=True)
-            await asyncio.shield(connection.close_transport_if_owned())
+            await _cleanup_preserving_cancel(
+                asyncio.shield(connection.close_transport_if_owned()), failure=original,
+            )
             raise
 
     async def _connect_instance(
@@ -916,7 +1121,11 @@ class SandboxClusterBackend(ClusterBackend):
 
     @staticmethod
     async def _terminate(sandbox: Any) -> None:
+        failure: BaseException | None = None
         try:
             await sandbox.kill()
+        except BaseException as error:
+            failure = error
+            raise
         finally:
-            await sandbox.close()
+            await _cleanup_preserving_cancel(sandbox.close(), failure=failure)

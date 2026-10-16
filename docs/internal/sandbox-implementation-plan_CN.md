@@ -17,7 +17,7 @@ SandboxEpisodeRunner.start(lease, request)
 RewardCommitter.commit(*, session_id, eval_result)
 ```
 
-新增的公共实现文件是 `core/result_artifact.py` 和 `evaluator/result_file.py`。AFS 辅助逻辑保留在既有 `clusters/sandbox_cluster.py`，没有独立 AFS helper 模块。不新增 SandboxClient、结果收集服务、存储管理框架、scheduler、评分 registry 或 per-env result_adapter。
+新增的公共实现文件是 `core/result_artifact.py` 和 `evaluator/result_file.py`，必须随主代码一起进入 Git 跟踪。AFS 辅助逻辑保留在既有 `clusters/sandbox_cluster.py`，没有独立 AFS helper 模块。`sandbox/` 仅供参考，部署和运行不依赖其中任何 shell 脚本、Python 模块或文档；干净 checkout 可以完全不包含该目录。不新增 SandboxClient、结果收集服务、存储管理框架、scheduler、评分 registry 或 per-env result_adapter。
 
 ## 配置解析接口
 
@@ -65,11 +65,11 @@ async def prepare_storage(
 
 复用方式：
 
-1. `sandbox/migrate_gpfs_data_to_afs.sh` 已支持 `--source`、`--dest-subpath`、`--project`、`--webdav-url` 和 `--publish-once`；保留原用法的默认值。
-2. 现有软链物化、旧 GPFS 前缀映射、断链/环检查和 `rclone check --download` 留在此脚本，Python 不复制一套遍历算法。
-3. Python 通过 `asyncio.create_subprocess_exec()` 调用该脚本，输出目录用 `rclone mkdir` 准备；AK/SK 只通过子进程环境和 stdin 传递，不拼接 shell 字符串、不修改全局进程环境。
+1. `prepare_storage()` 在 `clusters/sandbox_cluster.py` 内完成输入枚举、软链物化映射、旧 GPFS 前缀处理、断链/环检查和文件 manifest 计算；不寻找或调用参考目录中的迁移脚本。
+2. 输入通过临时软链视图和 `rclone --copy-links` 发布，无需把大输入目录完整复制到 H 临时目录；发布后读取远端字节校验。
+3. backend 使用 `asyncio.create_subprocess_exec()` 直接调用外部 rclone 命令，输出目录用 `rclone mkdir` 准备；无需 Bash 或额外 Python 脚本。AK/SK 只经私有子进程环境及 stdin 传递，不拼接 shell 字符串、不修改全局进程环境。
 4. 使用带版本的输入目录。发布前以 WebDAV MKCOL 获取目的目录的排他锁；只有明确取得锁的进程才负责释放。已发布目录先比对物化后的完整文件清单、大小和 SHA-256，再逐字节验证后复用；新版本或未完成发布才执行 copy。确认源未改变且远端没有多余文件后，才写入 manifest 完成标记。未知锁状态、并发冲突或锁释放失败均报错；中断留下的锁须确认没有活跃发布者后人工处理，不能自动抢占。
-5. backend 的 `ProjectAfsVolume` 同样定义于 `clusters/sandbox_cluster.py`，沿用 `create_sandbox.py` 的轻量兼容表示；CLI 脚本保持自己的既有实现。该表示支持字典与 SDK 所需属性，不伪造 host/PVC/OSSFS backend。
+5. backend 的 `ProjectAfsVolume` 同样定义于 `clusters/sandbox_cluster.py`。该轻量表示支持字典与 SDK 所需属性，不伪造 host/PVC/OSSFS backend，不从 `sandbox/` 导入共享代码。
 
 没有 AFS→H 的评分回收接口；标准结果文件统一通过 SDK 下载。
 
@@ -167,6 +167,8 @@ status = await sandbox.commands.get_command_status(execution_id)
 
 本地超时或取消时，对 interrupt 和后续停止确认执行独立限时、受保护的清理；必须确认 `status.running is False` 才进入权威结果收集。拿不到 execution_id、中断失败或停止状态不明时，保留实例并报告运行状态不确定，不提交分数、不自动重跑。正常路径不轮询后台日志；只有停止确认需要短暂查询 status。env runner 仍需负责退出时终止其原生子任务，SDK interrupt 不能被当成所有脱离父进程子任务已清理的证明。
 
+取消始终以 `CancelledError` 向上传播，状态不明、保存 runtime.json 失败或连接清理失败不能把取消改成普通运行失败。worker 在取消后先停止补位，再结算当前 lease；不会因此申请下一个 Sandbox、评分或提交奖励。AFS 取消会等待本次 rclone 进程组停止，只有确认没有写入者后才释放自己的发布锁。
+
 同时修正 `SandboxCommandOutput.from_sdk()`：Execution 有 `exit_code: int | None` 和 error，没有 code 字段；删除 `int(exit_code or 0)`。有明确 SDK error 或无可信终态不能默认退出码 0；可用已记录 id 查询一次终态，无法确认则失败。小型探测命令和长 runner 共用这一处修正。
 
 ## 标准结果协议接口
@@ -229,7 +231,7 @@ async def _collect_result(
 
 删除此 runner 中 stdout JSON 解析、exit_code 成功评分、`cat` fallback 和命令超时直接补结果分数的路径。退出码与超时只作运行诊断：外层强制超时或传输/执行错误不能被某个有效 JSON 覆盖为运行成功，必要时记录传输失败；有效的业务失败文件仍应下载保存。
 
-不新增独立 ResultCollector；大小、摘要、重试和落盘都在这个私有方法内。`SandboxSync.connect + files.read_bytes` 的参考为 `sandbox/get_first_sandbox.py`；现有 async handle 直接增加 files，不为下载再建立第二条连接。
+不新增独立 ResultCollector；大小、摘要、重试和落盘都在这个私有方法内。现有 async handle 直接增加 SDK files，不为下载再建立第二条连接；不会从参考目录调用下载脚本。
 
 ## 文件 evaluator 和 worker 接口
 
@@ -326,5 +328,7 @@ recovery_by_session 放入内部 Sandbox config。原 allocate() 返回恢复 le
 ## 当前验证边界与后续工作
 
 非 ENV 单元测试覆盖共用结果协议、文件 backend、SDK 结果下载、挂载覆盖、多文件上传、续期与命令停止、配置解析、Gateway 持久化确认和恢复分流；使用 fake SDK/rclone，不请求真实集群。测试不能证明某个业务镜像已具备完整评分依赖或远程网络可达。
+
+`tests/test_sandbox_checkout.py` 单独检查运行时模块是否进入 Git index，再从 index 导出不含 `sandbox/` 的干净运行时副本。子进程使用当前 Python 解释器、禁用继承的源码路径并禁止网络连接，验证 `import launcher` 和新增 runtime 模块确实从副本导入；未跟踪的本地文件不能掩盖打包缺失。
 
 后续优先迁移 Harbor/OpenRT：创建两份独立环境 YAML、接入 v2 文件发布、验证旧/新评分一致，再执行真实 smoke。其他 env 同样完成评分依赖与退出清理审查后才可声明支持；当前示例属于接入约定，不能直接把既有 `.rjob.yaml` 或未迁移 runner 当作完成支持。

@@ -53,9 +53,9 @@ sandbox:
     download_retries: 3
 ```
 
-`local_root` 相对 launcher 工作目录解析为绝对路径，所有 session 都使用同一个根目录。WebDAV 仅用于 H 发布输入和准备 AFS 子目录，复用项目与 AK/SK；评分文件必须经 SDK 下载。AFS 发布复用 H 端 `bash`、`rclone` 和 `sandbox/migrate_gpfs_data_to_afs.sh`，镜像须提供 execd、`sh`、`base64`、`sha256sum` 和业务依赖。框架检查 H 到 Gateway 的 readiness/模型路由；Sandbox 到 Gateway 的网络、镜像依赖和原生验证须通过真实 env smoke 确认。
+`local_root` 相对 launcher 工作目录解析为绝对路径，所有 session 都使用同一个根目录。WebDAV 仅用于 H 发布输入和准备 AFS 子目录，复用项目与 AK/SK；评分文件必须经 SDK 下载。AFS 发布逻辑直接实现在 `clusters/sandbox_cluster.py`，H 端需安装外部 rclone；不调用 Bash 迁移脚本，也不导入 `sandbox/` 中的 Python。镜像须提供 execd、`sh`、`base64`、`sha256sum` 和业务依赖。框架检查 H 到 Gateway 的 readiness/模型路由；Sandbox 到 Gateway 的网络、镜像依赖和原生验证须通过真实 env smoke 确认。
 
-SDK 连接存续期间自动续期；实例因失败或调试而保留、连接关闭后不再自动续期，仍受平台 TTL 限制。输入发布、完整挂载列表和 AFS volume 兼容类型均实现在 `clusters/sandbox_cluster.py`，没有单独的 AFS 传输服务。
+SDK 连接存续期间自动续期；实例因失败或调试而保留、连接关闭后不再自动续期，仍受平台 TTL 限制。输入发布、文件物化/manifest、WebDAV 锁、完整挂载列表和 AFS volume 兼容类型均实现在 `clusters/sandbox_cluster.py`，没有单独的 AFS 传输服务。`sandbox/` 目录只作开发参考，可以从部署包中完全省略。
 
 Gateway 地址只解析一次：显式 `--gateway-base-url` 优先，其次使用本文件的 `sandbox.gateway_base_url`。解析结果统一写入主控的 `cfg.gateway_base_url`，同时注入 Sandbox 请求；per-env 配置不再另行覆盖。CLI 未显式传值时不能让旧的 localhost 默认值盖过平台 YAML；未配置可达地址则启动失败。
 
@@ -223,7 +223,7 @@ results/
         └── artifacts/             # 可选的原生日志与诊断文件
 ```
 
-使用已锁定的 OpenSandbox 0.1.9 接口：在 runtime handle 增加 `files`，通过 `AdapterFactory.create_filesystem_service(endpoint)` 创建文件服务；`await files.read_bytes(remote_path)` 得到字节后写入 H。本仓库 `sandbox/get_first_sandbox.py` 已有 SDK 读取文件再落盘的示例。JSON 不通过 `cat`、stdout 或原始 HTTP proxy fallback 获取。
+使用已锁定的 OpenSandbox 0.1.9 接口：在 runtime handle 增加 `files`，通过 `AdapterFactory.create_filesystem_service(endpoint)` 创建文件服务；`await files.read_bytes(remote_path)` 得到字节后写入 H。实际代码位于 `manager/sandbox_episode_runner.py`，不依赖参考目录中的下载示例。JSON 不通过 `cat`、stdout 或原始 HTTP proxy fallback 获取。
 
 下载先写同目录临时文件，核验远端文件的大小和 SHA-256，并严格验证 JSON；成功后原子替换正式文件。SDK 文件信息提供大小；远端 SHA-256 在 writer 已确认停止后，通过 SDK 命令服务执行固定的 `sha256sum -- <result_path>` 获取，路径校验并正确转义。该命令输出仅作完整性校验，JSON 内容和评分仍只通过 SDK 文件服务取得。新执行的下载重试不得读取本地旧文件兜底；显式 resume 仅在可信 runtime.json 与身份匹配时恢复合法本地文件。当前自动回收只有标准 JSON，附属文件 SDK 回收属于后续可选扩展，不能成为 H 评分依赖。
 
@@ -330,6 +330,8 @@ results/
 ## 环境接入后的验收要求
 
 非 ENV 测试使用 fake SDK/rclone，验证框架行为；下列真实业务与集群验收仍待 env 迁移后执行，不能由框架单测替代。
+
+另用 `tests/test_sandbox_checkout.py` 检查 Git index 包含必要运行时模块，并导出完全没有 `sandbox/` 的干净副本验证 launcher 导入，避免本地未跟踪文件掩盖部署缺失。
 
 1. 多个上传文件能按原 import/执行路径工作，输入与输出挂载的 readOnly 值正确。
 2. 即使 stdout 为空、截断或存在其他 JSON，仍能通过 SDK 下载标准文件并正确评分。
