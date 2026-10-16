@@ -4,7 +4,7 @@ import argparse
 from collections.abc import Sequence
 
 DEFAULT_RJOB_CONFIG_PATH = "config.yaml"
-DEFAULT_SANDBOX_CONFIG_PATH = "config.yaml"
+DEFAULT_SANDBOX_CONFIG_PATH = "sandbox-config.yaml"
 
 
 def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -52,7 +52,8 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
         action="store_true",
         help=(
             "Continue a job and skip finished environments. Before continuing, "
-            "all landing rows for unfinished sessions are deleted; Cloud mode "
+            "unfinished sessions are reconciled before rerunning; Sandbox preserves "
+            "recoverable results and trajectories. Cloud mode "
             "requires the same destructive-operation safeguards as rebuild."
         ),
     )
@@ -116,7 +117,7 @@ def parse_simulation_args(argv: Sequence[str] | None = None) -> argparse.Namespa
         default=True,
         help="Remove stale Safactory Docker containers from the same job_id before startup.",
     )
-    parser.add_argument("--gateway-base-url", type=str, default="http://127.0.0.1:8080/v1/sessions")
+    parser.add_argument("--gateway-base-url", type=str, default=None)
     parser.add_argument("--agent-start-timeout-s", type=float, default=600.0)
     parser.add_argument(
         "--agent-start-timeout-grace-s",

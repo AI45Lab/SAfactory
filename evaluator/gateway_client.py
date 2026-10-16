@@ -9,6 +9,16 @@ import httpx
 log = logging.getLogger("evaluator.gateway_client")
 
 
+def is_durably_closed(payload: Any, *, session_id: str) -> bool:
+    return isinstance(payload, dict) and (
+        payload.get("session_id") == session_id
+        and payload.get("status") == "closed"
+        and payload.get("drained") is True
+        and payload.get("telemetry_status") == "flushed"
+        and payload.get("client_timed_out") is not True
+    )
+
+
 class GatewayClient:
     def __init__(
         self,

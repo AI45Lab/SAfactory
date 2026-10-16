@@ -1,71 +1,48 @@
 # Sandbox 模式
 
-Sandbox 模式是与 Docker、RJob 平级的 rollout runtime。Safactory 使用 OpenSandbox SDK 创建 Brainbox Sandbox Instance，在实例中执行 agent runner，并在 rollout 和可选 evaluation 完成后删除实例。
+Sandbox 是与 Docker、RJob 平级的运行后端。当前非 ENV 框架已接通：AFS 输入发布、SDK 多文件上传、命令停止确认、标准 JSON 下载、文件评分、Gateway 持久化检查及恢复。本轮没有修改 `env/`；既有业务 runner 尚需迁移到 v2 结果协议，不能直接将未迁移的 Docker/RJob YAML 切为 Sandbox 运行。
 
-## 前置条件
+详细配置见 [工作流与环境迁移](sandbox-workflow-design_CN.md)，实际函数接口见 [非 ENV 实现说明](sandbox-implementation-plan_CN.md)。
 
-1. 按仓库根目录的 `SandboxAPI.md` 提前创建 Sandbox Environment。
-2. Environment 的 image 必须与 agent config 中的 `env_image` 一致。
-3. Environment 必须声明命令端口，默认 `44772`。
-4. 数据和结果目录应通过 Environment volumes 挂载；Docker 本地 bind mount 不会自动转换。
-5. Sandbox 必须能访问 `sandbox.gateway_base_url`。
+## 前置准备
 
-安装依赖并设置认证：
+1. 通过平台的 Environment API 或管理端准备模板，镜像与业务 `env_image` 一致，声明 `44772`，镜像内运行 execd。
+2. H 端安装仓库依赖和 rclone；SDK 锁定 `opensandbox==0.1.9`。提供 `OPEN_SANDBOX_API_KEY`，project 在平台配置填写。AFS 发布直接实现在 `clusters/sandbox_cluster.py`，无需 Bash 迁移脚本；`sandbox/` 只作参考，部署包可完全不带该目录。
+3. 镜像提供 `sh`、`base64`、`sha256sum`、runner 和原生验证所需依赖；Sandbox 能访问统一 Gateway URL。
+4. 既有 Gateway 采用 `telemetry.mode: strict`、`telemetry.async_cloud_writes: false`，并关闭 `storage_config.enable_buffer` 和 `enable_upsert_batching`。launcher 与 Gateway 使用相同实际存储，框架通过 `/readyz` 校验。
+
+## 三份独立配置
 
 ```bash
-pip install -r requirements.txt
+cp config.sandbox.example.yaml sandbox-config.yaml
 export OPEN_SANDBOX_API_KEY='<ak>:<sk>'
 ```
 
-## 配置
+- `sandbox-config.yaml`：平台域名、project、认证环境变量、统一 Gateway、AFS WebDAV 和 H 结果根目录。
+- `env/<env>/<env>.config.sandbox.yaml`：任务数据集、镜像、业务参数。
+- `env/<env>/<env>.start.sandbox.yaml`：纯 `sandbox:` 的 runner_entrypoint、辅助文件、资源与 storage.inputs/outputs。
 
-复制 `config.sandbox.example.yaml`，至少填写 `project`、`environment_id` 和集群可访问的 `gateway_base_url`。多 agent 场景可以在 agent start config 中覆盖 Environment。Geo3K 使用同一套 runtime 契约：
+后两份需要在 env 迁移时创建。source 必须是文件，source 和相对 inputs.host_path 以启动 YAML 为基准；不读取 `container:`、RJob 挂载或本地 Docker bind mount。inputs 为只读 AFS 子目录，outputs 包含可写 `/app/results`；完整挂载列表覆盖 Environment 旧 volumes。
 
-```yaml
-agent_name: geo3k
+## 启动与结果
 
-container:
-  workdir: /workspace
-  runner_entrypoint:
-    source: ./
-    target: /tmp/safactory-geo3k
-    command: "python /tmp/safactory-geo3k/runner.py"
-
-sandbox:
-  environment_id: env-geo3k
-  required_mount_paths:
-    - /workspace/Safactory/results
-```
-
-`runner_entrypoint.source` 会在实例分配后写入目标路径。`container.mounts` 仍只属于 Docker；Sandbox 所需持久卷必须配置在 Environment 中。
-
-## 启动
+完成 env 迁移后可沿用 launcher：
 
 ```bash
 python launcher.py \
   --mode sandbox \
-  --sandbox-config config.sandbox.yaml \
-  --agent-config env/geo3k/geo3k_config.yaml \
-  --agent-start-config env/geo3k/geo3k_start.yaml \
-  --gateway-base-url http://YOUR_GATEWAY_HOST:8000/v1/sessions \
-  --llm-model geo3k_model \
-  --enable-evaluation \
-  --job-id geo3k-sandbox-smoke \
-  --pool-size 1 \
-  --max-workers 1 \
-  --max-steps 10
+  --sandbox-config sandbox-config.yaml \
+  --agent-config env/yourenv/yourenv.config.sandbox.yaml \
+  --agent-start-config env/yourenv/yourenv.start.sandbox.yaml \
+  --job-id yourenv-sandbox-smoke \
+  --llm-model your_model_route \
+  --pool-size 1 --multiplier 1 --max-workers 1
 ```
 
-`--pool-size` 决定 Safactory 同时持有的 Sandbox Instance 数量。Manager 会在 worker 启动前填充这些 lease，Brainbox Environment 的 `instanceCapacity` 必须不小于该并发量。
+Gateway 解析顺序为显式 `--gateway-base-url` 优先于平台 YAML；主控和 Sandbox 共用解析结果。文件评分自动启用，无须 `--enable-evaluation`。长任务需同时调整平台 command_timeout_s 与 launcher 的 agent-start-timeout-s。
 
-## Evaluation
+runner 在 Sandbox 内完成原生验证与评分，原子写入 `/app/results/<job_id>/<session_id>/safactory_result.json`。主控仅通过 SDK `files.read_bytes` 下载、验证并保存到 `<results.local_root>/<job_id>/<session_id>/safactory_result.json`；最终评分仅读取文件的 `evaluation.normalized_score_10`。stdout、exit code 和顶层 total_reward 不提供替代评分；外层执行错误不能被有效 JSON 覆盖为成功。
 
-Rule evaluator 不需要额外的 Sandbox 设置。Gateway session 关闭后，rule evaluator 会收到 rollout 结果和已经落盘的轨迹。
+实际预热数为 `ceil(pool_size × multiplier)`。SDK 连接期间自动续期；保留实例关闭连接后续期停止。`cleanup_on_finish: false` 或待恢复实例仍占配额并受平台 TTL 限制。
 
-只有该模式会把当前 Sandbox command endpoint 和 SAT header 传给 evaluator。Sandbox 不支持 `direct_docker`。
-
-## 生命周期限制
-
-- Brainbox 不支持 pause，因此 Safactory 不调用 pause。
-- `lifecycle_minutes` 应覆盖 rollout、trajectory flush 和 evaluation 的总时长。
-- `cleanup_on_finish: false` 可用于调试，但会保留实例并占用配额。
+`--resume --job-id <同一job>` 先对账 runtime.json、旧 writer 和结果文件；合法本地结果只恢复提交，远端结果只恢复下载。只有确认需重跑的 session 才清理旧轨迹。无需平台 pause/resume 功能；状态不明、错身份或无法确认 Gateway 持久化时不会提交评分。

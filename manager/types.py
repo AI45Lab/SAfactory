@@ -157,6 +157,7 @@ class SimulationStartResult:
     truncated: bool
     error_text: Optional[str] = None
     metrics: Dict[str, Any] = field(default_factory=dict)
+    result_artifact_path: str | None = None
 
 
 @dataclass(slots=True)

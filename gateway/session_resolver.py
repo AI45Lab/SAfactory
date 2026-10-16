@@ -161,10 +161,12 @@ class SessionResolver:
         self._last_eviction_at = now_mono
         cutoff_ts = _utcnow().timestamp() - self.cfg.session_cache_ttl_s
         async with self._lock:
+            # Closing/closed bindings reject old writers until explicitly cleaned.
             expired = [
                 session_id
                 for session_id, binding in self._bindings.items()
-                if binding.active_request_count <= 0
+                if binding.status == "active"
+                and binding.active_request_count <= 0
                 and binding.active_stream_count <= 0
                 and binding.last_seen_at.timestamp() < cutoff_ts
             ]

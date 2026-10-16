@@ -1,7 +1,9 @@
+# Copy this file to sandbox-config.yaml, the Sandbox launcher's default path.
+# Per-agent runner files and AFS mounts belong in <env>.start.sandbox.yaml.
 sandbox:
-  domain: "https://h.pjlab.org.cn/brainbox"
-  protocol: "https"
-  project: "ailab-pj"
+  domain: "deepenv.sandbox.pjlab.org.cn"
+  protocol: "http"
+  project: "<short-workspace-name>"
   api_key_env: "OPEN_SANDBOX_API_KEY"
 
   # The Sandbox Environment must already exist and expose command_port.
@@ -19,3 +21,23 @@ sandbox:
   use_server_proxy: true
   skip_health_check: false
   cleanup_on_finish: true
+
+  # H-side WebDAV input publication; result JSON is downloaded through SDK files.
+  # Requires rclone on H; implemented directly in clusters/sandbox_cluster.py.
+  afs:
+    webdav_url: "http://10.140.95.76:28081"
+
+  results:
+    # Relative to the launcher's working directory, then resolved to an absolute path.
+    local_root: "./results"
+    download_timeout_s: 60
+    # Extra attempts after the first download; never reruns the business command.
+    download_retries: 3
+
+# Configure the existing Gateway separately for Sandbox:
+# telemetry.mode: strict
+# telemetry.async_cloud_writes: false
+# storage_config.enable_buffer: false
+# storage_config.enable_upsert_batching: false
+# Launcher and Gateway must use the same actual storage backend / database.
+# Align command_timeout_s and --agent-start-timeout-s with the environment's workload.
