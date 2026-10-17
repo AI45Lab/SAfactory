@@ -25,16 +25,8 @@ async def evaluate_rule(
     artifacts = {
         "bench": "harbor",
         "task_id": metrics.get("task_id"),
-        "agent": metrics.get("harbor_agent"),
-        "model": metrics.get("harbor_model"),
-        "reward_key": metrics.get("reward_key"),
-        "rewards": metrics.get("harbor_rewards"),
-        "errors": metrics.get("harbor_errors"),
-        "fatal_errors": metrics.get("harbor_fatal_errors"),
-        "warnings": metrics.get("harbor_warnings"),
-        "job_result_path": metrics.get("harbor_job_result_path"),
-        "trial_result_path": metrics.get("harbor_trial_result_path"),
-        "trajectory_paths": metrics.get("trajectory_paths"),
+        "harbor_reward": metrics.get("harbor_reward"),
+        "harbor_fatal_errors": metrics.get("harbor_fatal_errors"),
     }
 
     if getattr(start_result, "status", None) != "succeeded":
@@ -46,11 +38,7 @@ async def evaluate_rule(
             error_text=getattr(start_result, "error_text", None),
             artifacts=artifacts,
         )
-    fatal_errors = metrics.get("harbor_fatal_errors")
-    if fatal_errors is None:
-        # Compatibility with results written before fatal/warning separation.
-        fatal_errors = metrics.get("harbor_errors")
-    if fatal_errors:
+    if metrics.get("harbor_fatal_errors"):
         return EvalResult.failed(
             session_id=request.session_id,
             eval_id=spec.eval_id,
