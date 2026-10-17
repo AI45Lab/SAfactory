@@ -3,31 +3,39 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
+import re
 import signal
 import subprocess
+import sys
 import time
-from dataclasses import dataclass, field, replace
+import unicodedata
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
-
-from bundle_materializer import BundleSpec, materialize_bundle, parse_bundle_spec
-from image_archive_loader import (
-    ImageArchive,
-    load_image_archives,
-    parse_image_archives,
-)
 
 REQUEST_ENV = "SAFACTORY_START_REQUEST_JSON"
 RESULT_PATH_ENV = "SAFACTORY_RESULT_PATH"
 RESULT_JSON_PREFIX = "SAFACTORY_RESULT_JSON "
 HARBOR_BIN = "/opt/harbor-env/bin/harbor"
 RUNTIME_DIR = Path("/tmp/safactory-harbor")
+CODEX_CONFIG_TARGET = "/opt/safactory-codex-config"
+# Profile subdirectory under <bundle_root>/<task_id>/; configurable per run so an
+# upstream layout change does not require touching the runner.
+DEFAULT_PROFILE_SUBDIR = "harbor-runtime-profile"
+# Shared-image directory under <bundle_root>/, passed to load_shared_images.py.
+# Upstream bundles disagree on the name (_runtime vs shared-images), so it is
+# configurable; the default matches the original self-describing layout.
+DEFAULT_SHARED_SUBDIR = "_runtime"
+# The bundle ships its own loaders; the runner delegates image loading to them.
+BUNDLE_LOADERS = ("load_shared_images.py", "load_image.py")
 CANCELLATION_GRACE_S = 30.0
 CANCELLATION_POLL_S = 1.0
+LOAD_TIMEOUT_S = 1800
+INSPECT_TIMEOUT_S = 20
 MODEL_ENV_NAMES = {
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -43,24 +51,179 @@ AGENT_RUNTIME_TARGETS = {
     "codex": "/usr/local/bin/codex",
     "claude-code": "/usr/local/bin/claude",
 }
-REASONING_EFFORT_AGENTS = {"codex", "claude-code", "opencode", "openhands"}
+MODEL_ENV_PREFIXES = {
+    "claude-code": "ANTHROPIC",
+    "codex": "OPENAI",
+    "opencode": "OPENAI",
+    "openhands": "LLM",
+}
 OPENCODE_CHAT_AGENT_IMPORT_PATHS = {
     "agents.offline_agents:OfflineOpenCode",
     "agents.tracing_agents:TracingOfflineOpenCode",
 }
-CLAUDE_CODE_REASONING_EFFORTS = {
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-    "ultracode",
-}
+
+
+@dataclass(frozen=True)
+class TaskRecord:
+    task_id: str
+    task_path: Path
+    bundle_root: Path
+
+
+def _has_controls(text: str) -> bool:
+    return any(unicodedata.category(char) in {"Cc", "Cs"} for char in text)
+
+
+def _clean_text(value: Any, name: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"{name} must be a non-empty string without outer whitespace")
+    if _has_controls(value):
+        raise ValueError(f"{name} must be valid UTF-8 without control characters")
+    return value
+
+
+def _path_segment(value: Any, name: str) -> str:
+    """A single safe path segment: no separators, no traversal, no option-leading '-'."""
+    text = _clean_text(value, name)
+    if "/" in text or "\\" in text or text in {".", ".."} or text.startswith("-"):
+        raise ValueError(f"{name} must be a single safe path segment")
+    return text
+
+
+def _runtime_env(value: Any) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, dict):
+        raise ValueError("runtime_env must be an object")
+    reserved = MODEL_ENV_NAMES | {"PATH", "HOME", "BASH_ENV", "ENV"}
+    # HARBOR_* is allowed so tasks whose Harbor verifier reads a public oracle
+    # (e.g. HARBOR_EXPECTED_SECRET for propentbench live-flag capture) can pass
+    # it through runtime_env; SAFACTORY_/DOCKER_/LD_/PYTHON remain reserved.
+    prefixes = ("DOCKER_", "SAFACTORY_", "LD_", "PYTHON")
+    for name, item in value.items():
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError("runtime_env keys must be environment variable names")
+        if name in reserved or name.startswith(prefixes):
+            raise ValueError(f"runtime_env cannot override reserved variable {name}")
+        if not isinstance(item, str) or "\x00" in item:
+            raise ValueError(f"runtime_env.{name} must be a string without NUL")
+    return tuple(sorted(value.items()))
+
+
+def resolve_task_record(
+    task_id: str,
+    bundle_root: Path,
+    profile_subdir: str,
+) -> TaskRecord:
+    """Locate one task by convention: <bundle_root>/<task_id>/<profile_subdir>."""
+    task_id = _path_segment(task_id, "dataset.task_id")
+    profile_subdir = _path_segment(profile_subdir, "profile_subdir")
+    if not bundle_root.is_absolute():
+        raise ValueError("bundle_root must be absolute")
+    try:
+        root = bundle_root.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise ValueError(f"bundle_root does not exist: {bundle_root}") from error
+    if root == Path(root.anchor) or not root.is_dir():
+        raise ValueError("bundle_root must be a directory other than filesystem root")
+    for name in BUNDLE_LOADERS:
+        if not (root / "bin" / name).is_file():
+            raise ValueError(f"bundle_root missing loader: bin/{name}")
+    # task_id/profile_subdir are single safe segments, so the path stays inside
+    # bundle_root syntactically. The directory may still be a symlink pointing
+    # outside (e.g. a symlink-farm bundle whose tasks link to a real upstream
+    # delivery); such escapes are permitted on purpose.
+    task_path = root / task_id / profile_subdir
+    return TaskRecord(task_id=task_id, task_path=task_path, bundle_root=root)
+
+
+def validate_task_record(record: TaskRecord) -> None:
+    if not record.task_path.is_dir():
+        raise ValueError("task_path must be a directory")
+    for name in ("task.toml", "instruction.md", "tests/test.sh"):
+        if not (record.task_path / name).is_file():
+            raise ValueError(f"task missing required file: {name}")
+    if not (record.task_path / "environment").is_dir():
+        raise ValueError("task missing environment directory")
+
+
+def _docker_env(env: dict[str, str]) -> dict[str, str]:
+    # CLI contexts and TLS options must never redirect the episode's connection.
+    overrides = {
+        "DOCKER_CONTEXT",
+        "DOCKER_TLS",
+        "DOCKER_TLS_VERIFY",
+        "DOCKER_CERT_PATH",
+        *MODEL_ENV_NAMES,
+    }
+    return {key: value for key, value in env.items() if key not in overrides}
+
+
+def _docker_command(env: dict[str, str], *args: str) -> list[str]:
+    host = env.get("DOCKER_HOST", "")
+    if not host.startswith("unix:///"):
+        raise ValueError("nested Docker requires an explicit Unix DOCKER_HOST")
+    return ["docker", f"--host={host}", *args]
+
+
+def _docker(env: dict[str, str], *args: str, timeout: int = INSPECT_TIMEOUT_S) -> str:
+    completed = subprocess.run(
+        _docker_command(env, *args),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+    if completed.returncode:
+        raise RuntimeError(
+            f"docker {args[0]} failed: {completed.stdout[-2000:].strip()}"
+        )
+    return completed.stdout.strip()
+
+
+def load_task_images(spec: RunSpec, docker_env: dict[str, str]) -> None:
+    """Delegate image loading to the bundle's own loader scripts.
+
+    The bundle ships bin/load_shared_images.py (shared <bundle>/_runtime archives)
+    and bin/load_image.py (per-task <bundle>/<task>/images archives); they handle
+    gzip streaming, pre.tar/post.tar inner archives, and overlay max-depth
+    flatten-import. The runner only wires them to this episode's daemon via
+    DOCKER_HOST (already set in docker_env) and runs them isolated (-I) because the
+    bundle is untrusted data.
+    """
+    loader_args = {
+        "load_shared_images.py": [
+            "--runtime-dir",
+            str(spec.bundle_root / spec.shared_images_subdir),
+        ],
+        "load_image.py": ["--root", str(spec.bundle_root), "--task", spec.task_id],
+    }
+    for name in loader_args:
+        if not (spec.bundle_root / "bin" / name).is_file():
+            raise ValueError(f"bundle loader missing: bin/{name}")
+    spec.image_load_log_path.parent.mkdir(parents=True, exist_ok=True)
+    with spec.image_load_log_path.open("ab") as log:
+        for name, args in loader_args.items():
+            script = spec.bundle_root / "bin" / name
+            completed = subprocess.run(
+                [sys.executable, "-I", str(script), *args],
+                env=docker_env,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=LOAD_TIMEOUT_S,
+            )
+            if completed.returncode:
+                raise RuntimeError(
+                    f"{name} failed with status {completed.returncode}; "
+                    f"see {spec.image_load_log_path}"
+                )
 
 
 @dataclass(frozen=True)
 class AgentRuntime:
-    agent: str
     source: Path
     version: str
     target: str
@@ -69,8 +232,7 @@ class AgentRuntime:
 @dataclass(frozen=True)
 class RunSpec:
     session_id: str
-    task_id: str
-    task_path: Path | None
+    task_record: TaskRecord
     gateway_url: str
     agent: str
     model: str | None
@@ -82,9 +244,27 @@ class RunSpec:
     harbor_job_name: str
     agent_import_path: str | None = None
     capture_http: bool = False
-    bundle: BundleSpec | None = None
     agent_runtime: AgentRuntime | None = None
-    image_archives: tuple[ImageArchive, ...] = ()
+    codex_config_dir: Path | None = None
+    agent_env: dict[str, str] = field(default_factory=dict)
+    runtime_env: tuple[tuple[str, str], ...] = ()
+    shared_images_subdir: str = DEFAULT_SHARED_SUBDIR
+
+    @property
+    def task_id(self) -> str:
+        return self.task_record.task_id
+
+    @property
+    def task_path(self) -> Path:
+        return self.task_record.task_path
+
+    @property
+    def bundle_root(self) -> Path:
+        return self.task_record.bundle_root
+
+    @property
+    def preparation_path(self) -> Path:
+        return self.episode_dir / "infra" / "preparation.json"
 
     @property
     def episode_dir(self) -> Path:
@@ -101,6 +281,10 @@ class RunSpec:
     @property
     def dockerd_log_path(self) -> Path:
         return self.episode_dir / "infra" / "dockerd.log"
+
+    @property
+    def image_load_log_path(self) -> Path:
+        return self.episode_dir / "infra" / "image-load.log"
 
     @property
     def harbor_log_path(self) -> Path:
@@ -144,7 +328,7 @@ class NestedDocker:
             )
 
         self.env = {
-            **os.environ,
+            **_docker_env(dict(os.environ)),
             "DOCKER_HOST": f"unix://{spec.docker_socket}",
             "HARBOR_TELEMETRY": "0",
         }
@@ -161,32 +345,22 @@ class NestedDocker:
                 f"nested dockerd did not become ready; see {spec.dockerd_log_path}"
             )
 
-        driver = self._docker_output("info", "--format", "{{.Driver}}")
+        driver = _docker(self.env, "info", "--format", "{{.Driver}}")
         if driver != "fuse-overlayfs":
             raise RuntimeError(
                 f"nested dockerd uses {driver!r}, expected 'fuse-overlayfs'"
             )
         return driver
 
-    def materialize_task(self, spec: RunSpec) -> RunSpec:
-        if spec.bundle is not None:
-            output_dir = RUNTIME_DIR / f"bundle-{_safe_name(spec.session_id)}"
-            task_path = materialize_bundle(
-                spec.bundle,
-                output_dir=output_dir,
-                env=self.env,
-            )
-            spec = replace(spec, task_path=task_path)
-        load_image_archives(spec.image_archives, env=self.env)
-        return spec
-
     def run_harbor(self, spec: RunSpec) -> tuple[int, bool]:
         spec.harbor_log_path.parent.mkdir(parents=True, exist_ok=True)
         timed_out = False
+        # self.env is already stripped of inherited model credentials by _docker_env.
         harbor_env = {
-            key: value for key, value in self.env.items() if key not in MODEL_ENV_NAMES
+            **self.env,
+            **model_connection_env(spec),
+            **dict(spec.runtime_env),
         }
-        harbor_env.update(model_connection_env(spec))
         with spec.harbor_log_path.open("ab") as log:
             self.harbor_process = subprocess.Popen(
                 harbor_command(spec),
@@ -216,37 +390,11 @@ class NestedDocker:
             self.process = None
 
     def _docker_ready(self) -> bool:
-        if not self.env:
-            return False
         try:
-            return (
-                subprocess.run(
-                    ["docker", "info"],
-                    env=self.env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                    timeout=5,
-                ).returncode
-                == 0
-            )
-        except (OSError, subprocess.TimeoutExpired):
+            _docker(self.env, "info", timeout=5)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
             return False
-
-    def _docker_output(self, *args: str) -> str:
-        completed = subprocess.run(
-            ["docker", *args],
-            env=self.env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
-            timeout=20,
-        )
-        if completed.returncode != 0:
-            raise RuntimeError(completed.stdout.strip() or "docker command failed")
-        return completed.stdout.strip()
+        return True
 
     @staticmethod
     def _stop(process: subprocess.Popen[bytes]) -> None:
@@ -259,14 +407,10 @@ class NestedDocker:
         try:
             process.wait(timeout=20)
         except subprocess.TimeoutExpired:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            try:
+            with contextlib.suppress(subprocess.TimeoutExpired):
                 process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                pass
 
 
 def read_request() -> dict[str, Any]:
@@ -281,67 +425,46 @@ def read_request() -> dict[str, Any]:
 
 def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
     """Parse the small request subset needed to run exactly one Harbor trial."""
-    params = request.get("env_params")
-    params = params if isinstance(params, dict) else {}
-    dataset = params.get("dataset")
-    dataset = dataset if isinstance(dataset, dict) else {}
+    params = _dict(request.get("env_params"))
+    dataset = _dict(params.get("dataset"))
 
     session_id = _required_text(request.get("session_id"), "session_id")
-    bundle = parse_bundle_spec(dataset, params)
-    task_path: Path | None = None
-    if bundle is None:
-        task_path = Path(
-            _required_text(
-                _param(dataset, params, "task_path", "/tmp/safactory-harbor-task"),
-                "task_path",
-            )
-        ).resolve()
-        if not task_path.is_dir():
-            raise RuntimeError(f"Harbor task directory does not exist: {task_path}")
+    task_id = _path_segment(dataset.get("task_id"), "dataset.task_id")
+    bundle_root = Path(_clean_text(params.get("bundle_root"), "bundle_root"))
+    if not bundle_root.is_absolute():
+        raise ValueError("bundle_root must be absolute")
+    profile_subdir = _path_segment(
+        params.get("profile_subdir", DEFAULT_PROFILE_SUBDIR), "profile_subdir"
+    )
+    shared_images_subdir = _path_segment(
+        params.get("shared_images_subdir", DEFAULT_SHARED_SUBDIR),
+        "shared_images_subdir",
+    )
+    task_record = resolve_task_record(task_id, bundle_root, profile_subdir)
+    # Optional public run-time variables for the Harbor process (no per-task
+    # catalog any more); applies to every task of this run.
+    runtime_env = _runtime_env(params.get("runtime_env", {}))
 
+    # The SAfactory launcher/cluster code has already resolved and containerized this URL.
+    # Keep only a manual-run fallback; URL validation belongs to the launcher.
     gateway_url = (
         os.environ.get("SAFACTORY_GATEWAY_SESSION_URL_CONTAINER")
         or os.environ.get("SAFACTORY_GATEWAY_SESSION_URL")
-        or f"{_required_text(request.get('gateway_base_url'), 'gateway_base_url').rstrip('/')}/{session_id}"
+        or f"{str(request.get('gateway_base_url') or '').rstrip('/')}/{session_id}"
     ).rstrip("/")
-    parsed_gateway = urlsplit(gateway_url)
-    if parsed_gateway.scheme not in {"http", "https"} or not parsed_gateway.hostname:
-        raise RuntimeError(f"invalid SAfactory gateway URL: {gateway_url!r}")
 
-    agent_runtime_config = params.get("agent_runtime")
-    image_archives_config = params.get("image_archives")
-    reasoning_effort_config = params.get("reasoning_effort")
-    agent_import_path_config = params.get("agent_import_path")
-    capture_http_config = params.get("capture_http", False)
-    agent = _required_text(
-        params.get("agent")
-        if agent_runtime_config is not None or reasoning_effort_config is not None
-        else _param(dataset, params, "agent", "oracle"),
-        "agent",
-    )
-    agent_runtime = _parse_agent_runtime(agent_runtime_config, agent)
-    image_archives = parse_image_archives(image_archives_config)
-    reasoning_effort = _parse_reasoning_effort(reasoning_effort_config, agent)
-    agent_import_path = _optional_text(agent_import_path_config)
-    if agent_import_path is not None and ":" not in agent_import_path:
-        raise RuntimeError(
-            "agent_import_path must use module.path:ClassName format"
-        )
-    capture_http = _parse_bool(capture_http_config, "capture_http")
-    if capture_http and agent_import_path != "agents.tracing_agents:TracingOfflineOpenCode":
-        raise RuntimeError(
-            "capture_http=true requires "
-            "agents.tracing_agents:TracingOfflineOpenCode"
-        )
-    model = str(
-        _param(dataset, params, "model", request.get("model") or "") or ""
-    ).strip()
+    agent = _optional_text(params.get("agent")) or "oracle"
+    reasoning_effort = _optional_text(params.get("reasoning_effort"))
+    agent_import_path = _optional_text(params.get("agent_import_path"))
+    capture_http = params.get("capture_http") is True
+    agent_runtime = _agent_runtime(params.get("agent_runtime"), agent)
+    codex_config_dir = _codex_config_dir(params.get("codex_config_dir"), agent)
+    agent_env = _dict(params.get("agent_env"))
+    model = str(params.get("model", request.get("model") or "") or "").strip()
     if agent in {"oracle", "nop"}:
         model = ""
-    reward_key = _required_text(
-        _param(dataset, params, "reward_key", "reward"), "reward_key"
-    )
-    timeout_s = int(_param(dataset, params, "timeout_s", 900))
+    reward_key = _required_text(params.get("reward_key", "reward"), "reward_key")
+    timeout_s = int(params.get("timeout_s", 900))
     if timeout_s <= 0:
         raise RuntimeError("timeout_s must be positive")
     result_path_text = os.environ.get(RESULT_PATH_ENV, "").strip()
@@ -349,11 +472,9 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
         raise RuntimeError(f"{RESULT_PATH_ENV} is required")
     result_path = Path(result_path_text)
     job_name = ("safactory-" + _safe_name(session_id).lower())[:63].strip("-")
-    default_task_id = bundle.task if bundle is not None else task_path.name
     return RunSpec(
         session_id=session_id,
-        task_id=_required_text(dataset.get("task_id") or default_task_id, "task_id"),
-        task_path=task_path,
+        task_record=task_record,
         gateway_url=gateway_url,
         agent=agent,
         model=model or None,
@@ -365,15 +486,15 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
         harbor_job_name=job_name,
         agent_import_path=agent_import_path,
         capture_http=capture_http,
-        bundle=bundle,
         agent_runtime=agent_runtime,
-        image_archives=image_archives,
+        codex_config_dir=codex_config_dir,
+        agent_env=agent_env,
+        runtime_env=runtime_env,
+        shared_images_subdir=shared_images_subdir,
     )
 
 
 def harbor_command(spec: RunSpec) -> list[str]:
-    if spec.task_path is None:
-        raise RuntimeError("Harbor task has not been materialized")
     command = [
         HARBOR_BIN,
         "run",
@@ -389,9 +510,8 @@ def harbor_command(spec: RunSpec) -> list[str]:
             opencode_config = _opencode_reasoning_config(
                 spec.model,
                 spec.reasoning_effort,
-                chat_compatible=(
-                    spec.agent_import_path in OPENCODE_CHAT_AGENT_IMPORT_PATHS
-                ),
+                chat_compatible=spec.agent_import_path
+                in OPENCODE_CHAT_AGENT_IMPORT_PATHS,
             )
             command.extend(
                 [
@@ -402,23 +522,21 @@ def harbor_command(spec: RunSpec) -> list[str]:
             )
         else:
             command.extend(["--ak", f"reasoning_effort={spec.reasoning_effort}"])
+    mounts = []
     if spec.agent_runtime is not None:
-        mount = {
-            "type": "bind",
-            "source": str(spec.agent_runtime.source),
-            "target": spec.agent_runtime.target,
-            "read_only": True,
-        }
-        command.extend(
-            [
-                "--mounts",
-                json.dumps([mount], separators=(",", ":")),
-                "--ak",
-                f"version={spec.agent_runtime.version}",
-            ]
-        )
+        mounts.append(_bind_mount(spec.agent_runtime.source, spec.agent_runtime.target))
+        command.extend(["--ak", f"version={spec.agent_runtime.version}"])
+    if spec.codex_config_dir is not None:
+        # Harbor merges the session URL into a writable CODEX_HOME copy of this file;
+        # the read-only mount only serves companion files referenced from it.
+        command.extend(["--ak", f"config={spec.codex_config_dir / 'config.toml'}"])
+        mounts.append(_bind_mount(spec.codex_config_dir, CODEX_CONFIG_TARGET))
+    if mounts:
+        command.extend(["--mounts", json.dumps(mounts, separators=(",", ":"))])
     if spec.capture_http:
         command.extend(["--ak", "capture_http=true"])
+    for name, value in sorted(spec.agent_env.items()):
+        command.extend(["--ae", f"{name}={value}"])
     command.extend(
         [
             "--env",
@@ -431,6 +549,7 @@ def harbor_command(spec: RunSpec) -> list[str]:
             str(spec.jobs_root),
             "--job-name",
             spec.harbor_job_name,
+            "--yes",
             "--quiet",
         ]
     )
@@ -438,76 +557,38 @@ def harbor_command(spec: RunSpec) -> list[str]:
 
 
 def model_connection_env(spec: RunSpec) -> dict[str, str]:
-    if spec.agent == "claude-code":
-        return {
-            "ANTHROPIC_BASE_URL": spec.gateway_url,
-            "ANTHROPIC_API_KEY": "EMPTY",
-        }
-    if spec.agent in {"codex", "opencode"}:
-        return {
-            "OPENAI_BASE_URL": spec.gateway_url,
-            "OPENAI_API_KEY": "EMPTY",
-        }
-    if spec.agent == "openhands":
-        return {
-            "LLM_BASE_URL": spec.gateway_url,
-            "LLM_API_KEY": "EMPTY",
-        }
-    return {}
+    prefix = MODEL_ENV_PREFIXES.get(spec.agent)
+    if prefix is None:
+        return {}
+    return {f"{prefix}_BASE_URL": spec.gateway_url, f"{prefix}_API_KEY": "EMPTY"}
 
 
-def wait_for_cancellation_cleanup(
-    spec: RunSpec,
-    *,
-    grace_s: float = CANCELLATION_GRACE_S,
-    poll_s: float = CANCELLATION_POLL_S,
-) -> None:
+def wait_for_cancellation_cleanup(spec: RunSpec) -> None:
     """Wait briefly for Harbor's asynchronous cancellation writes to settle."""
-    deadline = time.monotonic() + grace_s
+    deadline = time.monotonic() + CANCELLATION_GRACE_S
+    job_dir = spec.harbor_job_dir
+    job_result = job_dir / "result.json"
     previous: tuple[tuple[str, int, int], ...] = ()
     while time.monotonic() < deadline:
-        job_dir = spec.harbor_job_dir
-        trajectories = _trajectory_paths(job_dir)
-        manifests = sorted(job_dir.glob("*/artifacts/manifest.json"))
-        trial_results = sorted(job_dir.glob("*/result.json"))
-        paths = [job_dir / "result.json", *trial_results]
-        paths.extend([*trajectories, *manifests])
+        trajectories = [
+            path for path in job_dir.rglob("*trajectory*.json*") if path.is_file()
+        ]
+        manifests = list(job_dir.glob("*/artifacts/manifest.json"))
+        trial_results = list(job_dir.glob("*/result.json"))
         snapshot = tuple(
-            (str(path), path.stat().st_size, path.stat().st_mtime_ns)
-            for path in sorted(paths)
+            (str(path), (info := path.stat()).st_size, info.st_mtime_ns)
+            for path in sorted({job_result, *trial_results, *trajectories, *manifests})
             if path.is_file()
         )
         ready = (
-            (job_dir / "result.json").is_file()
+            job_result.is_file()
             and bool(manifests)
-            and (bool(trajectories) or bool(trial_results))
+            and bool(trajectories or trial_results)
         )
         if ready and snapshot == previous:
             return
         previous = snapshot
-        time.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))
-
-
-def _trajectory_paths(root: Path) -> list[Path]:
-    if not root.is_dir():
-        return []
-    return sorted(path for path in root.rglob("*trajectory*.json*") if path.is_file())
-
-
-def _trajectory_step_count(paths: list[Path]) -> int:
-    total = 0
-    for path in paths:
-        try:
-            trajectory = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, TypeError, ValueError):
-            continue
-        if isinstance(trajectory, dict):
-            steps = trajectory.get("steps")
-            if isinstance(steps, list):
-                total += len(steps)
-        elif isinstance(trajectory, list):
-            total += len(trajectory)
-    return total
+        time.sleep(min(CANCELLATION_POLL_S, max(0.0, deadline - time.monotonic())))
 
 
 def parse_harbor_result(
@@ -515,8 +596,6 @@ def parse_harbor_result(
     *,
     return_code: int,
     timed_out: bool,
-    docker_driver: str,
-    duration_ms: float,
 ) -> dict[str, Any]:
     job_result_path = spec.harbor_job_dir / "result.json"
     try:
@@ -524,127 +603,75 @@ def parse_harbor_result(
     except (OSError, TypeError, ValueError):
         if not timed_out:
             raise RuntimeError(
-                f"Harbor did not write {job_result_path}; return_code={return_code}; "
-                f"log_tail={_tail(spec.harbor_log_path)}"
+                f"Harbor did not write job result; return_code={return_code}"
             )
         job_result = {}
 
-    candidates = sorted(spec.harbor_job_dir.glob("*/result.json"))
-    if len(candidates) == 1:
-        trial_result_path: Path | None = candidates[0]
-        trial_dir = trial_result_path.parent
-    elif not candidates and timed_out:
-        trial_dirs = (
-            sorted(path for path in spec.harbor_job_dir.iterdir() if path.is_dir())
-            if spec.harbor_job_dir.is_dir()
-            else []
-        )
-        if len(trial_dirs) != 1:
-            raise RuntimeError(
-                f"expected exactly one Harbor trial under {spec.harbor_job_dir}, "
-                f"got {len(trial_dirs)}: {[str(path) for path in trial_dirs]}"
-            )
-        trial_dir = trial_dirs[0]
-        trial_result_path = None
-    else:
-        raise RuntimeError(
-            f"expected exactly one Harbor trial result under {spec.harbor_job_dir}, "
-            f"got {len(candidates)}: {[str(path) for path in candidates]}"
-        )
-
+    job_dir = spec.harbor_job_dir
+    candidates = list(job_dir.glob("*/result.json"))
     trial: dict[str, Any] = {}
-    if trial_result_path is not None:
+    if len(candidates) == 1:
         try:
-            trial = _read_object(trial_result_path)
+            trial = _read_object(candidates[0])
         except (OSError, TypeError, ValueError):
             if not timed_out:
                 raise
+    elif candidates or not timed_out or _subdir_count(job_dir) != 1:
+        # Only a timed-out lone trial may be missing its result.json.
+        raise RuntimeError("expected exactly one Harbor trial result")
 
-    verifier = trial.get("verifier_result")
-    verifier = verifier if isinstance(verifier, dict) else {}
-    rewards = verifier.get("rewards")
-    rewards = rewards if isinstance(rewards, dict) else {}
-    raw_reward = rewards.get(spec.reward_key)
-    reward = _numeric_reward(raw_reward)
+    rewards = _dict(_dict(trial.get("verifier_result")).get("rewards"))
+    reward = _numeric_reward(rewards.get(spec.reward_key))
 
-    trial_errors = _trial_errors(trial)
-    warnings: list[str] = []
-    fatal_errors: list[str] = []
-    process_error = (
-        f"harbor process exited with status {return_code}"
-        if return_code != 0 and not timed_out
-        else None
-    )
-    cancel_reason: str | None = None
+    fatal_errors = _trial_errors(trial)
     if timed_out:
         cancel_reason = (
             f"runner timeout after {spec.timeout_s}s; sent SIGTERM to Harbor"
         )
-        stats = job_result.get("stats")
-        stats = stats if isinstance(stats, dict) else {}
-        cancelled_trials = stats.get("n_cancelled_trials")
+        cancelled_trials = _dict(job_result.get("stats")).get("n_cancelled_trials")
         if cancelled_trials:
             cancel_reason += f"; Harbor reported {cancelled_trials} cancelled trial(s)"
         fatal_errors.append(cancel_reason)
-    if reward is None and not timed_out:
-        fatal_errors.append(
-            f"verifier did not produce numeric reward {spec.reward_key!r}; "
-            f"available rewards={sorted(rewards)}"
-        )
-
-    if reward is not None and not timed_out:
-        warnings.extend(trial_errors)
-        if process_error is not None:
-            warnings.append(process_error)
     else:
-        fatal_errors.extend(trial_errors)
-        if process_error is not None:
-            fatal_errors.append(process_error)
+        if reward is None:
+            fatal_errors.append("verifier did not produce numeric reward")
+        if return_code != 0:
+            fatal_errors.append(f"harbor process exited with status {return_code}")
 
-    trajectory_paths = _trajectory_paths(trial_dir)
-    trajectories = [str(path) for path in trajectory_paths]
-    step_count = _trajectory_step_count(trajectory_paths)
-    truncated = timed_out
-    succeeded = reward is not None and not truncated
-    errors = [*fatal_errors, *warnings]
-    metrics = {
-        "bench": "harbor",
-        "task_id": spec.task_id,
-        "task_path": str(spec.task_path),
-        "harbor_agent": spec.agent,
-        "harbor_model": spec.model,
-        "agent_reasoning_effort": spec.reasoning_effort,
-        "agent_import_path": spec.agent_import_path,
-        "agent_runtime": _agent_runtime_metric(spec.agent_runtime),
-        "reward_key": spec.reward_key,
-        "harbor_reward": reward,
-        "harbor_rewards": rewards,
-        "harbor_errors": errors,
-        "harbor_fatal_errors": fatal_errors,
-        "harbor_warnings": warnings,
-        "harbor_return_code": return_code,
-        "harbor_job_result_path": str(job_result_path),
-        "harbor_trial_result_path": (
-            str(trial_result_path) if trial_result_path is not None else None
-        ),
-        "harbor_cancel_reason": cancel_reason,
-        "harbor_log_path": str(spec.harbor_log_path),
-        "dockerd_log_path": str(spec.dockerd_log_path),
-        "trajectory_paths": trajectories,
-        "docker_driver": docker_driver,
-        "duration_ms": round(duration_ms, 3),
-    }
+    # Without a timeout, a missing reward always adds a fatal error.
+    succeeded = not timed_out and not fatal_errors
+    return _result(
+        spec.session_id,
+        status="truncated" if timed_out else "succeeded" if succeeded else "failed",
+        reward=reward if succeeded else 0.0,
+        timed_out=timed_out,
+        errors=fatal_errors,
+        metrics={"task_id": spec.task_id, "harbor_reward": reward},
+    )
+
+
+def _subdir_count(path: Path) -> int:
+    return sum(child.is_dir() for child in path.iterdir()) if path.is_dir() else 0
+
+
+def _result(
+    session_id: str,
+    *,
+    status: str,
+    reward: float,
+    timed_out: bool,
+    errors: list[str],
+    metrics: dict[str, Any],
+) -> dict[str, Any]:
     return {
-        "session_id": spec.session_id,
-        "status": (
-            "truncated" if truncated else ("succeeded" if succeeded else "failed")
-        ),
-        "total_reward": reward if succeeded and reward is not None else 0.0,
-        "step_count": step_count,
-        "terminated": not truncated,
-        "truncated": truncated,
-        "error_text": "; ".join(fatal_errors) if fatal_errors else None,
-        "metrics": metrics,
+        "session_id": session_id,
+        "status": status,
+        "total_reward": reward,
+        "step_count": 0,
+        "terminated": not timed_out,
+        "truncated": timed_out,
+        "error_text": "; ".join(errors) or None,
+        "metrics": {"bench": "harbor", **metrics, "harbor_fatal_errors": errors},
     }
 
 
@@ -673,114 +700,66 @@ def _failure(
     session_id: str,
     error: BaseException,
     *,
-    started: float,
-    spec: RunSpec | None,
+    task_id: str | None,
     timed_out: bool,
 ) -> dict[str, Any]:
-    metrics: dict[str, Any] = {
-        "bench": "harbor",
-        "harbor_errors": [str(error)],
-        "duration_ms": round((time.perf_counter() - started) * 1000, 3),
-    }
-    if spec is not None:
-        metrics.update(
-            {
-                "task_id": spec.task_id,
-                "task_path": str(spec.task_path),
-                "harbor_agent": spec.agent,
-                "harbor_model": spec.model,
-                "agent_reasoning_effort": spec.reasoning_effort,
-                "agent_import_path": spec.agent_import_path,
-                "agent_runtime": _agent_runtime_metric(spec.agent_runtime),
-                "reward_key": spec.reward_key,
-                "harbor_job_result_path": str(spec.harbor_job_dir / "result.json"),
-                "harbor_log_path": str(spec.harbor_log_path),
-                "dockerd_log_path": str(spec.dockerd_log_path),
-                "trajectory_paths": [],
-            }
-        )
-    return {
-        "session_id": session_id,
-        "status": "failed",
-        "total_reward": 0.0,
-        "step_count": 0,
-        "terminated": not timed_out,
-        "truncated": timed_out,
-        "error_text": str(error),
-        "metrics": metrics,
-    }
-
-
-def _param(
-    dataset: dict[str, Any], params: dict[str, Any], name: str, default: Any
-) -> Any:
-    if dataset.get(name) is not None:
-        return dataset[name]
-    if params.get(name) is not None:
-        return params[name]
-    return default
-
-
-def _parse_agent_runtime(value: Any, agent: str) -> AgentRuntime | None:
-    if value is None:
-        return None
-    if not isinstance(value, dict):
-        raise TypeError("agent_runtime must be an object")
-    target = AGENT_RUNTIME_TARGETS.get(agent)
-    if target is None:
-        raise RuntimeError(f"agent_runtime does not support agent {agent!r}")
-    source = Path(_required_text(value.get("source"), "agent_runtime.source"))
-    if not source.is_absolute():
-        raise RuntimeError("agent_runtime.source must be absolute")
-    if not source.is_file():
-        raise RuntimeError(f"agent_runtime.source is not a regular file: {source}")
-    if not os.access(source, os.X_OK):
-        raise RuntimeError(f"agent_runtime.source is not executable: {source}")
-    return AgentRuntime(
-        agent=agent,
-        source=source,
-        version=_required_text(value.get("version"), "agent_runtime.version"),
-        target=target,
+    return _result(
+        session_id,
+        status="failed",
+        reward=0.0,
+        timed_out=timed_out,
+        errors=[str(error)],
+        metrics={} if task_id is None else {"task_id": task_id},
     )
 
 
-def _parse_reasoning_effort(value: Any, agent: str) -> str | None:
+def _preparation_metrics(spec: RunSpec) -> dict[str, Any]:
+    return {
+        "task_id": spec.task_id,
+        "bundle_root": str(spec.bundle_root),
+        "task_path": str(spec.task_path),
+        "image_load_log_path": str(spec.image_load_log_path),
+        "preparation_receipt_path": str(spec.preparation_path),
+    }
+
+
+def _agent_runtime(value: Any, agent: str) -> AgentRuntime | None:
+    """Translate already-normalized start config into Harbor mount arguments."""
+    source = _optional_text(_dict(value).get("source"))
+    if source is None:
+        return None
+    return AgentRuntime(
+        source=Path(source),
+        version=_optional_text(value.get("version")) or "",
+        target=AGENT_RUNTIME_TARGETS.get(agent, "/usr/local/bin/agent"),
+    )
+
+
+def _codex_config_dir(value: Any, agent: str) -> Path | None:
     if value is None:
         return None
-    if not isinstance(value, str):
-        raise TypeError("reasoning_effort must be a string")
-    effort = _required_text(value, "reasoning_effort").lower()
-    if agent not in REASONING_EFFORT_AGENTS:
-        raise RuntimeError(
-            f"reasoning_effort does not support agent {agent!r}; "
-            "expected codex, claude-code, opencode, or openhands"
-        )
-    if agent == "claude-code" and effort not in CLAUDE_CODE_REASONING_EFFORTS:
-        choices = ", ".join(sorted(CLAUDE_CODE_REASONING_EFFORTS))
-        raise RuntimeError(
-            f"invalid reasoning_effort {effort!r} for agent {agent!r}; "
-            f"expected one of: {choices}"
-        )
-    return effort
+    source = Path(_required_text(value, "codex_config_dir"))
+    if agent != "codex":
+        raise RuntimeError("codex_config_dir requires agent='codex'")
+    if not source.is_absolute() or not (source / "config.toml").is_file():
+        raise RuntimeError("codex_config_dir must be an absolute dir with config.toml")
+    return source
+
+
+def _bind_mount(source: Path, target: str) -> dict[str, Any]:
+    return {"type": "bind", "source": str(source), "target": target, "read_only": True}
 
 
 def _opencode_reasoning_config(
     model: str | None,
     reasoning_effort: str,
     *,
-    chat_compatible: bool = False,
+    chat_compatible: bool,
 ) -> dict[str, Any]:
-    model_name = str(model or "").strip()
-    if "/" not in model_name:
-        raise RuntimeError(
-            "opencode reasoning_effort requires model in provider/model form"
-        )
-    provider, model_id = model_name.split("/", 1)
-    if not provider or not model_id:
-        raise RuntimeError(
-            "opencode reasoning_effort requires model in provider/model form"
-        )
-    config_provider = "openai-chat" if chat_compatible and provider == "openai" else provider
+    provider, _, model_id = str(model or "").strip().partition("/")
+    config_provider = (
+        "openai-chat" if chat_compatible and provider == "openai" else provider
+    )
     config_model = f"{config_provider}/{model_id}"
     return {
         "small_model": config_model,
@@ -792,44 +771,23 @@ def _opencode_reasoning_config(
                     }
                 }
             }
-        }
+        },
     }
 
 
-def _agent_runtime_metric(runtime: AgentRuntime | None) -> dict[str, str] | None:
-    if runtime is None:
-        return None
-    return {
-        "agent": runtime.agent,
-        "version": runtime.version,
-        "target": runtime.target,
-    }
+def _optional_text(value: Any) -> str | None:
+    return str(value or "").strip() or None
 
 
 def _required_text(value: Any, name: str) -> str:
-    text = str(value or "").strip()
-    if not text:
+    text = _optional_text(value)
+    if text is None:
         raise RuntimeError(f"SimulationStartRequest missing {name}")
     return text
 
 
-def _optional_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _parse_bool(value: Any, name: str) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off", ""}:
-            return False
-    raise TypeError(f"{name} must be a boolean")
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def _safe_name(value: str) -> str:
@@ -854,12 +812,6 @@ def _numeric_reward(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _tail(path: Path, limit: int = 2000) -> str:
-    if not path.is_file():
-        return ""
-    return path.read_text(encoding="utf-8", errors="replace")[-limit:].strip()
-
-
 def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -871,13 +823,12 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    started = time.perf_counter()
     nested = NestedDocker()
-    spec: RunSpec | None = None
     session_id = os.environ.get("SAFACTORY_SESSION_ID", "")
     result_path_text = os.environ.get(RESULT_PATH_ENV, "").strip()
     result_path = Path(result_path_text) if result_path_text else None
     timed_out = False
+    task_id: str | None = None
 
     def stop(signum: int, _frame: Any) -> None:
         nested.cleanup()
@@ -886,12 +837,21 @@ def main() -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
-        spec = resolve_run_spec(read_request())
-        session_id = spec.session_id
-        result_path = spec.result_path
+        request = read_request()
+        session_id = _required_text(request.get("session_id"), "session_id")
+        # Parsed before resolve_run_spec so resolve-stage failures still report it.
+        dataset = _dict(request.get("env_params")).get("dataset")
+        if isinstance(dataset, dict):
+            task_id = _path_segment(dataset.get("task_id"), "dataset.task_id")
+        spec = resolve_run_spec(request)
         spec.episode_dir.mkdir(parents=True, exist_ok=True)
-        docker_driver = nested.start(spec)
-        spec = nested.materialize_task(spec)
+        validate_task_record(spec.task_record)
+        nested.start(spec)
+        load_task_images(spec, nested.env)
+        _write_json(
+            spec.preparation_path,
+            {**_preparation_metrics(spec), "status": "prepared"},
+        )
         return_code, timed_out = nested.run_harbor(spec)
         if timed_out:
             wait_for_cancellation_cleanup(spec)
@@ -899,15 +859,12 @@ def main() -> int:
             spec,
             return_code=return_code,
             timed_out=timed_out,
-            docker_driver=docker_driver,
-            duration_ms=(time.perf_counter() - started) * 1000,
         )
     except Exception as error:
         result = _failure(
             session_id,
             error,
-            started=started,
-            spec=spec,
+            task_id=task_id,
             timed_out=timed_out,
         )
     finally:
