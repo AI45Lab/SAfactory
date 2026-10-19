@@ -20,6 +20,12 @@ container:
 sandbox:
   environment_id: "env-harbor-dind-replace"
   command_port: 44772
+  idle_entrypoint:
+    - tail
+    - -f
+    - /dev/null
+  execution_mode: execd_command
+  lifecycle_policy: per_episode
   resource:
     cpu: "4"
     memory: "16Gi"

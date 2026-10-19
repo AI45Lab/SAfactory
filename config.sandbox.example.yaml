@@ -1,5 +1,5 @@
 sandbox:
-  domain: "https://h.pjlab.org.cn/brainbox"
+  domain: "h.pjlab.org.cn/brainbox"
   protocol: "https"
   project: "ailab-pj"
   api_key_env: "OPEN_SANDBOX_API_KEY"
@@ -16,6 +16,12 @@ sandbox:
   create_timeout_s: 600
   command_timeout_s: 720
   startup_concurrency: 8
+  creation_mode: environment
+  execution_mode: execd_command
+  lifecycle_policy: per_episode
+  idle_entrypoint: ["tail", "-f", "/dev/null"]
+  poll_interval_s: 2
+  result_artifact_root: "/tmp/safactory-results"
   use_server_proxy: true
   skip_health_check: false
   cleanup_on_finish: true

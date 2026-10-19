@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import math
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -287,6 +288,7 @@ class SimulationWorkerGroup:
                     rollout_reward=result.total_reward,
                     rollout_truncated=result.truncated,
                 )
+                runner_eval = self._runner_reward_result(lease, result)
                 result.total_reward = None
                 completion_mode = self._gateway_completion_mode(result)
                 trace.update_context(gateway_completion_mode=completion_mode)
@@ -325,6 +327,17 @@ class SimulationWorkerGroup:
                     with trace.span("mark_environment_finished"):
                         await self.data_manager.mark_environment_finished(lease.agent_id)
                     release_reusable = False
+                elif runner_eval is not None and self.reward_committer is not None:
+                    with trace.span("reward_commit_runner"):
+                        await self.reward_committer.commit(
+                            session_id=result.session_id,
+                            eval_result=runner_eval,
+                        )
+                    result.total_reward = runner_eval.normalized_score_10
+                    trace.update_context(eval_score=runner_eval.normalized_score_10)
+                    with trace.span("mark_environment_finished"):
+                        await self.data_manager.mark_environment_finished(lease.agent_id)
+                    release_reusable = True
                 elif self.evaluation_service is not None and self.reward_committer is not None:
                     with trace.span("eval_discover_rule"):
                         public_env_params = strip_internal_env_params(lease.env_params)
@@ -600,6 +613,44 @@ class SimulationWorkerGroup:
         if result.status == "succeeded":
             return "seal"
         return "abort"
+
+    @staticmethod
+    def _runner_reward_result(
+        lease: SimulationAgentLease,
+        result: SimulationStartResult,
+    ) -> EvalResult | None:
+        """Convert an explicitly requested runner reward into an EvalResult.
+
+        Runner rewards are opt-in through ``env_params.reward_source`` so the
+        existing evaluator and completion paths remain unchanged for all other
+        environments. Harbor emits a score in the inclusive [0, 1] range;
+        Safactory stores normalized evaluation scores on a [0, 10] scale.
+        """
+        if str(lease.env_params.get("reward_source") or "").strip().lower() != "runner":
+            return None
+        if str(result.status or "").strip().lower() != "succeeded":
+            return None
+        if result.total_reward is None:
+            return None
+        try:
+            raw_reward = float(result.total_reward)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(raw_reward):
+            return None
+
+        metrics = dict(result.metrics) if isinstance(result.metrics, dict) else {}
+        score = min(1.0, max(0.0, raw_reward))
+        return EvalResult(
+            session_id=result.session_id,
+            status=EvalStatus.SUCCEEDED.value,
+            normalized_score_10=round(score * 10.0, 6),
+            raw_score=raw_reward,
+            reason="runner reward",
+            artifacts={"metrics": metrics, "source": "runner"},
+            eval_id="runner",
+            method="runner",
+        )
 
     def _build_start_request(
         self,

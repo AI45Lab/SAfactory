@@ -25,4 +25,5 @@ environments:
         NO_PROXY: "127.0.0.1,localhost,10.0.0.0/8,100.96.0.0/12"
         no_proxy: "127.0.0.1,localhost,10.0.0.0/8,100.96.0.0/12"
       reward_key: reward
+      reward_source: runner
       timeout_s: 30000

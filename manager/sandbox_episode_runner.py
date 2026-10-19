@@ -50,6 +50,14 @@ class SandboxEpisodeRunner:
                 containerize_local_gateway=False,
             ),
         }
+        # request_env keeps the historical /app/results layout.  Sandbox
+        # deployments may expose a different writable result root, so only
+        # replace that prefix after the common environment has been built.
+        artifact_path = result_artifact_path(request)
+        artifact_root = str(cfg.get("result_artifact_root") or "").strip().rstrip("/")
+        if artifact_root and artifact_path.startswith("/app/results/"):
+            artifact_path = f"{artifact_root}{artifact_path[len('/app/results'):]}"
+            env["SAFACTORY_RESULT_PATH"] = artifact_path
         encoded_payload = base64.b64encode(payload.encode("utf-8")).decode("ascii")
         command = f"printf %s {shlex.quote(encoded_payload)} | base64 -d | env "
         command += " ".join(shlex.quote(f"{key}={value}") for key, value in env.items())
@@ -108,10 +116,9 @@ class SandboxEpisodeRunner:
             body = parse_result_output(output.stdout)
             source = "stdout"
         except Exception as stdout_error:
-            path = result_artifact_path(request)
             artifact = await run_sandbox_command(
                 sandbox,
-                f"cat -- {shlex.quote(path)}",
+                f"cat -- {shlex.quote(artifact_path)}",
                 timeout_s=min(30.0, timeout_s),
             )
             if artifact.exit_code != 0:
@@ -124,7 +131,14 @@ class SandboxEpisodeRunner:
 
         result = normalize_result(body, session_id=request.session_id)
         result.metrics = dict(result.metrics or {})
-        result.metrics.update({"runtime": "sandbox", "sandbox_id": lease.resource_id, "result_source": source})
+        result.metrics.update(
+            {
+                "runtime": "sandbox",
+                "sandbox_id": lease.resource_id,
+                "result_source": source,
+                "result_artifact_path": artifact_path,
+            }
+        )
         return result
 
     async def close(self) -> None:
