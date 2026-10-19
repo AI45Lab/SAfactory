@@ -1,0 +1,32 @@
+agent_name: harbor
+
+container:
+  workdir: /work
+  runner_entrypoint:
+    # The manager resolves this source relative to this start file and copies
+    # it into the Sandbox before each runner command.
+    source: ./runner.py
+    target: /tmp/safactory-harbor/runner.py
+    command: "/opt/harbor-env/bin/python /tmp/safactory-harbor/runner.py"
+
+  env:
+    HARBOR_TELEMETRY: "0"
+    PYTHONDONTWRITEBYTECODE: "1"
+    PYTHONUNBUFFERED: "1"
+    # Standard Docker-in-Sandbox mode. The runner starts dockerd on this socket.
+    SAFACTORY_DOCKER_MODE: "sandbox"
+    DOCKER_HOST: "unix:///var/run/docker.sock"
+
+sandbox:
+  environment_id: "env-harbor-dind-replace"
+  command_port: 44772
+  resource:
+    cpu: "4"
+    memory: "16Gi"
+  extensions:
+    project: "ailab-evobox"
+    runtimeClassName: "sysbox-runc"
+  required_mount_paths:
+    - /sandbox-data
+  lifecycle_minutes: 720
+  cleanup_on_finish: true
