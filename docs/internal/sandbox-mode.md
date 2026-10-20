@@ -1,14 +1,12 @@
 # Sandbox Mode
 
-Sandbox mode is a rollout runtime alongside Docker and RJob. Safactory creates a Brainbox Sandbox Instance through the OpenSandbox SDK, runs the agent entrypoint inside it, and deletes the instance after rollout and optional evaluation.
+Sandbox mode is a rollout runtime alongside Docker and RJob. Safactory creates a Sandbox Instance directly through the OpenSandbox SDK, runs the agent entrypoint inside it, and deletes the instance after rollout and optional evaluation. Instances are created from the agent config `env_image` with `extensions.project`; no Environment template (`environmentId`) is involved, and `environment_id` / `required_mount_paths` settings are rejected at config load.
 
 ## Prerequisites
 
-1. Create a Sandbox Environment in advance using `SandboxAPI.md` at the repository root.
-2. Its image must match the agent config `env_image`.
-3. It must expose the command port, `44772` by default.
-4. Configure data and result storage as Environment volumes; local Docker bind mounts are not translated.
-5. The Sandbox must be able to reach `sandbox.gateway_base_url`.
+1. The image from the agent config `env_image` must run execd and expose the command port, `44772` by default. The pinned SDK (`opensandbox==0.1.9`) cannot declare ports at creation time, so the image must provide this itself.
+2. Data and result storage is declared as explicit `sandbox.volumes` entries (project AFS volumes); local Docker bind mounts are not translated. Declaring any volume disables the platform's implicit project mount at `/sandbox-data`, so declare every mount the agent needs. See `sandbox/04-sdk-usage.md` and `sandbox/09-2-project-data-custom-mount-guide.md` for the volume syntax.
+3. The Sandbox must be able to reach `sandbox.gateway_base_url`.
 
 Install dependencies and provide credentials:
 
@@ -17,7 +15,7 @@ pip install -r requirements.txt
 export OPEN_SANDBOX_API_KEY='<ak>:<sk>'
 ```
 
-Copy `config.sandbox.example.yaml` and set `project`, `environment_id`, and a cluster-reachable gateway URL. An agent can override the Environment in its start config. Geo3K uses the same runtime contract:
+Copy `config.sandbox.example.yaml` and set `project` plus a cluster-reachable gateway URL. An agent can override the connection and volume settings in its start config. Geo3K uses the same runtime contract:
 
 ```yaml
 agent_name: geo3k
@@ -30,8 +28,10 @@ container:
     command: "python /tmp/safactory-geo3k/runner.py"
 
 sandbox:
-  environment_id: env-geo3k
-  required_mount_paths: [/workspace/Safactory/results]
+  volumes:
+    - mountPath: /workspace/Safactory/results
+      subPath: /geo3k/results
+      readOnly: false
 ```
 
 The local runner source is installed after instance allocation. `container.mounts` remain Docker-only.
@@ -53,7 +53,7 @@ python launcher.py \
   --max-steps 10
 ```
 
-`--pool-size` controls the number of active instances. The manager fills those leases before workers start, and the Environment capacity must cover that concurrency.
+`--pool-size` controls the number of active instances. The manager fills those leases before workers start, and the project quota must cover that concurrency.
 
 Rule evaluation needs no Sandbox-specific settings. The rule evaluator receives the rollout result and the persisted trajectory after the Gateway session is closed.
 

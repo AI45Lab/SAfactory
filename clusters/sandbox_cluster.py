@@ -11,8 +11,6 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
-import httpx
-
 from manager.binding_plan import BindingPlan
 from manager.types import PoolEntry
 
@@ -74,8 +72,8 @@ class SandboxClusterBackend(ClusterBackend):
         if not self._sandbox_cfg.get("api_key"):
             env_name = str(self._sandbox_cfg.get("api_key_env") or "OPEN_SANDBOX_API_KEY")
             raise ValueError(f"Sandbox API key is required; set {env_name} or sandbox.api_key")
-        for env_name, image in sorted(plan.env_to_image.items()):
-            await self._validate_environment(env_name, image, self._config_for_env(env_name))
+        if not str(self._sandbox_cfg.get("project") or "").strip():
+            raise ValueError("Sandbox project is required; set sandbox.project")
         await self._ensure_sdk_clients()
         log.debug("Sandbox backend ready for %d agent image(s)", len(plan.env_to_image))
 
@@ -90,10 +88,7 @@ class SandboxClusterBackend(ClusterBackend):
         group_id: str,
     ) -> PoolEntry:
         cfg = self._config_for_env(env_name)
-        environment_id = str(cfg.get("environment_id") or "").strip()
         run_command = str(cfg.get("run_command") or "").strip()
-        if not environment_id:
-            raise ValueError(f"Sandbox environment_id is required for agent {env_name!r}")
         if not run_command:
             raise ValueError(f"Sandbox run_command is required for agent {env_name!r}")
         lifecycle_s = float(cfg.get("lifecycle_minutes", 120) or 120) * 60.0
@@ -105,7 +100,6 @@ class SandboxClusterBackend(ClusterBackend):
 
         sandbox_id, sandbox = await self._create_sandbox(
             image=image,
-            environment_id=environment_id,
             cfg=cfg,
         )
         try:
@@ -230,10 +224,6 @@ class SandboxClusterBackend(ClusterBackend):
             *list(self._sandbox_cfg.get("embedded_files", []) or []),
             *list(sandbox_cfg.get("embedded_files", []) or []),
         ]
-        merged["required_mount_paths"] = [
-            *list(self._sandbox_cfg.get("required_mount_paths", []) or []),
-            *list(sandbox_cfg.get("required_mount_paths", []) or []),
-        ]
         merged["volumes"] = list(
             sandbox_cfg.get("volumes", self._sandbox_cfg.get("volumes", [])) or []
         )
@@ -241,52 +231,12 @@ class SandboxClusterBackend(ClusterBackend):
             **dict(self._sandbox_cfg.get("metadata", {}) or {}),
             **dict(sandbox_cfg.get("metadata", {}) or {}),
         }
-        merged["environment_id"] = str(
-            sandbox_cfg.get("environment_id") or self._sandbox_cfg.get("environment_id") or ""
-        ).strip()
         return merged
-
-    async def _validate_environment(self, env_name: str, image: str, cfg: Dict[str, Any]) -> None:
-        environment_id = str(cfg.get("environment_id") or "").strip()
-        if not environment_id:
-            raise ValueError(f"Sandbox environment_id is required for agent {env_name!r}")
-        params = {"project": cfg["project"]} if cfg.get("project") else None
-        domain = str(cfg.get("domain") or "").rstrip("/")
-        if "://" not in domain:
-            domain = f"{str(cfg.get('protocol') or 'https')}://{domain}"
-        async with httpx.AsyncClient(timeout=float(cfg.get("request_timeout_s", 60.0))) as client:
-            response = await client.get(
-                f"{domain}/v1/sandbox-environments/{environment_id}",
-                params=params,
-                headers={"OPEN-SANDBOX-API-KEY": str(cfg["api_key"])},
-            )
-            response.raise_for_status()
-            environment = response.json()
-
-        environment_image = str((environment.get("image") or {}).get("uri") or "")
-        if environment_image and image and environment_image != image:
-            raise ValueError(
-                f"Sandbox environment {environment_id!r} image {environment_image!r} "
-                f"does not match agent {env_name!r} image {image!r}"
-            )
-        ports = {
-            int(port["containerPort"])
-            for port in (environment.get("ports") or [])
-            if port.get("containerPort") is not None
-        }
-        command_port = int(cfg.get("command_port", 44772) or 44772)
-        if command_port not in ports:
-            raise ValueError(f"Sandbox environment {environment_id!r} does not expose command port {command_port}")
-        mounts = {str(volume.get("mountPath") or "") for volume in (environment.get("volumes") or [])}
-        missing = set(cfg.get("required_mount_paths", []) or []) - mounts
-        if missing:
-            raise ValueError(f"Sandbox environment {environment_id!r} is missing volume mounts: {sorted(missing)}")
 
     async def _create_sandbox(
         self,
         *,
         image: str,
-        environment_id: str,
         cfg: Dict[str, Any],
     ) -> tuple[str, Any]:
         await self._ensure_sdk_clients()
@@ -296,8 +246,14 @@ class SandboxClusterBackend(ClusterBackend):
             raise RuntimeError("Sandbox SDK clients are not initialized")
 
         extensions = dict(cfg.get("extensions", {}) or {})
-        extensions.pop("project", None)
-        extensions["environmentId"] = environment_id
+        if "environmentId" in extensions or "environment_id" in extensions:
+            raise ValueError(
+                "Sandbox mode creates instances directly via the SDK and does not support "
+                "extensions.environmentId; configure sandbox.project, image, and volumes instead"
+            )
+        extensions["project"] = str(extensions.get("project") or cfg.get("project") or "").strip()
+        if not extensions["project"]:
+            raise ValueError("Sandbox project is required; set sandbox.project")
         entrypoint = cfg.get("idle_entrypoint") or ["tail", "-f", "/dev/null"]
         if isinstance(entrypoint, str):
             entrypoint = shlex.split(entrypoint)
@@ -307,6 +263,10 @@ class SandboxClusterBackend(ClusterBackend):
             **{str(key): str(value) for key, value in dict(cfg.get("metadata", {}) or {}).items()},
         }
         network_policy = cfg.get("network_policy") or None
+        try:
+            from opensandbox.models.sandboxes import SandboxImageSpec
+        except ImportError as exc:
+            raise RuntimeError("Sandbox mode requires opensandbox==0.1.9") from exc
         if isinstance(network_policy, dict):
             try:
                 from opensandbox.models.sandboxes import NetworkPolicy, NetworkRule
@@ -318,7 +278,7 @@ class SandboxClusterBackend(ClusterBackend):
             except (ImportError, TypeError, ValueError) as exc:
                 raise ValueError("invalid sandbox.network_policy") from exc
         kwargs: Dict[str, Any] = {
-            "spec": None,
+            "spec": SandboxImageSpec(image),
             "entrypoint": list(entrypoint),
             "env": {str(key): str(value) for key, value in dict(cfg.get("env", {}) or {}).items()},
             "metadata": metadata,
@@ -326,7 +286,7 @@ class SandboxClusterBackend(ClusterBackend):
             "resource": dict(cfg.get("resource", {}) or {}),
             "network_policy": network_policy,
             "extensions": extensions,
-            # Passing None preserves the Environment's AFS volume declaration.
+            # Passing None preserves the project's implicit AFS mount.
             "volumes": list(cfg.get("volumes", []) or []) or None,
         }
         try:

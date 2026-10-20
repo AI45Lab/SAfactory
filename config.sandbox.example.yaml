@@ -4,8 +4,6 @@ sandbox:
   project: "ailab-pj"
   api_key_env: "OPEN_SANDBOX_API_KEY"
 
-  # The Sandbox Environment must already exist and expose command_port.
-  environment_id: "env-replace-me"
   command_port: 44772
 
   # Use an address reachable from the Sandbox cluster.
@@ -16,7 +14,7 @@ sandbox:
   create_timeout_s: 600
   command_timeout_s: 720
   startup_concurrency: 8
-  creation_mode: environment
+  creation_mode: direct_sdk
   execution_mode: execd_command
   lifecycle_policy: per_episode
   idle_entrypoint: ["tail", "-f", "/dev/null"]

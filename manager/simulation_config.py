@@ -43,7 +43,6 @@ _SANDBOX_DEFAULT_CONFIG: Dict[str, Any] = {
     "project": "",
     "api_key": "",
     "api_key_env": "OPEN_SANDBOX_API_KEY",
-    "environment_id": "",
     "gateway_base_url": "",
     "command_port": 44772,
     "lifecycle_minutes": 120,
@@ -56,7 +55,7 @@ _SANDBOX_DEFAULT_CONFIG: Dict[str, Any] = {
     "skip_health_check": False,
     # OpenSandbox 0.1.9 creates an idle instance and executes the runner via
     # the execd command API for each Safactory episode.
-    "creation_mode": "environment",
+    "creation_mode": "direct_sdk",
     "execution_mode": "execd_command",
     "lifecycle_policy": "per_episode",
     "idle_entrypoint": ["tail", "-f", "/dev/null"],
@@ -160,6 +159,12 @@ def load_sandbox_global_config(path: str) -> Dict[str, Any]:
 
 def _normalize_sandbox_config(section: Dict[str, Any]) -> Dict[str, Any]:
     raw_section = dict(section or {})
+    for key in ("environment_id", "environmentId"):
+        if key in raw_section:
+            raise ValueError(
+                f"sandbox.{key} is not supported: Sandbox mode creates instances directly "
+                "via the SDK; configure project, image, and volumes instead"
+            )
     merged = {**_SANDBOX_DEFAULT_CONFIG, **raw_section}
     raw_domain = str(merged.get("domain") or "").strip()
     raw_protocol = str(merged.get("protocol") or "").strip().lower().rstrip(":/")
@@ -172,7 +177,7 @@ def _normalize_sandbox_config(section: Dict[str, Any]) -> Dict[str, Any]:
         raw_domain = parsed_domain.netloc + parsed_domain.path
     merged["domain"] = raw_domain.strip().rstrip("/")
     merged["protocol"] = raw_protocol or "https"
-    for key in ("project", "api_key", "api_key_env", "environment_id", "gateway_base_url"):
+    for key in ("project", "api_key", "api_key_env", "gateway_base_url"):
         merged[key] = str(merged.get(key) or "").strip()
     if not merged["api_key"] and merged["api_key_env"]:
         merged["api_key"] = str(os.getenv(merged["api_key_env"], "")).strip()
@@ -754,6 +759,17 @@ def _normalize_agent_start_sandbox(
     raw = spec.get("sandbox", {}) or {}
     if not isinstance(raw, dict):
         raise ValueError(f"sandbox config for {agent_name!r} must be a mapping in {cfg_path}")
+    for key in ("environment_id", "environmentId"):
+        if key in raw:
+            raise ValueError(
+                f"sandbox.{key} for {agent_name!r} is not supported in {cfg_path}: Sandbox mode "
+                "creates instances directly via the SDK; configure image and volumes instead"
+            )
+    if "required_mount_paths" in raw:
+        raise ValueError(
+            f"sandbox.required_mount_paths for {agent_name!r} is not supported in {cfg_path}: "
+            "declare mounts explicitly via sandbox.volumes"
+        )
 
     sandbox: Dict[str, Any] = {}
     for key in (
@@ -762,7 +778,6 @@ def _normalize_agent_start_sandbox(
         "project",
         "api_key",
         "api_key_env",
-        "environment_id",
         "workdir",
         "run_command",
         "result_mode",
@@ -852,13 +867,6 @@ def _normalize_agent_start_sandbox(
         if runner_file not in embedded:
             embedded.append(runner_file)
     sandbox["embedded_files"] = embedded
-
-    required_paths = raw.get("required_mount_paths", []) or []
-    if isinstance(required_paths, str):
-        required_paths = [required_paths]
-    if not isinstance(required_paths, list):
-        raise ValueError(f"sandbox.required_mount_paths for {agent_name!r} must be a list in {cfg_path}")
-    sandbox["required_mount_paths"] = [str(path) for path in required_paths]
     return sandbox
 
 
