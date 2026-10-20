@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from .actor_pool import RuntimeAgentPool
 from .binding_plan import build_binding_plan
@@ -65,7 +65,7 @@ class AgentPoolManager:
         self._initialized = False
         self._closed = False
 
-    async def start(self) -> None:
+    async def start(self, *, on_ready: Optional[Callable[[PoolEntry], Awaitable[Any]]] = None) -> None:
         async with self._state_lock:
             if self._initialized:
                 return
@@ -83,9 +83,14 @@ class AgentPoolManager:
                 else []
             )
             await self._allocator.start(plan)
-            await self._pool.prewarm(rows=prewarm_rows)
-
+            # Ready callbacks may immediately hand a lease to a worker while
+            # other instances are still bootstrapping.
             self._initialized = True
+            try:
+                await self._pool.prewarm(rows=prewarm_rows, on_ready=on_ready)
+            except BaseException:
+                self._initialized = False
+                raise
             log.info(
                 "Safactory %s scheduler started: pool_size=%d job_id=%s",
                 self._mode,
@@ -117,7 +122,7 @@ class AgentPoolManager:
         await self._pool.ensure_capacity(wait_for_rows=wait_for_rows)
 
     async def is_data_exhausted(self) -> bool:
-        return await self._repo.is_exhausted()
+        return not self._pool.has_pending_work and await self._repo.is_exhausted()
 
     async def close_and_refill(
         self,

@@ -18,6 +18,7 @@ class _LeaseRuntimeState:
         self._leased = 0
         self._refills_in_flight = 0
         self._initial_load_done = False
+        self._initial_error: Optional[Exception] = None
         self._cond = asyncio.Condition()
 
     async def add_ready_lease(self, key: Tuple[str, str], lease: SimulationAgentLease) -> bool:
@@ -29,14 +30,17 @@ class _LeaseRuntimeState:
             self._cond.notify(1)
             return True
 
-    async def mark_initial_load_done(self) -> None:
+    async def mark_initial_load_done(self, error: Optional[Exception] = None) -> None:
         async with self._cond:
             self._initial_load_done = True
+            self._initial_error = error
             self._cond.notify_all()
 
     async def acquire(self) -> Optional[SimulationAgentLease]:
         async with self._cond:
             while True:
+                if self._initial_error is not None:
+                    raise self._initial_error
                 if self._ready:
                     self._leased += 1
                     return self._ready.popleft()
@@ -103,17 +107,44 @@ class SimulationLeasePool:
         self._lifecycle_lock = asyncio.Lock()
         self._lifecycle_cond = asyncio.Condition()
         self._active_refills = 0
+        self._refill_tasks: Set[asyncio.Task] = set()
+        self._startup_task: Optional[asyncio.Task] = None
+        self._startup_ready = asyncio.Event()
+        self._startup_error: Optional[Exception] = None
         self._closing = False
         self._closed = False
         self._repair_lock = asyncio.Lock()
 
     async def start(self) -> None:
         log.debug("starting AgentPoolManager for simulation lease pool")
+        if str(getattr(self.mgr, "cfg", {}).get("mode", "")).lower() == "sandbox":
+            if self._startup_task is None:
+                self._startup_task = asyncio.create_task(self._start_manager(), name="sandbox-pool-prewarm")
+            try:
+                await self._startup_ready.wait()
+            except asyncio.CancelledError:
+                self._startup_task.cancel()
+                await asyncio.gather(self._startup_task, return_exceptions=True)
+                raise
+            if self._startup_error is not None:
+                raise self._startup_error
+            return
         await self.mgr.start()
 
         added = await self._enqueue_manager_leases()
         log.debug("manager reports %d warmed agent instance(s)", added)
         await self._runtime.mark_initial_load_done()
+
+    async def _start_manager(self) -> None:
+        try:
+            await self.mgr.start(on_ready=self._enqueue_ready_entry)
+            await self._enqueue_manager_leases()
+        except Exception as exc:
+            self._startup_error = exc
+            log.error("sandbox pool prewarm failed", exc_info=True)
+        finally:
+            await self._runtime.mark_initial_load_done(self._startup_error)
+            self._startup_ready.set()
 
     async def acquire(self) -> Optional[SimulationAgentLease]:
         while True:
@@ -174,6 +205,11 @@ class SimulationLeasePool:
                     log.debug("SimulationLeasePool.aclose(): already closed")
                     return
                 self._closing = True
+                if self._startup_task is not None:
+                    self._startup_task.cancel()
+                    await asyncio.gather(self._startup_task, return_exceptions=True)
+                for task in list(self._refill_tasks):
+                    task.cancel()
                 while self._active_refills > 0:
                     log.debug(
                         "SimulationLeasePool.aclose(): waiting for %d active container refill(s)",
@@ -201,26 +237,35 @@ class SimulationLeasePool:
         entries = await self.mgr.list_pool_instances()
         added_count = 0
         for entry in entries:
-            lease = self._entry_to_agent_lease(entry)
-            if lease is None:
-                continue
-            added = await self._runtime.add_ready_lease((lease.agent_name, lease.agent_id), lease)
-            if added:
+            if await self._enqueue_ready_entry(entry):
                 added_count += 1
-                log.debug("enqueued agent lease: %s/%s", lease.agent_name, lease.agent_id)
         return added_count
+
+    async def _enqueue_ready_entry(self, entry: PoolEntry) -> bool:
+        if self._closing:
+            return False
+        lease = self._entry_to_agent_lease(entry)
+        if lease is None:
+            return False
+        added = await self._runtime.add_ready_lease((lease.agent_name, lease.agent_id), lease)
+        if added:
+            self._startup_ready.set()
+            log.debug("enqueued agent lease: %s/%s", lease.agent_name, lease.agent_id)
+        return added
 
     async def _enter_refill_if_open(self) -> bool:
         async with self._lifecycle_cond:
             if self._closing or self._closed:
                 return False
             self._active_refills += 1
+            self._refill_tasks.add(asyncio.current_task())
             return True
 
     async def _leave_refill(self) -> None:
         async with self._lifecycle_cond:
             if self._active_refills > 0:
                 self._active_refills -= 1
+            self._refill_tasks.discard(asyncio.current_task())
             self._lifecycle_cond.notify_all()
 
     async def _finish_without_replacement(self, old_key: Tuple[str, str]) -> None:
@@ -252,6 +297,7 @@ class SimulationLeasePool:
             return False
         except asyncio.CancelledError:
             refill_task.cancel()
+            await asyncio.gather(refill_task, return_exceptions=True)
             raise
         except Exception:
             log.warning(

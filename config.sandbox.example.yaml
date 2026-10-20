@@ -18,6 +18,8 @@ sandbox:
   lifecycle_minutes: 120
   request_timeout_s: 60
   create_timeout_s: 600
+  bootstrap_timeout_s: 120
+  cancel_timeout_s: 10
   command_timeout_s: 720
   startup_concurrency: 8
   creation_mode: direct_api
@@ -25,11 +27,21 @@ sandbox:
   lifecycle_policy: per_episode
   idle_entrypoint: ["tail", "-f", "/dev/null"]
   poll_interval_s: 2
-  result_artifact_root: "/tmp/safactory-results"
+  result_artifact_root: "/sandbox-data/results"
   use_server_proxy: true
   skip_health_check: false
   cleanup_on_finish: true
 
-  # Configure workload resources, extensions, and volumes in the agent's sandbox section.
-  # Harbor uses extensions.runtimeClassName: sysbox-runc and a read-write project-default-afs
-  # volume at /sandbox-data; these settings belong to its agent start config (see sandbox/README.harbor.md).
+  # Explicit mounts keep project inputs available and persist results/<job-id>/<session-id>.
+  # Prepare the project results directory with permissions writable by the Sandbox UID mapping.
+  volumes:
+    - name: project-default-afs
+      mountPath: /sandbox-data
+      readOnly: false
+    - name: project-default-afs
+      subPath: results
+      mountPath: /sandbox-data/results
+      readOnly: false
+
+  # Configure workload resources and extensions in the agent's sandbox section.
+  # Harbor requires extensions.runtimeClassName: sysbox-runc (see sandbox/README.harbor.md).

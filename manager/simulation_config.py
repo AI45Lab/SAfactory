@@ -49,6 +49,8 @@ _SANDBOX_DEFAULT_CONFIG: Dict[str, Any] = {
     "lifecycle_minutes": 120,
     "request_timeout_s": 60.0,
     "create_timeout_s": 600.0,
+    "bootstrap_timeout_s": 120.0,
+    "cancel_timeout_s": 10.0,
     "command_timeout_s": 720.0,
     "startup_concurrency": 8,
     "cleanup_on_finish": True,
@@ -61,7 +63,7 @@ _SANDBOX_DEFAULT_CONFIG: Dict[str, Any] = {
     "lifecycle_policy": "per_episode",
     "idle_entrypoint": ["tail", "-f", "/dev/null"],
     "poll_interval_s": 2.0,
-    "result_artifact_root": "",
+    "result_artifact_root": "/sandbox-data/results",
     "resource": {},
     "extensions": {},
     "volumes": [],
@@ -187,7 +189,10 @@ def _normalize_sandbox_config(section: Dict[str, Any]) -> Dict[str, Any]:
     merged["command_port"] = min(65535, max(1, int(merged.get("command_port") or 44772)))
     merged["lifecycle_minutes"] = min(1440, max(3, int(merged.get("lifecycle_minutes") or 120)))
     merged["startup_concurrency"] = max(1, int(merged.get("startup_concurrency") or 8))
-    for key in ("request_timeout_s", "create_timeout_s", "command_timeout_s"):
+    for key in (
+        "request_timeout_s", "create_timeout_s", "bootstrap_timeout_s",
+        "cancel_timeout_s", "command_timeout_s",
+    ):
         merged[key] = max(1.0, float(merged.get(key) or _SANDBOX_DEFAULT_CONFIG[key]))
     if merged["lifecycle_minutes"] * 60 < merged["command_timeout_s"] + 600:
         raise ValueError("sandbox.lifecycle_minutes must cover command_timeout_s plus 600 seconds")
@@ -197,8 +202,8 @@ def _normalize_sandbox_config(section: Dict[str, Any]) -> Dict[str, Any]:
         merged[key] = str(merged.get(key) or _SANDBOX_DEFAULT_CONFIG[key]).strip()
     if merged["creation_mode"] not in {"direct_api", "direct_sdk"}:
         raise ValueError("sandbox.creation_mode must be direct_api (or legacy direct_sdk)")
-    if merged["result_artifact_root"] and not Path(merged["result_artifact_root"]).is_absolute():
-        raise ValueError("sandbox.result_artifact_root must be an absolute Sandbox path")
+    if merged["result_artifact_root"] != "/sandbox-data/results":
+        raise ValueError("sandbox.result_artifact_root must be /sandbox-data/results for persistent results")
     # Keep both spellings accepted by existing start files.  The backend uses
     # idle_entrypoint, while idle_command is retained as a compatibility alias.
     idle_entrypoint = (
@@ -219,11 +224,31 @@ def _normalize_sandbox_config(section: Dict[str, Any]) -> Dict[str, Any]:
     merged["idle_entrypoint"] = idle_entrypoint
     merged["idle_command"] = list(idle_entrypoint) if isinstance(idle_entrypoint, list) else idle_entrypoint
     merged["poll_interval_s"] = max(0.1, float(merged.get("poll_interval_s") or 2.0))
-    for key in ("volumes",):
-        value = merged.get(key) or []
-        if not isinstance(value, list):
-            raise ValueError(f"sandbox.{key} must be a list")
-        merged[key] = list(value)
+    volumes = merged.get("volumes") or []
+    if not isinstance(volumes, list) or any(not isinstance(volume, dict) for volume in volumes):
+        raise ValueError("sandbox.volumes must be a list of mappings")
+    # Explicit volumes disable the platform's implicit project root mount.
+    # Preserve custom input mounts and always declare writable persistent output.
+    volumes = [dict(volume) for volume in volumes] or [
+        {"name": "project-default-afs", "mountPath": "/sandbox-data", "readOnly": False}
+    ]
+    results_mounts = []
+    for volume in volumes:
+        if "readOnly" in volume:
+            volume["readOnly"] = _as_bool(volume["readOnly"], default=False)
+        if str(volume.get("mountPath") or "").rstrip("/") == merged["result_artifact_root"].rstrip("/"):
+            if volume.get("readOnly", False):
+                raise ValueError("sandbox results volume must set readOnly: false")
+            volume["readOnly"] = False
+            results_mounts.append(volume)
+    if len(results_mounts) > 1:
+        raise ValueError("sandbox.volumes must not contain duplicate results mount paths")
+    if not results_mounts:
+        volumes.append({
+            "name": "project-default-afs", "subPath": "results",
+            "mountPath": merged["result_artifact_root"], "readOnly": False,
+        })
+    merged["volumes"] = volumes
     for key in ("resource", "extensions", "network_policy", "metadata"):
         value = merged.get(key) or {}
         if not isinstance(value, dict):
@@ -801,8 +826,10 @@ def _normalize_agent_start_sandbox(
                 f"sandbox.creation_mode for {agent_name!r} must be direct_api "
                 f"(or legacy direct_sdk) in {cfg_path}"
             )
-    if sandbox.get("result_artifact_root") and not Path(str(sandbox["result_artifact_root"])).is_absolute():
-        raise ValueError(f"sandbox.result_artifact_root for {agent_name!r} must be absolute in {cfg_path}")
+    if sandbox.get("result_artifact_root") not in (None, "/sandbox-data/results"):
+        raise ValueError(
+            f"sandbox.result_artifact_root for {agent_name!r} must be /sandbox-data/results in {cfg_path}"
+        )
     sandbox.setdefault("workdir", str(docker.get("workdir") or ""))
     sandbox.setdefault("run_command", str(docker.get("run_command") or ""))
     sandbox.setdefault("result_mode", str(docker.get("result_mode") or docker.get("run_result_mode") or "json"))
@@ -847,6 +874,8 @@ def _normalize_agent_start_sandbox(
     for key in (
         "request_timeout_s",
         "create_timeout_s",
+        "bootstrap_timeout_s",
+        "cancel_timeout_s",
         "command_timeout_s",
         "poll_interval_s",
     ):
@@ -875,6 +904,8 @@ def _normalize_agent_start_sandbox(
         raise ValueError(f"sandbox.embedded_files for {agent_name!r} must be a list in {cfg_path}")
     embedded = [_normalize_embedded_file(item, cfg_path) for item in raw_embedded]
     runner = docker.get("runner_entrypoint") or {}
+    if runner:
+        sandbox["runner_entrypoint"] = dict(runner)
     if runner.get("source") and runner.get("target"):
         runner_file = {"source": str(runner["source"]), "target": str(runner["target"])}
         if runner_file not in embedded:

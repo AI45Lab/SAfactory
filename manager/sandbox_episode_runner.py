@@ -50,14 +50,10 @@ class SandboxEpisodeRunner:
                 containerize_local_gateway=False,
             ),
         }
-        # request_env keeps the historical /app/results layout.  Sandbox
-        # deployments may expose a different writable result root, so only
-        # replace that prefix after the common environment has been built.
-        artifact_path = result_artifact_path(request)
-        artifact_root = str(cfg.get("result_artifact_root") or "").strip().rstrip("/")
-        if artifact_root and artifact_path.startswith("/app/results/"):
-            artifact_path = f"{artifact_root}{artifact_path[len('/app/results'):]}"
-            env["SAFACTORY_RESULT_PATH"] = artifact_path
+        artifact_path = result_artifact_path(request).replace(
+            "/app/results/", "/sandbox-data/results/", 1,
+        )
+        env["SAFACTORY_RESULT_PATH"] = artifact_path
         encoded_payload = base64.b64encode(payload.encode("utf-8")).decode("ascii")
         command = f"printf %s {shlex.quote(encoded_payload)} | base64 -d | env "
         command += " ".join(shlex.quote(f"{key}={value}") for key, value in env.items())

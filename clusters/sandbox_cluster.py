@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import inspect
 import logging
 import shlex
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
+from threading import Event
 from typing import Any, Dict, Mapping
 from urllib.parse import urlsplit
 
@@ -39,40 +39,88 @@ class SandboxCommandOutput:
                 return values
             return "".join(str(getattr(item, "text", item)) for item in (values or []))
 
-        exit_code = getattr(result, "exit_code", getattr(result, "code", 0))
-        return cls(int(exit_code or 0), stream_text("stdout"), stream_text("stderr"))
+        exit_code = getattr(result, "exit_code", getattr(result, "code", None))
+        if exit_code is None:
+            raise RuntimeError(f"Sandbox command ended without a completion status: {getattr(result, 'error', None)}")
+        return cls(int(exit_code), stream_text("stdout"), stream_text("stderr"))
 
 
 @dataclass(slots=True)
 class SandboxRuntimeHandle:
-    """SDK services sharing a transport owned by the cluster backend."""
+    """One instance's async execd services, separate from lifecycle clients."""
 
     id: str
     commands: Any
     files: Any
     _service: Any
     _connection: Any
+    cancel_timeout_s: float = 10.0
+    _active_commands: set[asyncio.Task] = field(default_factory=set, repr=False)
+    _closed: bool = False
 
     def get_endpoint(self, port: int) -> Any:
         return self._service.get_sandbox_endpoint(
             self.id, port, self._connection.use_server_proxy,
         )
 
-    def close(self) -> None:
-        # Releasing one episode must not close the transport used by other
-        # instances. The backend closes it after all instances are released.
-        pass
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        tasks = self._active_commands - {asyncio.current_task()}
+        for task in tasks:
+            task.cancel()
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=self.cancel_timeout_s + 1.0,
+            )
+        finally:
+            await self._connection.close_transport_if_owned()
 
 
 async def run_sandbox_command(sandbox: Any, command: str, *, timeout_s: float) -> SandboxCommandOutput:
-    async def invoke() -> Any:
-        result = await asyncio.to_thread(sandbox.commands.run, command)
-        if inspect.isawaitable(result):
-            return await result
-        return result
+    from opensandbox.models.execd import ExecutionHandlers, RunCommandOpts
 
-    result = await asyncio.wait_for(invoke(), timeout=max(1.0, float(timeout_s)))
-    return SandboxCommandOutput.from_sdk(result)
+    execution_id = ""
+
+    async def on_init(event: Any) -> None:
+        nonlocal execution_id
+        execution_id = str(event.id or "")
+
+    active = getattr(sandbox, "_active_commands", None)
+    if getattr(sandbox, "_closed", False) or active:
+        raise RuntimeError("Sandbox instance is closed or already running a command")
+
+    async def invoke() -> SandboxCommandOutput:
+        try:
+            result = await sandbox.commands.run(
+                command,
+                opts=RunCommandOpts(timeout=timedelta(seconds=float(timeout_s))),
+                handlers=ExecutionHandlers(on_init=on_init),
+            )
+            return SandboxCommandOutput.from_sdk(result)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            # Async cancellation closes the SSE response. Interrupt also stops
+            # the remote process; a local deadline alone cannot do that.
+            if execution_id:
+                try:
+                    await asyncio.wait_for(
+                        sandbox.commands.interrupt(execution_id),
+                        timeout=float(getattr(sandbox, "cancel_timeout_s", 10.0)),
+                    )
+                except Exception:
+                    log.warning("failed to interrupt Sandbox command: sandbox=%s execution=%s", sandbox.id, execution_id, exc_info=True)
+            raise
+
+    task = asyncio.create_task(invoke())
+    if active is not None:
+        active.add(task)
+    try:
+        return await asyncio.wait_for(task, timeout=max(0.001, float(timeout_s)))
+    finally:
+        if active is not None:
+            active.discard(task)
 
 
 class SandboxClusterBackend(ClusterBackend):
@@ -128,6 +176,7 @@ class SandboxClusterBackend(ClusterBackend):
                 f"Sandbox lifecycle for agent {env_name!r} must cover command timeout plus 600 seconds"
             )
 
+        log.info("Creating Sandbox: agent=%s id=%s", env_name, env_id)
         sandbox_id, sandbox = await self._create_sandbox(
             image=image,
             cfg=cfg,
@@ -137,8 +186,8 @@ class SandboxClusterBackend(ClusterBackend):
                 sandbox.get_endpoint,
                 int(cfg.get("command_port", 44772) or 44772),
             )
-            await self._prepare_instance(sandbox, cfg)
-        except Exception:
+            run_command, runner_path = await self._prepare_instance(sandbox, cfg)
+        except (Exception, asyncio.CancelledError):
             try:
                 await self._terminate(sandbox_id, sandbox)
             except Exception:
@@ -176,6 +225,7 @@ class SandboxClusterBackend(ClusterBackend):
             runtime=self.runtime,
             runtime_config={
                 "command_timeout_s": command_timeout_s,
+                "runner_path": runner_path,
                 "endpoint": endpoint_url,
                 "endpoint_headers": endpoint_headers,
                 "env": dict(cfg.get("env", {}) or {}),
@@ -199,7 +249,7 @@ class SandboxClusterBackend(ClusterBackend):
         sandbox = self._instances.pop(entry.resource_id, None) or entry.runtime_handle
         self._instance_managers.pop(entry.resource_id, None)
         if sandbox is not None:
-            await asyncio.to_thread(sandbox.close)
+            await sandbox.close()
         log.info("preserving Sandbox instance after run: %s", entry.resource_id)
 
     async def remove(self, entry: PoolEntry) -> None:
@@ -212,13 +262,16 @@ class SandboxClusterBackend(ClusterBackend):
             log.warning("failed to delete Sandbox instance %s", entry.resource_id, exc_info=True)
 
     async def close(self) -> None:
-        instances = list(self._instances.items())
+        instances = {
+            **dict.fromkeys(self._instance_managers),
+            **self._instances,
+        }
         self._instances.clear()
         results = await asyncio.gather(
-            *(self._terminate(sandbox_id, sandbox) for sandbox_id, sandbox in instances),
+            *(self._terminate(sandbox_id, sandbox) for sandbox_id, sandbox in instances.items()),
             return_exceptions=True,
         )
-        for (sandbox_id, _), result in zip(instances, results):
+        for sandbox_id, result in zip(instances, results):
             if isinstance(result, Exception):
                 log.warning("failed to delete Sandbox instance %s during shutdown: %s", sandbox_id, result)
         clients = list(self._clients.values())
@@ -316,33 +369,54 @@ class SandboxClusterBackend(ClusterBackend):
         }
         if cfg.get("network_policy"):
             payload["networkPolicy"] = dict(cfg["network_policy"])
-        # Omit volumes to preserve the project's implicit AFS mount. Direct JSON
-        # also supports DeepEnv volumes without an upstream SDK storage backend.
-        if cfg.get("volumes"):
-            payload["volumes"] = list(cfg["volumes"])
+        # Normalization keeps input mounts and adds a writable results volume.
+        payload["volumes"] = list(cfg["volumes"])
+        deadline = time.monotonic() + float(cfg.get("create_timeout_s", 600.0))
+        sandbox_id = ""
+        cancelled_create = Event()
+        create_task = asyncio.create_task(asyncio.to_thread(
+            self._post_sandbox, {**cfg, "_cancelled_create": cancelled_create}, payload,
+        ))
         try:
             created = await asyncio.wait_for(
-                asyncio.to_thread(self._post_sandbox, cfg, payload),
-                timeout=float(cfg.get("create_timeout_s", 600.0) or 600.0),
+                asyncio.shield(create_task),
+                timeout=max(0.001, deadline - time.monotonic()),
             )
             sandbox_id = str(created.get("id") or "").strip()
             if not sandbox_id:
                 raise RuntimeError("Sandbox create response did not contain an id")
             self._instance_managers[sandbox_id] = manager
+            log.info("Sandbox created: id=%s; waiting for running state", sandbox_id)
             await self._wait_running(
                 sandbox_id,
                 manager=manager,
-                timeout_s=float(cfg.get("create_timeout_s", 600.0) or 600.0),
+                timeout_s=max(0.001, deadline - time.monotonic()),
                 poll_interval_s=float(cfg.get("poll_interval_s", 2.0) or 2.0),
             )
-            sandbox = await self._connect_sandbox(sandbox_id, cfg, connection=connection)
+            log.info("Sandbox running: id=%s; connecting execd", sandbox_id)
+            sandbox = await asyncio.wait_for(
+                self._connect_sandbox(sandbox_id, cfg, connection=connection),
+                timeout=max(0.001, deadline - time.monotonic()),
+            )
             return sandbox_id, sandbox
-        except Exception:
-            sandbox_id = locals().get("sandbox_id")
-            if sandbox_id:
-                self._instance_managers.pop(sandbox_id, None)
+        except (Exception, asyncio.CancelledError):
+            cancelled_create.set()
+            if not sandbox_id and not create_task.cancelled():
+                # A cancelled to_thread cannot stop an in-flight create POST.
+                # Recover its response before returning so its instance is not orphaned.
                 try:
-                    await asyncio.to_thread(manager.kill_sandbox, sandbox_id)
+                    created = await asyncio.wait_for(
+                        asyncio.shield(create_task),
+                        timeout=float(cfg.get("request_timeout_s", 60.0)) + 1.0,
+                    )
+                    sandbox_id = str(created.get("id") or "")
+                except Exception:
+                    log.warning("Sandbox create failed before an instance id could be recovered", exc_info=True)
+                    create_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+            if sandbox_id:
+                self._instance_managers.setdefault(sandbox_id, manager)
+                try:
+                    await self._terminate(sandbox_id, None)
                 except Exception:
                     log.warning("failed to clean up Sandbox %s after creation error", sandbox_id, exc_info=True)
             raise
@@ -351,14 +425,27 @@ class SandboxClusterBackend(ClusterBackend):
     def _post_sandbox(cfg: Mapping[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
         # opensandbox==0.1.9 cannot include ports in create_sandbox. The proxy
         # requires the execd port to be declared independently of the image.
+        headers = {"OPEN-SANDBOX-API-KEY": str(cfg.get("api_key") or "")}
+        cancelled = cfg.get("_cancelled_create")
         with httpx.Client(timeout=float(cfg.get("request_timeout_s", 60.0) or 60.0)) as client:
+            if cancelled is not None and cancelled.is_set():
+                raise RuntimeError("Sandbox creation cancelled before POST")
             response = client.post(
                 f"{cfg['protocol']}://{cfg['domain']}/v1/sandboxes",
-                headers={"OPEN-SANDBOX-API-KEY": str(cfg.get("api_key") or "")},
+                headers=headers,
                 json=payload,
             )
             response.raise_for_status()
             created = response.json()
+            # The thread can outlive the caller's recovery deadline. It retains
+            # responsibility for deleting a late instance using its own client.
+            if cancelled is not None and cancelled.is_set() and isinstance(created, dict) and created.get("id"):
+                deleted = client.delete(
+                    f"{cfg['protocol']}://{cfg['domain']}/v1/sandboxes/{created['id']}",
+                    headers=headers,
+                )
+                if deleted.status_code != 404:
+                    deleted.raise_for_status()
         if not isinstance(created, dict):
             raise RuntimeError("Sandbox create response must be an object")
         return created
@@ -405,10 +492,13 @@ class SandboxClusterBackend(ClusterBackend):
         manager = manager if manager is not None else self._manager
         if manager is None:
             raise RuntimeError("Sandbox manager is not initialized")
-        deadline = time.monotonic() + max(1.0, float(timeout_s))
+        deadline = time.monotonic() + max(0.001, float(timeout_s))
         last_info: Any = None
         while time.monotonic() < deadline:
-            last_info = await asyncio.to_thread(manager.get_sandbox_info, sandbox_id)
+            last_info = await asyncio.wait_for(
+                asyncio.to_thread(manager.get_sandbox_info, sandbox_id),
+                timeout=max(0.001, deadline - time.monotonic()),
+            )
             status = getattr(last_info, "status", None)
             state = str(getattr(status, "state", "") or "").rsplit(".", 1)[-1].lower()
             if state == "running":
@@ -419,7 +509,7 @@ class SandboxClusterBackend(ClusterBackend):
                     f"state={state} reason={getattr(status, 'reason', '')!r} "
                     f"message={getattr(status, 'message', '')!r}"
                 )
-            await asyncio.sleep(max(0.1, float(poll_interval_s)))
+            await asyncio.sleep(min(max(0.1, float(poll_interval_s)), max(0.0, deadline - time.monotonic())))
         status = getattr(last_info, "status", None)
         raise TimeoutError(
             f"Sandbox {sandbox_id} did not become running within {float(timeout_s):.1f}s; "
@@ -430,14 +520,15 @@ class SandboxClusterBackend(ClusterBackend):
         self, sandbox_id: str, cfg: Mapping[str, Any], *, connection: Any | None = None,
     ) -> Any:
         try:
+            from opensandbox.adapters.factory import AdapterFactory
+            from opensandbox.config import ConnectionConfig
             from opensandbox.sync.adapters.factory import AdapterFactorySync
         except ImportError as exc:
             raise RuntimeError("Sandbox mode requires opensandbox==0.1.9") from exc
         connection = connection if connection is not None else self._connection
         if connection is None:
             raise RuntimeError("Sandbox connection is not initialized")
-        factory = AdapterFactorySync(connection)
-        service = factory.create_sandbox_service()
+        service = AdapterFactorySync(connection).create_sandbox_service()
         # SandboxSync.connect hardcodes 44772 and also resolves an unused
         # egress endpoint on 18080. Connect the required execd services directly
         # so DeepEnv only needs the configured command port declared.
@@ -449,6 +540,7 @@ class SandboxClusterBackend(ClusterBackend):
         )
         # DeepEnv can return an absolute proxy URL. SDK service adapters prepend
         # connection.protocol themselves, so supply a scheme-free endpoint.
+        protocol = connection.protocol
         if "://" in endpoint.endpoint:
             parsed = urlsplit(endpoint.endpoint)
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -456,14 +548,25 @@ class SandboxClusterBackend(ClusterBackend):
             endpoint = endpoint.model_copy(update={
                 "endpoint": parsed.netloc + parsed.path,
             })
-            connection = connection.model_copy(update={"protocol": parsed.scheme})
-            factory = AdapterFactorySync(connection)
+            protocol = parsed.scheme
+        # Each instance owns its async transport. Cancelling or closing one
+        # command must neither occupy lifecycle threads nor close another instance.
+        runtime_connection = ConnectionConfig(
+            domain=connection.domain,
+            protocol=protocol,
+            api_key=connection.api_key,
+            headers=dict(connection.headers),
+            request_timeout=connection.request_timeout,
+            use_server_proxy=connection.use_server_proxy,
+        ).with_transport_if_missing()
+        factory = AdapterFactory(runtime_connection)
         sandbox = SandboxRuntimeHandle(
             id=sandbox_id,
             commands=factory.create_command_service(endpoint),
             files=factory.create_filesystem_service(endpoint),
             _service=service,
-            _connection=connection,
+            _connection=runtime_connection,
+            cancel_timeout_s=float(cfg.get("cancel_timeout_s", 10.0)),
         )
         if bool(cfg.get("skip_health_check", False)):
             return sandbox
@@ -471,47 +574,70 @@ class SandboxClusterBackend(ClusterBackend):
         timeout_s = float(cfg.get("request_timeout_s", 60.0) or 60.0)
         deadline = time.monotonic() + timeout_s
         last_error: Exception | None = None
-        while time.monotonic() < deadline:
-            try:
-                if await asyncio.wait_for(
-                    asyncio.to_thread(health.ping, sandbox_id),
-                    timeout=max(0.001, deadline - time.monotonic()),
-                ):
-                    return sandbox
-            except Exception as exc:
-                last_error = exc
-            await asyncio.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
-        raise TimeoutError(f"Sandbox {sandbox_id} execd was not ready within {timeout_s:.1f}s") from last_error
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    if await asyncio.wait_for(
+                        health.ping(sandbox_id),
+                        timeout=max(0.001, deadline - time.monotonic()),
+                    ):
+                        return sandbox
+                except Exception as exc:
+                    last_error = exc
+                await asyncio.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+            raise TimeoutError(f"Sandbox {sandbox_id} execd was not ready within {timeout_s:.1f}s") from last_error
+        except (Exception, asyncio.CancelledError):
+            await sandbox.close()
+            raise
 
-    async def _prepare_instance(self, sandbox: Any, cfg: Dict[str, Any]) -> None:
-        commands = []
+    async def _prepare_instance(self, sandbox: Any, cfg: Dict[str, Any]) -> tuple[str, str]:
+        result_root = str(cfg["result_artifact_root"])
+        commands = [
+            f"mkdir -p {shlex.quote(result_root)} && "
+            f"probe=$(mktemp {shlex.quote(result_root + '/.safactory-write-XXXXXX')}) && "
+            'printf safactory > "$probe" && rm -- "$probe"'
+        ]
+        runner = dict(cfg.get("runner_entrypoint") or {})
+        runner_target = str(runner.get("target") or "")
+        runner_path = (
+            f"/work/safactory/instances/{sandbox.id}/{Path(runner_target).name}"
+            if runner_target else ""
+        )
+        run_command = str(cfg.get("run_command") or "")
+        if runner_path:
+            if runner_target not in run_command:
+                raise ValueError("Sandbox run_command must reference runner_entrypoint.target")
+            run_command = run_command.replace(runner_target, runner_path)
         for item in cfg.get("embedded_files", []) or []:
             source = Path(str(item["source"]))
             if not source.is_file():
                 raise FileNotFoundError(f"Sandbox embedded file not found: {source}")
-            target = str(item["target"])
+            target = runner_path if str(item["target"]) == runner_target else str(item["target"])
             encoded = base64.b64encode(source.read_bytes()).decode("ascii")
             commands.append(
                 f"mkdir -p {shlex.quote(str(Path(target).parent))} && "
                 f"printf %s {shlex.quote(encoded)} | base64 -d > {shlex.quote(target)}"
             )
-        if not commands:
-            return
         output = await run_sandbox_command(
             sandbox,
             " && ".join(commands),
-            timeout_s=float(cfg.get("command_timeout_s", 720.0) or 720.0),
+            timeout_s=float(cfg.get("bootstrap_timeout_s", 120.0)),
         )
         if output.exit_code != 0:
-            raise RuntimeError(f"Sandbox bootstrap failed: {output.stderr or output.stdout}")
+            raise RuntimeError(
+                f"Sandbox {sandbox.id} bootstrap failed; verify readOnly=false and AFS permissions "
+                f"for {result_root}: {output.stderr or output.stdout}"
+            )
+        log.info("Sandbox ready: id=%s runner=%s results=%s", sandbox.id, runner_path, result_root)
+        return run_command, runner_path
 
     async def _terminate(self, sandbox_id: str, sandbox: Any | None) -> None:
         if sandbox is not None:
             try:
-                await asyncio.to_thread(sandbox.close)
+                await sandbox.close()
             except Exception:
                 log.debug("failed to close Sandbox client %s", sandbox_id, exc_info=True)
-        manager = self._instance_managers.pop(sandbox_id, None) or self._manager
+        manager = self._instance_managers.get(sandbox_id) or self._manager
         if manager is not None and sandbox_id:
             try:
                 await asyncio.to_thread(manager.kill_sandbox, sandbox_id)
@@ -520,3 +646,4 @@ class SandboxClusterBackend(ClusterBackend):
                 # the first cleanup error for callers that need to report it.
                 if "not found" not in str(exc).lower():
                     raise
+            self._instance_managers.pop(sandbox_id, None)

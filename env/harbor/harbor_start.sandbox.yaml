@@ -4,10 +4,10 @@ container:
   workdir: /work
   runner_entrypoint:
     # The manager resolves this source relative to this start file and copies
-    # it into the Sandbox before each runner command.
+    # it into /work/safactory/instances/<sandbox-id>/runner.py for this instance.
     source: ./runner.py
-    target: /tmp/safactory-harbor/runner.py
-    command: "/opt/harbor-env/bin/python /tmp/safactory-harbor/runner.py"
+    target: /work/safactory/runner.py
+    command: "/opt/harbor-env/bin/python /work/safactory/runner.py"
 
   env:
     HARBOR_TELEMETRY: "0"
