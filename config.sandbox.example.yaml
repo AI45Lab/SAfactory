@@ -1,9 +1,15 @@
 sandbox:
-  domain: "h.pjlab.org.cn/brainbox"
-  protocol: "https"
-  project: "ailab-pj"
+  # Control-plane settings shared with sandbox/create_sandbox.py and run_harbor_runner_task.py.
+  # domain excludes the scheme and /v1; a full URL is also accepted.
+  domain: "deepenv.sandbox.pjlab.org.cn"
+  protocol: "http"
+  # Set the short workspace name explicitly (e.g. ailab-evobox), or export OPEN_SANDBOX_PROJECT.
+  project: ""
+  project_env: "OPEN_SANDBOX_PROJECT"
+  # export OPEN_SANDBOX_API_KEY='<access_key_id>:<secret_key>'
   api_key_env: "OPEN_SANDBOX_API_KEY"
 
+  # The direct API creation request declares this TCP port for execd proxy/endpoint access.
   command_port: 44772
 
   # Use an address reachable from the Sandbox cluster.
@@ -14,7 +20,7 @@ sandbox:
   create_timeout_s: 600
   command_timeout_s: 720
   startup_concurrency: 8
-  creation_mode: direct_sdk
+  creation_mode: direct_api
   execution_mode: execd_command
   lifecycle_policy: per_episode
   idle_entrypoint: ["tail", "-f", "/dev/null"]
@@ -23,3 +29,7 @@ sandbox:
   use_server_proxy: true
   skip_health_check: false
   cleanup_on_finish: true
+
+  # Configure workload resources, extensions, and volumes in the agent's sandbox section.
+  # Harbor uses extensions.runtimeClassName: sysbox-runc and a read-write project-default-afs
+  # volume at /sandbox-data; these settings belong to its agent start config (see sandbox/README.harbor.md).

@@ -38,9 +38,10 @@ _RJOB_DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 _SANDBOX_DEFAULT_CONFIG: Dict[str, Any] = {
-    "domain": "https://h.pjlab.org.cn/brainbox",
-    "protocol": "https",
+    "domain": "deepenv.sandbox.pjlab.org.cn",
+    "protocol": "http",
     "project": "",
+    "project_env": "OPEN_SANDBOX_PROJECT",
     "api_key": "",
     "api_key_env": "OPEN_SANDBOX_API_KEY",
     "gateway_base_url": "",
@@ -53,9 +54,9 @@ _SANDBOX_DEFAULT_CONFIG: Dict[str, Any] = {
     "cleanup_on_finish": True,
     "use_server_proxy": True,
     "skip_health_check": False,
-    # OpenSandbox 0.1.9 creates an idle instance and executes the runner via
-    # the execd command API for each Safactory episode.
-    "creation_mode": "direct_sdk",
+    # The direct API create request declares the execd port; OpenSandbox 0.1.9's
+    # SDK omits ports.  The runner executes via execd for each episode.
+    "creation_mode": "direct_api",
     "execution_mode": "execd_command",
     "lifecycle_policy": "per_episode",
     "idle_entrypoint": ["tail", "-f", "/dev/null"],
@@ -163,7 +164,7 @@ def _normalize_sandbox_config(section: Dict[str, Any]) -> Dict[str, Any]:
         if key in raw_section:
             raise ValueError(
                 f"sandbox.{key} is not supported: Sandbox mode creates instances directly "
-                "via the SDK; configure project, image, and volumes instead"
+                "via the API; configure project, image, and volumes instead"
             )
     merged = {**_SANDBOX_DEFAULT_CONFIG, **raw_section}
     raw_domain = str(merged.get("domain") or "").strip()
@@ -173,12 +174,14 @@ def _normalize_sandbox_config(section: Dict[str, Any]) -> Dict[str, Any]:
         raw_protocol = parsed_domain.scheme.lower() or raw_protocol
         raw_domain = parsed_domain.netloc + parsed_domain.path
     elif raw_domain.startswith("//"):
-        parsed_domain = urlsplit(f"{raw_protocol or 'https'}:{raw_domain}")
+        parsed_domain = urlsplit(f"{raw_protocol or 'http'}:{raw_domain}")
         raw_domain = parsed_domain.netloc + parsed_domain.path
     merged["domain"] = raw_domain.strip().rstrip("/")
-    merged["protocol"] = raw_protocol or "https"
-    for key in ("project", "api_key", "api_key_env", "gateway_base_url"):
+    merged["protocol"] = raw_protocol or "http"
+    for key in ("project", "project_env", "api_key", "api_key_env", "gateway_base_url"):
         merged[key] = str(merged.get(key) or "").strip()
+    if not merged["project"] and merged["project_env"]:
+        merged["project"] = str(os.getenv(merged["project_env"], "")).strip()
     if not merged["api_key"] and merged["api_key_env"]:
         merged["api_key"] = str(os.getenv(merged["api_key_env"], "")).strip()
     merged["command_port"] = min(65535, max(1, int(merged.get("command_port") or 44772)))
@@ -192,6 +195,8 @@ def _normalize_sandbox_config(section: Dict[str, Any]) -> Dict[str, Any]:
         merged[key] = _as_bool(merged.get(key), default=bool(_SANDBOX_DEFAULT_CONFIG[key]))
     for key in ("creation_mode", "execution_mode", "lifecycle_policy", "result_artifact_root"):
         merged[key] = str(merged.get(key) or _SANDBOX_DEFAULT_CONFIG[key]).strip()
+    if merged["creation_mode"] not in {"direct_api", "direct_sdk"}:
+        raise ValueError("sandbox.creation_mode must be direct_api (or legacy direct_sdk)")
     if merged["result_artifact_root"] and not Path(merged["result_artifact_root"]).is_absolute():
         raise ValueError("sandbox.result_artifact_root must be an absolute Sandbox path")
     # Keep both spellings accepted by existing start files.  The backend uses
@@ -763,7 +768,7 @@ def _normalize_agent_start_sandbox(
         if key in raw:
             raise ValueError(
                 f"sandbox.{key} for {agent_name!r} is not supported in {cfg_path}: Sandbox mode "
-                "creates instances directly via the SDK; configure image and volumes instead"
+                "creates instances directly via the API; configure image and volumes instead"
             )
     if "required_mount_paths" in raw:
         raise ValueError(
@@ -776,6 +781,7 @@ def _normalize_agent_start_sandbox(
         "domain",
         "protocol",
         "project",
+        "project_env",
         "api_key",
         "api_key_env",
         "workdir",
@@ -788,6 +794,13 @@ def _normalize_agent_start_sandbox(
         "result_artifact_root",
     ):
         _copy_non_empty(raw, sandbox, key)
+    if "creation_mode" in sandbox:
+        sandbox["creation_mode"] = sandbox["creation_mode"].strip()
+        if sandbox["creation_mode"] not in {"direct_api", "direct_sdk"}:
+            raise ValueError(
+                f"sandbox.creation_mode for {agent_name!r} must be direct_api "
+                f"(or legacy direct_sdk) in {cfg_path}"
+            )
     if sandbox.get("result_artifact_root") and not Path(str(sandbox["result_artifact_root"])).is_absolute():
         raise ValueError(f"sandbox.result_artifact_root for {agent_name!r} must be absolute in {cfg_path}")
     sandbox.setdefault("workdir", str(docker.get("workdir") or ""))
