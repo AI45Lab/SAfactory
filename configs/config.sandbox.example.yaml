@@ -22,9 +22,7 @@ sandbox:
   cancel_timeout_s: 10
   command_timeout_s: 720
   startup_concurrency: 8
-  creation_mode: direct_api
-  execution_mode: execd_command
-  lifecycle_policy: per_episode
+  # Each episode gets one instance; its runner command executes through execd.
   idle_entrypoint: ["tail", "-f", "/dev/null"]
   poll_interval_s: 2
   result_artifact_root: "/sandbox-data/results"

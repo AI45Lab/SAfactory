@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import shlex
 from pathlib import PurePosixPath
+from typing import Any
 
 from clusters.sandbox_cluster import run_sandbox_command, sandbox_results_setup_command
 
@@ -38,6 +40,11 @@ class SandboxEpisodeRunner:
             raise RuntimeError(f"Sandbox lease missing runtime handle: {lease.agent_name}/{lease.agent_id}")
         if not lease.run_command:
             raise RuntimeError(f"Sandbox lease missing run_command: {lease.agent_name}/{lease.agent_id}")
+        artifact_required = lease.agent_name == "harbor" or (
+            str(lease.env_params.get("reward_source") or "").strip().lower() == "runner"
+        )
+        if artifact_required and lease.result_mode == "exit_code":
+            raise ValueError("Harbor and runner rewards require a JSON result artifact")
 
         _, payload = request_payload(request)
         cfg = dict(lease.runtime_config or {})
@@ -62,6 +69,10 @@ class SandboxEpisodeRunner:
         if lease.workdir:
             shell_command = f"cd {shlex.quote(lease.workdir)} && {shell_command}"
         command += f" sh -lc {shlex.quote(shell_command)}"
+        if artifact_required:
+            # Retries share the session's result path. Require this attempt to
+            # produce its own result instead of accepting an earlier reward.
+            command = f"rm -f -- {shlex.quote(artifact_path)} && {command}"
 
         session_dir = PurePosixPath(artifact_path).parent
         target = shlex.quote(str(session_dir))
@@ -177,22 +188,24 @@ class SandboxEpisodeRunner:
                 },
             )
 
-        try:
-            body = parse_result_output(output.stdout)
-            source = "stdout"
-        except Exception as stdout_error:
-            artifact = await run_sandbox_command(
-                sandbox,
-                f"cat -- {shlex.quote(artifact_path)}",
-                timeout_s=min(30.0, timeout_s),
-            )
-            if artifact.exit_code != 0:
-                raise RuntimeError(
-                    "Sandbox runner produced no parseable SimulationStartResult: "
-                    f"stdout_error={stdout_error}; artifact_error={tail(artifact.stderr or artifact.stdout)}"
-                ) from stdout_error
-            body = parse_result_output(artifact.stdout)
+        if artifact_required:
+            # Native rewards come from the persisted runner result, even when
+            # stdout contains another parseable result.
+            body = await self._read_result_artifact(sandbox, artifact_path, timeout_s)
             source = "artifact"
+            if body.get("session_id") != request.session_id:
+                raise RuntimeError("Sandbox result artifact session_id does not match the current session")
+            if not body.get("status"):
+                raise RuntimeError("Sandbox result artifact is missing its rollout status")
+            if isinstance(body.get("total_reward"), bool):
+                raise RuntimeError("Sandbox result artifact total_reward must be numeric, not boolean")
+        else:
+            try:
+                body = parse_result_output(output.stdout)
+                source = "stdout"
+            except Exception:
+                body = await self._read_result_artifact(sandbox, artifact_path, timeout_s)
+                source = "artifact"
 
         result = normalize_result(body, session_id=request.session_id)
         result.metrics = dict(result.metrics or {})
@@ -205,6 +218,26 @@ class SandboxEpisodeRunner:
             }
         )
         return result
+
+    @staticmethod
+    async def _read_result_artifact(
+        sandbox: Any, artifact_path: str, timeout_s: float,
+    ) -> dict[str, Any]:
+        artifact = await run_sandbox_command(
+            sandbox, f"cat -- {shlex.quote(artifact_path)}", timeout_s=min(30.0, timeout_s),
+        )
+        if artifact.exit_code != 0:
+            raise RuntimeError(
+                f"Sandbox runner result artifact could not be read: {artifact_path}; "
+                f"{tail(artifact.stderr or artifact.stdout)}"
+            )
+        try:
+            body = json.loads(artifact.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Sandbox runner result artifact contains invalid JSON: {artifact_path}") from exc
+        if not isinstance(body, dict):
+            raise RuntimeError("Sandbox runner result artifact must contain a JSON object")
+        return body
 
     async def close(self) -> None:
         return

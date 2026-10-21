@@ -18,7 +18,7 @@ async def evaluate_rule(
     spec: EvalSpec,
     trajectory: Trajectory,
 ) -> EvalResult:
-    """Validate Harbor's native reward and normalize it onto SAfactory's 0-10 scale."""
+    """Validate the runner result payload and normalize its native reward to 0-10."""
     del trajectory
     start_result = request.start_result
     metrics = _start_metrics(request)
@@ -27,6 +27,7 @@ async def evaluate_rule(
         "task_id": metrics.get("task_id"),
         "harbor_reward": metrics.get("harbor_reward"),
         "harbor_fatal_errors": metrics.get("harbor_fatal_errors"),
+        "total_reward": getattr(start_result, "total_reward", None),
     }
 
     if getattr(start_result, "status", None) != "succeeded":
@@ -47,7 +48,7 @@ async def evaluate_rule(
             artifacts=artifacts,
         )
 
-    raw_reward = _finite_float(metrics.get("harbor_reward"))
+    raw_reward = _finite_float(getattr(start_result, "total_reward", None))
     if raw_reward is None:
         return EvalResult.failed(
             session_id=request.session_id,

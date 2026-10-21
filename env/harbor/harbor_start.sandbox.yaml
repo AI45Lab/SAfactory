@@ -23,8 +23,6 @@ sandbox:
     - tail
     - -f
     - /dev/null
-  execution_mode: execd_command
-  lifecycle_policy: per_episode
   resource:
     cpu: "4"
     memory: "16Gi"

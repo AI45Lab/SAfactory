@@ -168,8 +168,9 @@ class SandboxClusterBackend(ClusterBackend):
 
     def __init__(self, *, cluster_cfg: Dict[str, Any] | None = None) -> None:
         self._cluster_cfg = dict(cluster_cfg or {})
-        self._sandbox_cfg = _normalize_sandbox_config(self._cluster_cfg.get("sandbox", {}) or {})
+        self._sandbox_cfg = dict(self._cluster_cfg.get("sandbox", {}) or {})
         self._env_types = dict(self._cluster_cfg.get("env_types", {}) or {})
+        self._resolved_configs: Dict[str, Dict[str, Any]] = {}
         self.startup_concurrency = max(1, int(self._sandbox_cfg.get("startup_concurrency", 8) or 8))
         self._instances: Dict[str, Any] = {}
         self._connection: Any | None = None
@@ -207,12 +208,7 @@ class SandboxClusterBackend(ClusterBackend):
         run_command = str(cfg.get("run_command") or "").strip()
         if not run_command:
             raise ValueError(f"Sandbox run_command is required for agent {env_name!r}")
-        lifecycle_s = float(cfg.get("lifecycle_minutes", 120) or 120) * 60.0
         command_timeout_s = float(cfg.get("command_timeout_s", 720.0) or 720.0)
-        if lifecycle_s < command_timeout_s + 600.0:
-            raise ValueError(
-                f"Sandbox lifecycle for agent {env_name!r} must cover command timeout plus 600 seconds"
-            )
 
         log.info("Creating Sandbox: agent=%s id=%s", env_name, env_id)
         sandbox_id, sandbox = await self._create_sandbox(
@@ -332,38 +328,17 @@ class SandboxClusterBackend(ClusterBackend):
                         log.warning("failed to close Sandbox transport", exc_info=True)
 
     def _config_for_env(self, env_name: str) -> Dict[str, Any]:
-        env_cfg = dict(self._env_types.get(str(env_name), {}) or {})
-        sandbox_cfg = dict(env_cfg.get("sandbox", {}) or {})
-        merged = {**self._sandbox_cfg, **sandbox_cfg}
-        merged["env"] = {
-            **dict(self._sandbox_cfg.get("env", {}) or {}),
-            **dict(sandbox_cfg.get("env", {}) or {}),
-        }
-        merged["resource"] = {
-            **dict(self._sandbox_cfg.get("resource", {}) or {}),
-            **dict(sandbox_cfg.get("resource", {}) or {}),
-        }
-        merged["extensions"] = {
-            **dict(self._sandbox_cfg.get("extensions", {}) or {}),
-            **dict(sandbox_cfg.get("extensions", {}) or {}),
-        }
-        merged["embedded_files"] = [
-            *list(self._sandbox_cfg.get("embedded_files", []) or []),
-            *list(sandbox_cfg.get("embedded_files", []) or []),
-        ]
-        merged["volumes"] = list(
-            sandbox_cfg.get("volumes", self._sandbox_cfg.get("volumes", [])) or []
+        env_name = str(env_name)
+        if env_name in self._resolved_configs:
+            return self._resolved_configs[env_name]
+        env_cfg = dict(self._env_types.get(env_name, {}) or {})
+        # Resolve credentials and validate cross-field constraints after overrides.
+        # A backend's configuration is fixed for its lifetime, including release.
+        cfg = _normalize_sandbox_config(
+            self._sandbox_cfg, agent_overrides=env_cfg.get("sandbox", {}) or {},
         )
-        merged["metadata"] = {
-            **dict(self._sandbox_cfg.get("metadata", {}) or {}),
-            **dict(sandbox_cfg.get("metadata", {}) or {}),
-        }
-        # Agent-specific environment variables override values already resolved
-        # from the global configuration.
-        for key in ("api_key", "project"):
-            if f"{key}_env" in sandbox_cfg and key not in sandbox_cfg:
-                merged[key] = ""
-        return _normalize_sandbox_config(merged)
+        self._resolved_configs[env_name] = cfg
+        return cfg
 
     async def _create_sandbox(
         self,
@@ -489,7 +464,7 @@ class SandboxClusterBackend(ClusterBackend):
         return created
 
     async def _ensure_sdk_clients(self, cfg: Mapping[str, Any] | None = None) -> tuple[Any, Any, Any]:
-        cfg = cfg if cfg is not None else self._sandbox_cfg
+        cfg = cfg if cfg is not None else self._config_for_env("")
         key = tuple(cfg.get(name) for name in (
             "domain", "protocol", "api_key", "request_timeout_s", "use_server_proxy",
         ))
