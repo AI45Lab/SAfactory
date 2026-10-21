@@ -7,6 +7,10 @@ if TYPE_CHECKING:
     from manager.binding_plan import BindingPlan
 
 
+class RuntimeConfigurationError(RuntimeError):
+    """A shared runtime configuration failure that retries cannot resolve."""
+
+
 class ClusterBackend(ABC):
     """
     Strategy interface for Safactory runtime allocation backends.

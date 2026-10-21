@@ -15,12 +15,42 @@ from urllib.parse import urlsplit
 import httpx
 
 from manager.binding_plan import BindingPlan
+from manager.episode_common import safe_path_part
 from manager.simulation_config import _normalize_sandbox_config
 from manager.types import PoolEntry
 
-from .base import ClusterBackend
+from .base import ClusterBackend, RuntimeConfigurationError
 
 log = logging.getLogger("clusters.sandbox_cluster")
+
+
+def sandbox_results_setup_command(result_dir: str) -> str:
+    """Create a shared results directory and verify it using this instance's UID."""
+    path = Path(result_dir)
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("Sandbox results directory must be an absolute path without '..'")
+    target = shlex.quote(str(path))
+    ancestors = " ".join(shlex.quote(str(item)) for item in (*reversed(path.parents), path))
+    probe = shlex.quote(str(path / ".safactory-write-XXXXXX"))
+    return (
+        "( "
+        f"for directory in {ancestors}; do "
+        '[ ! -L "$directory" ] || exit 1; done && '
+        # Restrict umask to directory creation; the runner may contain credentials.
+        f"(umask 000; mkdir -p -- {target}) && "
+        # A different instance may own an already shared directory.
+        f"(chmod -- a+rwX {target} 2>/dev/null || true) && "
+        f"probe=$(mktemp {probe}) && "
+        'printf safactory > "$probe" && rm -- "$probe"'
+        " ) || { "
+        "printf '%s\\n' SAFACTORY_RESULTS_NOT_WRITABLE >&2; "
+        "id >&2; "
+        "printf '%s\\n' /proc/self/uid_map /proc/self/gid_map >&2; "
+        "cat /proc/self/uid_map /proc/self/gid_map >&2 2>/dev/null || true; "
+        f"stat -c '%a %u:%g %n' -- {target} >&2 2>/dev/null || ls -ld -- {target} >&2; "
+        f"findmnt -T {target} >&2 2>/dev/null || true; "
+        "exit 73; }"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,16 +130,24 @@ async def run_sandbox_command(sandbox: Any, command: str, *, timeout_s: float) -
                 handlers=ExecutionHandlers(on_init=on_init),
             )
             return SandboxCommandOutput.from_sdk(result)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            # Async cancellation closes the SSE response. Interrupt also stops
-            # the remote process; a local deadline alone cannot do that.
+        except (Exception, asyncio.CancelledError):
+            # Losing the SSE stream does not stop the remote process. Finish
+            # interruption before another command can start, even if cancelled.
             if execution_id:
+                interruption = asyncio.create_task(asyncio.wait_for(
+                    sandbox.commands.interrupt(execution_id),
+                    timeout=float(getattr(sandbox, "cancel_timeout_s", 10.0)),
+                ))
+                while not interruption.done():
+                    try:
+                        await asyncio.shield(interruption)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
                 try:
-                    await asyncio.wait_for(
-                        sandbox.commands.interrupt(execution_id),
-                        timeout=float(getattr(sandbox, "cancel_timeout_s", 10.0)),
-                    )
-                except Exception:
+                    interruption.result()
+                except (Exception, asyncio.CancelledError):
                     log.warning("failed to interrupt Sandbox command: sandbox=%s execution=%s", sandbox.id, execution_id, exc_info=True)
             raise
 
@@ -592,11 +630,9 @@ class SandboxClusterBackend(ClusterBackend):
 
     async def _prepare_instance(self, sandbox: Any, cfg: Dict[str, Any]) -> tuple[str, str]:
         result_root = str(cfg["result_artifact_root"])
-        commands = [
-            f"mkdir -p {shlex.quote(result_root)} && "
-            f"probe=$(mktemp {shlex.quote(result_root + '/.safactory-write-XXXXXX')}) && "
-            'printf safactory > "$probe" && rm -- "$probe"'
-        ]
+        job_id = str(self._cluster_cfg.get("job_id") or "")
+        result_dir = str(Path(result_root) / safe_path_part(job_id)) if job_id else result_root
+        commands = [sandbox_results_setup_command(result_dir)]
         runner = dict(cfg.get("runner_entrypoint") or {})
         runner_target = str(runner.get("target") or "")
         runner_path = (
@@ -623,12 +659,17 @@ class SandboxClusterBackend(ClusterBackend):
             " && ".join(commands),
             timeout_s=float(cfg.get("bootstrap_timeout_s", 120.0)),
         )
+        if output.exit_code == 73:
+            raise RuntimeConfigurationError(
+                f"Sandbox {sandbox.id} results directory is not writable: {result_dir}; "
+                f"readOnly=false does not grant AFS filesystem permissions: {output.stderr or output.stdout}"
+            )
         if output.exit_code != 0:
             raise RuntimeError(
                 f"Sandbox {sandbox.id} bootstrap failed; verify readOnly=false and AFS permissions "
                 f"for {result_root}: {output.stderr or output.stdout}"
             )
-        log.info("Sandbox ready: id=%s runner=%s results=%s", sandbox.id, runner_path, result_root)
+        log.info("Sandbox ready: id=%s runner=%s results=%s", sandbox.id, runner_path, result_dir)
         return run_command, runner_path
 
     async def _terminate(self, sandbox_id: str, sandbox: Any | None) -> None:

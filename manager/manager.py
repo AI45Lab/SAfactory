@@ -50,6 +50,8 @@ class AgentPoolManager:
         self._row_fetch_timeout_s = float(self.cfg.get("row_fetch_timeout_s", 30.0) or 30.0)
 
         cluster_cfg: Dict = dict(self.cfg.get("cluster", {}) or {})
+        if self._mode == "sandbox":
+            cluster_cfg["job_id"] = self._job_id
         self._allocator: RuntimeLeaseAllocator = self._build_allocator(cluster_cfg)
         startup_concurrency = int(getattr(self._allocator, "startup_concurrency", 8) or 8)
 

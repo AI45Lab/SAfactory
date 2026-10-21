@@ -6,6 +6,8 @@ import logging
 from collections import deque
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from clusters.base import RuntimeConfigurationError
+
 from .runtime_allocator import RuntimeLeaseAllocator
 from .types import AgentKey, PoolEntry
 
@@ -47,6 +49,7 @@ class RuntimeAgentPool:
         self._closing = False
         self._image_by_env: Dict[str, str] = {}
         self._background_tasks: set[asyncio.Task] = set()
+        self._allocation_error: Optional[RuntimeConfigurationError] = None
 
     def _repo_fetch_batch_size(self, requested: int = 1) -> int:
         return max(1, self._pool_size, int(requested))
@@ -85,6 +88,7 @@ class RuntimeAgentPool:
         on_ready: Optional[Callable[[PoolEntry], Awaitable[Any]]] = None,
     ) -> None:
         self._closing = False
+        self._allocation_error = None
         self._on_ready = on_ready
         if self._pool_size <= 0:
             log.debug("pool_size <= 0, skip %s prewarm", self._allocator.runtime)
@@ -112,11 +116,15 @@ class RuntimeAgentPool:
                 return
             tasks = [self._start_fill(row) for row in rows]
         await asyncio.gather(*tasks, return_exceptions=True)
+        if self._allocation_error is not None:
+            raise self._allocation_error
         await self.ensure_capacity()
 
     async def ensure_capacity(self, *, wait_for_rows: bool = False) -> None:
         while True:
             async with self._reserve_lock:
+                if self._allocation_error is not None:
+                    raise self._allocation_error
                 if self._closing:
                     return
                 async with self._lock:
@@ -145,8 +153,12 @@ class RuntimeAgentPool:
                     tasks = [self._start_fill(row) for row in rows]
             if deficit <= 0:
                 await asyncio.wait(tasks)
+                if self._allocation_error is not None:
+                    raise self._allocation_error
             else:
                 await asyncio.gather(*tasks, return_exceptions=True)
+                if self._allocation_error is not None:
+                    raise self._allocation_error
 
     async def close_and_refill(
         self,
@@ -163,6 +175,8 @@ class RuntimeAgentPool:
             self._schedule_release_entry(old_entry, succeeded=succeeded)
 
         async with self._reserve_lock:
+            if self._allocation_error is not None:
+                raise self._allocation_error
             if self._closing:
                 return None
             async with self._lock:
@@ -243,14 +257,24 @@ class RuntimeAgentPool:
     async def _fill_slot(self, row: Dict[str, Any]) -> Optional[PoolEntry]:
         try:
             async with self._fill_sem:
+                if self._allocation_error is not None:
+                    raise self._allocation_error
                 return await self._fill_slot_once(row)
+        except RuntimeConfigurationError as exc:
+            if self._allocation_error is None:
+                self._allocation_error = exc
+                pending = [task for task in self._pending if task is not asyncio.current_task() and not task.done()]
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+            raise self._allocation_error
         except asyncio.CancelledError:
             key = (str(row.get("env_name", "")).strip(), str(row.get("env_id", "")).strip())
             attempts = self._cancel_attempts.get(key, 0) + 1
             self._cancel_attempts[key] = attempts
-            if not self._closing and attempts <= 2:
+            if not self._closing and self._allocation_error is None and attempts <= 2:
                 self._retry_rows.appendleft(row)
-            elif not self._closing:
+            elif not self._closing and self._allocation_error is None:
                 log.error("giving up %s lease %s/%s after %d cancelled allocations", self._allocator.runtime, *key, attempts)
             raise
 
@@ -283,11 +307,13 @@ class RuntimeAgentPool:
                     self._pool.pop(key, None)
                 await self._allocator.remove(entry)
             raise
-        except Exception:
+        except Exception as exc:
             if entry is not None:
                 async with self._lock:
                     self._pool.pop(key, None)
                 await self._allocator.remove(entry)
+            if isinstance(exc, RuntimeConfigurationError):
+                raise
             log.error(
                 "failed to allocate %s lease for %s/%s",
                 self._allocator.runtime,

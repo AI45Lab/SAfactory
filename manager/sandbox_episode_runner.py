@@ -4,8 +4,9 @@ import asyncio
 import base64
 import logging
 import shlex
+from pathlib import PurePosixPath
 
-from clusters.sandbox_cluster import run_sandbox_command
+from clusters.sandbox_cluster import run_sandbox_command, sandbox_results_setup_command
 
 from .episode_common import (
     RUNNER_DIAGNOSTIC_PREFIXES,
@@ -62,25 +63,93 @@ class SandboxEpisodeRunner:
             shell_command = f"cd {shlex.quote(lease.workdir)} && {shell_command}"
         command += f" sh -lc {shlex.quote(shell_command)}"
 
+        session_dir = PurePosixPath(artifact_path).parent
+        target = shlex.quote(str(session_dir))
+        # Check ancestors again at cleanup: a runner may have replaced a path.
+        directories = " && ".join(
+            f"[ ! -L {shlex.quote(str(path))} ]"
+            for path in (*reversed(session_dir.parents), session_dir)
+        )
+        cleanup_command = (
+            f"if [ -e {target} ] || [ -L {target} ]; then "
+            f"{directories} && [ -d {target} ] && "
+            f"find -P {target} -type d -exec chmod -- a+rwX {{}} \\; "
+            "-o -type f -exec chmod -- a+rwX {} +; fi"
+        )
+        # The trap covers ordinary runner exits; the management-side finally
+        # also runs after SDK errors, interrupts and external cancellation.
+        exit_trap = (
+            'status=$?; trap - EXIT; '
+            f"{cleanup_command}; exit \"$status\""
+        )
+        command = (
+            f"{sandbox_results_setup_command(str(session_dir.parent))} && "
+            f"{sandbox_results_setup_command(str(session_dir))} && "
+            f"{{ trap {shlex.quote(exit_trap)} EXIT; {command}; }}"
+        )
+
         timeout_s = min(self.timeout_s, float(cfg.get("command_timeout_s") or self.timeout_s))
+        execution = asyncio.create_task(run_sandbox_command(sandbox, command, timeout_s=timeout_s))
+        cancellation = None
         try:
-            output = await run_sandbox_command(sandbox, command, timeout_s=timeout_s)
-        except asyncio.TimeoutError:
-            return SimulationStartResult(
-                session_id=request.session_id,
-                status="truncated",
-                total_reward=None,
-                step_count=0,
-                terminated=True,
-                truncated=True,
-                error_text=f"sandbox command timed out after {timeout_s:.1f}s",
-                metrics={
-                    "timeout_layer": "sandbox_command",
-                    "outer_timeout_s": timeout_s,
-                    "inner_timeout_s": float(request.agent_start_timeout_s),
-                    "sandbox_id": lease.resource_id,
-                },
-            )
+            while True:
+                try:
+                    output = await asyncio.shield(execution)
+                    break
+                except asyncio.CancelledError as exc:
+                    if cancellation is None:
+                        cancellation = exc
+                        execution.cancel()
+                    # Repeated cancellation must not interrupt the SDK's remote
+                    # interrupt request or let cleanup overlap the main command.
+                    if execution.done():
+                        raise cancellation
+                except asyncio.TimeoutError:
+                    if cancellation is not None:
+                        raise cancellation
+                    return SimulationStartResult(
+                        session_id=request.session_id,
+                        status="truncated",
+                        total_reward=None,
+                        step_count=0,
+                        terminated=True,
+                        truncated=True,
+                        error_text=f"sandbox command timed out after {timeout_s:.1f}s",
+                        metrics={
+                            "timeout_layer": "sandbox_command",
+                            "outer_timeout_s": timeout_s,
+                            "inner_timeout_s": float(request.agent_start_timeout_s),
+                            "sandbox_id": lease.resource_id,
+                        },
+                    )
+                except Exception:
+                    if cancellation is not None:
+                        raise cancellation
+                    raise
+        finally:
+            cleanup = asyncio.create_task(run_sandbox_command(sandbox, cleanup_command, timeout_s=30.0))
+            while True:
+                try:
+                    permissions = await asyncio.shield(cleanup)
+                    if permissions.exit_code != 0 or permissions.stderr:
+                        log.warning(
+                            "Sandbox results permission cleanup failed: resource=%s path=%s exit_code=%s stderr=%s",
+                            lease.resource_id, session_dir, permissions.exit_code, tail(permissions.stderr),
+                        )
+                    break
+                except asyncio.CancelledError as exc:
+                    cancellation = cancellation or exc
+                    if cleanup.done():
+                        log.warning("Sandbox results permission cleanup cancelled: resource=%s path=%s", lease.resource_id, session_dir)
+                        break
+                except Exception:
+                    log.warning(
+                        "Sandbox results permission cleanup failed: resource=%s path=%s",
+                        lease.resource_id, session_dir, exc_info=True,
+                    )
+                    break
+            if cancellation is not None:
+                raise cancellation
 
         for raw_line in output.stderr.splitlines():
             line = raw_line.strip()
