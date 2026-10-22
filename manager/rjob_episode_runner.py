@@ -65,6 +65,9 @@ class RJobEpisodeRunner:
         )
 
         submitted_name = ""
+        submit_attempted = False
+        submit_task: asyncio.Task[str] | None = None
+        rjob_name = ""
         terminal_status = "Unknown"
         logs_text = ""
         logs_error = ""
@@ -133,7 +136,17 @@ class RJobEpisodeRunner:
 
             started = time.perf_counter()
             with trace.span("submit_job", requested_rjob_name=rjob_name):
-                submitted = await self._cluster.submit_job(client, job, submit_kwargs)
+                submit_attempted = not (
+                    submit_kwargs.get("dry_run") or submit_kwargs.get("predict_only")
+                )
+                # RJobClient.submit runs in a worker thread. Cancelling this
+                # coroutine cannot stop that thread, so retain the task until
+                # its remote job name is available for cleanup.
+                submit_task = asyncio.create_task(
+                    self._cluster.submit_job(client, job, submit_kwargs),
+                    name=f"rjob-submit-{rjob_name}",
+                )
+                submitted = await asyncio.shield(submit_task)
             timings_ms["rjob_submit_ms"] = _elapsed_ms(started)
             trace.update_context(rjob_submit_ms=timings_ms["rjob_submit_ms"])
             submitted_name = str(submitted or rjob_name).strip()
@@ -241,6 +254,27 @@ class RJobEpisodeRunner:
             trace.update_context(error_type=type(exc).__name__, error=str(exc))
             raise
         finally:
+            if submit_task is not None:
+                try:
+                    if not submit_task.done():
+                        log.info(
+                            "waiting for in-flight RJob submit before cleanup: %s",
+                            rjob_name,
+                        )
+                        await submit_task
+                    submitted = submit_task.result()
+                    if not submitted_name:
+                        submitted_name = str(submitted or rjob_name).strip()
+                except (Exception, asyncio.CancelledError):
+                    # The server may have accepted a deterministic-name job
+                    # even if the client failed before returning its name.
+                    if submit_attempted and not submitted_name:
+                        submitted_name = rjob_name
+                    log.warning(
+                        "RJob submit did not return cleanly; attempting cleanup by name: %s",
+                        submitted_name or rjob_name,
+                        exc_info=True,
+                    )
             if submitted_name:
                 cleanup_started = time.perf_counter()
                 with trace.span(

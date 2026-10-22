@@ -351,11 +351,19 @@ class RJobClusterBackend(ClusterBackend):
             log.info("keeping failed RJob for debugging: %s status=%s", job_name, terminal_status)
             return
         try:
-            await asyncio.to_thread(client.delete, [job_name], async_=True)
-        except TypeError:
-            await asyncio.to_thread(client.delete, [job_name])
+            removed = await self.force_cleanup_job(
+                client,
+                job_name,
+                timeout_s=max(1.0, float(cfg.get("cleanup_timeout_s", 30.0) or 30.0)),
+                poll_interval_s=max(
+                    0.1,
+                    float(cfg.get("cleanup_poll_interval_s", 1.0) or 1.0),
+                ),
+            )
+            if not removed:
+                log.info("RJob already absent during cleanup: %s", job_name)
         except Exception:
-            log.warning("RJob delete failed for %s", job_name, exc_info=True)
+            log.warning("RJob cleanup failed for %s", job_name, exc_info=True)
 
     async def cleanup_resume_session(
         self,
@@ -399,7 +407,7 @@ class RJobClusterBackend(ClusterBackend):
         if not exists:
             return False
 
-        log.info("cleaning stale RJob before resume: name=%s status=%s", job_name, status)
+        log.info("cleaning RJob: name=%s status=%s", job_name, status)
         if status not in RJOB_SUCCEEDED_STATUSES | RJOB_FAILED_STATUSES | {"Killing", "Deleting"}:
             await self.stop_job(client, job_name)
 
@@ -413,11 +421,11 @@ class RJobClusterBackend(ClusterBackend):
         while True:
             exists, status = await self._get_job_status(client, job_name)
             if not exists:
-                log.info("stale RJob removed before resume: name=%s", job_name)
+                log.info("RJob removed: name=%s", job_name)
                 return True
             if time.monotonic() >= deadline:
                 raise TimeoutError(
-                    f"stale RJob {job_name} was not removed within {timeout_s:.1f}s; "
+                    f"RJob {job_name} was not removed within {timeout_s:.1f}s; "
                     f"last_status={status}"
                 )
             await asyncio.sleep(max(0.1, float(poll_interval_s)))
