@@ -273,11 +273,15 @@ rjob:
     cpu: 1
     gpu: 0
     memory_in_mb: 1024
+  affinity:
+    random_positive_tags:
+      - "node/worker-a.example"
+      - "node/worker-b.example"
   mount_config:
     - "gpfs+gpfs://gpfs1/path/data:/app/data"
 ```
 
-当 `container.runner_entrypoint.source` 指向本地文件时，RJob 模式会自动嵌入该文件。支持的 per-agent RJob key 包括连接覆盖、image pull policy、`resources`、`requests`、`env`、`labels`、`annotations`、`affinity`、`mount_config`、`mount`、`before_script`、`depends_on`、用于额外文件的 `embedded_files`、`replicas`、`poll_interval_s`、`termination_grace_period_seconds`、`local_storage_in_mb` 和清理相关 flags。
+当 `container.runner_entrypoint.source` 指向本地文件时，RJob 模式会自动嵌入该文件。支持的 per-agent RJob key 包括连接覆盖、image pull policy、`resources`、`requests`、`env`、`labels`、`annotations`、`affinity`、`mount_config`、`mount`、`before_script`、`depends_on`、用于额外文件的 `embedded_files`、`replicas`、`poll_interval_s`、`termination_grace_period_seconds`、`local_storage_in_mb` 和清理相关 flags。`affinity.random_positive_tags` 会为每个提交的任务独立随机选择一个候选 tag，但不会探测节点当前的剩余资源。
 
 ## 常用环境变量
 
