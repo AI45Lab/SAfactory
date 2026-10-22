@@ -33,6 +33,8 @@ _RJOB_DEFAULT_CONFIG: Dict[str, Any] = {
     "auto_delete_duration": "",
     "keep_failed_jobs": False,
     "submit_concurrency": 0,
+    "cleanup_timeout_s": 30.0,
+    "cleanup_poll_interval_s": 1.0,
     "resume_cleanup_timeout_s": 120.0,
     "resume_cleanup_poll_interval_s": 1.0,
 }
@@ -134,6 +136,14 @@ def _normalize_rjob_config(section: Dict[str, Any]) -> Dict[str, Any]:
     merged["keep_failed_jobs"] = _as_bool(merged.get("keep_failed_jobs"), default=False)
     merged["retries"] = max(0, int(merged.get("retries") or 0))
     merged["poll_interval_s"] = max(0.1, float(merged.get("poll_interval_s") or 5.0))
+    merged["cleanup_timeout_s"] = max(
+        1.0,
+        float(merged.get("cleanup_timeout_s") or 30.0),
+    )
+    merged["cleanup_poll_interval_s"] = max(
+        0.1,
+        float(merged.get("cleanup_poll_interval_s") or 1.0),
+    )
     merged["resume_cleanup_timeout_s"] = max(
         1.0,
         float(merged.get("resume_cleanup_timeout_s") or 120.0),
@@ -777,6 +787,8 @@ def _normalize_agent_start_rjob(agent_name: Any, spec: Any, cfg_path: Path) -> D
     for key in (
         "replicas",
         "poll_interval_s",
+        "cleanup_timeout_s",
+        "cleanup_poll_interval_s",
         "resume_cleanup_timeout_s",
         "resume_cleanup_poll_interval_s",
         "termination_grace_period_seconds",
@@ -786,7 +798,14 @@ def _normalize_agent_start_rjob(agent_name: Any, spec: Any, cfg_path: Path) -> D
             value = rjob_raw.get(key)
             rjob[key] = (
                 float(value)
-                if key in {"poll_interval_s", "resume_cleanup_timeout_s", "resume_cleanup_poll_interval_s"}
+                if key
+                in {
+                    "poll_interval_s",
+                    "cleanup_timeout_s",
+                    "cleanup_poll_interval_s",
+                    "resume_cleanup_timeout_s",
+                    "resume_cleanup_poll_interval_s",
+                }
                 else int(value)
             )
 
