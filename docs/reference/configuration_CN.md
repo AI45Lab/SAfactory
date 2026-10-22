@@ -269,6 +269,8 @@ rjob:
   no_packaging: true
   cleanup_on_finish: true
   keep_failed_jobs: true
+  starting_timeout_s: 900
+  running_timeout_s: 1800
   resources:
     cpu: 1
     gpu: 0
@@ -281,7 +283,7 @@ rjob:
     - "gpfs+gpfs://gpfs1/path/data:/app/data"
 ```
 
-当 `container.runner_entrypoint.source` 指向本地文件时，RJob 模式会自动嵌入该文件。支持的 per-agent RJob key 包括连接覆盖、image pull policy、`resources`、`requests`、`env`、`labels`、`annotations`、`affinity`、`mount_config`、`mount`、`before_script`、`depends_on`、用于额外文件的 `embedded_files`、`replicas`、`poll_interval_s`、`termination_grace_period_seconds`、`local_storage_in_mb` 和清理相关 flags。`affinity.random_positive_tags` 会为每个提交的任务独立随机选择一个候选 tag，但不会探测节点当前的剩余资源。
+当 `container.runner_entrypoint.source` 指向本地文件时，RJob 模式会自动嵌入该文件。`starting_timeout_s` 限制任务处于 `Starting` 的时间，`running_timeout_s` 从任务进入 `Running` 后开始计时；任一配置缺省时，该阶段沿用原有总超时。支持的 per-agent RJob key 包括连接覆盖、image pull policy、`resources`、`requests`、`env`、`labels`、`annotations`、`affinity`、`mount_config`、`mount`、`before_script`、`depends_on`、用于额外文件的 `embedded_files`、`replicas`、`poll_interval_s`、`starting_timeout_s`、`running_timeout_s`、`termination_grace_period_seconds`、`local_storage_in_mb` 和清理相关 flags。`affinity.random_positive_tags` 会为每个提交的任务独立随机选择一个候选 tag，但不会探测节点当前的剩余资源。
 
 ## 常用环境变量
 

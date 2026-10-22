@@ -45,6 +45,8 @@ class RJobEpisodeRunner:
         cfg = dict(lease.runtime_config or {})
         poll_interval_s = float(cfg.get("poll_interval_s", 5.0) or 5.0)
         timeout_s = float(request.agent_start_timeout_s or self.timeout_s)
+        starting_timeout_s = float(cfg.get("starting_timeout_s") or 0) or None
+        running_timeout_s = float(cfg.get("running_timeout_s") or 0) or None
         trace = PerfTrace(
             "rjob_episode.start",
             logger=log,
@@ -165,6 +167,8 @@ class RJobEpisodeRunner:
                     submitted_name,
                     timeout_s=timeout_s,
                     poll_interval_s=poll_interval_s,
+                    starting_timeout_s=starting_timeout_s,
+                    running_timeout_s=running_timeout_s,
                     trace=trace,
                 )
             timings_ms["rjob_wait_terminal_ms"] = _elapsed_ms(started)
