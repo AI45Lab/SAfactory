@@ -334,23 +334,23 @@ class SimulationFlow:
             gateway_client=self.gateway_client,
             llm_model=self.cfg.llm_model,
         )
-        evaluation_service = None
+        # Native runner rewards still use the environment's rule evaluator when
+        # general evaluation is disabled. Workers decide per lease whether to run it.
+        self.evaluation_service = build_evaluation_service(
+            trajectory_reader=None,
+            max_concurrency=self.cfg.max_workers or self.cfg.warm_pool_size,
+        )
         if self.cfg.evaluation_enabled:
             log.info("EVAL FLOW enabled: rule evaluator only")
-            self.evaluation_service = build_evaluation_service(
-                trajectory_reader=None,
-                max_concurrency=self.cfg.max_workers or self.cfg.warm_pool_size,
-            )
-            evaluation_service = self.evaluation_service
         else:
-            log.debug("EVAL FLOW disabled: launcher was not started with --enable-evaluation")
+            log.debug("EVAL FLOW disabled except for explicitly requested native runner rewards")
         self.worker_group = SimulationWorkerGroup(
             lease_pool=self.lease_pool,
             data_manager=self.data_manager,
             agent_start_client=self.agent_start_client,
             cfg=self.cfg,
             gateway_client=self.gateway_client,
-            evaluation_service=evaluation_service,
+            evaluation_service=self.evaluation_service,
             reward_committer=self.reward_committer,
         )
         return await self.worker_group.run_all()

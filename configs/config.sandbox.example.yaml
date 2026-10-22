@@ -1,0 +1,45 @@
+sandbox:
+  # Control-plane settings shared with sandbox/create_sandbox.py and run_harbor_runner_task.py.
+  # domain excludes the scheme and /v1; a full URL is also accepted.
+  domain: "deepenv.sandbox.pjlab.org.cn"
+  protocol: "http"
+  # Set the short workspace name explicitly (e.g. ailab-evobox), or export OPEN_SANDBOX_PROJECT.
+  project: ""
+  project_env: "OPEN_SANDBOX_PROJECT"
+  # export OPEN_SANDBOX_API_KEY='<access_key_id>:<secret_key>'
+  api_key_env: "OPEN_SANDBOX_API_KEY"
+
+  # The direct API creation request declares this TCP port for execd proxy/endpoint access.
+  command_port: 44772
+
+  # Use an address reachable from the Sandbox cluster.
+  gateway_base_url: "http://YOUR_GATEWAY_HOST:8000/v1/sessions"
+
+  lifecycle_minutes: 120
+  request_timeout_s: 60
+  create_timeout_s: 600
+  bootstrap_timeout_s: 120
+  cancel_timeout_s: 10
+  command_timeout_s: 720
+  startup_concurrency: 8
+  # Each episode gets one instance; its runner command executes through execd.
+  idle_entrypoint: ["tail", "-f", "/dev/null"]
+  poll_interval_s: 2
+  result_artifact_root: "/sandbox-data/results"
+  use_server_proxy: true
+  skip_health_check: false
+  cleanup_on_finish: true
+
+  # Explicit mounts keep project inputs available and persist results/<job-id>/<session-id>.
+  # Prepare the project results directory with permissions writable by the Sandbox UID mapping.
+  volumes:
+    - name: project-default-afs
+      mountPath: /sandbox-data
+      readOnly: false
+    - name: project-default-afs
+      subPath: results
+      mountPath: /sandbox-data/results
+      readOnly: false
+
+  # Configure workload resources and extensions in the agent's sandbox section.
+  # Harbor requires extensions.runtimeClassName: sysbox-runc (see sandbox/README.harbor.md).
