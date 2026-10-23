@@ -4,6 +4,7 @@ import asyncio
 import base64
 import inspect
 import logging
+import random
 import re
 import time
 from pathlib import Path
@@ -151,6 +152,9 @@ class RJobClusterBackend(ClusterBackend):
             "containers": [container],
             "environments": env,
         }
+        affinity = self._build_affinity(symbols, cfg.get("affinity"))
+        if affinity is not None:
+            template_kwargs["affinity"] = affinity
         if lease.workdir:
             template_kwargs["working_dir"] = lease.workdir
         if cfg.get("before_script"):
@@ -461,6 +465,8 @@ class RJobClusterBackend(ClusterBackend):
             "Template",
             "Container",
             "Resources",
+            "Affinity",
+            "AffinityQoS",
             "RestartPolicy",
             "PrivateMachine",
             "ImagePullPolicy",
@@ -554,6 +560,76 @@ class RJobClusterBackend(ClusterBackend):
             if custom_resources:
                 kwargs["custom_resources"] = custom_resources
         return _make(symbols["Resources"], **kwargs) if kwargs else None
+
+    @staticmethod
+    def _build_affinity(symbols: Dict[str, Any], value: Any) -> Optional[Any]:
+        if not value:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("RJob affinity must be a mapping")
+
+        affinity_cls = symbols.get("Affinity")
+        if affinity_cls is None:
+            raise RuntimeError("RJob SDK does not provide the Affinity struct")
+
+        aliases = {
+            "positiveTags": "positive_tags",
+            "randomPositiveTags": "random_positive_tags",
+            "negativeTags": "negative_tags",
+            "taskAffinities": "task_affinities",
+            "taskAntiAffinities": "task_anti_affinities",
+            "gpuQos": "gpu_qos",
+            "localStorageQos": "local_storage_qos",
+        }
+        allowed = {
+            "positive_tags",
+            "random_positive_tags",
+            "negative_tags",
+            "task_affinities",
+            "task_anti_affinities",
+            "gpu_qos",
+            "local_storage_qos",
+        }
+        normalized = {
+            aliases.get(str(key), str(key)): item for key, item in value.items()
+        }
+        unknown = sorted(set(normalized) - allowed)
+        if unknown:
+            raise ValueError(
+                f"Unsupported RJob affinity field(s): {', '.join(unknown)}"
+            )
+
+        for key in (
+            "positive_tags",
+            "random_positive_tags",
+            "negative_tags",
+            "task_affinities",
+            "task_anti_affinities",
+        ):
+            if key not in normalized:
+                continue
+            items = normalized[key]
+            if isinstance(items, str):
+                items = [items]
+            if not isinstance(items, (list, tuple)) or not all(
+                isinstance(item, str) for item in items
+            ):
+                raise ValueError(
+                    f"RJob affinity.{key} must be a string or list of strings"
+                )
+            normalized[key] = [item.strip() for item in items if item.strip()]
+
+        random_tags = normalized.pop("random_positive_tags", [])
+        if random_tags:
+            normalized.setdefault("positive_tags", []).append(random.choice(random_tags))
+
+        qos_cls = symbols.get("AffinityQoS")
+        for key in ("gpu_qos", "local_storage_qos"):
+            if key in normalized:
+                normalized[key] = RJobClusterBackend._coerce_enum(
+                    qos_cls, normalized[key]
+                )
+        return _make(affinity_cls, **normalized)
 
     @staticmethod
     def _command_with_embedded_files(cfg: Dict[str, Any], run_command: str) -> str:

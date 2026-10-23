@@ -9,6 +9,7 @@ import math
 import os
 import re
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -22,6 +23,11 @@ RESULT_PATH_ENV = "SAFACTORY_RESULT_PATH"
 RESULT_JSON_PREFIX = "SAFACTORY_RESULT_JSON "
 HARBOR_BIN = "/opt/harbor-env/bin/harbor"
 RUNTIME_DIR = Path("/tmp/safactory-harbor")
+DOCKER_MODE_ENV = "SAFACTORY_DOCKER_MODE"
+DEFAULT_DOCKER_MODE = "rjob"
+DOCKER_MODES = {"docker", "rjob", "sandbox"}
+RJOB_DOCKER_SOCKET = RUNTIME_DIR / "docker.sock"
+SANDBOX_DOCKER_SOCKET = Path("/var/run/docker.sock")
 CODEX_CONFIG_TARGET = "/opt/safactory-codex-config"
 # Profile subdirectory under <bundle_root>/<task_id>/; configurable per run so an
 # upstream layout change does not require touching the runner.
@@ -157,11 +163,38 @@ def _docker_env(env: dict[str, str]) -> dict[str, str]:
     return {key: value for key, value in env.items() if key not in overrides}
 
 
+def _docker_mode() -> str:
+    """Resolve the outer runtime's Docker connection mode.
+
+    ``rjob`` is the compatibility default.  Docker mode uses an already
+    running daemon (normally a mounted host socket), while Sandbox mode starts
+    the standard Docker-in-Sandbox daemon on ``/var/run/docker.sock``.
+    """
+    value = os.environ.get(DOCKER_MODE_ENV, DEFAULT_DOCKER_MODE).strip().lower()
+    aliases = {"host": "docker", "dind": "rjob", "sandbox-dind": "sandbox"}
+    mode = aliases.get(value, value)
+    if mode not in DOCKER_MODES:
+        allowed = ", ".join(sorted(DOCKER_MODES))
+        raise RuntimeError(
+            f"{DOCKER_MODE_ENV} must be one of {allowed}; got {value!r}"
+        )
+    return mode
+
+
+def _docker_host_for_mode(mode: str) -> str:
+    if mode == "rjob":
+        return f"unix://{RJOB_DOCKER_SOCKET}"
+    if mode == "sandbox":
+        return f"unix://{SANDBOX_DOCKER_SOCKET}"
+    value = os.environ.get("DOCKER_HOST", "").strip()
+    return value or f"unix://{SANDBOX_DOCKER_SOCKET}"
+
+
 def _docker_command(env: dict[str, str], *args: str) -> list[str]:
     host = env.get("DOCKER_HOST", "")
     if not host.startswith("unix:///"):
         raise ValueError("nested Docker requires an explicit Unix DOCKER_HOST")
-    return ["docker", f"--host={host}", *args]
+    return ["docker", *args]
 
 
 def _docker(env: dict[str, str], *args: str, timeout: int = INSPECT_TIMEOUT_S) -> str:
@@ -276,7 +309,9 @@ class RunSpec:
 
     @property
     def docker_socket(self) -> Path:
-        return RUNTIME_DIR / "docker.sock"
+        # Kept for callers that inspect the legacy RJob endpoint.  The actual
+        # endpoint is selected by ``SAFACTORY_DOCKER_MODE`` in NestedDocker.
+        return RJOB_DOCKER_SOCKET
 
     @property
     def dockerd_log_path(self) -> Path:
@@ -296,61 +331,99 @@ class NestedDocker:
     process: subprocess.Popen[bytes] | None = None
     harbor_process: subprocess.Popen[bytes] | None = None
     env: dict[str, str] = field(default_factory=dict)
+    mode: str = ""
+    docker_host: str = ""
+    driver: str = ""
 
     def start(self, spec: RunSpec) -> str:
-        if os.geteuid() != 0:
-            raise RuntimeError("nested Docker requires root")
-        if not Path("/dev/fuse").exists():
+        self.mode = _docker_mode()
+        self.docker_host = _docker_host_for_mode(self.mode)
+        if not self.docker_host.startswith("unix:///"):
             raise RuntimeError(
-                "nested Docker requires /dev/fuse; use privileged RJob with "
-                "brainpp.cn/fuse:1"
-            )
-
-        spec.dockerd_log_path.parent.mkdir(parents=True, exist_ok=True)
-        spec.docker_socket.unlink(missing_ok=True)
-        (RUNTIME_DIR / "exec").mkdir(parents=True, exist_ok=True)
-        Path("/docker-data").mkdir(parents=True, exist_ok=True)
-
-        with spec.dockerd_log_path.open("ab") as log:
-            self.process = subprocess.Popen(
-                [
-                    "dockerd",
-                    f"--host=unix://{spec.docker_socket}",
-                    f"--pidfile={RUNTIME_DIR / 'dockerd.pid'}",
-                    f"--exec-root={RUNTIME_DIR / 'exec'}",
-                    "--data-root=/docker-data",
-                    "--storage-driver=fuse-overlayfs",
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
+                f"{DOCKER_MODE_ENV}={self.mode!r} requires a Unix DOCKER_HOST; "
+                f"got {self.docker_host!r}"
             )
 
         self.env = {
             **_docker_env(dict(os.environ)),
-            "DOCKER_HOST": f"unix://{spec.docker_socket}",
+            "DOCKER_HOST": self.docker_host,
             "HARBOR_TELEMETRY": "0",
         }
-        for _ in range(120):
-            if self._docker_ready():
-                break
-            if self.process.poll() is not None:
+
+        # Docker mode talks to an already running daemon (normally the mounted
+        # /var/run/docker.sock) and must not start or stop that daemon.
+        if self.mode == "docker":
+            return self._wait_ready(spec)
+
+        if os.geteuid() != 0:
+            raise RuntimeError(f"{self.mode} Docker mode requires root")
+        spec.dockerd_log_path.parent.mkdir(parents=True, exist_ok=True)
+        socket = Path(self.docker_host.removeprefix("unix://"))
+        socket.parent.mkdir(parents=True, exist_ok=True)
+        socket.unlink(missing_ok=True)
+
+        if self.mode == "rjob":
+            for binary in ("docker", "dockerd", "fuse-overlayfs"):
+                if shutil.which(binary) is None:
+                    raise RuntimeError(f"{binary} missing from the RJob image")
+            if not Path("/dev/fuse").exists():
+                raise RuntimeError(
+                    "rjob Docker mode requires /dev/fuse; use privileged RJob with "
+                    "brainpp.cn/fuse:1"
+                )
+            (RUNTIME_DIR / "exec").mkdir(parents=True, exist_ok=True)
+            Path("/docker-data").mkdir(parents=True, exist_ok=True)
+            dockerd_args = [
+                "dockerd",
+                f"--host={self.docker_host}",
+                f"--pidfile={RUNTIME_DIR / 'dockerd.pid'}",
+                f"--exec-root={RUNTIME_DIR / 'exec'}",
+                "--data-root=/docker-data",
+                "--storage-driver=fuse-overlayfs",
+            ]
+        else:
+            # Sandbox DIND follows sandbox/05-docker-in-sandbox.md.  Sysbox
+            # supplies nested-container support; storage and runtime paths are
+            # selected by the Sandbox image instead of RJob-specific flags.
+            for binary in ("docker", "dockerd"):
+                if shutil.which(binary) is None:
+                    raise RuntimeError(f"{binary} missing from the Sandbox image")
+            dockerd_args = ["dockerd", f"--host={self.docker_host}"]
+
+        with spec.dockerd_log_path.open("ab") as log:
+            self.process = subprocess.Popen(
+                dockerd_args,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=self.env,
+                start_new_session=True,
+            )
+        return self._wait_ready(spec)
+
+    def _wait_ready(self, spec: RunSpec) -> str:
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            if self.process is not None and self.process.poll() is not None:
                 raise RuntimeError(
                     f"nested dockerd exited during startup; see {spec.dockerd_log_path}"
                 )
-            time.sleep(0.5)
-        else:
-            raise RuntimeError(
-                f"nested dockerd did not become ready; see {spec.dockerd_log_path}"
-            )
-
-        driver = _docker(self.env, "info", "--format", "{{.Driver}}")
-        if driver != "fuse-overlayfs":
-            raise RuntimeError(
-                f"nested dockerd uses {driver!r}, expected 'fuse-overlayfs'"
-            )
-        return driver
+            try:
+                driver = _docker(self.env, "info", "--format", "{{.Driver}}", timeout=5)
+                if not driver:
+                    raise RuntimeError("Docker daemon returned an empty storage driver")
+                _docker(self.env, "compose", "version", timeout=20)
+                self.driver = driver
+                return driver
+            except (OSError, RuntimeError, subprocess.TimeoutExpired):
+                time.sleep(1)
+        tail = ""
+        if spec.dockerd_log_path.is_file():
+            tail = spec.dockerd_log_path.read_text(errors="replace")[-6000:]
+        raise RuntimeError(
+            f"Docker daemon did not become ready in {self.mode} mode; "
+            f"see {spec.dockerd_log_path}\n{tail}"
+        )
 
     def run_harbor(self, spec: RunSpec) -> tuple[int, bool]:
         spec.harbor_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -388,13 +461,6 @@ class NestedDocker:
         if self.process is not None:
             self._stop(self.process)
             self.process = None
-
-    def _docker_ready(self) -> bool:
-        try:
-            _docker(self.env, "info", timeout=5)
-        except (OSError, RuntimeError, subprocess.TimeoutExpired):
-            return False
-        return True
 
     @staticmethod
     def _stop(process: subprocess.Popen[bytes]) -> None:
@@ -535,7 +601,21 @@ def harbor_command(spec: RunSpec) -> list[str]:
         command.extend(["--mounts", json.dumps(mounts, separators=(",", ":"))])
     if spec.capture_http:
         command.extend(["--ak", "capture_http=true"])
-    for name, value in sorted(spec.agent_env.items()):
+    # The per-session Gateway URL is known only when the runner receives the
+    # request.  Pass it to the Task Agent as well as to Harbor itself, while
+    # allowing a configured API key to override the safe EMPTY default.
+    task_agent_env = {
+        **dict(spec.agent_env),
+        **model_connection_env(spec),
+    }
+    # Keep a configured secret when one is supplied; the dynamic session URL
+    # must always win so the Task Agent follows this episode's Gateway route.
+    prefix = MODEL_ENV_PREFIXES.get(spec.agent)
+    if prefix is not None:
+        api_key_name = f"{prefix}_API_KEY"
+        if api_key_name in spec.agent_env:
+            task_agent_env[api_key_name] = spec.agent_env[api_key_name]
+    for name, value in sorted(task_agent_env.items()):
         command.extend(["--ae", f"{name}={value}"])
     command.extend(
         [
@@ -850,7 +930,13 @@ def main() -> int:
         load_task_images(spec, nested.env)
         _write_json(
             spec.preparation_path,
-            {**_preparation_metrics(spec), "status": "prepared"},
+            {
+                **_preparation_metrics(spec),
+                "status": "prepared",
+                "docker_mode": nested.mode,
+                "docker_host": nested.docker_host,
+                "docker_driver": nested.driver,
+            },
         )
         return_code, timed_out = nested.run_harbor(spec)
         if timed_out:

@@ -6,6 +6,7 @@ import os
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -37,23 +38,39 @@ _RJOB_DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 _SANDBOX_DEFAULT_CONFIG: Dict[str, Any] = {
-    "domain": "https://h.pjlab.org.cn/brainbox",
-    "protocol": "https",
+    "domain": "deepenv.sandbox.pjlab.org.cn",
+    "protocol": "http",
     "project": "",
+    "project_env": "OPEN_SANDBOX_PROJECT",
     "api_key": "",
     "api_key_env": "OPEN_SANDBOX_API_KEY",
-    "environment_id": "",
     "gateway_base_url": "",
     "command_port": 44772,
     "lifecycle_minutes": 120,
     "request_timeout_s": 60.0,
     "create_timeout_s": 600.0,
+    "bootstrap_timeout_s": 120.0,
+    "cancel_timeout_s": 10.0,
     "command_timeout_s": 720.0,
     "startup_concurrency": 8,
     "cleanup_on_finish": True,
     "use_server_proxy": True,
     "skip_health_check": False,
+    "idle_entrypoint": ["tail", "-f", "/dev/null"],
+    "poll_interval_s": 2.0,
+    "result_artifact_root": "/sandbox-data/results",
+    "resource": {},
+    "extensions": {},
+    "volumes": [],
+    "network_policy": {},
+    "metadata": {},
 }
+
+_SANDBOX_TIMEOUT_KEYS = (
+    "request_timeout_s", "create_timeout_s", "bootstrap_timeout_s",
+    "cancel_timeout_s", "command_timeout_s", "poll_interval_s",
+)
+_SANDBOX_BOOL_KEYS = ("cleanup_on_finish", "use_server_proxy", "skip_health_check")
 
 
 def load_rjob_global_config(path: str) -> Dict[str, Any]:
@@ -133,7 +150,7 @@ def _normalize_rjob_config(section: Dict[str, Any]) -> Dict[str, Any]:
 def load_sandbox_global_config(path: str) -> Dict[str, Any]:
     path = str(path or "").strip()
     if not path:
-        return _normalize_sandbox_config({})
+        return {}
     cfg = load_yaml_file(str(_resolve_config_path(path)))
     cluster = cfg.get("cluster") if isinstance(cfg.get("cluster"), dict) else {}
     section: Dict[str, Any] = {}
@@ -141,33 +158,147 @@ def load_sandbox_global_config(path: str) -> Dict[str, Any]:
         section.update(cluster.get("sandbox") or {})
     if isinstance(cfg.get("sandbox"), dict):
         section.update(cfg.get("sandbox") or {})
-    return _normalize_sandbox_config(section)
+    return _canonicalize_sandbox_input(section)
 
 
-def _normalize_sandbox_config(section: Dict[str, Any]) -> Dict[str, Any]:
-    merged = {**_SANDBOX_DEFAULT_CONFIG, **dict(section or {})}
-    for key in (
-        "domain",
-        "protocol",
-        "project",
-        "api_key",
-        "api_key_env",
-        "environment_id",
-        "gateway_base_url",
+def _canonicalize_sandbox_input(
+    section: Dict[str, Any], *, context: str = "",
+) -> Dict[str, Any]:
+    """Validate input-only selectors and resolve aliases before merging scopes."""
+    normalized = dict(section or {})
+    if "creation_mode" in normalized:
+        raise ValueError(
+            f"sandbox.creation_mode{context} is no longer supported; remove it: "
+            "Sandbox instances are always created via the API"
+        )
+    for key in ("environment_id", "environmentId"):
+        if key in normalized:
+            raise ValueError(
+                f"sandbox.{key}{context} is not supported: Sandbox mode creates instances directly "
+                "via the API; configure project, image, and volumes instead"
+            )
+    for key, expected in (
+        ("execution_mode", "execd_command"), ("lifecycle_policy", "per_episode"),
     ):
+        if key in normalized:
+            value = str(normalized[key] or expected).strip() or expected
+            if value != expected:
+                raise ValueError(f"sandbox.{key}{context} must be {expected}")
+            normalized.pop(key)
+    if "idle_entrypoint" not in normalized and "idle_command" in normalized:
+        normalized["idle_entrypoint"] = normalized["idle_command"]
+    normalized.pop("idle_command", None)
+    if normalized.get("idle_entrypoint") is None:
+        normalized.pop("idle_entrypoint", None)
+    return normalized
+
+
+def _normalize_sandbox_config(
+    section: Dict[str, Any], *, agent_overrides: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Merge input scopes, then resolve and validate their effective configuration."""
+    global_cfg = _canonicalize_sandbox_input(section)
+    agent_cfg = _canonicalize_sandbox_input(agent_overrides or {})
+    merged = {**_SANDBOX_DEFAULT_CONFIG, **global_cfg, **agent_cfg}
+    for key in ("env", "resource", "extensions", "metadata"):
+        base, override = global_cfg.get(key) or {}, agent_cfg.get(key) or {}
+        if not isinstance(base, dict) or not isinstance(override, dict):
+            raise ValueError(f"sandbox.{key} must be a mapping")
+        merged[key] = {**base, **override}
+    merged["embedded_files"] = [
+        *list(global_cfg.get("embedded_files") or []),
+        *list(agent_cfg.get("embedded_files") or []),
+    ]
+    # Numeric zero retains its historical scope-dependent meaning: global zero
+    # selects the default, while a supplied agent zero clamps to the minimum.
+    for key, minimum, maximum in (
+        ("command_port", 1, 65535), ("lifecycle_minutes", 3, 1440),
+        ("startup_concurrency", 1, None),
+    ):
+        raw_value = agent_cfg.get(key)
+        if raw_value is None:
+            raw_value = global_cfg.get(key) or _SANDBOX_DEFAULT_CONFIG[key]
+        value = max(minimum, int(raw_value))
+        merged[key] = min(maximum, value) if maximum is not None else value
+    for key in _SANDBOX_TIMEOUT_KEYS:
+        minimum = 0.1 if key == "poll_interval_s" else 1.0
+        raw_value = agent_cfg.get(key)
+        if raw_value is None:
+            raw_value = global_cfg.get(key) or _SANDBOX_DEFAULT_CONFIG[key]
+        merged[key] = max(minimum, float(raw_value))
+    for key in _SANDBOX_BOOL_KEYS:
+        merged[key] = _as_bool(merged[key], default=bool(_SANDBOX_DEFAULT_CONFIG[key]))
+    entrypoint = merged["idle_entrypoint"]
+    if isinstance(entrypoint, str):
+        entrypoint = entrypoint.strip()
+    elif isinstance(entrypoint, (list, tuple)):
+        entrypoint = [str(item) for item in entrypoint if str(item)]
+    else:
+        raise ValueError("sandbox.idle_entrypoint must be a string or list")
+    merged["idle_entrypoint"] = entrypoint or list(_SANDBOX_DEFAULT_CONFIG["idle_entrypoint"])
+    merged["result_artifact_root"] = str(
+        merged.get("result_artifact_root") or _SANDBOX_DEFAULT_CONFIG["result_artifact_root"]
+    ).strip()
+    if merged["result_artifact_root"] != "/sandbox-data/results":
+        raise ValueError("sandbox.result_artifact_root must be /sandbox-data/results for persistent results")
+    raw_domain = str(merged.get("domain") or "").strip()
+    raw_protocol = str(merged.get("protocol") or "").strip().lower().rstrip(":/")
+    if "://" in raw_domain:
+        parsed_domain = urlsplit(raw_domain)
+        raw_protocol = parsed_domain.scheme.lower() or raw_protocol
+        raw_domain = parsed_domain.netloc + parsed_domain.path
+    elif raw_domain.startswith("//"):
+        parsed_domain = urlsplit(f"{raw_protocol or 'http'}:{raw_domain}")
+        raw_domain = parsed_domain.netloc + parsed_domain.path
+    merged["domain"] = raw_domain.strip().rstrip("/")
+    merged["protocol"] = raw_protocol or "http"
+    for key in ("project", "project_env", "api_key", "api_key_env", "gateway_base_url"):
         merged[key] = str(merged.get(key) or "").strip()
+    for key in ("api_key", "project"):
+        if f"{key}_env" in agent_cfg and key not in agent_cfg:
+            merged[key] = ""
+    if not merged["project"] and merged["project_env"]:
+        merged["project"] = str(os.getenv(merged["project_env"], "")).strip()
     if not merged["api_key"] and merged["api_key_env"]:
         merged["api_key"] = str(os.getenv(merged["api_key_env"], "")).strip()
-    merged["command_port"] = min(65535, max(1, int(merged.get("command_port") or 44772)))
-    merged["lifecycle_minutes"] = min(1440, max(3, int(merged.get("lifecycle_minutes") or 120)))
-    merged["startup_concurrency"] = max(1, int(merged.get("startup_concurrency") or 8))
-    for key in ("request_timeout_s", "create_timeout_s", "command_timeout_s"):
-        merged[key] = max(1.0, float(merged.get(key) or _SANDBOX_DEFAULT_CONFIG[key]))
-    for key in ("cleanup_on_finish", "use_server_proxy", "skip_health_check"):
-        merged[key] = _as_bool(merged.get(key), default=bool(_SANDBOX_DEFAULT_CONFIG[key]))
+    if merged["lifecycle_minutes"] * 60 < merged["command_timeout_s"] + 600:
+        raise ValueError("sandbox.lifecycle_minutes must cover command_timeout_s plus 600 seconds")
+    volumes = merged.get("volumes") or []
+    if not isinstance(volumes, list) or any(not isinstance(volume, dict) for volume in volumes):
+        raise ValueError("sandbox.volumes must be a list of mappings")
+    # Explicit volumes disable the platform's implicit project root mount.
+    # Preserve custom input mounts and always declare writable persistent output.
+    volumes = [dict(volume) for volume in volumes] or [
+        {"name": "project-default-afs", "mountPath": "/sandbox-data", "readOnly": False}
+    ]
+    results_mounts = []
+    for volume in volumes:
+        if "readOnly" in volume:
+            volume["readOnly"] = _as_bool(volume["readOnly"], default=False)
+        if str(volume.get("mountPath") or "").rstrip("/") == merged["result_artifact_root"].rstrip("/"):
+            if volume.get("readOnly", False):
+                raise ValueError("sandbox results volume must set readOnly: false")
+            volume["readOnly"] = False
+            results_mounts.append(volume)
+    if len(results_mounts) > 1:
+        raise ValueError("sandbox.volumes must not contain duplicate results mount paths")
+    if not results_mounts:
+        volumes.append({
+            "name": "project-default-afs", "subPath": "results",
+            "mountPath": merged["result_artifact_root"], "readOnly": False,
+        })
+    merged["volumes"] = volumes
+    network_policy = merged.get("network_policy") or {}
+    if not isinstance(network_policy, dict):
+        raise ValueError("sandbox.network_policy must be a mapping")
+    merged["network_policy"] = dict(network_policy)
     merged["domain"] = merged["domain"].rstrip("/")
     if merged["domain"].endswith("/v1"):
-        raise ValueError("sandbox.domain must not include the /v1 suffix")
+        merged["domain"] = merged["domain"][:-3].rstrip("/")
+    if not merged["domain"]:
+        raise ValueError("sandbox.domain is required")
+    if merged["protocol"] not in {"http", "https"}:
+        raise ValueError("sandbox.protocol must be http or https")
     return merged
 
 
@@ -220,7 +351,7 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
     sandbox_section = (
         load_sandbox_global_config(str(getattr(args, "sandbox_config", "") or ""))
         if mode == "sandbox"
-        else _normalize_sandbox_config({})
+        else {}
     )
 
     pool_size, warm_pool_size, startup_submit_count, followup_submit_batch = derive_pool_sizing(
@@ -696,14 +827,26 @@ def _normalize_agent_start_sandbox(
     raw = spec.get("sandbox", {}) or {}
     if not isinstance(raw, dict):
         raise ValueError(f"sandbox config for {agent_name!r} must be a mapping in {cfg_path}")
+    raw = _canonicalize_sandbox_input(raw, context=f" for {agent_name!r} in {cfg_path}")
+    if "required_mount_paths" in raw:
+        raise ValueError(
+            f"sandbox.required_mount_paths for {agent_name!r} is not supported in {cfg_path}: "
+            "declare mounts explicitly via sandbox.volumes"
+        )
 
     sandbox: Dict[str, Any] = {}
     for key in (
-        "environment_id",
+        "domain",
+        "protocol",
+        "project",
+        "project_env",
+        "api_key",
+        "api_key_env",
         "workdir",
         "run_command",
         "result_mode",
         "gateway_base_url",
+        "result_artifact_root",
     ):
         _copy_non_empty(raw, sandbox, key)
     sandbox.setdefault("workdir", str(docker.get("workdir") or ""))
@@ -726,34 +869,41 @@ def _normalize_agent_start_sandbox(
         raise ValueError(f"sandbox.extensions for {agent_name!r} must be a mapping in {cfg_path}")
     sandbox["extensions"] = {str(key): str(value) for key, value in extensions.items()}
 
-    for key in ("lifecycle_minutes", "command_port"):
+    # Keep supplied values raw; the backend normalizes after the global merge.
+    for key in (
+        "idle_entrypoint", "lifecycle_minutes", "command_port",
+        *_SANDBOX_TIMEOUT_KEYS,
+    ):
         if raw.get(key) is not None:
-            sandbox[key] = int(raw[key])
-    if "lifecycle_minutes" in sandbox:
-        sandbox["lifecycle_minutes"] = min(1440, max(3, sandbox["lifecycle_minutes"]))
-    if "command_port" in sandbox:
-        sandbox["command_port"] = min(65535, max(1, sandbox["command_port"]))
-    for key in ("skip_health_check", "cleanup_on_finish"):
+            sandbox[key] = raw[key]
+    for key in _SANDBOX_BOOL_KEYS:
         if key in raw:
-            sandbox[key] = _as_bool(raw[key], default=bool(_SANDBOX_DEFAULT_CONFIG[key]))
+            sandbox[key] = raw[key]
 
+    if "volumes" in raw:
+        raw_volumes = raw.get("volumes") or []
+        if not isinstance(raw_volumes, list):
+            raise ValueError(f"sandbox.volumes for {agent_name!r} must be a list in {cfg_path}")
+        sandbox["volumes"] = list(raw_volumes)
+    for key in ("network_policy", "metadata"):
+        if key not in raw:
+            continue
+        value = raw.get(key) or {}
+        if not isinstance(value, dict):
+            raise ValueError(f"sandbox.{key} for {agent_name!r} must be a mapping in {cfg_path}")
+        sandbox[key] = dict(value)
     raw_embedded = raw.get("embedded_files", []) or []
     if not isinstance(raw_embedded, list):
         raise ValueError(f"sandbox.embedded_files for {agent_name!r} must be a list in {cfg_path}")
     embedded = [_normalize_embedded_file(item, cfg_path) for item in raw_embedded]
     runner = docker.get("runner_entrypoint") or {}
+    if runner:
+        sandbox["runner_entrypoint"] = dict(runner)
     if runner.get("source") and runner.get("target"):
         runner_file = {"source": str(runner["source"]), "target": str(runner["target"])}
         if runner_file not in embedded:
             embedded.append(runner_file)
     sandbox["embedded_files"] = embedded
-
-    required_paths = raw.get("required_mount_paths", []) or []
-    if isinstance(required_paths, str):
-        required_paths = [required_paths]
-    if not isinstance(required_paths, list):
-        raise ValueError(f"sandbox.required_mount_paths for {agent_name!r} must be a list in {cfg_path}")
-    sandbox["required_mount_paths"] = [str(path) for path in required_paths]
     return sandbox
 
 

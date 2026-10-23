@@ -273,11 +273,15 @@ rjob:
     cpu: 1
     gpu: 0
     memory_in_mb: 1024
+  affinity:
+    random_positive_tags:
+      - "node/worker-a.example"
+      - "node/worker-b.example"
   mount_config:
     - "gpfs+gpfs://gpfs1/path/data:/app/data"
 ```
 
-When `container.runner_entrypoint.source` points to a local file, RJob mode embeds that file automatically. Supported per-agent RJob keys include connection overrides, image pull policy, `resources`, `requests`, `env`, `labels`, `annotations`, `affinity`, `mount_config`, `mount`, `before_script`, `depends_on`, `embedded_files` for additional files, `replicas`, `poll_interval_s`, `termination_grace_period_seconds`, `local_storage_in_mb`, and cleanup flags.
+When `container.runner_entrypoint.source` points to a local file, RJob mode embeds that file automatically. Supported per-agent RJob keys include connection overrides, image pull policy, `resources`, `requests`, `env`, `labels`, `annotations`, `affinity`, `mount_config`, `mount`, `before_script`, `depends_on`, `embedded_files` for additional files, `replicas`, `poll_interval_s`, `termination_grace_period_seconds`, `local_storage_in_mb`, and cleanup flags. `affinity.random_positive_tags` chooses one candidate tag independently for each submitted job; it does not inspect current node capacity.
 
 ## Useful Environment Variables
 

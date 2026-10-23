@@ -1,0 +1,29 @@
+# Harbor agent configuration for the OpenSandbox bundle mounted at
+# /sandbox-data/harbor/test100.
+environments:
+  - env_name: harbor
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:safactory-harbor-runtime-v0.23.0
+    env_num: 1
+    dataset: ../../harbor-v2-for-sandbox-test/harbor_1k_standard_test.jsonl
+    dataset_load_mode: eager
+
+    env_params:
+      task_family: harbor
+      bundle_root: /sandbox-data/harbor/test100
+      shared_images_subdir: shared-images
+      profile_subdir: harbor-runtime-profile
+      agent: claude-code
+      model: GLM-5.3-W4A8C8
+      reasoning_effort: max
+      agent_runtime:
+        source: /sandbox-data/harbor/test100/bin/claude
+        version: "2.1.207"
+      agent_env:
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+        DISABLE_AUTOUPDATER: "1"
+        IS_SANDBOX: "1"
+        NO_PROXY: "127.0.0.1,localhost,10.0.0.0/8,100.96.0.0/12"
+        no_proxy: "127.0.0.1,localhost,10.0.0.0/8,100.96.0.0/12"
+      reward_key: reward
+      reward_source: runner
+      timeout_s: 30000

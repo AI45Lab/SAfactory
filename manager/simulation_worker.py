@@ -5,7 +5,7 @@ import inspect
 import logging
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, Optional
 
 from core.data_manager.load_yaml import materialize_dataset_env_params
@@ -222,7 +222,6 @@ class SimulationWorkerGroup:
                 context={
                     "job_id": self.cfg.job_id,
                     "worker_id": worker_id,
-                    "evaluation_enabled": self.evaluation_service is not None,
                 },
             )
             with trace.span("acquire_lease"):
@@ -236,6 +235,9 @@ class SimulationWorkerGroup:
                 return
 
             agent_key = f"{lease.agent_name}_{lease.agent_id}"
+            evaluation_requested = self.cfg.evaluation_enabled or (
+                str(lease.env_params.get("reward_source") or "").strip().lower() == "runner"
+            )
             trace.update_context(
                 agent_key=agent_key,
                 agent_name=lease.agent_name,
@@ -245,6 +247,7 @@ class SimulationWorkerGroup:
                 runtime=lease.runtime,
                 resource_name=lease.resource_name or lease.container_name or lease.container_id,
                 reuse_container=lease.reuse_container,
+                evaluation_enabled=evaluation_requested,
             )
             started = time.perf_counter()
             session: SessionContext | None = None
@@ -287,6 +290,9 @@ class SimulationWorkerGroup:
                     rollout_reward=result.total_reward,
                     rollout_truncated=result.truncated,
                 )
+                # Evaluators receive the native payload; only committed scores
+                # belong in the worker summary and the released lease result.
+                start_result = replace(result)
                 result.total_reward = None
                 completion_mode = self._gateway_completion_mode(result)
                 trace.update_context(gateway_completion_mode=completion_mode)
@@ -325,7 +331,9 @@ class SimulationWorkerGroup:
                     with trace.span("mark_environment_finished"):
                         await self.data_manager.mark_environment_finished(lease.agent_id)
                     release_reusable = False
-                elif self.evaluation_service is not None and self.reward_committer is not None:
+                elif evaluation_requested:
+                    if self.evaluation_service is None or self.reward_committer is None:
+                        raise RuntimeError("evaluation service and reward committer are required for scoring")
                     with trace.span("eval_discover_rule"):
                         public_env_params = strip_internal_env_params(lease.env_params)
                         eval_spec = discover_rule_eval_spec(
@@ -348,7 +356,7 @@ class SimulationWorkerGroup:
                             job_id=self.cfg.job_id,
                             session_id=result.session_id,
                             lease=lease,
-                            start_result=result,
+                            start_result=start_result,
                             env_params=public_env_params,
                             eval_spec=eval_spec,
                         )
