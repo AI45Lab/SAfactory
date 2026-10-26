@@ -25,6 +25,18 @@ FIXTURE_ROOT = TEST_ROOT / "fixtures"
 APPROVED_RJOB_IMAGE = (
     "registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:agentcompass-02"
 )
+APPROVED_HOST_EXTRAS_IMAGE = (
+    "registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:agentcompass-d2c3e148-host-extras-01"
+)
+APPROVED_HOST_EXTRAS_DIGEST = (
+    "registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches@sha256:"
+    "832a3ee0606e19c59360a6c9abbf63909d0d3dfc357f039e27eae01e5ac29d60"
+)
+APPROVED_RJOB_DIGEST = (
+    "registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches@sha256:"
+    "61e6f2b7c3e92d51981bcfd48b159964c5a40519c5d0c6b06166a2897ed324f2"
+)
+OFFICIAL_SCICODE_URL = "http://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/agentcompass/scicode.zip"
 
 
 def _load(name: str, filename: str):
@@ -86,6 +98,7 @@ def _command_for(request: dict) -> list[str]:
         frozenset({"special_pattern_check", "swebench_verified"}),
         frozenset({"mini_swe_agent", "openai_chat"}),
         frozenset({"host_process"}),
+        frozenset(),
     )
     with mock.patch.object(runner, "_registered_components", return_value=registered):
         benchmark, harness, environment = runner._component_selection(dataset)
@@ -125,7 +138,7 @@ class RunnerTests(unittest.TestCase):
             "final_answer": "synthetic candidate", "ground_truth": "synthetic reference",
             "artifacts": {}, "extra": {},
         }
-        if benchmark in {"browsecomp", "hle", "hle_verified", "sgi_deep_research"}:
+        if benchmark in {"browsecomp", "browsecomp_zh", "gaia", "hle", "hle_verified", "sgi_deep_research"}:
             attempt["extra"] = {"scoring": {
                 "evaluation_type": "llm_judge", "correct": correct,
                 "model_answer": attempt["final_answer"], "ground_truth": attempt["ground_truth"],
@@ -164,17 +177,23 @@ class RunnerTests(unittest.TestCase):
             attempt["extra"] = {
                 "status": "completed", "eval_raw_data": {"completed": True, "resolved": correct}
             }
+        elif benchmark == "xbench_deepsearch":
+            attempt["extra"] = {"scoring": {
+                "evaluation_type": "xbench_llm_judge", "correct": correct,
+                "extracted_answer": "synthetic", "explanation": "synthetic", "raw_response": "synthetic",
+                "judge_model": "synthetic-judge", "api_protocol": "openai-chat",
+            }, "version": "2510"}
         elif benchmark != "special_pattern_check":
             raise AssertionError(f"missing synthetic schema for {benchmark}")
         return {"task_id": "sample-1", "correct": correct, "score": attempt["score"], "attempts": {"1": attempt}}
 
     def test_dispatch_has_only_source_proven_ids_and_no_aliases(self):
         expected = {
-            "browsecomp": "llm_judge", "deepsearchqa": "deepsearchqa_judge",
-            "frontierscience": "frontierscience", "hle": "llm_judge", "hle_verified": "llm_judge",
-            "scicode": "scicode_fractional", "sealqa": "sealqa_judge",
+            "browsecomp": "llm_judge", "browsecomp_zh": "llm_judge", "deepsearchqa": "deepsearchqa_judge",
+            "frontierscience": "frontierscience", "gaia": "llm_judge", "hle": "llm_judge",
+            "hle_verified": "llm_judge", "scicode": "scicode_fractional", "sealqa": "sealqa_judge",
             "sgi_deep_research": "llm_judge", "special_pattern_check": "special_pattern_correct",
-            "swebench_verified": "swebench_resolved",
+            "swebench_verified": "swebench_resolved", "xbench_deepsearch": "xbench_judge",
         }
         self.assertEqual(runner.RESULT_NORMALIZERS, expected)
         self.assertEqual(rule_evaluator.NORMALIZATION_BY_BENCHMARK, expected)
@@ -242,6 +261,7 @@ class RunnerTests(unittest.TestCase):
             frozenset({"special_pattern_check"}),
             frozenset({"openai_chat"}),
             frozenset({"host_process"}),
+            frozenset(),
         )
         for field in ("benchmark", "harness"):
             request = _request(benchmark="special_pattern_check", harness="openai_chat")
@@ -331,7 +351,7 @@ class RunnerTests(unittest.TestCase):
         ]
         self.assertEqual(
             matching_mounts,
-            [{"source": "./datasets/special_pattern_check", "target": "/app/data/special_pattern_check", "mode": "ro"}],
+            [{"source": "./env/agentcompass/datasets/special_pattern_check", "target": "/app/data/special_pattern_check", "mode": "ro"}],
         )
         self.assertEqual(public_row["benchmark_params"]["version"], "gate4")
 
@@ -413,6 +433,7 @@ class RunnerTests(unittest.TestCase):
                     frozenset({"special_pattern_check", "swebench_verified"}),
                     frozenset({"mini_swe_agent", "openai_chat"}),
                     frozenset({"host_process"}),
+                    frozenset(),
                 )
                 with mock.patch.object(runner, "_registered_components", return_value=registered), mock.patch.object(
                     sys, "stdin", io.StringIO(json.dumps(request))
@@ -444,6 +465,7 @@ class RunnerTests(unittest.TestCase):
                 frozenset({"swebench_verified"}),
                 frozenset({"mini_swe_agent"}),
                 frozenset({"host_process", "docker"}),
+                frozenset(),
             )
             with mock.patch.object(runner, "_registered_components", return_value=registered), mock.patch.object(
                 sys, "stdin", io.StringIO(json.dumps(payload))
@@ -538,6 +560,7 @@ class RunnerTests(unittest.TestCase):
             frozenset({"special_pattern_check"}),
             frozenset({"openai_chat"}),
             frozenset({"host_process"}),
+            frozenset(),
         )
         stdout = io.StringIO()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -567,14 +590,15 @@ class RunnerTests(unittest.TestCase):
             frozenset({"special_pattern_check"}),
             frozenset({"openai_chat"}),
             frozenset({"host_process"}),
+            frozenset(),
         )
         stdout = io.StringIO()
         stderr = io.StringIO()
         with tempfile.TemporaryDirectory() as temp_dir:
             request["env_params"]["results_root"] = temp_dir
 
-            def fail_command(command, *, timeout_s, stdout_file, stderr_file):
-                del command, timeout_s, stdout_file
+            def fail_command(command, *, timeout_s, stdout_file, stderr_file, env=None):
+                del command, timeout_s, stdout_file, env
                 stderr_file.write("dataset directory does not exist\n")
                 return 2, False
 
@@ -931,6 +955,15 @@ class RunnerTests(unittest.TestCase):
 
         docker_start = load_agent_start_config(str(ENV_ROOT / "agentcompass_start.yaml"))
         docker_cfg = docker_start["agentcompass"]["docker"]
+        data_mount = next(
+            mount for mount in docker_cfg["volumes"]
+            if mount["target"] == "/app/data/special_pattern_check"
+        )
+        self.assertTrue(
+            (Path(data_mount["source"]) / "gate4.jsonl").samefile(
+                ENV_ROOT / "datasets/special_pattern_check/gate4.jsonl"
+            )
+        )
         expected_arg = "--add-host=host.docker.internal:127.0.0.1"
         self.assertEqual(docker_cfg["network"], "host")
         self.assertEqual(docker_cfg["extra_args"], [expected_arg])
@@ -1152,6 +1185,13 @@ class RunnerTests(unittest.TestCase):
         without_approved_values = (
             combined
             .replace(APPROVED_RJOB_IMAGE, "")
+            .replace(APPROVED_RJOB_DIGEST, "")
+            .replace(APPROVED_HOST_EXTRAS_IMAGE, "")
+            .replace(APPROVED_HOST_EXTRAS_DIGEST, "")
+            .replace("Dockerfile.host-extras", "")
+            .replace(OFFICIAL_SCICODE_URL, "")
+            .replace("scicode.zip", "")
+            .replace("/mnt/shared-storage-user/<DATA_OWNER>/", "")
             .replace("host.docker.internal", "")
         )
         self.assertNotIn("/var/run/docker.sock", combined)
