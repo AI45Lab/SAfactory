@@ -4,11 +4,14 @@ import asyncio
 import ipaddress
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass
+from datetime import timezone
+from email.utils import format_datetime, parsedate_to_datetime
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, quote_plus, urlparse
 
 import aiohttp
 
@@ -26,6 +29,7 @@ _ANTHROPIC_CLIENT_HEADERS = {
     "x-app",
 }
 _INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
+_PROBE_MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 class SessionClosedError(Exception):
@@ -68,6 +72,23 @@ class UpstreamHTTPError(Exception):
         self.upstream_latency_ms = upstream_latency_ms
 
 
+class RouteProbeError(Exception):
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        upstream_status_code: int | None = None,
+        upstream_error_code: str | None = None,
+        retry_after: str | None = None,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+        self.upstream_status_code = upstream_status_code
+        self.upstream_error_code = upstream_error_code
+        self.retry_after = retry_after
+
+
 class InferenceForwarder:
     def __init__(self, cfg: GatewayConfig):
         self.cfg = cfg
@@ -91,7 +112,9 @@ class InferenceForwarder:
             limit_per_host=0,
             enable_cleanup_closed=True,
         )
-        self._client = aiohttp.ClientSession(timeout=timeout, connector=connector)
+        self._client = aiohttp.ClientSession(
+            timeout=timeout, connector=connector, cookie_jar=aiohttp.DummyCookieJar(),
+        )
         log.info(
             "Gateway forwarder initialized: request_timeout_s=%.2f connect_timeout_s=%.2f "
             "max_connections=%d keepalive_connections=%d proxy_configured=%s no_proxy_count=%d",
@@ -102,6 +125,99 @@ class InferenceForwarder:
             bool(self._http_proxy),
             len(self._no_proxy),
         )
+
+    async def probe(
+        self,
+        target: LLMRouteTarget,
+        endpoint: str,
+        *,
+        timeout_s: float,
+    ) -> None:
+        """Verify one credential with a real inference without publishing the route."""
+        if not math.isfinite(timeout_s) or timeout_s <= 0:
+            raise RouteProbeError(400, "probe timeout must be positive and finite")
+        payload = _probe_payload(target.route_model, endpoint)
+        headers = (
+            self.build_anthropic_headers(target, None)
+            if endpoint == "messages"
+            else self.build_upstream_headers(target)
+        )
+        url = self._url(target, endpoint)
+        status_code: int | None = None
+        retry_after: str | None = None
+        try:
+            async with self._client.post(
+                url,
+                json=payload,
+                headers=headers,
+                proxy=self._proxy_for(url),
+                timeout=aiohttp.ClientTimeout(total=timeout_s),
+                allow_redirects=False,
+            ) as response:
+                status_code = response.status
+                if status_code in (429, 503):
+                    retry_after = _probe_retry_after(
+                        response.headers.get("Retry-After"), target.api_key
+                    )
+                chunks = bytearray()
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    chunks.extend(chunk)
+                    if len(chunks) > _PROBE_MAX_RESPONSE_BYTES:
+                        raise RouteProbeError(
+                            status_code if 400 <= status_code <= 599 else 502,
+                            "upstream probe response exceeds the size limit",
+                            upstream_status_code=status_code,
+                            retry_after=retry_after,
+                        )
+                raw_body = bytes(chunks).decode("utf-8", errors="replace")
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            raise RouteProbeError(
+                504, "upstream route probe timed out", upstream_status_code=status_code,
+                retry_after=retry_after,
+            ) from None
+        except (aiohttp.ClientError, OSError) as exc:
+            raise RouteProbeError(
+                503,
+                _probe_safe_text(f"upstream route probe failed: {exc}", target.api_key),
+                upstream_status_code=status_code,
+                retry_after=retry_after,
+            ) from None
+
+        try:
+            body = json.loads(raw_body)
+        except (ValueError, TypeError, RecursionError):
+            body = None
+
+        has_error = isinstance(body, dict) and (
+            ("error" in body and body["error"] is not None)
+            or body.get("type") == "error"
+            or body.get("status") in ("failed", "cancelled")
+            or (
+                body.get("status") == "incomplete"
+                and not (endpoint == "responses" and _probe_output_budget_exhausted(body))
+            )
+        )
+        if not 200 <= status_code < 300 or has_error:
+            message, error_code = _probe_error_details(body, raw_body, status_code)
+            raise RouteProbeError(
+                status_code if 400 <= status_code <= 599 else 502,
+                _probe_safe_text(message, target.api_key),
+                upstream_status_code=status_code,
+                upstream_error_code=(
+                    _probe_safe_text(error_code, target.api_key)
+                    if error_code is not None
+                    else None
+                ),
+                retry_after=retry_after,
+            )
+        if not _valid_probe_response(body, endpoint):
+            raise RouteProbeError(
+                502,
+                f"upstream returned an invalid {endpoint} probe response",
+                upstream_status_code=status_code,
+            )
 
     async def forward_chat(
         self,
@@ -496,3 +612,165 @@ class InferenceForwarder:
         if payload is not None:
             body["error"]["upstream"] = payload
         return body
+
+
+def _probe_payload(model: str, endpoint: str) -> dict[str, Any]:
+    payload: dict[str, Any] = {"model": model, "stream": False}
+    if endpoint == "responses":
+        payload.update(input="Reply with OK.", max_output_tokens=16)
+    elif endpoint in {"chat/completions", "messages"}:
+        payload.update(
+            messages=[{"role": "user", "content": "Reply with OK."}],
+            max_tokens=16,
+        )
+    else:
+        raise RouteProbeError(400, "unsupported route probe endpoint")
+    return payload
+
+
+def _probe_safe_text(value: str, api_key: str | None) -> str:
+    if api_key:
+        variants = {
+            api_key,
+            quote(api_key, safe=""),
+            quote_plus(api_key),
+            json.dumps(api_key, ensure_ascii=False)[1:-1],
+            json.dumps(api_key, ensure_ascii=True)[1:-1],
+        }
+        for secret in sorted(variants, key=len, reverse=True):
+            value = value.replace(secret, "[REDACTED]")
+    return value[:2048]
+
+
+def _probe_retry_after(value: str | None, api_key: str | None) -> str | None:
+    if not value or len(value) > 128 or "\r" in value or "\n" in value:
+        return None
+    value = value.strip()
+    if not value.isascii() or _probe_safe_text(value, api_key) != value:
+        return None
+    if value.isdigit():
+        return value
+    try:
+        parsed = parsedate_to_datetime(value)
+        if parsed.tzinfo is None:
+            return None
+        return format_datetime(parsed.astimezone(timezone.utc), usegmt=True)
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _probe_error_details(
+    body: Any, raw_body: str, status_code: int
+) -> tuple[str, str | None]:
+    fallback = f"upstream route probe returned HTTP {status_code}"
+    if not isinstance(body, dict):
+        return raw_body.strip() or fallback, None
+    error = body.get("error")
+    source = error if isinstance(error, dict) else body
+    message = source.get("message") or source.get("detail")
+    if not message and isinstance(error, str):
+        message = error
+    if not message and body.get("status") in ("failed", "cancelled", "incomplete"):
+        message = f"upstream route probe response status is {body['status']}"
+    code = source.get("code")
+    if code is None:
+        code = source.get("type")
+    return str(message or fallback), str(code) if code is not None else None
+
+
+def _has_probe_text(content: Any, *, block_type: str) -> bool:
+    if isinstance(content, str):
+        return bool(content.strip())
+    return isinstance(content, list) and any(
+        isinstance(block, dict)
+        and block.get("type") == block_type
+        and isinstance(block.get("text"), str)
+        and bool(block["text"].strip())
+        for block in content
+    )
+
+
+def _probe_output_budget_exhausted(body: dict[str, Any]) -> bool:
+    details = body.get("incomplete_details")
+    return (
+        body.get("status") == "incomplete"
+        and isinstance(details, dict)
+        and details.get("reason") == "max_output_tokens"
+    )
+
+
+def _valid_probe_reasoning(item: dict[str, Any]) -> bool:
+    summary = item.get("summary")
+    return (
+        item.get("type") == "reasoning"
+        and isinstance(item.get("id"), str)
+        and bool(item["id"])
+        and isinstance(summary, list)
+        and all(
+            isinstance(block, dict)
+            and block.get("type") == "summary_text"
+            and isinstance(block.get("text"), str)
+            for block in summary
+        )
+    )
+
+
+def _valid_probe_response(body: Any, endpoint: str) -> bool:
+    if not isinstance(body, dict):
+        return False
+    if endpoint == "chat/completions":
+        choices = body.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            return False
+        choice = choices[0]
+        message = choice.get("message")
+        return (
+            isinstance(message, dict)
+            and message.get("role") == "assistant"
+            and choice.get("error") is None
+            and message.get("error") is None
+            and isinstance(choice.get("finish_reason"), str)
+            and choice["finish_reason"] not in {"", "error"}
+            and (
+                _has_probe_text(message.get("content"), block_type="text")
+                or (
+                    choice["finish_reason"] == "length"
+                    and "content" in message
+                    and message["content"] in (None, "", [])
+                )
+            )
+        )
+    if endpoint == "responses":
+        output = body.get("output")
+        budget_exhausted = _probe_output_budget_exhausted(body)
+        if (
+            body.get("status") != "completed" and not budget_exhausted
+        ) or not isinstance(output, list):
+            return False
+        if any(
+            not isinstance(item, dict)
+            or item.get("error") is not None
+            or item.get("status") not in (
+                (None, "completed", "incomplete") if budget_exhausted else (None, "completed")
+            )
+            for item in output
+        ):
+            return False
+        return any(
+            (
+                item.get("type") == "message"
+                and item.get("role") == "assistant"
+                and isinstance(item.get("content"), list)
+                and _has_probe_text(item.get("content"), block_type="output_text")
+            )
+            or (budget_exhausted and _valid_probe_reasoning(item))
+            for item in output
+        )
+    return (
+        body.get("type") == "message"
+        and body.get("role") == "assistant"
+        and isinstance(body.get("content"), list)
+        and isinstance(body.get("stop_reason"), str)
+        and body["stop_reason"] not in {"", "error"}
+        and _has_probe_text(body.get("content"), block_type="text")
+    )
