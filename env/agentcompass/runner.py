@@ -32,8 +32,10 @@ class AdapterError(RuntimeError):
 # revision. Unknown benchmark schemas are never silently normalized.
 RESULT_NORMALIZERS = {
     "browsecomp": "llm_judge",
+    "browsecomp_zh": "llm_judge",
     "deepsearchqa": "deepsearchqa_judge",
     "frontierscience": "frontierscience",
+    "gaia": "llm_judge",
     "hle": "llm_judge",
     "hle_verified": "llm_judge",
     "scicode": "scicode_fractional",
@@ -41,6 +43,7 @@ RESULT_NORMALIZERS = {
     "sgi_deep_research": "llm_judge",
     "special_pattern_check": "special_pattern_correct",
     "swebench_verified": "swebench_resolved",
+    "xbench_deepsearch": "xbench_judge",
 }
 
 # AgentCompass harnesses use different names for their interaction budgets.
@@ -48,6 +51,35 @@ RESULT_NORMALIZERS = {
 # consumes at most one agent step.
 HARNESS_STEP_LIMIT_KEYS = {
     "mini_swe_agent": "step_limit",
+}
+
+# Pinned native ``<data_dir>/<path>`` locations each loader reads. A benchmark
+# listed here never runs without them: the native loaders would otherwise
+# download into, or silently return no tasks from, the shared read-only data.
+NATIVE_DATA_FILES = {
+    "browsecomp": ("browsecomp/browse_comp_test_set.jsonl",),
+    "browsecomp_zh": ("browsecomp_zh/browsecomp-zh-ac.jsonl",),
+    "gaia": ("gaia/2023/validation/text_only_metadata.jsonl",),
+    "hle": ("hle/test_text_only_500.jsonl",),
+    "deepsearchqa": ("deepsearchqa/deepsearchqa.jsonl",),
+    "frontierscience": ("frontierscience/test.jsonl",),
+    "sgi_deep_research": ("sgi_deep_research/test.jsonl",),
+}
+
+# Benchmarks whose native scorer needs an LLM judge (``judge_model``). Their
+# result conversion is implemented, but they are disabled until the framework
+# defines how auxiliary judge calls are routed; see _reject_unrouted_judge.
+JUDGE_BENCHMARKS = frozenset({
+    "browsecomp", "browsecomp_zh", "deepsearchqa", "frontierscience", "gaia", "hle",
+    "hle_verified", "sealqa", "sgi_deep_research", "xbench_deepsearch",
+})
+# Native placeholder that selects a HarnessFreeBenchmark's own inference loop.
+NONE_HARNESS_ID = "none"
+# Credentials a harness reads from the RJob environment. The pinned search tools
+# only fail at their first tool call, after policy calls were already spent.
+HARNESS_REQUIRED_ENV = {
+    "naive_search_agent": ("SERPER_API_KEY", "JINA_API_KEY"),
+    "researchharness": ("SERPER_API_KEY", "JINA_API_KEY", "MINERU_TOKEN"),
 }
 
 
@@ -110,21 +142,38 @@ def _allowed_environments() -> set[str]:
 
 
 @lru_cache(maxsize=1)
-def _registered_components() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+def _registered_components() -> tuple[frozenset[str], frozenset[str], frozenset[str], frozenset[str]]:
     try:
+        from agentcompass.runtime.base import HarnessFreeBenchmark
         from agentcompass.runtime.registry import BENCHMARKS, ENVIRONMENTS, HARNESSES, load_builtin_components
 
         load_builtin_components()
+        harness_free = frozenset(
+            name for name in BENCHMARKS.names()
+            if isinstance(BENCHMARKS.create(name), HarnessFreeBenchmark)
+        )
     except ModuleNotFoundError as exc:
         raise AdapterError(
             f"AgentCompass registry dependency is unavailable: {exc.name or 'unknown module'}",
             error_type="dependency_missing",
         ) from exc
-    return frozenset(BENCHMARKS.names()), frozenset(HARNESSES.names()), frozenset(ENVIRONMENTS.names())
+    return (
+        frozenset(BENCHMARKS.names()), frozenset(HARNESSES.names()),
+        frozenset(ENVIRONMENTS.names()), harness_free,
+    )
 
 
 def _validate_registered_selection(benchmark: str, harness: str, environment: str) -> None:
-    benchmarks, harnesses, environments = _registered_components()
+    benchmarks, harnesses, environments, harness_free = _registered_components()
+    if harness == NONE_HARNESS_ID:
+        # The native "none" placeholder is not a registered harness; the pinned
+        # runtime accepts it only for benchmarks that own their inference loop.
+        if benchmark not in harness_free:
+            raise AdapterError(
+                f"harness {NONE_HARNESS_ID!r} is only valid for harness-free benchmarks",
+                error_type="component_unregistered",
+            )
+        harnesses = harnesses | {NONE_HARNESS_ID}
     for kind, value, registered in (
         ("benchmark", benchmark, benchmarks),
         ("harness", harness, harnesses),
@@ -201,6 +250,32 @@ def _session_url(request: dict[str, Any], session_id: str) -> str:
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
+def _check_harness_credentials(harness: str) -> None:
+    missing = [name for name in HARNESS_REQUIRED_ENV.get(harness, ()) if not _text(os.environ.get(name))]
+    if missing:
+        raise AdapterError(
+            f"harness {harness!r} requires deployment credentials: {', '.join(missing)}",
+            error_type="credential_missing",
+        )
+
+
+def _reject_unrouted_judge(benchmark: str, benchmark_params: dict[str, Any]) -> None:
+    """Refuse native judge scoring until SAfactory defines how to route it.
+
+    A pinned native judge spec without base_url/api_key falls back to the
+    policy model's endpoint, i.e. this episode's Gateway session, which would
+    mix reference-answer judge calls into the policy trajectory and budget.
+    How auxiliary calls should be routed is an open framework question, so
+    judge benchmarks fail before any model call instead of choosing a route.
+    """
+    if benchmark in JUDGE_BENCHMARKS or "judge_model" in benchmark_params:
+        raise AdapterError(
+            f"{benchmark} scores with a native LLM judge; SAfactory has no agreed routing for "
+            "auxiliary judge calls yet, so this benchmark is disabled pending framework guidance",
+            error_type="judge_routing_undefined",
+        )
+
+
 def _timeout_s(request: dict[str, Any], dataset: dict[str, Any]) -> float:
     requested = request.get("agent_start_timeout_s")
     row_timeout = dataset.get("timeout_seconds")
@@ -244,6 +319,7 @@ def _build_command(
     environment_params: dict[str, Any],
     model_params: dict[str, Any],
     result_root: Path,
+    data_dir: str = "",
 ) -> list[str]:
     if not agentcompass_executable.is_absolute():
         raise RuntimeError("AgentCompass CLI path must be absolute")
@@ -282,7 +358,70 @@ def _build_command(
         "--progress",
         "none",
     ]
+    if data_dir:
+        command.extend(["--data-dir", data_dir])
     return command
+
+
+def _prepare_native_data(
+    benchmark: str, harness: str, dataset: dict[str, Any], result_root: Path,
+    benchmark_params: dict[str, Any], harness_params: dict[str, Any],
+) -> str:
+    """Resolve mounted read-only inputs and keep mutable native work per episode."""
+    data_dir = _text(dataset.get("data_dir"))
+    if not data_dir:
+        if benchmark == "scicode" or benchmark in NATIVE_DATA_FILES or benchmark == "sealqa":
+            raise RuntimeError(f"{benchmark} requires an explicit mounted data_dir")
+        return ""
+    root = Path(data_dir)
+    if not root.is_absolute() or ".." in root.parts:
+        raise RuntimeError("data_dir must be an absolute container path")
+    if benchmark in {"gaia", "hle"} and _text(benchmark_params.get("modality") or "llm") != "llm":
+        raise RuntimeError(f"{benchmark} multimodal tasks are not verified; use modality 'llm'")
+    for name in NATIVE_DATA_FILES.get(benchmark, ()):
+        if not (root / name).is_file():
+            raise RuntimeError(f"Missing native {benchmark} asset: {root / name}")
+    if benchmark == "sealqa":
+        # The loader reads only dataset_path but always builds its datasets
+        # cache under <data_dir>/sealqa, so data_dir must be per episode.
+        dataset_path = _text(benchmark_params.get("dataset_path"))
+        path = Path(dataset_path)
+        if not dataset_path or not path.is_absolute() or root not in path.parents or not path.is_file():
+            raise RuntimeError("sealqa requires benchmark_params.dataset_path to a Parquet file under data_dir")
+        return str(result_root.resolve() / "native-data")
+    if benchmark == "scicode":
+        if harness != "scicode_tool_use":
+            raise RuntimeError("Mounted SciCode data requires scicode_tool_use")
+        split_files = {
+            "validation": ("problems_dev.jsonl",),
+            "test": ("problems_test.jsonl",),
+            "all": ("problems_dev.jsonl", "problems_test.jsonl"),
+        }
+        split = benchmark_params.get("split", "all")
+        if split not in split_files:
+            raise RuntimeError(f"Unsupported SciCode split: {split}")
+        for name in (*split_files[split], "test_data.h5"):
+            if not (root / "scicode" / name).is_file():
+                raise RuntimeError(f"Missing native SciCode asset: {root / 'scicode' / name}")
+        benchmark_params["h5py_file"] = str(root / "scicode/test_data.h5")
+        # Native relative workspaces resolve under data_dir; keep mounted inputs
+        # separate from generated code and evaluator files, even in concurrent runs.
+        benchmark_params["workspace_root"] = str(result_root.resolve() / "scicode-evaluation")
+        harness_params["code_workdir"] = str(result_root.resolve() / "scicode-tools")
+    return str(root)
+
+
+def _native_env(result_root: Path) -> dict[str, str]:
+    """Child environment that keeps library caches out of the shared data mount."""
+    cache_root = result_root.resolve() / "cache"
+    return {
+        **os.environ,
+        "HF_HOME": str(cache_root / "huggingface"),
+        "HF_DATASETS_CACHE": str(cache_root / "huggingface" / "datasets"),
+        "HF_HUB_OFFLINE": "1",
+        "HF_DATASETS_OFFLINE": "1",
+        "XDG_CACHE_HOME": str(cache_root),
+    }
 
 
 def _terminate_process_group(process: subprocess.Popen[Any], grace_s: float = TERMINATION_GRACE_S) -> None:
@@ -310,6 +449,7 @@ def _run_command(
     timeout_s: float,
     stdout_file: TextIO,
     stderr_file: TextIO,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, bool]:
     process = subprocess.Popen(
         command,
@@ -318,6 +458,7 @@ def _run_command(
         stderr=stderr_file,
         text=True,
         start_new_session=True,
+        env=env,
     )
     try:
         return process.wait(timeout=timeout_s), False
@@ -564,6 +705,30 @@ def _normalize_frontierscience(detail: dict[str, Any], attempt: dict[str, Any]) 
     )
 
 
+def _normalize_xbench(detail: dict[str, Any], attempt: dict[str, Any]) -> dict[str, Any]:
+    status, error = _successful_attempt("xbench_deepsearch", detail, attempt)
+    correct = _consistent_bool(detail, attempt, "correct")
+    scoring = _scoring(attempt, "xbench_deepsearch")
+    evaluation_type = scoring.get("evaluation_type")
+    # The pinned scorer short-circuits an exact answer match without a judge call.
+    if evaluation_type == "xbench_exact_match":
+        if scoring.get("correct") is not True:
+            raise RuntimeError("AgentCompass xbench_deepsearch exact match was not correct")
+    elif evaluation_type != "xbench_llm_judge":
+        raise RuntimeError("AgentCompass xbench_deepsearch evaluation_type was not recognized")
+    if scoring.get("correct") is not correct:
+        raise RuntimeError("AgentCompass xbench_deepsearch judge fields were inconsistent")
+    return _normalized_result(
+        correct=correct,
+        reward=10.0 if correct else 0.0,
+        raw_score=1.0 if correct else 0.0,
+        status=status,
+        error=error,
+        strategy="xbench_judge",
+        xbench_evaluation_type=evaluation_type,
+    )
+
+
 def _normalize_sealqa(detail: dict[str, Any], attempt: dict[str, Any]) -> dict[str, Any]:
     status, error = _successful_attempt("sealqa", detail, attempt)
     correct = _consistent_bool(detail, attempt, "correct")
@@ -638,6 +803,8 @@ def _normalize_detail(benchmark: str, detail: dict[str, Any]) -> dict[str, Any]:
         return _normalize_deepsearchqa(detail, attempt)
     if normalizer == "sealqa_judge":
         return _normalize_sealqa(detail, attempt)
+    if normalizer == "xbench_judge":
+        return _normalize_xbench(detail, attempt)
     if normalizer == "special_pattern_correct":
         return _normalize_special_pattern(detail, attempt)
     if normalizer == "swebench_resolved":
@@ -825,6 +992,11 @@ def main() -> int:
             )
             return 0
 
+        data_dir = _prepare_native_data(
+            benchmark, harness, dataset, result_root, benchmark_params, harness_params,
+        )
+        _reject_unrouted_judge(benchmark, benchmark_params)
+        _check_harness_credentials(harness)
         command = _build_command(
             agentcompass_executable=_agentcompass_executable(),
             benchmark=benchmark,
@@ -837,6 +1009,7 @@ def main() -> int:
             environment_params=environment_params,
             model_params=model_params,
             result_root=result_root,
+            data_dir=data_dir,
         )
         timeout_s = _timeout_s(request, dataset)
         stdout_path = result_root / "agentcompass.stdout.log"
@@ -853,6 +1026,7 @@ def main() -> int:
             returncode, timed_out = _run_command(
                 command,
                 timeout_s=timeout_s,
+                env=_native_env(result_root),
                 stdout_file=stdout_file,
                 stderr_file=stderr_file,
             )
