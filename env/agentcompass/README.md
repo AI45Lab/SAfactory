@@ -218,13 +218,23 @@ python -B -m unittest discover -s tests/env/agentcompass -p 'test_*.py' -v
 ```
 
 - 每个 benchmark 从固定模块指定的来源获取**完整原生数据树**（含附件、图片、评分资产），
-  在临时目录中先用原生 loader 校验，再原子发布到原生 `data_dir` 位置。
-- `<SHARED_ROOT>/.published/<id>.json` 记录来源、实际获取的版本（模块未固定版本时记录本次
-  获取的 HF sha / git commit）、归档 SHA256 和每个文件的 SHA256；datasets/HF 留下的
-  `*.lock` 运行锁文件不计入资产。
-- 重复执行逐文件复核：内容变化、缺失或多出未记录文件都会报错，不覆盖、不修补；更新版本
-  须发布到新目录。`--reconcile` 只在已记录资产全部不变时，把记录后新增的文件补记、或删除
-  早期记录中误收的运行锁文件条目，并在记录的 `amendments` 中留痕。
+  在 `<SHARED_ROOT>/.staging/<id>/` 中依次完成：下载/解压 → 原生 loader 校验 → 逐文件 SHA256
+  并写出待发布记录 → 将数据目录逐个 rename 到原生 `data_dir` 位置 → 最后写入
+  `<SHARED_ROOT>/.published/<id>.json`。只有正式记录存在时数据才算已发布。
+- staging 不会因普通异常被删除；`state.json` 记录已完成阶段。无论是普通异常还是进程被强制
+  终止，重新执行都会从最后完成的阶段继续：已完成的下载和哈希不重做，"数据已移动、记录未写完"
+  也能补完。下载中途中断的部分文件不可信，会重新下载。
+- 正式记录包含来源、实际获取版本（模块未固定版本时为本次获取的 HF sha / git commit）、归档
+  SHA256、每个文件的 SHA256（内容完整性依据），以及每个文件的大小和 mtime（仅用于快速复用
+  检查），并记录各阶段实际耗时。datasets/HF 留下的 `*.lock` 运行锁文件不计入资产。
+- 重复执行默认只比对文件列表、大小和 mtime：能发现缺失、多出、大小变化或重写的文件，但**不
+  证明内容完整**（保持大小和 mtime 的原位修改无法发现）。需要内容级校验时加
+  `--verify-content`，重新计算所有文件的 SHA256；输出的 `verification` 字段标明本次实际
+  做的是哪一级。没有大小/mtime 元数据的旧记录，必须先通过完整内容校验，才会补写元数据并在
+  `amendments` 留痕。
+- 校验不通过时报错，不覆盖、不修补；更新版本须发布到新目录。`--reconcile` 只在已记录资产
+  内容全部不变时，补记记录后新增的文件，或删除早期记录中误收的运行锁文件条目，并在
+  `amendments` 留痕。
 - 原生任务目录写入 `<SHARED_ROOT>/manifests/v2/`；更早版本的 `manifests/*.jsonl` 保留不动。
   目录行只含数据与原生参数，不含 harness 或 judge 等运行配置。
 - SciCode 的官方 HDF5 首次获取与结构校验仍由 [generate_dataset.py](generate_dataset.py)

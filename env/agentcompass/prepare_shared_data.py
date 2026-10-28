@@ -28,12 +28,16 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import traceback
 import urllib.request
 from pathlib import Path, PurePosixPath
 
 PINNED_COMMIT = "d2c3e148902e948db3270fa34b2198fb1b10beb7"
 STATE_DIR = ".published"
+# Resumable per-benchmark staging on the same filesystem as the published
+# tree, so publishing is a rename. See _resume_or_stage for the phases.
+STAGING_DIR = ".staging"
 # Catalogs written by this tool; earlier catalogs in manifests/ stay untouched
 # because existing manifests and acceptance records reference them.
 CATALOG_DIR = "manifests/v2"
@@ -92,7 +96,7 @@ PROFILES: dict[str, dict] = {
     "swebench_pro": {"kind": "hf", "repo": "ScaleAI/SWE-bench_Pro", "revision": None,
                      "root": "swe_bench_pro", "extra": "swebench_pro_run_scripts"},
     "gdpval_ac": {"kind": "hf", "repo": ("gdpval_ac.dataset", "DEFAULT_HF_REPO_ID"), "revision": None,
-                  "root": "gdpval_ac", "extra": "gdpval_baseline"},
+                  "root": "gdpval_ac", "extra": "gdpval_baseline", "extra_roots": ("gdpval_baseline",)},
     "xbench_deepsearch": {"kind": "url_files", "root": "xbench_deepsearch",
                           "catalogs": {"2505": {"version": "2505"}, "2510": {"version": "2510"}}},
     "deepresearch_bench": {"kind": "zip_ref", "repo": "https://github.com/Ayanami0730/deep_research_bench",
@@ -138,21 +142,41 @@ def _resolve(value):
     return _pinned(*value) if isinstance(value, tuple) else value
 
 
+def _asset_paths(root: Path) -> list[Path]:
+    return [path for path in sorted(root.rglob("*"))
+            if path.is_file() and not path.is_symlink() and not path.name.endswith(RUNTIME_LOCK_SUFFIXES)]
+
+
 def _tree_manifest(root: Path) -> dict[str, str]:
-    """SHA256 of every published file; the integrity record for reuse checks."""
-    return {
-        str(path.relative_to(root)): sha256(path)
-        for path in sorted(root.rglob("*"))
-        if path.is_file() and not path.is_symlink() and not path.name.endswith(RUNTIME_LOCK_SUFFIXES)
-    }
+    """SHA256 of every asset file: the content-integrity record."""
+    return {str(path.relative_to(root)): sha256(path) for path in _asset_paths(root)}
+
+
+def _tree_metadata(root: Path) -> dict[str, list[int]]:
+    """[size, mtime_ns] per asset file: a fast reuse check, not an integrity check."""
+    return {str(path.relative_to(root)): [path.stat().st_size, path.stat().st_mtime_ns]
+            for path in _asset_paths(root)}
 
 
 def _verify_tree(root: Path, recorded: dict[str, str]) -> dict:
+    """Content verification: re-hash every file and compare with the record."""
     actual = _tree_manifest(root)
     return {
         "missing": sorted(set(recorded) - set(actual)),
         "unrecorded": sorted(set(actual) - set(recorded)),
         "changed": sorted(name for name in set(actual) & set(recorded) if actual[name] != recorded[name]),
+    }
+
+
+def _verify_metadata(root: Path, recorded: dict[str, list[int]]) -> dict:
+    """Fast check of file list, sizes and mtimes. Detects missing, extra,
+    resized or rewritten files in the common case, but does NOT prove content
+    integrity (an in-place edit preserving size and mtime goes unnoticed)."""
+    actual = _tree_metadata(root)
+    return {
+        "missing": sorted(set(recorded) - set(actual)),
+        "unrecorded": sorted(set(actual) - set(recorded)),
+        "changed": sorted(name for name in set(actual) & set(recorded) if actual[name] != list(recorded[name])),
     }
 
 
@@ -476,15 +500,164 @@ def _amend_record(record_path: Path, record: dict, root: Path, names: list[str],
                "record_sha256": hashlib.sha256(body.encode()).hexdigest(),
                "amendments": [*record.get("amendments", []),
                               {"added": sorted(names), "removed_runtime_locks": sorted(removed)}]}
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=record_path.parent, delete=False) as tmp:
-        tmp.write(json.dumps(amended, indent=2, sort_keys=True) + "\n")
-    os.chmod(tmp.name, 0o644)
-    os.replace(tmp.name, record_path)
+    if "metadata" in amended:
+        amended["metadata"] = _tree_metadata(root)
+    _write_json_atomic(record_path, amended)
     return amended
 
 
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as tmp:
+        tmp.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    os.chmod(tmp.name, 0o644)
+    os.replace(tmp.name, path)
+
+
+def _published_roots(profile: dict) -> list[str]:
+    """Top-level directories this profile publishes under data_dir."""
+    return [profile["root"], *profile.get("extra_roots", ())]
+
+
+def _build_record(benchmark: str, profile: dict, base: Path, provenance: dict) -> tuple[dict, float]:
+    """Hash every asset under ``base`` (staging or published) into a record."""
+    started = time.monotonic()
+    root = base / profile["root"]
+    files = _tree_manifest(root)
+    extra = {name: _tree_manifest(base / name) for name in profile.get("extra_roots", ())}
+    hash_s = round(time.monotonic() - started, 3)
+    body = json.dumps(files, sort_keys=True)
+    record = {"agentcompass_commit": PINNED_COMMIT, "benchmark": benchmark, "root": profile["root"],
+              "provenance": provenance, "file_count": len(files),
+              "total_bytes": sum((root / name).stat().st_size for name in files),
+              "record_sha256": hashlib.sha256(body.encode()).hexdigest(), "files": files,
+              # Fast reuse check only; content integrity is "files".
+              "metadata": _tree_metadata(root)}
+    if extra:
+        record["extra_roots"] = {name: {"files": manifest, "metadata": _tree_metadata(base / name)}
+                                 for name, manifest in extra.items()}
+    return record, hash_s
+
+
+def _resume_or_stage(benchmark: str, profile: dict, data_dir: Path, source: Path | None) -> dict:
+    """Stage, validate, hash and publish one benchmark, resumably.
+
+    Persistent staging lives in ``.staging/<id>/`` and is never deleted by an
+    ordinary exception, so a later run resumes from the last completed phase:
+
+      staged     download/extract finished (provenance recorded)
+      validated  native loader accepted the staged tree
+      hashed     pending record (SHA256 + metadata) written beside the stage
+      publishing directories are being renamed into data_dir one by one
+
+    The published record is written last; data counts as published only when
+    the record exists. A run interrupted mid-download (no ``staged`` phase)
+    restarts that download, since a partial download cannot be trusted.
+    """
+    staging = data_dir / STAGING_DIR / benchmark
+    work = staging / "work"
+    state_path = staging / "state.json"
+    pending_path = staging / "record.pending.json"
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    timings = dict(state.get("timings", {}))
+    phase = state.get("phase")
+
+    if phase is None:
+        if staging.exists():
+            # Interrupted before the download finished: nothing reusable.
+            shutil.rmtree(staging)
+        work.mkdir(parents=True)
+        started = time.monotonic()
+        provenance = _stage(benchmark, profile, work, source)
+        timings["stage_s"] = round(time.monotonic() - started, 3)
+        if not (work / profile["root"]).exists():
+            raise ValueError(f"{benchmark} staging produced no {profile['root']}")
+        state = {"phase": "staged", "provenance": provenance, "timings": timings}
+        _write_json_atomic(state_path, state)
+        phase = "staged"
+
+    if phase == "staged":
+        started = time.monotonic()
+        for params in _variants(profile, work / profile["root"]).values():
+            _load_for_catalog(benchmark, profile, work, _catalog_params(benchmark, profile, work, params))
+        timings["validate_s"] = round(time.monotonic() - started, 3)
+        state.update(phase="validated", timings=timings)
+        _write_json_atomic(state_path, state)
+        phase = "validated"
+
+    if phase == "validated":
+        record, timings["hash_s"] = _build_record(benchmark, profile, work, state["provenance"])
+        _write_json_atomic(pending_path, record)
+        state.update(phase="hashed", timings=timings)
+        _write_json_atomic(state_path, state)
+        phase = "hashed"
+
+    record = json.loads(pending_path.read_text(encoding="utf-8"))
+    if phase == "hashed":
+        state.update(phase="publishing")
+        _write_json_atomic(state_path, state)
+        phase = "publishing"
+
+    if phase == "publishing":
+        started = time.monotonic()
+        for name in _published_roots(profile):
+            staged, target = work / name, data_dir / name
+            if staged.exists() and target.exists():
+                raise ValueError(f"Both staged and published {name} exist; resolve {staging} manually")
+            if staged.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(staged, target)  # same filesystem: atomic per directory
+            elif not target.exists():
+                raise ValueError(f"{name} is neither staged nor published; resolve {staging} manually")
+        # Renames keep content and mtimes; confirm the published tree is the
+        # one that was hashed before recording it.
+        for name, recorded in [(profile["root"], record["metadata"]),
+                               *[(n, e["metadata"]) for n, e in record.get("extra_roots", {}).items()]]:
+            drift = _verify_metadata(data_dir / name, recorded)
+            if any(drift.values()):
+                raise ValueError(f"Published {name} does not match its pending record: {drift}")
+        timings["publish_s"] = round(time.monotonic() - started, 3)
+        record["timings"] = timings
+        _write_once(data_dir / STATE_DIR / f"{benchmark}.json", json.dumps(record, indent=2, sort_keys=True) + "\n")
+        shutil.rmtree(staging)
+    return record
+
+
+def _check_published(benchmark: str, profile: dict, data_dir: Path, record_path: Path, record: dict,
+                     *, verify_content: bool, reconcile: bool) -> tuple[dict, str, float]:
+    """Verify a published tree. Returns (record, verification level, seconds)."""
+    root = data_dir / profile["root"]
+    started = time.monotonic()
+    if "metadata" in record and not verify_content and not reconcile:
+        drift = _verify_metadata(root, record["metadata"])
+        level = "metadata (file list, size, mtime; not content)"
+    else:
+        # Records without metadata, or an explicit request, need a full content
+        # check; metadata is backfilled only after that check passes.
+        drift = _verify_tree(root, record["files"])
+        level = "content (SHA256 of every file)"
+        stale_locks = [name for name in drift["missing"] if name.endswith(RUNTIME_LOCK_SUFFIXES)]
+        if reconcile and not drift["changed"] and drift["missing"] == stale_locks and (
+                stale_locks or drift["unrecorded"]):
+            # Recorded assets are intact. Records written before lock files
+            # were excluded listed them as assets; drop only those entries,
+            # and append files that appeared after recording (e.g. a loader
+            # README). Both changes are kept in the record's amendments.
+            record = _amend_record(record_path, record, root, drift["unrecorded"], stale_locks)
+            drift = _verify_tree(root, record["files"])
+        if not any(drift.values()) and "metadata" not in record:
+            record = {**record, "metadata": _tree_metadata(root),
+                      "amendments": [*record.get("amendments", []),
+                                     {"metadata_backfilled_after_content_verification": True}]}
+            _write_json_atomic(record_path, record)
+    if any(drift.values()):
+        raise ValueError(f"Published {benchmark} tree differs from its record ({level}): "
+                         f"{ {k: v[:5] for k, v in drift.items() if v} }")
+    return record, level, round(time.monotonic() - started, 3)
+
+
 def prepare(benchmark: str, data_dir: Path, container_data_dir: str, source: Path | None = None,
-            reconcile: bool = False) -> dict:
+            reconcile: bool = False, verify_content: bool = False) -> dict:
     """Deployment only: publish one benchmark's complete native tree, then its catalogs."""
     profile = PROFILES[benchmark]
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -492,50 +665,25 @@ def prepare(benchmark: str, data_dir: Path, container_data_dir: str, source: Pat
     with (data_dir / ".prepare.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         root = data_dir / profile["root"]
+        verification = None
         if record_path.exists():
             record = json.loads(record_path.read_text(encoding="utf-8"))
-            drift = _verify_tree(root, record["files"])
-            stale_locks = [name for name in drift["missing"] if name.endswith(RUNTIME_LOCK_SUFFIXES)]
-            if reconcile and not drift["changed"] and drift["missing"] == stale_locks and (
-                    stale_locks or drift["unrecorded"]):
-                # Recorded assets are intact. Records written before lock files
-                # were excluded listed them as assets; drop only those entries,
-                # and append files that appeared after recording (e.g. a loader
-                # README). Both changes are kept in the record's amendments.
-                record = _amend_record(record_path, record, root, drift["unrecorded"], stale_locks)
-                drift = _verify_tree(root, record["files"])
-            if any(drift.values()):
-                raise ValueError(f"Published {benchmark} tree differs from its record: "
-                                 f"{ {k: v[:5] for k, v in drift.items() if v} }")
+            record, level, seconds = _check_published(benchmark, profile, data_dir, record_path, record,
+                                                      verify_content=verify_content, reconcile=reconcile)
+            verification = {"level": level, "seconds": seconds}
             reused = True
+        elif (data_dir / STAGING_DIR / benchmark).exists() or not root.exists():
+            record = _resume_or_stage(benchmark, profile, data_dir, source)
+            verification = {"level": "content (hashed in staging before publishing)",
+                            "seconds": record["timings"].get("hash_s")}
+            reused = False
         else:
-            if root.exists():
-                provenance = _adopt_existing(benchmark, profile, root)
-                for params in _variants(profile, root).values():
-                    _load_for_catalog(benchmark, profile, data_dir, _catalog_params(benchmark, profile, data_dir, params))
-            else:
-                with tempfile.TemporaryDirectory(prefix=f".{benchmark}-", dir=data_dir) as tmp:
-                    stage = Path(tmp)
-                    provenance = _stage(benchmark, profile, stage, source)
-                    staged_root = stage / profile["root"]
-                    if not staged_root.exists():
-                        raise ValueError(f"{benchmark} staging produced no {profile['root']}")
-                    # Validate with the native loader before anything is published.
-                    for params in _variants(profile, staged_root).values():
-                        _load_for_catalog(benchmark, profile, stage, _catalog_params(benchmark, profile, stage, params))
-                    for extra in ("gdpval_baseline", "swe_bench_pro/run_scripts"):
-                        if extra.split("/")[0] != profile["root"] and (stage / extra).exists():
-                            (data_dir / extra).parent.mkdir(parents=True, exist_ok=True)
-                            os.replace(stage / extra, data_dir / extra)
-                    root.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(staged_root, root)
-            files = _tree_manifest(root)
-            body = json.dumps(files, sort_keys=True)
-            record = {"agentcompass_commit": PINNED_COMMIT, "benchmark": benchmark, "root": profile["root"],
-                      "provenance": provenance, "file_count": len(files),
-                      "total_bytes": sum((root / name).stat().st_size for name in files),
-                      "record_sha256": hashlib.sha256(body.encode()).hexdigest(), "files": files}
+            provenance = _adopt_existing(benchmark, profile, root)
+            for params in _variants(profile, root).values():
+                _load_for_catalog(benchmark, profile, data_dir, _catalog_params(benchmark, profile, data_dir, params))
+            record, hash_s = _build_record(benchmark, profile, data_dir, provenance)
             _write_once(record_path, json.dumps(record, indent=2, sort_keys=True) + "\n")
+            verification = {"level": "content (adopted against pinned checksums)", "seconds": hash_s}
             reused = False
         catalogs = {}
         for variant, params in _variants(profile, root).items():
@@ -550,7 +698,8 @@ def prepare(benchmark: str, data_dir: Path, container_data_dir: str, source: Pat
                                  "native_task_count": len(rows)}
         return {"benchmark": benchmark, "reused_complete_data": reused,
                 "provenance": record["provenance"], "file_count": record["file_count"],
-                "total_bytes": record["total_bytes"], "catalogs": catalogs}
+                "total_bytes": record["total_bytes"], "verification": verification,
+                "timings": record.get("timings"), "catalogs": catalogs}
 
 
 def status(data_dir: Path) -> list[dict]:
@@ -616,6 +765,8 @@ def main(argv=None):
     prep.add_argument("--data-dir", type=Path, required=True)
     prep.add_argument("--container-data-dir", default="/app/data/agentcompass")
     prep.add_argument("--source", type=Path, help="Deployer-supplied native data (skillsbench, special_pattern_check)")
+    prep.add_argument("--verify-content", action="store_true",
+                      help="Re-hash every published file instead of the fast metadata check")
     prep.add_argument("--reconcile", action="store_true",
                       help="Record files added after publication when all recorded files are unchanged")
     stat = sub.add_parser("status", help="Report published data per profile")
@@ -638,7 +789,7 @@ def main(argv=None):
             for name in args.benchmark:
                 try:
                     reports.append(prepare(name, args.data_dir.resolve(), args.container_data_dir, args.source,
-                                           args.reconcile))
+                                           args.reconcile, args.verify_content))
                 except Exception as exc:  # report every benchmark; one failure must not hide others
                     reports.append({"benchmark": name, "error": f"{type(exc).__name__}: {exc}",
                                     "traceback": traceback.format_exc(limit=8)})

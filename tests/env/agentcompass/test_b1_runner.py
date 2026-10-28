@@ -268,7 +268,9 @@ class ReconcileTests(unittest.TestCase):
                 prepare.prepare("deepsearchqa", data, "/app/data", reconcile=True)
             record = json.loads((data / prepare.STATE_DIR / "deepsearchqa.json").read_text())
             self.assertEqual(set(record["files"]), {"deepsearchqa.jsonl"})
-            self.assertEqual(record["amendments"][-1]["removed_runtime_locks"], ["cache_builder.lock"])
+            removed = [a["removed_runtime_locks"] for a in record["amendments"] if "removed_runtime_locks" in a]
+            self.assertEqual(removed, [["cache_builder.lock"]])
+            self.assertIn("metadata", record)
 
     def test_changed_asset_blocks_reconcile(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -276,3 +278,109 @@ class ReconcileTests(unittest.TestCase):
             (root / "deepsearchqa.jsonl").write_text("tampered\n")
             with self.assertRaisesRegex(ValueError, "changed"):
                 prepare.prepare("deepsearchqa", data, "/app/data", reconcile=True)
+
+
+class ResumablePublishTests(unittest.TestCase):
+    """Interruptions at each phase must resume without re-downloading or losing data."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.data = Path(self.tmp.name)
+        self.stage_calls = 0
+        self.patches = [
+            mock.patch.object(prepare, "_stage", side_effect=self._fake_stage),
+            mock.patch.object(prepare, "_load_for_catalog", return_value=[]),
+        ]
+        for patch in self.patches:
+            patch.start()
+
+    def tearDown(self):
+        for patch in self.patches:
+            patch.stop()
+        self.tmp.cleanup()
+
+    def _fake_stage(self, benchmark, profile, stage, source=None):
+        self.stage_calls += 1
+        (stage / "deepsearchqa").mkdir()
+        (stage / "deepsearchqa/deepsearchqa.jsonl").write_text("asset\n")
+        return {"source": "test"}
+
+    def _record(self):
+        return json.loads((self.data / prepare.STATE_DIR / "deepsearchqa.json").read_text())
+
+    def test_hash_failure_keeps_staged_download(self):
+        with mock.patch.object(prepare, "_build_record", side_effect=RuntimeError("killed while hashing")):
+            with self.assertRaises(RuntimeError):
+                prepare.prepare("deepsearchqa", self.data, "/app/data")
+        self.assertFalse((self.data / "deepsearchqa").exists())
+        self.assertTrue((self.data / prepare.STAGING_DIR / "deepsearchqa/work/deepsearchqa").exists())
+        report = prepare.prepare("deepsearchqa", self.data, "/app/data")
+        self.assertEqual(self.stage_calls, 1)
+        self.assertFalse(report["reused_complete_data"])
+        self.assertIn("hash_s", report["timings"])
+        self.assertFalse((self.data / prepare.STAGING_DIR / "deepsearchqa").exists())
+
+    def test_interruption_after_move_before_record_resumes(self):
+        real_write_once = prepare._write_once
+
+        def fail_on_record(path, content):
+            if path.parent.name == prepare.STATE_DIR:
+                raise RuntimeError("killed before the record was written")
+            return real_write_once(path, content)
+
+        with mock.patch.object(prepare, "_write_once", side_effect=fail_on_record):
+            with self.assertRaises(RuntimeError):
+                prepare.prepare("deepsearchqa", self.data, "/app/data")
+        self.assertTrue((self.data / "deepsearchqa/deepsearchqa.jsonl").exists())
+        self.assertFalse((self.data / prepare.STATE_DIR / "deepsearchqa.json").exists())
+        prepare.prepare("deepsearchqa", self.data, "/app/data")
+        self.assertEqual(self.stage_calls, 1)
+        self.assertEqual(set(self._record()["files"]), {"deepsearchqa.jsonl"})
+
+    def test_publish_rejects_tree_changed_after_hashing(self):
+        real_build = prepare._build_record
+
+        def build_then_tamper(benchmark, profile, base, provenance):
+            result = real_build(benchmark, profile, base, provenance)
+            (base / "deepsearchqa/extra.txt").write_text("appeared after hashing\n")
+            return result
+
+        with mock.patch.object(prepare, "_build_record", side_effect=build_then_tamper):
+            with self.assertRaisesRegex(ValueError, "does not match its pending record"):
+                prepare.prepare("deepsearchqa", self.data, "/app/data")
+        self.assertFalse((self.data / prepare.STATE_DIR / "deepsearchqa.json").exists())
+
+    def test_rerun_uses_metadata_check_and_labels_it(self):
+        prepare.prepare("deepsearchqa", self.data, "/app/data")
+        fast = prepare.prepare("deepsearchqa", self.data, "/app/data")
+        self.assertTrue(fast["reused_complete_data"])
+        self.assertIn("not content", fast["verification"]["level"])
+        full = prepare.prepare("deepsearchqa", self.data, "/app/data", verify_content=True)
+        self.assertIn("SHA256", full["verification"]["level"])
+
+    def test_metadata_check_misses_same_size_same_mtime_edit_but_content_check_catches_it(self):
+        prepare.prepare("deepsearchqa", self.data, "/app/data")
+        asset = self.data / "deepsearchqa/deepsearchqa.jsonl"
+        stat = asset.stat()
+        asset.write_text("ASSET\n")
+        os.utime(asset, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        prepare.prepare("deepsearchqa", self.data, "/app/data")  # documented limit
+        with self.assertRaisesRegex(ValueError, "changed"):
+            prepare.prepare("deepsearchqa", self.data, "/app/data", verify_content=True)
+
+    def test_old_record_without_metadata_needs_content_check_before_backfill(self):
+        prepare.prepare("deepsearchqa", self.data, "/app/data")
+        record_path = self.data / prepare.STATE_DIR / "deepsearchqa.json"
+        record = self._record()
+        record.pop("metadata")
+        record_path.write_text(json.dumps(record))
+        asset = self.data / "deepsearchqa/deepsearchqa.jsonl"
+        asset.write_text("tampered\n")
+        with self.assertRaisesRegex(ValueError, "SHA256"):
+            prepare.prepare("deepsearchqa", self.data, "/app/data")
+        self.assertNotIn("metadata", self._record())
+        asset.write_text("asset\n")
+        report = prepare.prepare("deepsearchqa", self.data, "/app/data")
+        self.assertIn("SHA256", report["verification"]["level"])
+        self.assertIn("metadata", self._record())
+        self.assertTrue(self._record()["amendments"][-1]["metadata_backfilled_after_content_verification"])
