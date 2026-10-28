@@ -190,19 +190,40 @@ def _download(url: str, target: Path) -> None:
 # Each function returns provenance describing exactly what was fetched.
 # ---------------------------------------------------------------------------
 
+def _fetch_archive(url: str, downloads: Path) -> tuple[Path, bool]:
+    """Download ``url`` once into ``downloads``; reuse a complete, valid archive.
+
+    The download goes to a ``.part`` file and is renamed only when complete,
+    so a finished archive survives later failures (hashing, extraction,
+    validation). On retry it is re-checked; an invalid one is downloaded again.
+    """
+    from agentcompass.benchmarks.utils.data import _zip_is_valid
+
+    downloads.mkdir(parents=True, exist_ok=True)
+    archive = downloads / f"{hashlib.sha256(url.encode()).hexdigest()[:16]}.zip"
+    if archive.exists():
+        if _zip_is_valid(archive):
+            return archive, True
+        archive.unlink()
+    part = archive.with_suffix(".part")
+    _download(url, part)
+    os.replace(part, archive)
+    return archive, False
+
+
 def _stage_zip(profile: dict, stage: Path) -> dict:
     from agentcompass.benchmarks.utils.data import _extract_zip, _zip_is_valid
 
     url = _resolve(profile["url"])
-    archive = stage / ".archive.zip"
-    _download(url, archive)
+    # Completed downloads live beside the work tree, which is rebuilt on retry.
+    archive, reused = _fetch_archive(url, stage.parent / "downloads")
     if not _zip_is_valid(archive):
         raise ValueError(f"Official archive is invalid: {url}")
-    provenance = {"source": url, "archive_sha256": sha256(archive), "archive_bytes": archive.stat().st_size}
+    provenance = {"source": url, "archive_sha256": sha256(archive), "archive_bytes": archive.stat().st_size,
+                  "archive_reused_from_staging": reused}
     # Same path-checked extractor the native helper uses; the archive carries
     # its own top-level directory, so the native root appears under stage.
     _extract_zip(archive, stage)
-    archive.unlink()
     return provenance
 
 
@@ -563,9 +584,11 @@ def _resume_or_stage(benchmark: str, profile: dict, data_dir: Path, source: Path
     phase = state.get("phase")
 
     if phase is None:
-        if staging.exists():
-            # Interrupted before the download finished: nothing reusable.
-            shutil.rmtree(staging)
+        # Interrupted before staging finished. The work tree may be partial and
+        # is rebuilt; completed archive downloads in staging/downloads are kept
+        # and re-checked by _fetch_archive before reuse.
+        if work.exists():
+            shutil.rmtree(work)
         work.mkdir(parents=True)
         started = time.monotonic()
         provenance = _stage(benchmark, profile, work, source)
@@ -623,9 +646,26 @@ def _resume_or_stage(benchmark: str, profile: dict, data_dir: Path, source: Path
     return record
 
 
+def _check_extra_roots(benchmark: str, profile: dict, data_dir: Path, record: dict, *, content: bool) -> None:
+    """Verify every additional published directory (e.g. scoring baselines)."""
+    recorded = record.get("extra_roots") or {}
+    for name in profile.get("extra_roots", ()):
+        entry = recorded.get(name)
+        if not entry:
+            # No checksums were recorded for this directory, so its content
+            # cannot be verified; never treat such a record as complete.
+            raise ValueError(f"Published {benchmark} record has no checksums for {name}; it cannot be verified. "
+                             "Republish to a new version directory.")
+        drift = (_verify_tree(data_dir / name, entry["files"]) if content
+                 else _verify_metadata(data_dir / name, entry["metadata"]))
+        if any(drift.values()):
+            raise ValueError(f"Published {benchmark} directory {name} differs from its record: "
+                             f"{ {k: v[:5] for k, v in drift.items() if v} }")
+
+
 def _check_published(benchmark: str, profile: dict, data_dir: Path, record_path: Path, record: dict,
                      *, verify_content: bool, reconcile: bool) -> tuple[dict, str, float]:
-    """Verify a published tree. Returns (record, verification level, seconds)."""
+    """Verify every published directory. Returns (record, verification level, seconds)."""
     root = data_dir / profile["root"]
     started = time.monotonic()
     if "metadata" in record and not verify_content and not reconcile:
@@ -653,6 +693,7 @@ def _check_published(benchmark: str, profile: dict, data_dir: Path, record_path:
     if any(drift.values()):
         raise ValueError(f"Published {benchmark} tree differs from its record ({level}): "
                          f"{ {k: v[:5] for k, v in drift.items() if v} }")
+    _check_extra_roots(benchmark, profile, data_dir, record, content=level.startswith("content"))
     return record, level, round(time.monotonic() - started, 3)
 
 

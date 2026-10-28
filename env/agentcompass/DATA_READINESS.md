@@ -44,12 +44,12 @@
 | skillsbench | 需部署方提供原生数据（`--source`） | — | ❌ | 需 Docker | ❌ 未验收 |
 | wildclawbench | 完整（MD5 固定，15.4 GB） | 60 | ❌ | 需 Docker、BRAVE 密钥 | ❌ 未验收 |
 | pinchbench | 完整（tag v1.1.0） | 23 | ❌ | 需 sandbox | ❌ 未验收 |
-| gdpval_ac | 完整（HF 获取时快照 + baseline） | 220 | ❌ | 需 sandbox、judge harness | ❌ 未验收 |
+| gdpval_ac | 部分：HF 数据已校验；评分 baseline 已发布但旧记录缺少其校验依据，需重新发布 | 220 | ❌ | 需 sandbox、judge harness | ❌ 未验收 |
 | researchclawbench | 完整（GitHub `main` 获取时 commit） | 40 | ❌ | 需搜索/MinerU 凭据、多模态 judge | ❌ 未验收 |
 | frontier_engineering | 完整（固定 SHA + 外部资产） | v1 48 / non_gpu 44 / filtered 38 / lite 10 | ❌ | openevolve 就绪；部分任务需 GPU/Docker | ❌ 未验收 |
 | taubench | 完整（MD5 固定） | 375 | ❌ | tau2 就绪；需用户模拟器/judge/embedding 路由 | ❌ 未验收 |
 
-合计：数据和 catalog 已准备 26、需部署方提供数据 2；代码已接入 2（scicode、
+合计：数据和 catalog 已准备 25、部分（gdpval_ac 评分 baseline 未校验）1、需部署方提供数据 2；代码已接入 2（scicode、
 special_pattern_check）；结果转换已实现但 judge 路由待框架确认 10；仅结果转换 1
 （swebench_verified）；未接入 15。v2 真实验收仅 SciCode，其余 27 个均未验收。
 数据准备完成不代表运行依赖就绪或 benchmark 验收通过。
@@ -59,6 +59,8 @@ special_pattern_check）；结果转换已实现但 judge 路由待框架确认 
 - `.published/<id>.json` 记录来源、实际获取版本（模块未固定版本时为本次获取的 HF sha /
   git commit）、归档 SHA256 和逐文件 SHA256。datasets/HF 运行锁文件（`*.lock`）不计入资产；
   GDPVal 早期记录误收的 3 个锁文件条目已通过 `--reconcile` 删除并在 `amendments` 留痕。
+- GDPVal 的评分 baseline（`gdpval_baseline/`）由早期工具发布，记录里没有它的逐文件校验，
+  因此不能视为已完整校验；重复检查会因此报错，需要用当前工具发布到新版本目录。
 - SciCode、SealQA 为既有文件接管：SciCode 按固定 HDF5 大小/SHA256 与固定包内定义逐项比对，
   SealQA 按固定 HF revision 的逐文件 LFS SHA256 比对，均未重新下载。旧 `manifests/*.jsonl`
   保留，新目录在 `manifests/v2/`。

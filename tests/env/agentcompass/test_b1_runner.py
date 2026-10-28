@@ -1,6 +1,7 @@
 """B1 common runner capabilities: judge routing, shared data and native caches."""
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -384,3 +385,94 @@ class ResumablePublishTests(unittest.TestCase):
         self.assertIn("SHA256", report["verification"]["level"])
         self.assertIn("metadata", self._record())
         self.assertTrue(self._record()["amendments"][-1]["metadata_backfilled_after_content_verification"])
+
+
+class ReviewRegressionTests(unittest.TestCase):
+    """Regressions from review of d523833."""
+
+    def test_extra_published_roots_are_verified_by_both_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+
+            def fake_stage(benchmark, profile, stage, source=None):
+                (stage / "gdpval_ac").mkdir()
+                (stage / "gdpval_ac/train.parquet").write_text("rows\n")
+                (stage / "gdpval_baseline").mkdir()
+                (stage / "gdpval_baseline/b.xlsx").write_text("baseline\n")
+                return {"source": "test"}
+
+            with mock.patch.object(prepare, "_stage", side_effect=fake_stage), \
+                    mock.patch.object(prepare, "_load_for_catalog", return_value=[]):
+                prepare.prepare("gdpval_ac", data, "/app/data")
+                (data / "gdpval_baseline/b.xlsx").unlink()
+                for verify_content in (False, True):
+                    with self.subTest(verify_content=verify_content), \
+                            self.assertRaisesRegex(ValueError, "gdpval_baseline"):
+                        prepare.prepare("gdpval_ac", data, "/app/data", verify_content=verify_content)
+
+    def test_record_without_extra_root_checksums_is_not_complete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            (data / "gdpval_ac").mkdir()
+            (data / "gdpval_ac/train.parquet").write_text("rows\n")
+            record = {"root": "gdpval_ac", "files": prepare._tree_manifest(data / "gdpval_ac"),
+                      "file_count": 1, "total_bytes": 5, "provenance": {}, "record_sha256": "x"}
+            (data / prepare.STATE_DIR).mkdir()
+            (data / prepare.STATE_DIR / "gdpval_ac.json").write_text(json.dumps(record))
+            with mock.patch.object(prepare, "_load_for_catalog", return_value=[]), \
+                    self.assertRaisesRegex(ValueError, "no checksums for gdpval_baseline"):
+                prepare.prepare("gdpval_ac", data, "/app/data", verify_content=True)
+
+    @unittest.skipUnless(importlib.util.find_spec("agentcompass"), "Requires pinned AgentCompass runtime")
+    def test_completed_archive_is_not_downloaded_again_after_hash_failure(self):
+        import zipfile
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            payload = data.parent / f"{data.name}-src.zip"
+            with zipfile.ZipFile(payload, "w") as archive:
+                archive.writestr("deepsearchqa/deepsearchqa.jsonl", "asset\n")
+            downloads = []
+
+            def fake_download(url, target):
+                downloads.append(url)
+                target.write_bytes(payload.read_bytes())
+
+            real_sha = prepare.sha256
+            calls = {"n": 0}
+
+            def failing_first_archive_hash(path):
+                if path.suffix == ".zip" and calls["n"] == 0:
+                    calls["n"] += 1
+                    raise RuntimeError("killed while hashing the archive")
+                return real_sha(path)
+
+            try:
+                with mock.patch.object(prepare, "_download", side_effect=fake_download), \
+                        mock.patch.object(prepare, "_load_for_catalog", return_value=[]), \
+                        mock.patch.object(prepare, "_resolve", return_value="http://example/deepsearchqa.zip"):
+                    with mock.patch.object(prepare, "sha256", side_effect=failing_first_archive_hash):
+                        with self.assertRaises(RuntimeError):
+                            prepare.prepare("deepsearchqa", data, "/app/data")
+                    self.assertEqual(len(downloads), 1)
+                    report = prepare.prepare("deepsearchqa", data, "/app/data")
+                self.assertEqual(len(downloads), 1)
+                self.assertTrue(report["provenance"]["archive_reused_from_staging"])
+                self.assertFalse((data / prepare.STAGING_DIR / "deepsearchqa").exists())
+            finally:
+                payload.unlink()
+
+    @unittest.skipUnless(importlib.util.find_spec("agentcompass"), "Requires pinned AgentCompass runtime")
+    def test_corrupt_archive_in_staging_is_downloaded_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            downloads_dir = Path(tmp) / "downloads"
+            downloads_dir.mkdir()
+            url = "http://example/x.zip"
+            bad = downloads_dir / f"{hashlib.sha256(url.encode()).hexdigest()[:16]}.zip"
+            bad.write_bytes(b"not a zip")
+            fetched = []
+            with mock.patch.object(prepare, "_download",
+                                   side_effect=lambda u, t: (fetched.append(u), t.write_bytes(b"new"))):
+                archive, reused = prepare._fetch_archive(url, downloads_dir)
+            self.assertEqual(fetched, [url])
+            self.assertFalse(reused)
+            self.assertEqual(archive.read_bytes(), b"new")
