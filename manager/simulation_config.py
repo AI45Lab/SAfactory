@@ -1173,6 +1173,8 @@ def _validate_gateway_route_key(model: str, *, arg_name: str = "--llm-model") ->
 
     routes = gateway_cfg.llm_routes or {}
     if routes and model not in routes:
-        raise ValueError(
-            f"{arg_name} must be a gateway llm_routes key; got {model!r}, available={sorted(routes)}"
+        log.debug(
+            "%s=%r is absent from the static gateway config; defer to the live model registry",
+            arg_name,
+            model,
         )
