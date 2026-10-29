@@ -15,6 +15,7 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional
 from rollout_progress import RolloutProgress, checkpoint_path, database_identity
+from rollout_groups import accumulate_group_batch
 
 # Add rl directory to path for utils import
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -240,37 +241,6 @@ async def fetch_new_items_from_db(limit: Optional[int] = None) -> List[Dict[str,
     return items
 
 
-def accumulate_and_pop_ready_groups(new_items: List[Dict[str, Any]]) -> tuple:
-    """Accumulate items and return ready groups."""
-    pending_items_by_instance: Dict[str, List[Dict[str, Any]]] = {}
-
-    ready_groups = []
-    finished_instance_ids = []
-
-    # Add new items to pending
-    for item in new_items:
-        instance_id = str(item.get("instance_id", ""))
-        if not instance_id:
-            continue
-        pending_items_by_instance.setdefault(instance_id, []).append(item)
-
-    # Check for complete groups
-    to_delete = []
-    for instance_id, bucket in pending_items_by_instance.items():
-        while len(bucket) >= group_size:
-            group = bucket[:group_size]
-            del bucket[:group_size]
-            ready_groups.append((instance_id, list(group)))
-            finished_instance_ids.append(instance_id)
-        if not bucket:
-            to_delete.append(instance_id)
-
-    for k in to_delete:
-        pending_items_by_instance.pop(k, None)
-
-    return ready_groups, finished_instance_ids
-
-
 @app.post("/get_rollout_data", response_model=BufferResponse)
 async def get_rollout_data(request: Request):
     global inflight_batch, inflight_env_ids
@@ -282,10 +252,14 @@ async def get_rollout_data(request: Request):
 
 async def _create_rollout_batch() -> BufferResponse:
     global inflight_batch, inflight_env_ids
-
-    # Fetch new items from database and accumulate groups
+    global_batch = int(get_env("RL_GLOBAL_BATCH_SIZE") or 0)
+    if global_batch <= 0 or group_size <= 0 or global_batch % group_size:
+        raise ValueError("RL_GLOBAL_BATCH_SIZE must be a positive multiple of group_size")
     new_items = await fetch_new_items_from_db(limit=None)
-    ready_groups, finished_ids = accumulate_and_pop_ready_groups(new_items)
+    ready_groups, finished_ids = accumulate_group_batch(
+        {}, new_items, group_size=group_size,
+        required_groups=global_batch // group_size,
+    )
 
     # Log pending status
     logger.info(f"new_items={len(new_items)}, ready_groups={len(ready_groups)}, pending_envs={len(progress.pending) if progress else 0}")
