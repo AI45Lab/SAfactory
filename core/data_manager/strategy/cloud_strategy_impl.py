@@ -601,6 +601,9 @@ class CloudStrategy(StorageStrategy):
             clauses.append(f"job_id = '{_escape_sql_literal(query.job_id)}'")
         if query.env_id:
             clauses.append(f"env_id = '{_escape_sql_literal(query.env_id)}'")
+        if query.env_ids:
+            ids = ", ".join(f"'{_escape_sql_literal(env_id)}'" for env_id in query.env_ids)
+            clauses.append(f"env_id IN ({ids})")
         if query.after_id:
             clauses.append(f"id > {int(query.after_id)}")
         if query.finished is not None:

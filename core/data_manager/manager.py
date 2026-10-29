@@ -132,6 +132,7 @@ class DataManager:
         *,
         job_id: Optional[str] = None,
         env_id: Optional[str] = None,
+        env_ids: Optional[List[str]] = None,
         after_id: int = 0,
         offset: int = 0,
         limit: Optional[int] = None,
@@ -142,6 +143,7 @@ class DataManager:
         return await self._strategy.list_environment_rows(EnvironmentQuery(
             job_id=job_id or self.job_id,
             env_id=env_id,
+            env_ids=tuple(env_ids or ()),
             after_id=max(0, int(after_id)),
             offset=max(0, int(offset)),
             limit=None if limit is None else max(0, int(limit)),
@@ -425,6 +427,17 @@ class DataManager:
             latest_first=bool(latest_first),
             columns=tuple(columns or ()),
             checkout_latest=checkout_latest,
+        ))
+
+    async def list_terminal_steps_for_sessions(
+        self, session_ids: List[str]
+    ) -> List[Dict[str, Any]]:
+        if not session_ids:
+            return []
+        return await self._strategy.list_session_step_rows(SessionStepQuery(
+            job_id=self.job_id or None,
+            session_ids=tuple(session_ids),
+            is_terminal=True,
         ))
 
     async def update_session_step_rows(

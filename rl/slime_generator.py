@@ -470,6 +470,7 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
     tokenizer = TOKENIZER
     retry_times = 0
     all_meta_info = []
+    finished_groups_instance_id_list = []
 
     if args.fetch_trajectory_retry_times == -1:
         print(
@@ -632,19 +633,28 @@ async def generate_rollout_async(args, rollout_id: int, data_buffer, evaluation:
                     for session_id in touched_session_ids:
                         TRAJECTORY_MASK_BUILDER.clear_session(session_id)
             data_buffer.add_samples(sample_results)
+            for meta_info in all_meta_info:
+                finished_groups_instance_id_list.extend(meta_info.get("finished_groups", []))
+                batch_id = meta_info.get("batch_id")
+                if batch_id:
+                    response = requests.post(
+                        f"{base_url}/ack_rollout_data",
+                        json={"batch_id": batch_id},
+                        timeout=30,
+                    )
+                    response.raise_for_status()
+            all_meta_info.clear()
             print(
                 "✅ Trainable groups added this round: "
                 f"{len(sample_results)}, buffer length: {data_buffer.get_buffer_length()}/{args.rollout_batch_size}"
             )
 
         except Exception as err:
+            if isinstance(err, requests.RequestException) and all_meta_info:
+                raise RuntimeError("Rollout batch acknowledgement failed") from err
             print(f"[get_rollout_data] Failed to get rollout data: {err}, retry times: {retry_times}")
 
-    if len(all_meta_info) > 0 and "finished_groups" in all_meta_info[0]:
-        finished_groups_instance_id_list = []
-        for item in all_meta_info:
-            finished_groups_instance_id_list.extend(item["finished_groups"])
-
+    if finished_groups_instance_id_list:
         data_buffer.update_metadata({str(rollout_id): finished_groups_instance_id_list})
 
     print("finally buffered trainable group count: ", data_buffer.get_buffer_length())
