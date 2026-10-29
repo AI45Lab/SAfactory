@@ -22,6 +22,7 @@ from gateway.inference_forwarder import (
     StreamForwardContext,
 )
 from gateway.llm_router import LLMRouteTarget, LLMRouter
+from gateway.model_route_api import install_model_route_api
 from gateway.models import GatewayRequestContext, GatewaySessionBinding
 from gateway.request_logger import GatewayRequestLogger
 from gateway.session_resolver import SessionResolver
@@ -102,6 +103,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
     )
     session_root = cfg.base_session_path.rstrip("/")
     standard_openai_root = _standard_openai_root(session_root)
+    install_model_route_api(app, cfg)
 
     async def handle_inference_request(
         request: Request,
@@ -115,7 +117,6 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         binding: GatewaySessionBinding | None = None
         target: LLMRouteTarget | None = None
         headers: dict[str, str] = {}
-        route_reserved = False
         release_in_finally = True
         trace_status: str | None = None
         trace_extra: dict[str, Any] = {}
@@ -230,8 +231,11 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             if cfg.max_steps < 0 or binding.step_count_for(ctx.requested_model) < cfg.max_steps:
                 if telemetry.should_reject_new_requests(ctx.session_id):
                     raise AdmissionRejected("telemetry queue is full", 503)
-                with trace.span("select_target_initial"):
-                    target = await router.select_target(ctx, binding)
+                with trace.span("route_acquire"):
+                    target = await router.acquire_target(
+                        requested_model=ctx.requested_model,
+                        is_stream=ctx.is_stream,
+                    )
                 log.debug(
                     "Gateway target selected: request_id=%s route_model=%s base_url=%s max_concurrency=%d",
                     ctx.request_id,
@@ -273,12 +277,12 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             ctx = replace(ctx, llm_step_index=decision.llm_step_index)
 
             if target is None:
-                with trace.span("select_target_fallback"):
-                    target = await router.select_target(ctx, binding)
-            route_reserved = True
+                with trace.span("route_acquire"):
+                    target = await router.acquire_target(
+                        requested_model=ctx.requested_model,
+                        is_stream=ctx.is_stream,
+                    )
             trace.update_context(route_model=target.route_model, upstream_base_url=target.base_url)
-            with trace.span("route_acquire"):
-                await router.on_acquire(target.route_model, is_stream=ctx.is_stream)
             log.debug(
                 "Gateway route acquired: request_id=%s route_model=%s stream=%s",
                 ctx.request_id,
@@ -334,8 +338,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     opened.status_code,
                     opened.upstream_latency_ms,
                 )
-                release_in_finally = False
-                return StreamingResponse(
+                response = StreamingResponse(
                     _stream_and_finalize(
                         opened=opened,
                         started=started,
@@ -354,6 +357,8 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     status_code=opened.status_code,
                     media_type=opened.media_type,
                 )
+                release_in_finally = False
+                return response
 
             log.info(
                 "Gateway upstream request begin: request_id=%s route_model=%s endpoint=%s",
@@ -396,7 +401,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 )
             with trace.span("router_mark_success"):
                 await router.mark_route_result(
-                    target.route_model,
+                    target,
                     True,
                     result.upstream_latency_ms,
                     result.status_code,
@@ -446,7 +451,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             )
             if target is not None:
                 with trace.span("router_mark_failure"):
-                    await router.mark_route_result(target.route_model, False, latency_ms, status_code)
+                    await router.mark_route_result(target, False, latency_ms, status_code)
             with trace.span("request_log_error"):
                 await request_logger.log_error(
                     endpoint=endpoint,
@@ -486,17 +491,16 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             return JSONResponse(error_body, status_code=status_code)
         finally:
             if release_in_finally:
-                if route_reserved and target is not None and ctx is not None:
-                    with trace.span("route_release"):
-                        await router.on_release(target.route_model, is_stream=ctx.is_stream)
-                    log.debug(
-                        "Gateway route released: request_id=%s route_model=%s stream=%s",
-                        ctx.request_id,
-                        target.route_model,
-                        ctx.is_stream,
-                    )
-                with trace.span("admission_release"):
-                    await admission.release(ctx, binding, target)
+                await _release_request_resources(
+                    router=router,
+                    target=target,
+                    trace=trace,
+                    admission=admission,
+                    ctx=ctx,
+                    binding=binding,
+                    request_id=ctx.request_id if ctx is not None else path_session_id,
+                    finalize_tasks=request.app.state.gateway_stream_finalize_tasks,
+                )
                 if trace_status is not None:
                     trace.emit_summary(status=trace_status, **trace_extra)
 
@@ -541,7 +545,6 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         started = time.perf_counter()
         payload: dict[str, Any] = {}
         target: LLMRouteTarget | None = None
-        route_reserved = False
         release_in_finally = True
         is_stream = False
         trace_status: str | None = None
@@ -573,15 +576,14 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 requested_model,
                 is_stream,
             )
-            with trace.span("select_standard_target"):
-                target = await router.select_standard_target(
+            if request.app.state.gateway_draining:
+                raise AdmissionRejected("gateway is draining", 503)
+            with trace.span("route_acquire"):
+                target = await router.acquire_target(
                     requested_model=requested_model,
                     is_stream=is_stream,
                 )
             trace.update_context(route_model=target.route_model, upstream_base_url=target.base_url)
-            route_reserved = True
-            with trace.span("route_acquire"):
-                await router.on_acquire(target.route_model, is_stream=is_stream)
 
             headers = forwarder.build_upstream_headers(target)
             if is_stream:
@@ -605,19 +607,20 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     opened.status_code,
                     opened.upstream_latency_ms,
                 )
-                release_in_finally = False
-                return StreamingResponse(
+                response = StreamingResponse(
                     _standard_stream_and_finalize(
                         opened=opened,
                         started=started,
                         target=target,
                         router=router,
-                        is_stream=is_stream,
                         trace=trace,
+                        finalize_tasks=request.app.state.gateway_stream_finalize_tasks,
                     ),
                     status_code=opened.status_code,
                     media_type=opened.media_type,
                 )
+                release_in_finally = False
+                return response
 
             with trace.span("upstream_json_forward"):
                 result = await _forward_json(forwarder, target, endpoint, payload, headers)
@@ -630,7 +633,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             )
             with trace.span("router_mark_success"):
                 await router.mark_route_result(
-                    target.route_model,
+                    target,
                     True,
                     result.upstream_latency_ms,
                     result.status_code,
@@ -665,7 +668,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             )
             if target is not None:
                 with trace.span("router_mark_failure"):
-                    await router.mark_route_result(target.route_model, False, latency_ms, status_code)
+                    await router.mark_route_result(target, False, latency_ms, status_code)
             trace_status = "failed"
             trace_extra = {
                 "status_code": status_code,
@@ -676,9 +679,14 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             }
             return JSONResponse(error_body, status_code=status_code)
         finally:
-            if release_in_finally and route_reserved and target is not None:
-                with trace.span("route_release"):
-                    await router.on_release(target.route_model, is_stream=is_stream)
+            if release_in_finally and target is not None:
+                await _release_request_resources(
+                    router=router,
+                    target=target,
+                    trace=trace,
+                    request_id=target.lease_id,
+                    finalize_tasks=request.app.state.gateway_stream_finalize_tasks,
+                )
             if release_in_finally and trace_status is not None:
                 trace.emit_summary(status=trace_status, **trace_extra)
 
@@ -1344,7 +1352,7 @@ async def _stream_and_finalize(
                         )
 
                 with trace.span("router_mark_stream_result"):
-                    await router.mark_route_result(target.route_model, ok, latency_ms, status_code)
+                    await router.mark_route_result(target, ok, latency_ms, status_code)
                 with trace.span("request_log_stream_response"):
                     await request_logger.log_stream_response(
                         ctx,
@@ -1370,12 +1378,16 @@ async def _stream_and_finalize(
                 )
                 trace.mark("stream_finalize_complete", status_code=status_code)
             finally:
-                try:
-                    with trace.span("route_release"):
-                        await router.on_release(target.route_model, is_stream=ctx.is_stream)
-                finally:
-                    with trace.span("admission_release"):
-                        await admission.release(ctx, binding, target)
+                await _release_request_resources(
+                    router=router,
+                    target=target,
+                    trace=trace,
+                    admission=admission,
+                    ctx=ctx,
+                    binding=binding,
+                    request_id=ctx.request_id,
+                    finalize_tasks=finalize_tasks,
+                )
                 trace.update_context(
                     final_status_code=status_code,
                     stream_chunk_count=chunk_count,
@@ -1399,31 +1411,70 @@ async def _stream_and_finalize(
                 )
                 log.debug("Gateway stream resources released: request_id=%s", ctx.request_id)
 
-        await _await_stream_finalize_cancel_safe(
+        await _await_finalize_cancel_safe(
             finalize(),
             request_id=ctx.request_id,
             finalize_tasks=finalize_tasks,
         )
 
 
-async def _await_stream_finalize_cancel_safe(
+async def _release_request_resources(
+    *,
+    router: LLMRouter,
+    target: LLMRouteTarget | None,
+    trace: PerfTrace,
+    admission: AdmissionController | None = None,
+    ctx: GatewayRequestContext | None = None,
+    binding: GatewaySessionBinding | None = None,
+    request_id: str,
+    finalize_tasks: set[asyncio.Task[None]],
+) -> None:
+    async def release() -> None:
+        if admission is not None:
+            with trace.span("admission_release"):
+                await admission.release(ctx, binding, target)
+        # Keep the route busy until session admission and request finalization end.
+        if target is not None:
+            with trace.span("route_release"):
+                await router.release_target(target)
+
+    try:
+        await release()
+    except asyncio.CancelledError:
+        # Normal completions stay in this task. Only interrupted cleanup needs a
+        # shielded task; both release operations are idempotent.
+        await _await_finalize_cancel_safe(
+            release(), request_id=request_id, finalize_tasks=finalize_tasks,
+        )
+        raise
+    except Exception:
+        if target is not None:
+            await _await_finalize_cancel_safe(
+                router.release_target(target),
+                request_id=request_id,
+                finalize_tasks=finalize_tasks,
+            )
+        raise
+
+
+async def _await_finalize_cancel_safe(
     finalize: Coroutine[Any, Any, None],
     *,
     request_id: str,
     finalize_tasks: set[asyncio.Task[None]],
 ) -> None:
-    task = asyncio.create_task(finalize, name=f"gateway-stream-finalize-{request_id}")
+    task = asyncio.create_task(finalize, name=f"gateway-request-finalize-{request_id}")
     finalize_tasks.add(task)
 
     def _on_done(done: asyncio.Task[None]) -> None:
         finalize_tasks.discard(done)
         if done.cancelled():
-            log.error("Gateway stream finalize cancelled: request_id=%s", request_id)
+            log.error("Gateway request finalize cancelled: request_id=%s", request_id)
             return
         error = done.exception()
         if error is not None:
             log.error(
-                "Gateway stream finalize failed: request_id=%s error=%s",
+                "Gateway request finalize failed: request_id=%s error=%s",
                 request_id,
                 error,
                 exc_info=(type(error), error, error.__traceback__),
@@ -1434,7 +1485,7 @@ async def _await_stream_finalize_cancel_safe(
         await asyncio.shield(task)
     except asyncio.CancelledError:
         log.warning(
-            "Gateway stream response task cancelled; finalize continues in background: request_id=%s",
+            "Gateway response task cancelled; finalize continues in background: request_id=%s",
             request_id,
         )
         raise
@@ -1446,8 +1497,8 @@ async def _standard_stream_and_finalize(
     started: float,
     target: LLMRouteTarget,
     router: LLMRouter,
-    is_stream: bool,
     trace: PerfTrace,
+    finalize_tasks: set[asyncio.Task[None]],
 ) -> AsyncIterator[bytes]:
     status_code = opened.status_code
     first_chunk_at: float | None = None
@@ -1489,36 +1540,51 @@ async def _standard_stream_and_finalize(
         latency_ms = (time.perf_counter() - started) * 1000
         upstream_stream_total_ms = (time.perf_counter() - opened.upstream_started_perf) * 1000
         ttft_ms = (first_chunk_at - started) * 1000 if first_chunk_at is not None else None
-        with trace.span("router_mark_stream_result"):
-            await router.mark_route_result(target.route_model, status_code < 400, latency_ms, status_code)
-        with trace.span("route_release"):
-            await router.on_release(target.route_model, is_stream=is_stream)
-        trace.update_context(
-            final_status_code=status_code,
-            stream_chunk_count=chunk_count,
-            stream_output_bytes=output_bytes,
-        )
-        trace.emit_summary(
-            status=(
-                "client_cancelled"
-                if client_cancelled
-                else "upstream_failed"
-                if upstream_failed
-                else "success"
-                if status_code < 400
-                else "failed"
-            ),
-            status_code=status_code,
-            total_latency_ms=latency_ms,
-            upstream_open_latency_ms=opened.upstream_latency_ms,
-            upstream_stream_total_ms=upstream_stream_total_ms,
-            ttft_ms=ttft_ms,
-        )
-        log.info(
-            "Gateway standard stream complete: route_model=%s status=%d total_latency_ms=%.2f",
-            target.route_model,
-            status_code,
-            latency_ms,
+
+        async def finalize() -> None:
+            try:
+                with trace.span("router_mark_stream_result"):
+                    await router.mark_route_result(target, status_code < 400, latency_ms, status_code)
+            finally:
+                await _release_request_resources(
+                    router=router,
+                    target=target,
+                    trace=trace,
+                    request_id=target.lease_id,
+                    finalize_tasks=finalize_tasks,
+                )
+            trace.update_context(
+                final_status_code=status_code,
+                stream_chunk_count=chunk_count,
+                stream_output_bytes=output_bytes,
+            )
+            trace.emit_summary(
+                status=(
+                    "client_cancelled"
+                    if client_cancelled
+                    else "upstream_failed"
+                    if upstream_failed
+                    else "success"
+                    if status_code < 400
+                    else "failed"
+                ),
+                status_code=status_code,
+                total_latency_ms=latency_ms,
+                upstream_open_latency_ms=opened.upstream_latency_ms,
+                upstream_stream_total_ms=upstream_stream_total_ms,
+                ttft_ms=ttft_ms,
+            )
+            log.info(
+                "Gateway standard stream complete: route_model=%s status=%d total_latency_ms=%.2f",
+                target.route_model,
+                status_code,
+                latency_ms,
+            )
+
+        await _await_finalize_cancel_safe(
+            finalize(),
+            request_id=target.lease_id,
+            finalize_tasks=finalize_tasks,
         )
 
 
@@ -1531,18 +1597,27 @@ def _standard_openai_root(session_root: str) -> str:
 
 async def _wait_for_drain(app: FastAPI, drain_timeout_s: int) -> None:
     admission: AdmissionController = app.state.gateway_admission
+    router: LLMRouter = app.state.gateway_router
     deadline = time.monotonic() + max(0, drain_timeout_s)
     next_log_at = 0.0
     while time.monotonic() < deadline:
         snapshot = await admission.snapshot()
-        if snapshot["inflight_requests"] <= 0 and snapshot["active_streams"] <= 0:
+        route_snapshot = await router.snapshot()
+        route_inflight = sum(int(state["inflight_requests"]) for state in route_snapshot.values())
+        route_streams = sum(int(state["active_streams"]) for state in route_snapshot.values())
+        if (
+            snapshot["inflight_requests"] <= 0
+            and snapshot["active_streams"] <= 0
+            and route_inflight <= 0
+            and route_streams <= 0
+        ):
             return
         now = time.monotonic()
         if now >= next_log_at:
             log.info(
                 "Gateway draining: inflight_requests=%d active_streams=%d",
-                snapshot["inflight_requests"],
-                snapshot["active_streams"],
+                max(int(snapshot["inflight_requests"]), route_inflight),
+                max(int(snapshot["active_streams"]), route_streams),
             )
             next_log_at = now + 1.0
         await asyncio.sleep(0.05)

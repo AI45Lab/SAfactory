@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, fields
+import math
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 import yaml
@@ -12,7 +13,7 @@ DEFAULT_SQLITE_DB_URL = "sqlite://env_trajs.db"
 @dataclass(frozen=True)
 class LLMRouteConfig:
     base_url: str
-    api_key: str | list[str] | None = None
+    api_key: str | list[str] | None = field(default=None, repr=False)
     supports_stream: bool = True
     max_concurrency: int | None = None
     anthropic_interleaved_thinking: bool = True
@@ -59,6 +60,8 @@ class GatewayConfig:
     storage_type: str = "sqlite"
     storage_config: dict[str, Any] | None = None
     llm_routes: dict[str, LLMRouteConfig] | None = None
+    route_probe_timeout_s: float = 15.0
+    route_registration_timeout_s: float = 120.0
 
     def __post_init__(self) -> None:
         storage_type = str(self.storage_type or "").strip().lower()
@@ -101,6 +104,10 @@ class GatewayConfig:
             raise ValueError("session_close_timeout_s must be positive")
         if self.session_close_retry_after_s <= 0:
             raise ValueError("session_close_retry_after_s must be positive")
+        if any(not math.isfinite(value) or value <= 0 for value in (
+            self.route_probe_timeout_s, self.route_registration_timeout_s,
+        )):
+            raise ValueError("route probe and registration timeouts must be positive")
 def load_gateway_config(path: str | None = None) -> GatewayConfig:
     file_data = _load_file(path) if path else {}
     cfg = _dict_to_config(file_data)
