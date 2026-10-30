@@ -269,6 +269,8 @@ rjob:
   no_packaging: true
   cleanup_on_finish: true
   keep_failed_jobs: true
+  starting_timeout_s: 900
+  running_timeout_s: 1800
   resources:
     cpu: 1
     gpu: 0
@@ -281,7 +283,7 @@ rjob:
     - "gpfs+gpfs://gpfs1/path/data:/app/data"
 ```
 
-When `container.runner_entrypoint.source` points to a local file, RJob mode embeds that file automatically. Supported per-agent RJob keys include connection overrides, image pull policy, `resources`, `requests`, `env`, `labels`, `annotations`, `affinity`, `mount_config`, `mount`, `before_script`, `depends_on`, `embedded_files` for additional files, `replicas`, `poll_interval_s`, `termination_grace_period_seconds`, `local_storage_in_mb`, and cleanup flags. `affinity.random_positive_tags` chooses one candidate tag independently for each submitted job; it does not inspect current node capacity.
+When `container.runner_entrypoint.source` points to a local file, RJob mode embeds that file automatically. `starting_timeout_s` limits time in `Starting`, while `running_timeout_s` starts when the job reaches `Running`; either can be omitted to retain the legacy total timeout for that phase. Supported per-agent RJob keys include connection overrides, image pull policy, `resources`, `requests`, `env`, `labels`, `annotations`, `affinity`, `mount_config`, `mount`, `before_script`, `depends_on`, `embedded_files` for additional files, `replicas`, `poll_interval_s`, `starting_timeout_s`, `running_timeout_s`, `termination_grace_period_seconds`, `local_storage_in_mb`, and cleanup flags. `affinity.random_positive_tags` chooses one candidate tag independently for each submitted job; it does not inspect current node capacity.
 
 ## Useful Environment Variables
 

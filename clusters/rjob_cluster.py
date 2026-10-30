@@ -245,9 +245,13 @@ class RJobClusterBackend(ClusterBackend):
         *,
         timeout_s: float,
         poll_interval_s: float,
+        starting_timeout_s: float | None = None,
+        running_timeout_s: float | None = None,
         trace: PerfTrace | None = None,
     ) -> tuple[str, int]:
         deadline = time.monotonic() + max(1.0, float(timeout_s))
+        starting_since: float | None = None
+        running_since: float | None = None
         unknown_count = 0
         poll_count = 0
         last_status = ""
@@ -281,7 +285,13 @@ class RJobClusterBackend(ClusterBackend):
                         submit_to_starting_ms=submit_to_starting_ms,
                     )
                     trace.update_context(rjob_submit_to_starting_ms=submit_to_starting_ms)
+            if status == "Starting":
+                if starting_since is None:
+                    starting_since = time.monotonic()
+            else:
+                starting_since = None
             if status == "Running" and submit_to_running_ms is None:
+                running_since = time.monotonic()
                 submit_to_running_ms = elapsed_ms
                 if trace is not None:
                     trace.mark(
@@ -309,15 +319,50 @@ class RJobClusterBackend(ClusterBackend):
                 unknown_count += 1
                 if unknown_count >= 5:
                     return status, poll_count
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            starting_timed_out = (
+                starting_timeout_s is not None
+                and starting_timeout_s > 0
+                and starting_since is not None
+                and now - starting_since >= starting_timeout_s
+            )
+            running_timed_out = (
+                running_timeout_s is not None
+                and running_timeout_s > 0
+                and running_since is not None
+                and now - running_since >= running_timeout_s
+            )
+            phase_timeout_active = (
+                status == "Starting"
+                and starting_timeout_s is not None
+                and starting_timeout_s > 0
+            ) or (
+                status == "Running"
+                and running_timeout_s is not None
+                and running_timeout_s > 0
+            )
+            total_timed_out = not phase_timeout_active and now >= deadline
+            if starting_timed_out or running_timed_out or total_timed_out:
+                if starting_timed_out:
+                    active_timeout_s = starting_timeout_s
+                    reason = "stuck in Starting"
+                elif running_timed_out:
+                    active_timeout_s = running_timeout_s
+                    reason = "exceeded Running limit"
+                else:
+                    active_timeout_s = timeout_s
+                    reason = "timed out"
                 if trace is not None:
                     trace.mark(
                         "wait_terminal.timeout",
                         last_status=status,
                         poll_count=poll_count,
-                        timeout_s=timeout_s,
+                        timeout_s=active_timeout_s,
                     )
-                exc = TimeoutError(f"RJob {job_name} timed out after {timeout_s:.1f}s; last_status={status}")
+                exc = TimeoutError(
+                    f"RJob {job_name} {reason} after {active_timeout_s:.1f}s; "
+                    f"last_status={status}"
+                )
                 exc.last_status = status  # type: ignore[attr-defined]
                 exc.poll_count = poll_count  # type: ignore[attr-defined]
                 raise exc
