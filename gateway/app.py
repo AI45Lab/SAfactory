@@ -17,9 +17,12 @@ from core.perf_trace import PerfTrace
 from gateway.admission_control import AdmissionController, AdmissionRejected
 from gateway.config import GatewayConfig, load_gateway_config
 from gateway.inference_forwarder import (
+    ForwardResult,
     InferenceForwarder,
     SessionClosedError,
     StreamForwardContext,
+    UpstreamHTTPError,
+    is_quota_exhausted,
 )
 from gateway.llm_router import LLMRouteTarget, LLMRouter
 from gateway.model_route_api import install_model_route_api
@@ -318,12 +321,14 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     endpoint,
                 )
                 with trace.span("upstream_stream_open"):
-                    opened = await _open_stream(
+                    opened, target, headers = await _forward_with_key_retry(
                         forwarder,
+                        router,
                         target,
                         endpoint,
                         payload,
                         headers,
+                        is_stream=True,
                         anthropic_query_string=anthropic_query_string,
                     )
                 trace.mark(
@@ -367,8 +372,9 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 endpoint,
             )
             with trace.span("upstream_json_forward"):
-                result = await _forward_json(
+                result, target, headers = await _forward_with_key_retry(
                     forwarder,
+                    router,
                     target,
                     endpoint,
                     payload,
@@ -434,6 +440,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             trace_extra = {"error_type": "CancelledError"}
             raise
         except Exception as exc:
+            target = getattr(exc, "gateway_target", target)
             latency_ms = (time.perf_counter() - started) * 1000
             upstream_latency_ms = _upstream_latency_ms_from_exception(exc)
             status_code, error_body = forwarder.normalize_error(exc)
@@ -593,7 +600,9 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     requested_model,
                 )
                 with trace.span("upstream_stream_open"):
-                    opened = await _open_stream(forwarder, target, endpoint, payload, headers)
+                    opened, target, headers = await _forward_with_key_retry(
+                        forwarder, router, target, endpoint, payload, headers, is_stream=True,
+                    )
                 trace.mark(
                     "upstream_stream_opened",
                     status_code=opened.status_code,
@@ -623,7 +632,9 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 return response
 
             with trace.span("upstream_json_forward"):
-                result = await _forward_json(forwarder, target, endpoint, payload, headers)
+                result, target, headers = await _forward_with_key_retry(
+                    forwarder, router, target, endpoint, payload, headers,
+                )
             latency_ms = (time.perf_counter() - started) * 1000
             trace.mark(
                 "upstream_json_complete",
@@ -654,6 +665,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             trace_extra = {"error_type": "CancelledError"}
             raise
         except Exception as exc:
+            target = getattr(exc, "gateway_target", target)
             latency_ms = (time.perf_counter() - started) * 1000
             upstream_latency_ms = _upstream_latency_ms_from_exception(exc)
             status_code, error_body = forwarder.normalize_error(exc)
@@ -983,6 +995,75 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
     return app
 
 
+async def _forward_with_key_retry(
+    forwarder: InferenceForwarder,
+    router: LLMRouter,
+    target: LLMRouteTarget,
+    endpoint: str,
+    payload: dict[str, Any],
+    headers: dict[str, str],
+    *,
+    is_stream: bool = False,
+    anthropic_query_string: str | None = None,
+) -> tuple[ForwardResult | StreamForwardContext, LLMRouteTarget, dict[str, str]]:
+    """Retry before any output, retaining one route lease and trajectory step."""
+    started = time.perf_counter()
+    timeout_s = forwarder.cfg.upstream_request_timeout_s
+    deadline = started + timeout_s if timeout_s and timeout_s > 0 else None
+    target = replace(target, request_deadline=deadline)
+    attempted_keys: set[str | None] = set()
+    forward = _open_stream if is_stream else _forward_json
+    try:
+        while True:
+            attempted_keys.add(target.api_key)
+            remaining = deadline - time.perf_counter() if deadline is not None else None
+            if remaining is not None and remaining <= 0:
+                raise asyncio.TimeoutError("upstream key retries exceeded the request timeout")
+            try:
+                result = await asyncio.wait_for(
+                    forward(
+                        forwarder, target, endpoint, payload, headers,
+                        anthropic_query_string=anthropic_query_string,
+                    ),
+                    timeout=remaining,
+                )
+                # Count all attempts as upstream time, keeping Gateway overhead
+                # and the final successful payload meaningful in telemetry.
+                result = replace(result, upstream_latency_ms=(time.perf_counter() - started) * 1000)
+                if isinstance(result, StreamForwardContext):
+                    result.upstream_started_perf = started
+                return result, target, headers
+            except UpstreamHTTPError as exc:
+                if not is_quota_exhausted(exc.status_code, exc.body):
+                    raise
+                replacement = await router.retry_target(target, attempted_keys)
+                if replacement is None:
+                    raise
+                target = replace(replacement, retry_count=target.retry_count + 1)
+                # Retain protocol/session/request/step headers, changing only
+                # the credentials selected for this attempt.
+                new_headers = (
+                    forwarder.build_anthropic_headers(target, headers)
+                    if endpoint == "messages"
+                    else forwarder.build_upstream_headers(target)
+                )
+                headers = {
+                    name: value for name, value in headers.items()
+                    if name.lower() not in {"authorization", "x-api-key"}
+                }
+                headers.update(new_headers)
+                log.info(
+                    "Gateway retrying exhausted API key: route_id=%s retry_count=%d",
+                    target.route_id, target.retry_count,
+                )
+    except Exception as exc:
+        # The outer handler records only this final failure, with the final
+        # attempt count. Its finally block still releases the original lease.
+        exc.gateway_target = target
+        exc.upstream_latency_ms = (time.perf_counter() - started) * 1000
+        raise
+
+
 async def _forward_json(
     forwarder: InferenceForwarder,
     target: LLMRouteTarget,
@@ -1172,7 +1253,7 @@ def _upstream_latency_ms_from_exception(exc: Exception) -> float | None:
 
 
 def _stream_completed(summary: dict[str, Any]) -> bool:
-    return summary.get("status") == "completed"
+    return summary.get("status") == "completed" and not summary.get("error")
 
 
 async def _stream_and_finalize(
@@ -1241,6 +1322,12 @@ async def _stream_and_finalize(
                     stream_response_body,
                     stream_choice_states,
                 )
+                if stream_response_body.get("error") and error_text is None:
+                    error_text = "upstream returned a streaming error"
+                    quota_exhausted = is_quota_exhausted(200, stream_response_body)
+                    status_code = 429 if quota_exhausted else 502
+                    if quota_exhausted:
+                        await router.disable_api_key(target)
             yield chunk
     except asyncio.CancelledError:
         if _stream_completed(stream_response_body):
@@ -1258,6 +1345,8 @@ async def _stream_and_finalize(
         upstream_cancelled = True
         status_code = 502
         error_text = str(exc)
+        if isinstance(exc, UpstreamHTTPError) and is_quota_exhausted(exc.status_code, exc.body):
+            await router.disable_api_key(target)
         log.warning("Gateway stream upstream failed: request_id=%s error=%s", ctx.request_id, exc)
         raise
     finally:
@@ -1506,6 +1595,7 @@ async def _standard_stream_and_finalize(
     output_bytes = 0
     client_cancelled = False
     upstream_failed = False
+    stream_metadata_buffer = b""
     try:
         log.info(
             "Gateway standard stream proxy start: route_model=%s status=%d",
@@ -1524,15 +1614,26 @@ async def _standard_stream_and_finalize(
                     )
                 chunk_count += 1
                 output_bytes += len(chunk)
+                # Inspect error events without retaining the standard response
+                # body. Output already sent to the client is never replayed.
+                summary: dict[str, Any] = {}
+                stream_metadata_buffer = _collect_stream_metadata(chunk, stream_metadata_buffer, summary, {})
+                if summary.get("error"):
+                    quota_exhausted = is_quota_exhausted(200, summary)
+                    status_code = 429 if quota_exhausted else 502
+                    if quota_exhausted:
+                        await router.disable_api_key(target)
             yield chunk
     except asyncio.CancelledError:
         status_code = 499
         client_cancelled = True
         log.warning("Gateway standard stream client cancelled: route_model=%s", target.route_model)
         raise
-    except Exception:
+    except Exception as exc:
         status_code = 502
         upstream_failed = True
+        if isinstance(exc, UpstreamHTTPError) and is_quota_exhausted(exc.status_code, exc.body):
+            await router.disable_api_key(target)
         log.warning("Gateway standard stream failed: route_model=%s", target.route_model, exc_info=True)
         raise
     finally:
@@ -1771,6 +1872,15 @@ def _merge_stream_event(
     choice_states: dict[int, dict[str, Any]] | None = None,
 ) -> None:
     event_type = event.get("type")
+    error = event.get("error")
+    response = event.get("response")
+    if error is None and isinstance(response, dict):
+        error = response.get("error")
+    if error is None and event_type == "error":
+        error = event
+    if error is not None:
+        summary["error"] = error
+        summary["status"] = "failed"
     if event_type in {
         "message_start",
         "content_block_start",
@@ -1934,6 +2044,8 @@ def _anthropic_stream_response_body_for_telemetry(summary: dict[str, Any]) -> di
     usage = summary.get("usage")
     if isinstance(usage, dict):
         message["usage"] = dict(usage)
+    if summary.get("error"):
+        message["error"] = summary["error"]
     return message
 
 

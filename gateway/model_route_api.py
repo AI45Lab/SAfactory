@@ -6,7 +6,7 @@ import hashlib
 import json
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 
@@ -19,8 +19,7 @@ from gateway.llm_router import LLMRouter, LLMRouteTarget, RouteManagementError
 
 _IDEMPOTENCY_TTL_S = 3600
 _MAX_REGISTRATIONS = 1024
-_MAX_BODY_BYTES = 64 * 1024
-_MAX_API_KEYS = 8
+_PROBE_CONCURRENCY = 8
 
 
 @dataclass
@@ -30,7 +29,6 @@ class _Registration:
     completed_at: float | None = None
     status_code: int = 0
     result: dict[str, Any] | None = None
-    headers: dict[str, str] = field(default_factory=dict)
 
 
 def _validate(payload: Any) -> tuple[str, LLMRouteConfig, str]:
@@ -61,12 +59,12 @@ def _validate(payload: Any) -> tuple[str, LLMRouteConfig, str]:
     keys = api_key if isinstance(api_key, list) else ([] if api_key is None else [api_key])
     if isinstance(api_key, list) and not api_key:
         invalid("api_key list must not be empty; use null for unauthenticated upstreams")
-    if len(keys) > _MAX_API_KEYS or any(
+    if any(
         not isinstance(key, str) or not key.strip() or len(key) > 4096
         or any(ord(character) < 32 or ord(character) == 127 for character in key)
         for key in keys
     ):
-        invalid(f"api_key must be null, a non-empty string, or up to {_MAX_API_KEYS} non-empty strings")
+        invalid("api_key must be null, a non-empty string, or a list of non-empty strings")
     if len(set(keys)) != len(keys):
         invalid("api_key list must not contain duplicates")
     endpoint = payload.get("probe_endpoint", "chat/completions")
@@ -76,13 +74,74 @@ def _validate(payload: Any) -> tuple[str, LLMRouteConfig, str]:
     return model, LLMRouteConfig(base_url=base_url.rstrip("/"), api_key=keys or None), endpoint
 
 
+async def _probe_keys(
+    cfg: GatewayConfig, forwarder: InferenceForwarder, model: str,
+    route: LLMRouteConfig, endpoint: str,
+) -> tuple[set[str | None], list[dict[str, Any]], int]:
+    """Validate credentials independently with bounded concurrent probes."""
+    keys = route.api_key if isinstance(route.api_key, list) else [route.api_key]
+    successes: set[int] = set()
+    failures: dict[int, dict[str, Any]] = {}
+    pending = iter(enumerate(keys))
+    secrets = sorted((key for key in keys if key), key=len, reverse=True)
+
+    def safe(value: str | None) -> str | None:
+        if value is None:
+            return None
+        for key in secrets:
+            value = value.replace(key, "[REDACTED]")
+        return value[:2048]
+
+    async def worker() -> None:
+        for index, api_key in pending:
+            try:
+                await asyncio.wait_for(
+                    forwarder.probe(
+                        LLMRouteTarget(route_model=model, base_url=route.base_url, api_key=api_key),
+                        endpoint, timeout_s=cfg.route_probe_timeout_s,
+                    ),
+                    timeout=cfg.route_probe_timeout_s,
+                )
+                successes.add(index)
+            except RouteProbeError as exc:
+                failures[index] = {
+                    "key_index": index, "code": "upstream_probe_failed", "source": "upstream",
+                    "message": safe(exc.message), "upstream_status_code": exc.upstream_status_code,
+                    "upstream_error_code": safe(exc.upstream_error_code),
+                }
+                if exc.retry_after:
+                    failures[index]["retry_after"] = safe(exc.retry_after)
+            except asyncio.TimeoutError:
+                failures[index] = {
+                    "key_index": index, "code": "probe_timeout", "source": "gateway",
+                    "message": "Credential probe deadline exceeded", "upstream_status_code": None,
+                }
+            except Exception:
+                failures[index] = {
+                    "key_index": index, "code": "probe_failed", "source": "gateway",
+                    "message": "Credential probe failed", "upstream_status_code": None,
+                }
+
+    workers = asyncio.gather(*(worker() for _ in range(min(_PROBE_CONCURRENCY, len(keys)))))
+    try:
+        await asyncio.wait_for(workers, timeout=cfg.route_registration_timeout_s)
+    except asyncio.TimeoutError:
+        for index in range(len(keys)):
+            if index not in successes and index not in failures:
+                failures[index] = {
+                    "key_index": index, "code": "registration_timeout", "source": "gateway",
+                    "message": "Credential validation deadline exceeded", "upstream_status_code": None,
+                }
+    return {keys[index] for index in failures}, [failures[index] for index in sorted(failures)], len(successes)
+
+
 class _Registrations:
     def __init__(self, cfg: GatewayConfig, router: LLMRouter, forwarder: InferenceForwarder):
         self.cfg, self.router, self.forwarder = cfg, router, forwarder
         self.records: dict[str, _Registration] = {}
         self.lock = asyncio.Lock()
 
-    async def register(self, key: str, payload: Any) -> tuple[int, dict[str, Any], dict[str, str]]:
+    async def register(self, key: str, payload: Any) -> tuple[int, dict[str, Any]]:
         model, route, endpoint = _validate(payload)
         fingerprint = hashlib.sha256(
             json.dumps([model, route.base_url, route.api_key, endpoint], ensure_ascii=False).encode(),
@@ -102,8 +161,8 @@ class _Registrations:
                 if record.status_code == 201:
                     if not await self.router.has_route_id(record.result["route_id"]):
                         raise RouteManagementError("route_deleted", "This registration was deleted; use a new Idempotency-Key", 410)
-                    return 200, record.result, record.headers
-                return record.status_code, record.result, record.headers
+                    return 200, record.result
+                return record.status_code, record.result
             if len(self.records) >= _MAX_REGISTRATIONS:
                 raise RouteManagementError("registration_quota_exceeded", "Registration history is full; retry later", 429)
             record = _Registration(fingerprint, uuid.uuid4().hex)
@@ -111,44 +170,11 @@ class _Registrations:
             await self.router.reserve_registration(model, record.operation_id)
             self.records[key] = record
 
-        key_index = 0
         try:
-            async def probe_all() -> None:
-                nonlocal key_index
-                for key_index, api_key in enumerate(route.api_key or [None]):
-                    await self.forwarder.probe(
-                        LLMRouteTarget(route_model=model, base_url=route.base_url, api_key=api_key),
-                        endpoint, timeout_s=self.cfg.route_probe_timeout_s,
-                    )
-
-            await asyncio.wait_for(probe_all(), timeout=self.cfg.route_registration_timeout_s)
-            result = await self.router.publish_registration(model, record.operation_id, route, endpoint)
-            result["validated_key_count"] = result["api_key_count"]
+            disabled, failed_keys, validated = await _probe_keys(self.cfg, self.forwarder, model, route, endpoint)
+            result = await self.router.publish_registration(model, record.operation_id, route, endpoint, disabled)
+            result.update(validated_key_count=validated, failed_keys=failed_keys)
             record.status_code, record.result = 201, result
-        except RouteProbeError as exc:
-            # Scrub all supplied keys, including keys echoed by an unusual upstream.
-            def safe(value: str | None) -> str | None:
-                if value is None:
-                    return None
-                for api_key in sorted(route.api_key or [], key=len, reverse=True):
-                    value = value.replace(api_key, "[REDACTED]")
-                return value[:2048]
-
-            record.status_code = exc.status_code
-            record.result = {"error": {
-                "code": "upstream_probe_failed", "source": "upstream",
-                "message": safe(exc.message), "upstream_status_code": exc.upstream_status_code,
-                "upstream_error_code": safe(exc.upstream_error_code), "key_index": key_index,
-            }}
-            if exc.retry_after and safe(exc.retry_after) == exc.retry_after:
-                record.headers["Retry-After"] = exc.retry_after
-        except asyncio.TimeoutError:
-            record.status_code = 504
-            record.result = {"error": {
-                "code": "registration_timeout", "source": "gateway",
-                "message": "Registration probe deadline exceeded", "key_index": key_index,
-                "upstream_status_code": None,
-            }}
         except asyncio.CancelledError:
             record.status_code = 503
             record.result = {"error": {
@@ -167,7 +193,14 @@ class _Registrations:
         finally:
             record.completed_at = time.monotonic()
             await asyncio.shield(self.router.abort_registration(model, record.operation_id))
-        return record.status_code, record.result, record.headers
+        return record.status_code, record.result
+
+
+async def _read_payload(request: Request) -> Any:
+    try:
+        return await request.json()
+    except (ValueError, UnicodeError):
+        raise RouteManagementError("invalid_route_config", "Body must be valid JSON", 422) from None
 
 
 def install_model_route_api(app: FastAPI, cfg: GatewayConfig) -> None:
@@ -183,22 +216,14 @@ def install_model_route_api(app: FastAPI, cfg: GatewayConfig) -> None:
         key = request.headers.get("idempotency-key", "")
         if not key.strip() or len(key) > 200:
             raise RouteManagementError("invalid_idempotency_key", "A non-empty Idempotency-Key of at most 200 characters is required", 422)
-        body = bytearray()
-        async for chunk in request.stream():
-            body.extend(chunk)
-            if len(body) > _MAX_BODY_BYTES:
-                raise RouteManagementError("request_too_large", "Registration body exceeds 64 KiB", 413)
-        try:
-            payload = json.loads(body)
-        except (ValueError, UnicodeError):
-            raise RouteManagementError("invalid_route_config", "Body must be valid JSON", 422) from None
+        payload = await _read_payload(request)
         router = app.state.gateway_router
         registrations = getattr(app.state, "gateway_registrations", None)
         if registrations is None or registrations.router is not router:
             registrations = _Registrations(cfg, router, app.state.gateway_forwarder)
             app.state.gateway_registrations = registrations
-        status, result, cached_headers = await registrations.register(key, payload)
-        headers = dict(cached_headers)
+        status, result = await registrations.register(key, payload)
+        headers = {}
         if status == 201:
             headers["Location"] = "/v1/model-routes?" + urlencode({"model": result["model"]})
         return JSONResponse(result, status_code=status, headers=headers)
@@ -206,6 +231,24 @@ def install_model_route_api(app: FastAPI, cfg: GatewayConfig) -> None:
     @app.get("/v1/model-routes")
     async def list_routes(model: str | None = None) -> dict[str, Any]:
         return {"data": await app.state.gateway_router.describe_routes(model)}
+
+    @app.put("/v1/model-routes/{route_id}/api-keys")
+    async def update_api_keys(route_id: str, request: Request) -> Response:
+        if not app.state.gateway_ready or app.state.gateway_draining:
+            raise RouteManagementError("gateway_unavailable", "Gateway is not accepting updates", 503)
+        payload = await _read_payload(request)
+        if not isinstance(payload, dict) or "api_key" not in payload or set(payload) - {"api_key", "probe_endpoint"}:
+            raise RouteManagementError("invalid_route_config", "Expected api_key and optional probe_endpoint", 422)
+        router = app.state.gateway_router
+        model, base_url, endpoint, revision = await router.snapshot_key_update(route_id)
+        _, route, endpoint = _validate({
+            "model": model, "base_url": base_url,
+            "probe_endpoint": endpoint, **payload,
+        })
+        disabled, failed_keys, validated = await _probe_keys(cfg, app.state.gateway_forwarder, model, route, endpoint)
+        result = await router.replace_api_keys(route_id, revision, route.api_key, endpoint, disabled)
+        result.update(validated_key_count=validated, failed_keys=failed_keys)
+        return JSONResponse(result)
 
     @app.delete("/v1/model-routes/{route_id}")
     async def delete_route(route_id: str) -> Response:

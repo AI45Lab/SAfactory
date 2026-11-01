@@ -72,6 +72,41 @@ class UpstreamHTTPError(Exception):
         self.upstream_latency_ms = upstream_latency_ms
 
 
+def is_quota_exhausted(status_code: int, body: Any) -> bool:
+    """Recognize billing exhaustion without treating ordinary 429s as bad keys."""
+    if status_code == 402:
+        return True
+    error = body.get("error", body) if isinstance(body, dict) else body
+    if isinstance(error, dict):
+        details = error.get("details")
+        details = details if isinstance(details, dict) else {}
+        codes = {
+            str(value).lower()
+            for value in (error.get("code"), error.get("type"), details.get("error_code"))
+            if value is not None
+        }
+        # GLM 1113 is unpaid balance; 1302/1305 and rolling-window limits
+        # must not permanently disable a credential.
+        if codes & {"1302", "1305", "1308", "1310", "1316", "1317", "1318", "1319", "1320", "1321"}:
+            return False
+        if codes & {
+            "1113", "insufficient_quota", "insufficient_balance",
+            "credit_balance_exhausted", "organization_spend_limit_exceeded",
+            "project_spend_limit_exceeded", "organization_usage_limit_exceeded",
+            "enforced_spend_limit_reached",
+        }:
+            return True
+        message = str(error.get("message") or "").lower()
+    else:
+        message = str(error or "").lower()
+    return any(phrase in message for phrase in (
+        "insufficient balance", "insufficient credits", "credit balance is too low",
+        "exceeded your current quota", "you have reached your specified api usage limits",
+        "you have reached your specified workspace api usage limits",
+        "余额不足", "账户已欠费", "账号已欠费",
+    ))
+
+
 class RouteProbeError(Exception):
     def __init__(
         self,
@@ -315,6 +350,7 @@ class InferenceForwarder:
                 json=payload,
                 headers=headers,
                 proxy=self._proxy_for(url),
+                timeout=self._request_timeout(target),
             ) as response:
                 log.debug(
                     "Gateway forwarder json response headers received: route_model=%s status=%d",
@@ -399,6 +435,7 @@ class InferenceForwarder:
                 json=payload,
                 headers=stream_headers,
                 proxy=self._proxy_for(url),
+                timeout=self._request_timeout(target),
             )
         except Exception as exc:
             latency_ms = (time.perf_counter() - started) * 1000
@@ -422,9 +459,11 @@ class InferenceForwarder:
         )
 
         if response.status >= 400:
-            body_bytes = await response.read()
+            try:
+                body_bytes = await response.read()
+            finally:
+                response.close()
             latency_ms = (time.perf_counter() - started) * 1000
-            response.close()
             body = self._parse_bytes_body(body_bytes)
             log.warning(
                 "Gateway forwarder stream upstream error: route_model=%s status=%d bytes=%d latency_ms=%.2f upstream_request_id=%s",
@@ -448,6 +487,15 @@ class InferenceForwarder:
             upstream_latency_ms=latency_ms,
             upstream_started_perf=started,
         )
+
+    def _request_timeout(self, target: LLMRouteTarget) -> aiohttp.ClientTimeout:
+        # aiohttp keeps its total timer active while a streaming body is read.
+        remaining = (
+            max(0.001, target.request_deadline - time.perf_counter())
+            if target.request_deadline is not None
+            else self.cfg.upstream_request_timeout_s
+        )
+        return aiohttp.ClientTimeout(total=remaining, connect=self.cfg.upstream_connect_timeout_s)
 
     def build_upstream_headers(
         self,

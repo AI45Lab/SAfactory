@@ -10,10 +10,10 @@ from gateway.config import GatewayConfig, LLMRouteConfig
 from gateway.models import GatewayRequestContext, GatewaySessionBinding
 
 
-def _pick_api_key(api_key: str | list[str] | None) -> str | None:
+def _api_keys(api_key: str | list[str] | None) -> list[str | None]:
     if isinstance(api_key, list):
-        return random.choice(api_key) if api_key else None
-    return api_key
+        return list(api_key) or [None]
+    return [api_key]
 
 
 class ModelNotFoundError(Exception):
@@ -41,6 +41,9 @@ class LLMRouteTarget:
     anthropic_interleaved_thinking: bool = True
     route_id: str = ""
     lease_id: str = ""
+    key_revision: int = 0
+    retry_count: int = 0
+    request_deadline: float | None = None
 
 
 @dataclass
@@ -54,6 +57,8 @@ class LLMRouteRuntimeState:
     route_id: str = field(default_factory=lambda: "rt_" + uuid.uuid4().hex)
     source: str = "config"
     probe_endpoint: str | None = None
+    disabled_api_keys: set[str | None] = field(default_factory=set, repr=False)
+    key_revision: int = 0
 
 
 class LLMRouter:
@@ -97,6 +102,10 @@ class LLMRouter:
         if not state.healthy:
             raise LLMRouteUnavailableError(f"model route {requested_model!r} is unhealthy")
 
+        available_keys = self._available_keys(route, state)
+        if not available_keys:
+            raise LLMRouteUnavailableError(f"model route {requested_model!r} has no available API keys")
+
         if is_stream and not route.supports_stream:
             raise LLMRouteUnavailableError(f"model route {requested_model!r} does not support streaming")
 
@@ -108,12 +117,45 @@ class LLMRouter:
         return LLMRouteTarget(
             route_model=requested_model,
             base_url=route.base_url,
-            api_key=_pick_api_key(route.api_key),
+            api_key=random.choice(available_keys),
             supports_stream=route.supports_stream,
             max_concurrency=max_concurrency,
             anthropic_interleaved_thinking=route.anthropic_interleaved_thinking,
             route_id=state.route_id,
+            key_revision=state.key_revision,
         )
+
+    @staticmethod
+    def _available_keys(route: LLMRouteConfig, state: LLMRouteRuntimeState) -> list[str | None]:
+        return [key for key in _api_keys(route.api_key) if key not in state.disabled_api_keys]
+
+    def _disable_api_key(self, target: LLMRouteTarget) -> bool:
+        state = self._states.get(target.route_model)
+        if state is None or state.route_id != target.route_id or state.key_revision != target.key_revision:
+            return False
+        state.disabled_api_keys.add(target.api_key)
+        return True
+
+    async def disable_api_key(self, target: LLMRouteTarget) -> bool:
+        async with self._lock:
+            return self._disable_api_key(target)
+
+    async def retry_target(
+        self, target: LLMRouteTarget, attempted_keys: set[str | None],
+    ) -> LLMRouteTarget | None:
+        """Disable an exhausted credential and reuse the existing request lease."""
+        async with self._lock:
+            state = self._states.get(target.route_model)
+            if state is None or state.route_id != target.route_id:
+                return None
+            self._disable_api_key(target)
+            if not state.healthy:
+                return None
+            route = self._routes[target.route_model]
+            candidates = [key for key in self._available_keys(route, state) if key not in attempted_keys]
+            if not candidates:
+                return None
+            return replace(target, api_key=random.choice(candidates), key_revision=state.key_revision)
 
     async def acquire_target(self, *, requested_model: str, is_stream: bool) -> LLMRouteTarget:
         """Select and reserve in the same critical section used by deletion."""
@@ -174,6 +216,7 @@ class LLMRouter:
 
     async def publish_registration(
         self, model: str, operation_id: str, route: LLMRouteConfig, probe_endpoint: str,
+        disabled_api_keys: set[str | None] | None = None,
     ) -> dict[str, Any]:
         async with self._lock:
             if self._pending.get(model) != operation_id:
@@ -181,6 +224,7 @@ class LLMRouter:
             self._routes[model] = route
             self._states[model] = LLMRouteRuntimeState(
                 route_model=model, source="dynamic", probe_endpoint=probe_endpoint,
+                disabled_api_keys=set(disabled_api_keys or ()),
             )
             del self._pending[model]
             return self._describe(model)
@@ -193,12 +237,41 @@ class LLMRouter:
     def _describe(self, model: str) -> dict[str, Any]:
         route, state = self._routes[model], self._states[model]
         key_count = len(route.api_key) if isinstance(route.api_key, list) else int(bool(route.api_key))
+        available_count = len(self._available_keys(route, state))
         return {
-            "route_id": state.route_id, "model": model, "status": "active",
+            "route_id": state.route_id, "model": model,
+            "status": "active" if state.healthy and available_count else "unavailable",
             "source": state.source, "base_url": route.base_url,
             "api_key_count": key_count, "probe_endpoint": state.probe_endpoint,
+            "available_key_count": available_count,
+            "disabled_key_count": len(_api_keys(route.api_key)) - available_count,
+            "key_revision": state.key_revision,
             "inflight_requests": state.inflight_requests, "active_streams": state.active_streams,
         }
+
+    async def snapshot_key_update(self, route_id: str) -> tuple[str, str, str, int]:
+        async with self._lock:
+            state = next((state for state in self._states.values() if state.route_id == route_id), None)
+            if state is None:
+                raise RouteManagementError("route_not_found", "Route does not exist", 404)
+            route = self._routes[state.route_model]
+            return state.route_model, route.base_url, state.probe_endpoint or "chat/completions", state.key_revision
+
+    async def replace_api_keys(
+        self, route_id: str, expected_revision: int, api_key: str | list[str] | None,
+        probe_endpoint: str, disabled_api_keys: set[str | None],
+    ) -> dict[str, Any]:
+        async with self._lock:
+            state = next((state for state in self._states.values() if state.route_id == route_id), None)
+            if state is None:
+                raise RouteManagementError("route_not_found", "Route does not exist", 404)
+            if state.key_revision != expected_revision:
+                raise RouteManagementError("key_update_conflict", "API keys changed during validation; retry the update")
+            self._routes[state.route_model] = replace(self._routes[state.route_model], api_key=api_key)
+            state.disabled_api_keys = set(disabled_api_keys)
+            state.probe_endpoint = probe_endpoint
+            state.key_revision += 1
+            return self._describe(state.route_model)
 
     async def describe_routes(self, model: str | None = None) -> list[dict[str, Any]]:
         async with self._lock:

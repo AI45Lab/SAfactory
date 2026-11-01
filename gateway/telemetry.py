@@ -592,7 +592,7 @@ class TelemetryRecorder:
             error_type=error_type,
             error_text=error_text,
             is_stream=ctx.is_stream,
-            retry_count=0,
+            retry_count=target.retry_count if target else 0,
             request_bytes=_json_size(request_body),
             response_bytes=output_bytes if output_bytes is not None else _json_size(response_body),
             prompt_tokens=_usage_int(usage, "prompt_tokens", "input_tokens"),
