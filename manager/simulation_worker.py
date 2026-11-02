@@ -179,11 +179,12 @@ class SimulationWorkerGroup:
             raise
 
         results = self._results
+        pool_stalled = getattr(self.lease_pool, "stop_reason", "") == "pool_stalled"
 
         if not results:
             return SimulationRunSummary(
                 job_id=self.cfg.job_id,
-                status="failed_no_episodes",
+                status="failed_pool_stalled" if pool_stalled else "failed_no_episodes",
                 total_episodes=0,
                 succeeded_episodes=0,
                 truncated_episodes=0,
@@ -197,6 +198,8 @@ class SimulationWorkerGroup:
         failed = len(results) - succeeded - truncated
         if cancelled:
             status = "cancelled"
+        elif pool_stalled:
+            status = "failed_pool_stalled"
         elif failed:
             status = "completed_with_failures"
         elif truncated:

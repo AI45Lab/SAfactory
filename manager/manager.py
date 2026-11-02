@@ -118,12 +118,22 @@ class AgentPoolManager:
     async def list_pool_instances(self) -> List[PoolEntry]:
         return await self._pool.list_instances()
 
+    def stop_scheduling(self) -> None:
+        # start() holds _state_lock throughout prewarm; stopping must not wait for it.
+        self._pool.stop_scheduling()
+
+    @property
+    def has_pending_work(self) -> bool:
+        return self._pool.has_pending_work
+
     async def ensure_capacity(self, *, wait_for_rows: bool = False) -> None:
         if not self._initialized:
             raise RuntimeError("AgentPoolManager not started. Call await start() first.")
         await self._pool.ensure_capacity(wait_for_rows=wait_for_rows)
 
     async def is_data_exhausted(self) -> bool:
+        if self._pool.allocation_error is not None:
+            raise self._pool.allocation_error
         return not self._pool.has_pending_work and await self._repo.is_exhausted()
 
     async def close_and_refill(
