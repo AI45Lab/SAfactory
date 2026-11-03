@@ -265,26 +265,46 @@ class SimulationFlow:
         )
 
     async def check_gateway_model_route(self) -> None:
-        metrics_url = self._gateway_origin() + "/metrics"
+        models_url = self._gateway_origin() + "/v1/models"
 
-        def _fetch_metrics() -> tuple[int, str]:
-            response = requests.get(metrics_url, timeout=5.0)
+        def _fetch(url: str) -> tuple[int, str]:
+            response = requests.get(url, timeout=5.0)
             return response.status_code, response.text
 
         try:
-            status_code, body = await asyncio.to_thread(_fetch_metrics)
-        except Exception:
-            log.debug("gateway metrics are not reachable at %s; skip route-key preflight", metrics_url, exc_info=True)
-            return
+            status_code, body = await asyncio.to_thread(_fetch, models_url)
+        except Exception as exc:
+            raise RuntimeError(f"gateway model registry is not reachable at {models_url}") from exc
 
-        if status_code != 200:
-            log.debug("gateway metrics returned status=%s; skip route-key preflight", status_code)
-            return
-
-        available = sorted(set(re.findall(r'gateway_llm_route_inflight\{model="([^"]+)"\}', body)))
-        if not available:
-            log.debug("gateway metrics exposed no llm route labels; skip route-key preflight")
-            return
+        if status_code in {404, 405}:
+            # Older gateways only expose route names as metric labels.
+            metrics_url = self._gateway_origin() + "/metrics"
+            try:
+                status_code, body = await asyncio.to_thread(_fetch, metrics_url)
+            except Exception:
+                log.debug("gateway metrics are not reachable at %s; skip route-key preflight", metrics_url, exc_info=True)
+                return
+            if status_code != 200:
+                log.debug("gateway metrics returned status=%s; skip route-key preflight", status_code)
+                return
+            available = sorted(set(re.findall(r'gateway_llm_route_inflight\{model="([^"]+)"\}', body)))
+            if not available:
+                log.debug("gateway metrics exposed no llm route labels; skip route-key preflight")
+                return
+        elif status_code != 200:
+            raise RuntimeError(f"gateway model registry returned status={status_code} at {models_url}")
+        else:
+            try:
+                payload = json.loads(body)
+                data = payload.get("data") if isinstance(payload, dict) else None
+                if not isinstance(data, list) or any(
+                    not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"]
+                    for item in data
+                ):
+                    raise ValueError("expected a model list with non-empty string ids")
+                available = sorted({item["id"] for item in data})
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(f"gateway model registry returned an invalid model list at {models_url}") from exc
         required_models = [self.cfg.llm_model]
         missing = [model for model in required_models if model not in available]
         if missing:

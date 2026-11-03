@@ -31,9 +31,7 @@ class AdmissionController:
         self._inflight_requests = 0
         self._active_streams = 0
         self._per_session_inflight: dict[str, int] = {}
-        self._per_route_inflight: dict[str, int] = {}
         self._request_acquired: set[str] = set()
-        self._route_acquired: set[tuple[str, str]] = set()
         self.accepted_total = 0
         self.rejected_total = 0
 
@@ -43,6 +41,8 @@ class AdmissionController:
         binding: GatewaySessionBinding,
         target: LLMRouteTarget | None = None,
     ) -> AdmissionDecision:
+        # LLMRouter owns route concurrency across both standard and session APIs.
+        # Keep the optional target argument for existing callers.
         async with self._lock:
             if binding.status != "active":
                 self.rejected_total += 1
@@ -72,14 +72,6 @@ class AdmissionController:
             if session_inflight >= self.cfg.per_session_max_inflight:
                 self.rejected_total += 1
                 raise AdmissionRejected("per-session inflight limit reached", 429)
-
-            if target is not None:
-                route_inflight = self._per_route_inflight.get(target.route_model, 0)
-                if route_inflight >= target.max_concurrency:
-                    self.rejected_total += 1
-                    raise AdmissionRejected("LLM route concurrency limit reached", 503)
-                self._per_route_inflight[target.route_model] = route_inflight + 1
-                self._route_acquired.add((ctx.request_id, target.route_model))
 
             self._inflight_requests += 1
             if ctx.is_stream:
@@ -116,14 +108,6 @@ class AdmissionController:
                     self._per_session_inflight[ctx.session_id] = session_inflight
                 else:
                     self._per_session_inflight.pop(ctx.session_id, None)
-
-            if target is not None and (ctx.request_id, target.route_model) in self._route_acquired:
-                self._route_acquired.discard((ctx.request_id, target.route_model))
-                route_inflight = max(0, self._per_route_inflight.get(target.route_model, 0) - 1)
-                if route_inflight:
-                    self._per_route_inflight[target.route_model] = route_inflight
-                else:
-                    self._per_route_inflight.pop(target.route_model, None)
 
     async def snapshot(self) -> dict[str, int | bool]:
         async with self._lock:

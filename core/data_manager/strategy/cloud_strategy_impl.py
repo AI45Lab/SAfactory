@@ -336,6 +336,7 @@ class CloudStrategy(StorageStrategy):
         # In-memory caches
         self._env_configs: Dict[str, Dict] = {}
         self._record_job_ids: Dict[str, str] = {}
+        self._record_session_ids: Dict[str, str] = {}
 
     async def init(self):
         """Initialize cloud clients"""
@@ -517,6 +518,19 @@ class CloudStrategy(StorageStrategy):
             if self._env_configs.pop(env_id, None) is not None:
                 removed += 1
         return removed
+
+    async def clear_session_cache(self, session_ids: List[str]) -> int:
+        """Forget inserted-record routing for these sessions, leaving cloud rows intact."""
+        targets = set(session_ids)
+        record_ids = [
+            record_id
+            for record_id, session_id in self._record_session_ids.items()
+            if session_id in targets
+        ]
+        for record_id in record_ids:
+            self._record_job_ids.pop(record_id, None)
+            self._record_session_ids.pop(record_id, None)
+        return len(record_ids)
 
     async def list_environment_rows(self, query: EnvironmentQuery) -> List[Dict[str, Any]]:
         """Read environment rows from the authoritative config store."""
@@ -820,6 +834,8 @@ class CloudStrategy(StorageStrategy):
             job_id = str(row.get("job_id") or self.job_id)
             if job_id:
                 self._record_job_ids[record_id] = job_id
+                if row.get("session_id"):
+                    self._record_session_ids[record_id] = str(row["session_id"])
         if self._enable_buffer:
             await self._buffer_records(records)
         else:

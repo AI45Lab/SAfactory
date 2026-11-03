@@ -4,24 +4,30 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from functools import partial
 from typing import Any
 from urllib.parse import parse_qsl, urlencode
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 from core.perf_trace import PerfTrace
 from gateway.admission_control import AdmissionController, AdmissionRejected
 from gateway.config import GatewayConfig, load_gateway_config
 from gateway.inference_forwarder import (
+    ForwardResult,
     InferenceForwarder,
     SessionClosedError,
     StreamForwardContext,
+    UpstreamHTTPError,
+    is_quota_exhausted,
 )
 from gateway.llm_router import LLMRouteTarget, LLMRouter
+from gateway.model_route_api import install_model_route_api
 from gateway.models import GatewayRequestContext, GatewaySessionBinding
 from gateway.request_logger import GatewayRequestLogger
 from gateway.session_resolver import SessionResolver
@@ -29,6 +35,34 @@ from gateway.storage import GatewayStorage
 from gateway.telemetry import StreamTelemetryStats, TelemetryRecorder
 
 log = logging.getLogger("gateway.app")
+
+
+class _QueuedTelemetryResponse(JSONResponse):
+    """Send the response before scheduling telemetry, even on disconnect."""
+
+    def __init__(
+        self,
+        content: Any,
+        *,
+        status_code: int,
+        finalize: Callable[[], Coroutine[Any, Any, None]],
+        request_id: str,
+        finalize_tasks: set[asyncio.Task[None]],
+    ) -> None:
+        super().__init__(content, status_code=status_code)
+        self._finalize = finalize
+        self._request_id = request_id
+        self._finalize_tasks = finalize_tasks
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            _start_finalize_task(
+                self._finalize(),
+                request_id=self._request_id,
+                finalize_tasks=self._finalize_tasks,
+            )
 
 
 def _without_beta_query(query: str) -> str | None:
@@ -102,12 +136,14 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
     )
     session_root = cfg.base_session_path.rstrip("/")
     standard_openai_root = _standard_openai_root(session_root)
+    install_model_route_api(app, cfg)
 
     async def handle_inference_request(
         request: Request,
         *,
         endpoint: str,
         path_session_id: str,
+        path_job_id: str | None = None,
     ) -> Response:
         started = time.perf_counter()
         payload: dict[str, Any] = {}
@@ -115,7 +151,6 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         binding: GatewaySessionBinding | None = None
         target: LLMRouteTarget | None = None
         headers: dict[str, str] = {}
-        route_reserved = False
         release_in_finally = True
         trace_status: str | None = None
         trace_extra: dict[str, Any] = {}
@@ -133,6 +168,43 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         storage: GatewayStorage = request.app.state.gateway_storage
         request_logger: GatewayRequestLogger = request.app.state.gateway_request_logger
 
+        def queued_response(
+            body: dict[str, Any],
+            status_code: int,
+            enqueue: Callable[[], Coroutine[Any, Any, None]],
+        ) -> Response:
+            nonlocal release_in_finally
+            assert ctx is not None and binding is not None
+
+            async def finalize() -> None:
+                try:
+                    await enqueue()
+                finally:
+                    # Keep admission active until telemetry has entered the
+                    # queue, so session close cannot flush ahead of this record.
+                    await _release_request_resources(
+                        router=router,
+                        target=target,
+                        trace=trace,
+                        admission=admission,
+                        ctx=ctx,
+                        binding=binding,
+                        request_id=ctx.request_id,
+                        finalize_tasks=request.app.state.gateway_stream_finalize_tasks,
+                    )
+                    if trace_status is not None:
+                        trace.emit_summary(status=trace_status, **trace_extra)
+
+            response = _QueuedTelemetryResponse(
+                body,
+                status_code=status_code,
+                finalize=finalize,
+                request_id=ctx.request_id,
+                finalize_tasks=request.app.state.gateway_stream_finalize_tasks,
+            )
+            release_in_finally = False
+            return response
+
         try:
             with trace.span("parse_request_json"):
                 payload = await request.json()
@@ -144,6 +216,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     payload,
                     endpoint=endpoint,
                     path_session_id=path_session_id,
+                    path_job_id=path_job_id,
                 )
             trace.update_context(
                 request_id=ctx.request_id,
@@ -162,8 +235,9 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             with trace.span("get_or_create_binding"):
                 binding = await resolver.get_or_create_binding(ctx)
             log.debug("Gateway request binding loaded: request_id=%s session_id=%s", ctx.request_id, ctx.session_id)
-            with trace.span("bind_session_environment"):
-                await storage.bind_session_environment(binding)
+            if ctx.job_id is None:
+                with trace.span("bind_session_environment"):
+                    await storage.bind_session_environment(binding)
             log.info(
                 "Gateway request start: request_id=%s session_id=%s endpoint=%s model=%s stream=%s "
                 "binding_status=%s step_count=%s queue_depth=%d",
@@ -228,10 +302,15 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 return response
 
             if cfg.max_steps < 0 or binding.step_count_for(ctx.requested_model) < cfg.max_steps:
-                if telemetry.should_reject_new_requests(ctx.session_id):
+                if telemetry.should_reject_new_requests(
+                    ctx.session_id, force_async=ctx.job_id is not None,
+                ):
                     raise AdmissionRejected("telemetry queue is full", 503)
-                with trace.span("select_target_initial"):
-                    target = await router.select_target(ctx, binding)
+                with trace.span("route_acquire"):
+                    target = await router.acquire_target(
+                        requested_model=ctx.requested_model,
+                        is_stream=ctx.is_stream,
+                    )
                 log.debug(
                     "Gateway target selected: request_id=%s route_model=%s base_url=%s max_concurrency=%d",
                     ctx.request_id,
@@ -273,12 +352,12 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             ctx = replace(ctx, llm_step_index=decision.llm_step_index)
 
             if target is None:
-                with trace.span("select_target_fallback"):
-                    target = await router.select_target(ctx, binding)
-            route_reserved = True
+                with trace.span("route_acquire"):
+                    target = await router.acquire_target(
+                        requested_model=ctx.requested_model,
+                        is_stream=ctx.is_stream,
+                    )
             trace.update_context(route_model=target.route_model, upstream_base_url=target.base_url)
-            with trace.span("route_acquire"):
-                await router.on_acquire(target.route_model, is_stream=ctx.is_stream)
             log.debug(
                 "Gateway route acquired: request_id=%s route_model=%s stream=%s",
                 ctx.request_id,
@@ -314,12 +393,14 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     endpoint,
                 )
                 with trace.span("upstream_stream_open"):
-                    opened = await _open_stream(
+                    opened, target, headers = await _forward_with_key_retry(
                         forwarder,
+                        router,
                         target,
                         endpoint,
                         payload,
                         headers,
+                        is_stream=True,
                         anthropic_query_string=anthropic_query_string,
                     )
                 trace.mark(
@@ -334,8 +415,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     opened.status_code,
                     opened.upstream_latency_ms,
                 )
-                release_in_finally = False
-                return StreamingResponse(
+                response = StreamingResponse(
                     _stream_and_finalize(
                         opened=opened,
                         started=started,
@@ -354,6 +434,8 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     status_code=opened.status_code,
                     media_type=opened.media_type,
                 )
+                release_in_finally = False
+                return response
 
             log.info(
                 "Gateway upstream request begin: request_id=%s route_model=%s endpoint=%s",
@@ -362,8 +444,9 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 endpoint,
             )
             with trace.span("upstream_json_forward"):
-                result = await _forward_json(
+                result, target, headers = await _forward_with_key_retry(
                     forwarder,
+                    router,
                     target,
                     endpoint,
                     payload,
@@ -396,23 +479,26 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 )
             with trace.span("router_mark_success"):
                 await router.mark_route_result(
-                    target.route_model,
+                    target,
                     True,
                     result.upstream_latency_ms,
                     result.status_code,
                 )
-            with trace.span("telemetry_enqueue_success"):
-                await telemetry.enqueue_success(
-                    ctx,
-                    binding,
-                    target,
-                    payload,
-                    result.body,
-                    latency_ms,
-                    upstream_latency_ms=result.upstream_latency_ms,
-                    request_headers=headers,
-                    status_code=result.status_code,
-                )
+            enqueue_success = partial(
+                telemetry.enqueue_success,
+                ctx,
+                binding,
+                target,
+                payload,
+                result.body,
+                latency_ms,
+                upstream_latency_ms=result.upstream_latency_ms,
+                request_headers=headers,
+                status_code=result.status_code,
+            )
+            if ctx.job_id is None:
+                with trace.span("telemetry_enqueue_success"):
+                    await enqueue_success()
             log.info(
                 "Gateway request complete: request_id=%s session_id=%s model=%s status=%d total_latency_ms=%.2f",
                 ctx.request_id,
@@ -423,12 +509,15 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             )
             trace_status = "success" if result.status_code < 400 else "failed"
             trace_extra = {"status_code": result.status_code, "total_latency_ms": latency_ms}
+            if ctx.job_id is not None:
+                return queued_response(result.body, result.status_code, enqueue_success)
             return JSONResponse(result.body, status_code=result.status_code)
         except asyncio.CancelledError:
             trace_status = "cancelled"
             trace_extra = {"error_type": "CancelledError"}
             raise
         except Exception as exc:
+            target = getattr(exc, "gateway_target", target)
             latency_ms = (time.perf_counter() - started) * 1000
             upstream_latency_ms = _upstream_latency_ms_from_exception(exc)
             status_code, error_body = forwarder.normalize_error(exc)
@@ -446,7 +535,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             )
             if target is not None:
                 with trace.span("router_mark_failure"):
-                    await router.mark_route_result(target.route_model, False, latency_ms, status_code)
+                    await router.mark_route_result(target, False, latency_ms, status_code)
             with trace.span("request_log_error"):
                 await request_logger.log_error(
                     endpoint=endpoint,
@@ -461,20 +550,24 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     binding=binding,
                     target=target,
                 )
+            enqueue_failure = None
             if ctx is not None and binding is not None and ctx.llm_step_index is not None:
-                with trace.span("telemetry_enqueue_failure"):
-                    await telemetry.enqueue_failure(
-                        ctx,
-                        binding,
-                        target,
-                        payload,
-                        str(exc),
-                        status_code,
-                        latency_ms,
-                        upstream_latency_ms=upstream_latency_ms,
-                        response_body=error_body,
-                        request_headers=headers,
-                    )
+                enqueue_failure = partial(
+                    telemetry.enqueue_failure,
+                    ctx,
+                    binding,
+                    target,
+                    payload,
+                    str(exc),
+                    status_code,
+                    latency_ms,
+                    upstream_latency_ms=upstream_latency_ms,
+                    response_body=error_body,
+                    request_headers=headers,
+                )
+                if ctx.job_id is None:
+                    with trace.span("telemetry_enqueue_failure"):
+                        await enqueue_failure()
             trace_status = "failed"
             trace_extra = {
                 "status_code": status_code,
@@ -483,20 +576,21 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 "error_type": type(exc).__name__,
                 "error": str(exc),
             }
+            if ctx is not None and ctx.job_id is not None and enqueue_failure is not None:
+                return queued_response(error_body, status_code, enqueue_failure)
             return JSONResponse(error_body, status_code=status_code)
         finally:
             if release_in_finally:
-                if route_reserved and target is not None and ctx is not None:
-                    with trace.span("route_release"):
-                        await router.on_release(target.route_model, is_stream=ctx.is_stream)
-                    log.debug(
-                        "Gateway route released: request_id=%s route_model=%s stream=%s",
-                        ctx.request_id,
-                        target.route_model,
-                        ctx.is_stream,
-                    )
-                with trace.span("admission_release"):
-                    await admission.release(ctx, binding, target)
+                await _release_request_resources(
+                    router=router,
+                    target=target,
+                    trace=trace,
+                    admission=admission,
+                    ctx=ctx,
+                    binding=binding,
+                    request_id=ctx.request_id if ctx is not None else path_session_id,
+                    finalize_tasks=request.app.state.gateway_stream_finalize_tasks,
+                )
                 if trace_status is not None:
                     trace.emit_summary(status=trace_status, **trace_extra)
 
@@ -521,6 +615,36 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             path_session_id=session_id,
         )
 
+    async def handle_job_session_chat_completions(
+        job_id: str, session_id: str, request: Request,
+    ) -> Response:
+        return await handle_inference_request(
+            request,
+            endpoint="chat/completions",
+            path_session_id=session_id,
+            path_job_id=job_id,
+        )
+
+    async def handle_job_session_responses(
+        job_id: str, session_id: str, request: Request,
+    ) -> Response:
+        return await handle_inference_request(
+            request,
+            endpoint="responses",
+            path_session_id=session_id,
+            path_job_id=job_id,
+        )
+
+    async def handle_job_session_anthropic_messages(
+        job_id: str, session_id: str, request: Request,
+    ) -> Response:
+        return await handle_inference_request(
+            request,
+            endpoint="messages",
+            path_session_id=session_id,
+            path_job_id=job_id,
+        )
+
     async def handle_standard_chat_completions(request: Request) -> Response:
         return await handle_standard_inference_request(
             request,
@@ -541,7 +665,6 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         started = time.perf_counter()
         payload: dict[str, Any] = {}
         target: LLMRouteTarget | None = None
-        route_reserved = False
         release_in_finally = True
         is_stream = False
         trace_status: str | None = None
@@ -573,15 +696,14 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                 requested_model,
                 is_stream,
             )
-            with trace.span("select_standard_target"):
-                target = await router.select_standard_target(
+            if request.app.state.gateway_draining:
+                raise AdmissionRejected("gateway is draining", 503)
+            with trace.span("route_acquire"):
+                target = await router.acquire_target(
                     requested_model=requested_model,
                     is_stream=is_stream,
                 )
             trace.update_context(route_model=target.route_model, upstream_base_url=target.base_url)
-            route_reserved = True
-            with trace.span("route_acquire"):
-                await router.on_acquire(target.route_model, is_stream=is_stream)
 
             headers = forwarder.build_upstream_headers(target)
             if is_stream:
@@ -591,7 +713,9 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     requested_model,
                 )
                 with trace.span("upstream_stream_open"):
-                    opened = await _open_stream(forwarder, target, endpoint, payload, headers)
+                    opened, target, headers = await _forward_with_key_retry(
+                        forwarder, router, target, endpoint, payload, headers, is_stream=True,
+                    )
                 trace.mark(
                     "upstream_stream_opened",
                     status_code=opened.status_code,
@@ -605,22 +729,25 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
                     opened.status_code,
                     opened.upstream_latency_ms,
                 )
-                release_in_finally = False
-                return StreamingResponse(
+                response = StreamingResponse(
                     _standard_stream_and_finalize(
                         opened=opened,
                         started=started,
                         target=target,
                         router=router,
-                        is_stream=is_stream,
                         trace=trace,
+                        finalize_tasks=request.app.state.gateway_stream_finalize_tasks,
                     ),
                     status_code=opened.status_code,
                     media_type=opened.media_type,
                 )
+                release_in_finally = False
+                return response
 
             with trace.span("upstream_json_forward"):
-                result = await _forward_json(forwarder, target, endpoint, payload, headers)
+                result, target, headers = await _forward_with_key_retry(
+                    forwarder, router, target, endpoint, payload, headers,
+                )
             latency_ms = (time.perf_counter() - started) * 1000
             trace.mark(
                 "upstream_json_complete",
@@ -630,7 +757,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             )
             with trace.span("router_mark_success"):
                 await router.mark_route_result(
-                    target.route_model,
+                    target,
                     True,
                     result.upstream_latency_ms,
                     result.status_code,
@@ -651,6 +778,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             trace_extra = {"error_type": "CancelledError"}
             raise
         except Exception as exc:
+            target = getattr(exc, "gateway_target", target)
             latency_ms = (time.perf_counter() - started) * 1000
             upstream_latency_ms = _upstream_latency_ms_from_exception(exc)
             status_code, error_body = forwarder.normalize_error(exc)
@@ -665,7 +793,7 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             )
             if target is not None:
                 with trace.span("router_mark_failure"):
-                    await router.mark_route_result(target.route_model, False, latency_ms, status_code)
+                    await router.mark_route_result(target, False, latency_ms, status_code)
             trace_status = "failed"
             trace_extra = {
                 "status_code": status_code,
@@ -676,9 +804,14 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
             }
             return JSONResponse(error_body, status_code=status_code)
         finally:
-            if release_in_finally and route_reserved and target is not None:
-                with trace.span("route_release"):
-                    await router.on_release(target.route_model, is_stream=is_stream)
+            if release_in_finally and target is not None:
+                await _release_request_resources(
+                    router=router,
+                    target=target,
+                    trace=trace,
+                    request_id=target.lease_id,
+                    finalize_tasks=request.app.state.gateway_stream_finalize_tasks,
+                )
             if release_in_finally and trace_status is not None:
                 trace.emit_summary(status=trace_status, **trace_extra)
 
@@ -851,6 +984,20 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         handle_session_anthropic_messages,
         methods=["POST"],
     )
+    # Both SDK-style /v1 endpoints and unversioned base-URL suffixes are
+    # supported. The URL supplies all database routing information.
+    job_session_root = "/jobid/{job_id}/sessionid/{session_id}"
+    for suffix, handler in (
+        ("chat/completions", handle_job_session_chat_completions),
+        ("responses", handle_job_session_responses),
+        ("messages", handle_job_session_anthropic_messages),
+    ):
+        for version in ("", "/v1"):
+            app.add_api_route(
+                f"{job_session_root}{version}/{suffix}",
+                handler,
+                methods=["POST"],
+            )
     app.add_api_route(
         f"{standard_openai_root}/chat/completions",
         handle_standard_chat_completions,
@@ -973,6 +1120,75 @@ def create_app(cfg: GatewayConfig | None = None, storage: GatewayStorage | None 
         return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
     return app
+
+
+async def _forward_with_key_retry(
+    forwarder: InferenceForwarder,
+    router: LLMRouter,
+    target: LLMRouteTarget,
+    endpoint: str,
+    payload: dict[str, Any],
+    headers: dict[str, str],
+    *,
+    is_stream: bool = False,
+    anthropic_query_string: str | None = None,
+) -> tuple[ForwardResult | StreamForwardContext, LLMRouteTarget, dict[str, str]]:
+    """Retry before any output, retaining one route lease and trajectory step."""
+    started = time.perf_counter()
+    timeout_s = forwarder.cfg.upstream_request_timeout_s
+    deadline = started + timeout_s if timeout_s and timeout_s > 0 else None
+    target = replace(target, request_deadline=deadline)
+    attempted_keys: set[str | None] = set()
+    forward = _open_stream if is_stream else _forward_json
+    try:
+        while True:
+            attempted_keys.add(target.api_key)
+            remaining = deadline - time.perf_counter() if deadline is not None else None
+            if remaining is not None and remaining <= 0:
+                raise asyncio.TimeoutError("upstream key retries exceeded the request timeout")
+            try:
+                result = await asyncio.wait_for(
+                    forward(
+                        forwarder, target, endpoint, payload, headers,
+                        anthropic_query_string=anthropic_query_string,
+                    ),
+                    timeout=remaining,
+                )
+                # Count all attempts as upstream time, keeping Gateway overhead
+                # and the final successful payload meaningful in telemetry.
+                result = replace(result, upstream_latency_ms=(time.perf_counter() - started) * 1000)
+                if isinstance(result, StreamForwardContext):
+                    result.upstream_started_perf = started
+                return result, target, headers
+            except UpstreamHTTPError as exc:
+                if not is_quota_exhausted(exc.status_code, exc.body):
+                    raise
+                replacement = await router.retry_target(target, attempted_keys)
+                if replacement is None:
+                    raise
+                target = replace(replacement, retry_count=target.retry_count + 1)
+                # Retain protocol/session/request/step headers, changing only
+                # the credentials selected for this attempt.
+                new_headers = (
+                    forwarder.build_anthropic_headers(target, headers)
+                    if endpoint == "messages"
+                    else forwarder.build_upstream_headers(target)
+                )
+                headers = {
+                    name: value for name, value in headers.items()
+                    if name.lower() not in {"authorization", "x-api-key"}
+                }
+                headers.update(new_headers)
+                log.info(
+                    "Gateway retrying exhausted API key: route_id=%s retry_count=%d",
+                    target.route_id, target.retry_count,
+                )
+    except Exception as exc:
+        # The outer handler records only this final failure, with the final
+        # attempt count. Its finally block still releases the original lease.
+        exc.gateway_target = target
+        exc.upstream_latency_ms = (time.perf_counter() - started) * 1000
+        raise
 
 
 async def _forward_json(
@@ -1164,7 +1380,7 @@ def _upstream_latency_ms_from_exception(exc: Exception) -> float | None:
 
 
 def _stream_completed(summary: dict[str, Any]) -> bool:
-    return summary.get("status") == "completed"
+    return summary.get("status") == "completed" and not summary.get("error")
 
 
 async def _stream_and_finalize(
@@ -1233,6 +1449,12 @@ async def _stream_and_finalize(
                     stream_response_body,
                     stream_choice_states,
                 )
+                if stream_response_body.get("error") and error_text is None:
+                    error_text = "upstream returned a streaming error"
+                    quota_exhausted = is_quota_exhausted(200, stream_response_body)
+                    status_code = 429 if quota_exhausted else 502
+                    if quota_exhausted:
+                        await router.disable_api_key(target)
             yield chunk
     except asyncio.CancelledError:
         if _stream_completed(stream_response_body):
@@ -1250,6 +1472,8 @@ async def _stream_and_finalize(
         upstream_cancelled = True
         status_code = 502
         error_text = str(exc)
+        if isinstance(exc, UpstreamHTTPError) and is_quota_exhausted(exc.status_code, exc.body):
+            await router.disable_api_key(target)
         log.warning("Gateway stream upstream failed: request_id=%s error=%s", ctx.request_id, exc)
         raise
     finally:
@@ -1344,7 +1568,7 @@ async def _stream_and_finalize(
                         )
 
                 with trace.span("router_mark_stream_result"):
-                    await router.mark_route_result(target.route_model, ok, latency_ms, status_code)
+                    await router.mark_route_result(target, ok, latency_ms, status_code)
                 with trace.span("request_log_stream_response"):
                     await request_logger.log_stream_response(
                         ctx,
@@ -1370,12 +1594,16 @@ async def _stream_and_finalize(
                 )
                 trace.mark("stream_finalize_complete", status_code=status_code)
             finally:
-                try:
-                    with trace.span("route_release"):
-                        await router.on_release(target.route_model, is_stream=ctx.is_stream)
-                finally:
-                    with trace.span("admission_release"):
-                        await admission.release(ctx, binding, target)
+                await _release_request_resources(
+                    router=router,
+                    target=target,
+                    trace=trace,
+                    admission=admission,
+                    ctx=ctx,
+                    binding=binding,
+                    request_id=ctx.request_id,
+                    finalize_tasks=finalize_tasks,
+                )
                 trace.update_context(
                     final_status_code=status_code,
                     stream_chunk_count=chunk_count,
@@ -1399,42 +1627,100 @@ async def _stream_and_finalize(
                 )
                 log.debug("Gateway stream resources released: request_id=%s", ctx.request_id)
 
-        await _await_stream_finalize_cancel_safe(
-            finalize(),
-            request_id=ctx.request_id,
-            finalize_tasks=finalize_tasks,
+        if ctx.job_id is not None:
+            # All upstream chunks have been forwarded. A full telemetry queue
+            # must not delay the final HTTP body frame for explicit job routes.
+            _start_finalize_task(
+                finalize(), request_id=ctx.request_id, finalize_tasks=finalize_tasks,
+            )
+        else:
+            await _await_finalize_cancel_safe(
+                finalize(),
+                request_id=ctx.request_id,
+                finalize_tasks=finalize_tasks,
+            )
+
+
+async def _release_request_resources(
+    *,
+    router: LLMRouter,
+    target: LLMRouteTarget | None,
+    trace: PerfTrace,
+    admission: AdmissionController | None = None,
+    ctx: GatewayRequestContext | None = None,
+    binding: GatewaySessionBinding | None = None,
+    request_id: str,
+    finalize_tasks: set[asyncio.Task[None]],
+) -> None:
+    async def release() -> None:
+        if admission is not None:
+            with trace.span("admission_release"):
+                await admission.release(ctx, binding, target)
+        # Keep the route busy until session admission and request finalization end.
+        if target is not None:
+            with trace.span("route_release"):
+                await router.release_target(target)
+
+    try:
+        await release()
+    except asyncio.CancelledError:
+        # Normal completions stay in this task. Only interrupted cleanup needs a
+        # shielded task; both release operations are idempotent.
+        await _await_finalize_cancel_safe(
+            release(), request_id=request_id, finalize_tasks=finalize_tasks,
         )
+        raise
+    except Exception:
+        if target is not None:
+            await _await_finalize_cancel_safe(
+                router.release_target(target),
+                request_id=request_id,
+                finalize_tasks=finalize_tasks,
+            )
+        raise
 
 
-async def _await_stream_finalize_cancel_safe(
+def _start_finalize_task(
     finalize: Coroutine[Any, Any, None],
     *,
     request_id: str,
     finalize_tasks: set[asyncio.Task[None]],
-) -> None:
-    task = asyncio.create_task(finalize, name=f"gateway-stream-finalize-{request_id}")
+) -> asyncio.Task[None]:
+    task = asyncio.create_task(finalize, name=f"gateway-request-finalize-{request_id}")
     finalize_tasks.add(task)
 
     def _on_done(done: asyncio.Task[None]) -> None:
         finalize_tasks.discard(done)
         if done.cancelled():
-            log.error("Gateway stream finalize cancelled: request_id=%s", request_id)
+            log.error("Gateway request finalize cancelled: request_id=%s", request_id)
             return
         error = done.exception()
         if error is not None:
             log.error(
-                "Gateway stream finalize failed: request_id=%s error=%s",
+                "Gateway request finalize failed: request_id=%s error=%s",
                 request_id,
                 error,
                 exc_info=(type(error), error, error.__traceback__),
             )
 
     task.add_done_callback(_on_done)
+    return task
+
+
+async def _await_finalize_cancel_safe(
+    finalize: Coroutine[Any, Any, None],
+    *,
+    request_id: str,
+    finalize_tasks: set[asyncio.Task[None]],
+) -> None:
+    task = _start_finalize_task(
+        finalize, request_id=request_id, finalize_tasks=finalize_tasks,
+    )
     try:
         await asyncio.shield(task)
     except asyncio.CancelledError:
         log.warning(
-            "Gateway stream response task cancelled; finalize continues in background: request_id=%s",
+            "Gateway response task cancelled; finalize continues in background: request_id=%s",
             request_id,
         )
         raise
@@ -1446,8 +1732,8 @@ async def _standard_stream_and_finalize(
     started: float,
     target: LLMRouteTarget,
     router: LLMRouter,
-    is_stream: bool,
     trace: PerfTrace,
+    finalize_tasks: set[asyncio.Task[None]],
 ) -> AsyncIterator[bytes]:
     status_code = opened.status_code
     first_chunk_at: float | None = None
@@ -1455,6 +1741,7 @@ async def _standard_stream_and_finalize(
     output_bytes = 0
     client_cancelled = False
     upstream_failed = False
+    stream_metadata_buffer = b""
     try:
         log.info(
             "Gateway standard stream proxy start: route_model=%s status=%d",
@@ -1473,15 +1760,26 @@ async def _standard_stream_and_finalize(
                     )
                 chunk_count += 1
                 output_bytes += len(chunk)
+                # Inspect error events without retaining the standard response
+                # body. Output already sent to the client is never replayed.
+                summary: dict[str, Any] = {}
+                stream_metadata_buffer = _collect_stream_metadata(chunk, stream_metadata_buffer, summary, {})
+                if summary.get("error"):
+                    quota_exhausted = is_quota_exhausted(200, summary)
+                    status_code = 429 if quota_exhausted else 502
+                    if quota_exhausted:
+                        await router.disable_api_key(target)
             yield chunk
     except asyncio.CancelledError:
         status_code = 499
         client_cancelled = True
         log.warning("Gateway standard stream client cancelled: route_model=%s", target.route_model)
         raise
-    except Exception:
+    except Exception as exc:
         status_code = 502
         upstream_failed = True
+        if isinstance(exc, UpstreamHTTPError) and is_quota_exhausted(exc.status_code, exc.body):
+            await router.disable_api_key(target)
         log.warning("Gateway standard stream failed: route_model=%s", target.route_model, exc_info=True)
         raise
     finally:
@@ -1489,36 +1787,51 @@ async def _standard_stream_and_finalize(
         latency_ms = (time.perf_counter() - started) * 1000
         upstream_stream_total_ms = (time.perf_counter() - opened.upstream_started_perf) * 1000
         ttft_ms = (first_chunk_at - started) * 1000 if first_chunk_at is not None else None
-        with trace.span("router_mark_stream_result"):
-            await router.mark_route_result(target.route_model, status_code < 400, latency_ms, status_code)
-        with trace.span("route_release"):
-            await router.on_release(target.route_model, is_stream=is_stream)
-        trace.update_context(
-            final_status_code=status_code,
-            stream_chunk_count=chunk_count,
-            stream_output_bytes=output_bytes,
-        )
-        trace.emit_summary(
-            status=(
-                "client_cancelled"
-                if client_cancelled
-                else "upstream_failed"
-                if upstream_failed
-                else "success"
-                if status_code < 400
-                else "failed"
-            ),
-            status_code=status_code,
-            total_latency_ms=latency_ms,
-            upstream_open_latency_ms=opened.upstream_latency_ms,
-            upstream_stream_total_ms=upstream_stream_total_ms,
-            ttft_ms=ttft_ms,
-        )
-        log.info(
-            "Gateway standard stream complete: route_model=%s status=%d total_latency_ms=%.2f",
-            target.route_model,
-            status_code,
-            latency_ms,
+
+        async def finalize() -> None:
+            try:
+                with trace.span("router_mark_stream_result"):
+                    await router.mark_route_result(target, status_code < 400, latency_ms, status_code)
+            finally:
+                await _release_request_resources(
+                    router=router,
+                    target=target,
+                    trace=trace,
+                    request_id=target.lease_id,
+                    finalize_tasks=finalize_tasks,
+                )
+            trace.update_context(
+                final_status_code=status_code,
+                stream_chunk_count=chunk_count,
+                stream_output_bytes=output_bytes,
+            )
+            trace.emit_summary(
+                status=(
+                    "client_cancelled"
+                    if client_cancelled
+                    else "upstream_failed"
+                    if upstream_failed
+                    else "success"
+                    if status_code < 400
+                    else "failed"
+                ),
+                status_code=status_code,
+                total_latency_ms=latency_ms,
+                upstream_open_latency_ms=opened.upstream_latency_ms,
+                upstream_stream_total_ms=upstream_stream_total_ms,
+                ttft_ms=ttft_ms,
+            )
+            log.info(
+                "Gateway standard stream complete: route_model=%s status=%d total_latency_ms=%.2f",
+                target.route_model,
+                status_code,
+                latency_ms,
+            )
+
+        await _await_finalize_cancel_safe(
+            finalize(),
+            request_id=target.lease_id,
+            finalize_tasks=finalize_tasks,
         )
 
 
@@ -1531,18 +1844,27 @@ def _standard_openai_root(session_root: str) -> str:
 
 async def _wait_for_drain(app: FastAPI, drain_timeout_s: int) -> None:
     admission: AdmissionController = app.state.gateway_admission
+    router: LLMRouter = app.state.gateway_router
     deadline = time.monotonic() + max(0, drain_timeout_s)
     next_log_at = 0.0
     while time.monotonic() < deadline:
         snapshot = await admission.snapshot()
-        if snapshot["inflight_requests"] <= 0 and snapshot["active_streams"] <= 0:
+        route_snapshot = await router.snapshot()
+        route_inflight = sum(int(state["inflight_requests"]) for state in route_snapshot.values())
+        route_streams = sum(int(state["active_streams"]) for state in route_snapshot.values())
+        if (
+            snapshot["inflight_requests"] <= 0
+            and snapshot["active_streams"] <= 0
+            and route_inflight <= 0
+            and route_streams <= 0
+        ):
             return
         now = time.monotonic()
         if now >= next_log_at:
             log.info(
                 "Gateway draining: inflight_requests=%d active_streams=%d",
-                snapshot["inflight_requests"],
-                snapshot["active_streams"],
+                max(int(snapshot["inflight_requests"]), route_inflight),
+                max(int(snapshot["active_streams"]), route_streams),
             )
             next_log_at = now + 1.0
         await asyncio.sleep(0.05)
@@ -1696,6 +2018,15 @@ def _merge_stream_event(
     choice_states: dict[int, dict[str, Any]] | None = None,
 ) -> None:
     event_type = event.get("type")
+    error = event.get("error")
+    response = event.get("response")
+    if error is None and isinstance(response, dict):
+        error = response.get("error")
+    if error is None and event_type == "error":
+        error = event
+    if error is not None:
+        summary["error"] = error
+        summary["status"] = "failed"
     if event_type in {
         "message_start",
         "content_block_start",
@@ -1859,6 +2190,8 @@ def _anthropic_stream_response_body_for_telemetry(summary: dict[str, Any]) -> di
     usage = summary.get("usage")
     if isinstance(usage, dict):
         message["usage"] = dict(usage)
+    if summary.get("error"):
+        message["error"] = summary["error"]
     return message
 
 

@@ -114,6 +114,10 @@ class DataManager:
         """Clear backend-local environment cache entries."""
         return await self._strategy.clear_environment_cache(env_ids)
 
+    async def clear_session_cache(self, session_ids: List[str]) -> int:
+        """Clear backend-local session caches without changing persisted rows."""
+        return await self._strategy.clear_session_cache(session_ids)
+
     async def mark_environment_finished(self, env_id: str) -> int:
         """Mark one environment completed for this job."""
         updated = await self._strategy.update_environment_rows(

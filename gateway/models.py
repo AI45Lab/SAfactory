@@ -97,6 +97,8 @@ class GatewayRequestContext:
     created_at: datetime
     llm_step_index: int | None = None
     synthetic_stop: bool = False
+    # Supplied by the job/session URL; never resolved from storage.
+    job_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -143,3 +145,5 @@ class GatewayTelemetryRecord:
     is_session_completed: bool = False
     truncate_reason: str | None = None
     synthetic_stop: bool = False
+    # An explicit job uses queued, write-only persistence.
+    job_id: str | None = None
