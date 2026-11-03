@@ -5,7 +5,7 @@ import inspect
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from core.data_manager.contracts import SessionContext
@@ -328,9 +328,19 @@ class GatewayStorage:
             steps: list[dict[str, Any]] = []
             with trace.span("session_context.prepare", operation="in_memory"):
                 for binding, record in batch:
-                    await self.get_or_create_session(binding, record.requested_model)
-                    environment = await self._resolve_session_environment(record.session_id)
-                    dataset = environment.dataset if environment is not None else None
+                    if record.job_id is not None:
+                        # The explicit URL is authoritative. Do not hydrate a
+                        # session or look up environment/dataset metadata, even
+                        # in the background writer. Snapshot the shared binding
+                        # so later requests cannot change this row's job.
+                        binding = replace(
+                            binding, job_id=record.job_id, env_name="gateway", group_id=None,
+                        )
+                        dataset = None
+                    else:
+                        await self.get_or_create_session(binding, record.requested_model)
+                        environment = await self._resolve_session_environment(record.session_id)
+                        dataset = environment.dataset if environment is not None else None
 
                     stored_messages: Any = _trajectory_messages(record)
                     stored_response: Any = record.response
@@ -403,7 +413,9 @@ class GatewayStorage:
             for session_id in patched:
                 self._patched_environment_sessions.discard(session_id)
             removed = len(session_keys) + len(environments) + len(patched)
-        return removed + await self.data_manager.clear_environment_cache(list(targets))
+        removed += await self.data_manager.clear_environment_cache(list(targets))
+        removed += await self.data_manager.clear_session_cache(list(targets))
+        return removed
 
     async def close(self) -> None:
         log.info("Gateway storage close begin")

@@ -80,10 +80,7 @@ class TelemetryRecorder:
             return
         self._running = True
         if self._async_writes or self.cfg.telemetry_mode != "strict":
-            self._writer_tasks = [
-                asyncio.create_task(self._writer_loop(index), name=f"gateway-telemetry-writer-{index}")
-                for index in range(len(self._queues))
-            ]
+            self._start_writers()
         log.info(
             "Gateway telemetry recorder started: mode=%s async_writes=%s writers=%d loss_policy=%s "
             "queue_max_size=%d batch_size=%d flush_interval_ms=%d",
@@ -95,6 +92,13 @@ class TelemetryRecorder:
             self.cfg.telemetry_batch_size,
             self.cfg.telemetry_flush_interval_ms,
         )
+
+    def _start_writers(self) -> None:
+        if not self._writer_tasks:
+            self._writer_tasks = [
+                asyncio.create_task(self._writer_loop(index), name=f"gateway-telemetry-writer-{index}")
+                for index in range(len(self._queues))
+            ]
 
     async def stop(self) -> None:
         log.info("Gateway telemetry recorder stopping: queued=%d", self.queue_depth())
@@ -309,10 +313,12 @@ class TelemetryRecorder:
     def queue_depth(self) -> int:
         return sum(queue.qsize() for queue in self._queues)
 
-    def should_reject_new_requests(self, session_id: str | None = None) -> bool:
+    def should_reject_new_requests(
+        self, session_id: str | None = None, *, force_async: bool = False,
+    ) -> bool:
         queues = [self._queue_for_session(session_id)] if session_id else self._queues
         return (
-            (self._async_writes or self.cfg.telemetry_mode != "strict")
+            (force_async or self._async_writes or self.cfg.telemetry_mode != "strict")
             and self.cfg.telemetry_loss_policy == "fail_closed"
             and any(queue.full() for queue in queues)
         )
@@ -366,7 +372,13 @@ class TelemetryRecorder:
                 self._ttft_sum_ms[record.requested_model] += record.ttft_ms
                 self._ttft_count[record.requested_model] += 1
 
-        if self.cfg.telemetry_mode == "strict" and not self._async_writes:
+        force_async = record.job_id is not None
+        if force_async and self._running:
+            # Explicit job/session requests never wait for a database write,
+            # including when legacy SQLite telemetry uses strict mode.
+            self._start_writers()
+
+        if self.cfg.telemetry_mode == "strict" and not self._async_writes and not force_async:
             started = time.perf_counter()
             log.info(
                 "Gateway telemetry strict write begin: event_type=%s request_id=%s session_id=%s seq_id=%s model=%s",
@@ -388,7 +400,7 @@ class TelemetryRecorder:
             return
 
         queue = self._queue_for_session(record.session_id)
-        if self._async_writes and self.cfg.telemetry_mode == "strict":
+        if (force_async or self._async_writes) and self.cfg.telemetry_mode == "strict":
             await queue.put((binding, record))
             log.info(
                 "Gateway telemetry submitted: event_type=%s request_id=%s session_id=%s seq_id=%s queued=%d",
@@ -635,6 +647,7 @@ class TelemetryRecorder:
             is_session_completed=is_truncated,
             truncate_reason="max_steps_reached" if is_truncated else None,
             synthetic_stop=ctx.synthetic_stop,
+            job_id=ctx.job_id,
         )
 
     def _should_capture_payload(self, failed: bool) -> bool:

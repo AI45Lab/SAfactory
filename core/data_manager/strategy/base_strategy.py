@@ -67,6 +67,10 @@ class StorageStrategy(ABC):
         """Clear backend-local environment cache entries, if any."""
         return 0
 
+    async def clear_session_cache(self, session_ids: List[str]) -> int:
+        """Clear backend-local session caches without changing persisted rows."""
+        return 0
+
     @abstractmethod
     async def list_environment_rows(self, query: EnvironmentQuery) -> List[Dict[str, Any]]:
         """List environment rows using backend-neutral filters."""

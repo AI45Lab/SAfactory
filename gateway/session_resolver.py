@@ -34,9 +34,12 @@ class SessionResolver:
         *,
         endpoint: str,
         path_session_id: str,
+        path_job_id: str | None = None,
     ) -> GatewayRequestContext:
         if not path_session_id:
             raise SessionResolutionError("session_id must be supplied in the URL path")
+        if path_job_id is not None and not path_job_id.strip():
+            raise SessionResolutionError("job_id must be non-empty")
 
         requested_model = payload.get("model")
         if not isinstance(requested_model, str) or not requested_model:
@@ -49,6 +52,7 @@ class SessionResolver:
             endpoint=endpoint,
             is_stream=bool(payload.get("stream", False)),
             created_at=_utcnow(),
+            job_id=path_job_id,
         )
 
     async def get_or_create_binding(self, ctx: GatewayRequestContext) -> GatewaySessionBinding:
@@ -64,9 +68,14 @@ class SessionResolver:
                     status="active",
                     last_seen_at=now,
                     first_seen_at=now,
+                    job_id=ctx.job_id,
                 )
                 self._bindings[ctx.session_id] = binding
             else:
+                if ctx.job_id is not None:
+                    if binding.job_id is not None and binding.job_id != ctx.job_id:
+                        raise SessionResolutionError("session is already bound to a different job_id")
+                    binding.job_id = ctx.job_id
                 binding.model = ctx.requested_model or binding.model
                 binding.last_seen_at = now
         return binding
