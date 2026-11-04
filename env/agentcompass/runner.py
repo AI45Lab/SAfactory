@@ -367,7 +367,15 @@ def _prepare_native_data(
     benchmark: str, harness: str, dataset: dict[str, Any], result_root: Path,
     benchmark_params: dict[str, Any], harness_params: dict[str, Any],
 ) -> str:
-    """Resolve mounted read-only inputs and keep mutable native work per episode."""
+    """Resolve mounted read-only inputs and keep mutable native work per episode.
+
+    Mutates ``benchmark_params`` and ``harness_params`` in place to inject the
+    resolved native paths (top-level keys only). Callers must pass independent
+    per-episode copies, as _merge_params builds, never the request's dataset
+    objects. An explicit shared ``data_dir`` must already be a directory: it is
+    never created here, so a missing mount or wrong path fails before the
+    native CLI starts instead of running against an empty directory.
+    """
     data_dir = _text(dataset.get("data_dir"))
     if not data_dir:
         if benchmark == "scicode" or benchmark in NATIVE_DATA_FILES or benchmark == "sealqa":
@@ -378,6 +386,11 @@ def _prepare_native_data(
         raise RuntimeError("data_dir must be an absolute container path")
     if benchmark in {"gaia", "hle"} and _text(benchmark_params.get("modality") or "llm") != "llm":
         raise RuntimeError(f"{benchmark} multimodal tasks are not verified; use modality 'llm'")
+    if not root.exists():
+        raise AdapterError(f"Shared data_dir does not exist; check the data mount: {root}",
+                           error_type="asset_missing")
+    if not root.is_dir():
+        raise AdapterError(f"Shared data_dir is not a directory: {root}", error_type="asset_missing")
     for name in NATIVE_DATA_FILES.get(benchmark, ()):
         if not (root / name).is_file():
             raise RuntimeError(f"Missing native {benchmark} asset: {root / name}")

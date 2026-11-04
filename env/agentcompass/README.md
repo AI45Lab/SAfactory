@@ -242,13 +242,23 @@ python -B -m unittest discover -s tests/env/agentcompass -p 'test_*.py' -v
   `amendments` 留痕。
 - 原生任务目录写入 `<SHARED_ROOT>/manifests/v2/`；更早版本的 `manifests/*.jsonl` 保留不动。
   目录行只含数据与原生参数，不含 harness 或 judge 等运行配置。
-- SciCode 的官方 HDF5 首次获取与结构校验仍由 [generate_dataset.py](generate_dataset.py)
-  `--prepare` 完成；统一工具在其基础上接管、记录并生成 validation/test 目录。
+- SciCode 与其他 benchmark 使用同一命令（`--benchmark scicode`），可从空目录首次准备：题目
+  定义与模板取自已安装的 SciCode 包内文件（不取压缩包中的副本；准备前先核对 SciCode 模块源码
+  的固定 SHA256，这只校验关键源码文件，题目与模板本身没有独立固定哈希），官方压缩包只解出
+  `scicode/test_data.h5`，按固定大小/SHA256 校验，并逐项核对 HDF5 测试组与题目定义一致，
+  再经原生 loader 校验后发布 validation/test 两个目录。下载缓存、staging、中断恢复和发布
+  记录与其他 benchmark 相同。已有官方 HDF5 时可用 `--source <test_data.h5>` 复用而不下载
+  （同样校验）。已存在但无发布记录的 `scicode/` 按固定 HDF5 与包内定义比对后接管，不改写
+  文件。旧命令 [generate_dataset.py](generate_dataset.py) `--prepare`（`--reuse-h5` 对应
+  `--source`）仅为兼容保留，直接转调同一实现；目录写入 `manifests/v2/`，早期的
+  `manifests/scicode-validation.jsonl` 保持不动，仍可用 `generate_dataset.py --catalog` 读取。
 - skillsbench 与 special_pattern_check 在固定版本没有下载源，需部署方用 `--source <目录>`
   提供原生格式数据，同样经原生 loader 校验后发布；`status` 子命令会给出所需目录结构。
 - 失败时输出结构化错误与 traceback 并以非零码退出；批量提交按 benchmark 汇总失败项。
 - 准备只在需要网络的部署环境（经集群代理）运行；使用者的 runner 关闭 HF 在线访问，
-  缺数据时直接失败，不会向共享目录下载。
+  缺数据时直接失败，不会向共享目录下载。目录行给出的 `data_dir` 必须是已存在的目录，runner
+  不会自动创建；路径不存在、不是目录或缺少必需文件时，在启动原生 CLI 前即失败
+  （`error_type=asset_missing`），以免空目录掩盖挂载或配置错误。
 
 部署映射。`<DATA_OWNER>` 是**发布共享数据的 fileset 所有者**，由部署者告知；使用者必须
 挂载这份已发布的数据，不能把它换成自己的用户名（那会指向不存在的目录）。results 是每个

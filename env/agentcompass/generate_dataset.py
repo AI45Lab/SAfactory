@@ -1,36 +1,44 @@
 """Build a SAfactory task manifest using the pinned native SciCode loader.
 
 Deployment preparation and native loading use the pinned AgentCompass Python.
-Daily --catalog selection only needs standard Python. --prepare may download a
-missing official asset; no mode starts a model, environment session or database.
+Daily --catalog selection only needs standard Python. --prepare is kept for
+compatibility and forwards to ``prepare_shared_data.py prepare --benchmark
+scicode`` (the single download/staging/resume/publish implementation); no mode
+starts a model, environment session or database.
 """
 from __future__ import annotations
 
 import argparse
-import fcntl
-import hashlib
 import importlib.util
 import inspect
 import json
-import os
-import shutil
-import tempfile
-import urllib.request
-import zipfile
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
-PINNED_COMMIT = "d2c3e148902e948db3270fa34b2198fb1b10beb7"
-SCICODE_URL = "http://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/agentcompass/scicode.zip"
-# Existing GPFS bytes verified against the official archive size/CRC32 on
-# 2026-10-22; retain SHA256 so subsequent preparation is entirely offline.
-H5_SIZE = 1049345865
-H5_SHA256 = "48b0272a88b17dbd29777c217e1b4fb2b019b92e11cc2add847409db9541b890"
-H5_CRC32 = "9fe0ae53"
-ASSET_FILES = ("problems_dev.jsonl", "problems_test.jsonl", "background_comment_template.txt",
-               "multistep_template.txt", "13.6.txt", "62.1.txt", "76.3.txt")
+
+def _load_unified():
+    # Loaded by path: this script runs standalone and is also loaded by tests.
+    spec = importlib.util.spec_from_file_location(
+        "agentcompass_prepare_shared_data", Path(__file__).with_name("prepare_shared_data.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+unified = _load_unified()
+
+PINNED_COMMIT = unified.PINNED_COMMIT
+# SciCode pins live in the unified tool; these names remain for existing callers.
+SCICODE_URL = unified.SCICODE_URL
+H5_SIZE = unified.SCICODE_H5_SIZE
+H5_SHA256 = unified.SCICODE_H5_SHA256
+H5_CRC32 = unified.SCICODE_H5_CRC32
+ASSET_FILES = unified.SCICODE_ASSET_FILES
+verify_h5 = unified.verify_scicode_h5
+verify_h5_structure = unified.verify_scicode_h5_structure
+sha256 = unified.sha256
 SOURCE_HASHES = {
-    "SciCodeBenchmark": "fdc4aa30db3ead957b05a7d0135591cb6c5ec7984d86f2af8071371c859a11e1",
+    "SciCodeBenchmark": unified.SCICODE_SOURCE_SHA256,
     "SciCodeToolUseHarness": "0447a0b452e949f6b9f76e68d410000f61c66fab14db6d7bcfe82344cfe82e5a",
 }
 SPLIT_FILES = {
@@ -40,107 +48,15 @@ SPLIT_FILES = {
 }
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def prepare_shared_data(data_dir: Path, reuse_h5: Path | None = None,
+                        container_data_dir: str = "/app/data/agentcompass") -> dict:
+    """Deployment only: compatibility wrapper around the unified SciCode prepare.
 
-
-def verify_h5(path: Path, digest: str | None = None) -> None:
-    if path.stat().st_size != H5_SIZE or (digest or sha256(path)) != H5_SHA256:
-        raise ValueError(f"{path} is not the verified official SciCode HDF5 asset")
-
-
-def verify_h5_structure(native_dir: Path) -> dict:
-    import h5py
-
-    expected = {}
-    for filename in SPLIT_FILES["all"]:
-        for line in (native_dir / filename).read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            problem = json.loads(line)
-            for step in problem["sub_steps"]:
-                key = str(step["step_number"])
-                if key not in {"13.6", "62.1", "76.3"}:  # Official prefilled steps.
-                    expected[key] = len(step["test_cases"])
-    with h5py.File(native_dir / "test_data.h5", "r") as data:
-        if set(data) != set(expected):
-            raise ValueError("SciCode HDF5 subproblem groups differ from the pinned definitions")
-        for key, count in expected.items():
-            for index in range(1, count + 1):
-                if not isinstance(data.get(f"{key}/test{index}"), h5py.Group):
-                    raise ValueError(f"Missing SciCode HDF5 group: {key}/test{index}")
-    return {"subproblems": len(expected), "test_groups": sum(expected.values())}
-
-
-def prepare_shared_data(data_dir: Path, reuse_h5: Path | None = None) -> dict:
-    """Deployment only: publish immutable inputs, reusing verified assets."""
-    from agentcompass.benchmarks.scicode import SciCodeBenchmark
-
-    package_dir = Path(inspect.getfile(SciCodeBenchmark)).parent / "data"
-    if sha256(Path(inspect.getfile(SciCodeBenchmark))) != SOURCE_HASHES["SciCodeBenchmark"]:
-        raise ValueError(f"Preparation requires AgentCompass {PINNED_COMMIT}")
-    data_dir.mkdir(parents=True, exist_ok=True)
-    native_dir = data_dir / "scicode"
-    with (data_dir / ".prepare.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        reused = native_dir.exists()
-        if not reused:
-            with tempfile.TemporaryDirectory(prefix=".scicode-", dir=data_dir) as tmp:
-                stage = Path(tmp) / "scicode"
-                stage.mkdir(mode=0o755)
-                for name in ASSET_FILES:
-                    shutil.copyfile(package_dir / name, stage / name)
-                if reuse_h5 is not None:
-                    verify_h5(reuse_h5)
-                    shutil.copyfile(reuse_h5, stage / "test_data.h5")
-                else:
-                    archive = Path(tmp) / "scicode.zip"
-                    with urllib.request.urlopen(SCICODE_URL, timeout=60) as source, archive.open("wb") as out:
-                        shutil.copyfileobj(source, out)
-                    with zipfile.ZipFile(archive) as bundle:
-                        # Extract only the known asset. Templates/definitions
-                        # come from the pinned source, not a mutable archive.
-                        with bundle.open("scicode/test_data.h5") as source, (stage / "test_data.h5").open("wb") as out:
-                            shutil.copyfileobj(source, out)
-                verify_h5(stage / "test_data.h5")
-                verify_h5_structure(stage)
-                for path in stage.iterdir():
-                    path.chmod(0o644)
-                stage.rename(native_dir)
-        # Never overwrite or 'repair' an existing deployment silently.
-        assets = {}
-        for name in ASSET_FILES:
-            actual = sha256(native_dir / name)
-            if actual != sha256(package_dir / name):
-                raise ValueError(f"Existing shared asset differs from pinned source: {name}")
-            assets[name] = actual
-        verify_h5(native_dir / "test_data.h5")
-        assets["test_data.h5"] = H5_SHA256
-        structure = verify_h5_structure(native_dir)
-        tasks, _ = load_native_tasks(data_dir, "validation")
-        catalog_dir = data_dir / "manifests"
-        catalog_dir.mkdir(mode=0o755, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".catalog-", dir=data_dir) as tmp:
-            output = Path(tmp) / "scicode-validation.jsonl"
-            report = write_manifest(output, tasks, split="validation",
-                                    container_data_dir="/app/data/agentcompass", assets=assets)
-            report.update({"task_manifest_sha256": sha256(output), "hdf5_structure": structure,
-                           "official_archive_url": SCICODE_URL, "official_hdf5_crc32": H5_CRC32})
-            metadata = output.with_suffix(".metadata.json")
-            metadata.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            for path in (output, metadata):
-                target = catalog_dir / path.name
-                if target.exists():
-                    if target.read_bytes() != path.read_bytes():
-                        raise ValueError(f"Shared catalog differs; use a new version directory: {target}")
-                else:
-                    path.chmod(0o644)
-                    path.rename(target)
-        return {"data_dir": str(data_dir), "reused_complete_data": reused, **report}
+    Download cache, staging, resume, records and catalogs (manifests/v2/) all
+    come from prepare_shared_data.py. Earlier catalogs under manifests/ are
+    left untouched and remain readable with --catalog.
+    """
+    return unified.prepare("scicode", data_dir, container_data_dir, source=reuse_h5)
 
 
 def load_catalog(path: Path):
@@ -279,7 +195,7 @@ def main(argv=None):
     source.add_argument("--data-dir", type=Path,
                         help="Native data root containing scicode/, visible to this process")
     source.add_argument("--catalog", type=Path, help="Deployment catalog; no native runtime or download needed")
-    parser.add_argument("--prepare", action="store_true", help="Deployment only: prepare shared assets and validation catalog")
+    parser.add_argument("--prepare", action="store_true", help="Deployment only (compatibility): same as prepare_shared_data.py prepare --benchmark scicode")
     parser.add_argument("--reuse-h5", type=Path, help="Deployment only: reuse an existing official HDF5 instead of downloading")
     parser.add_argument("--container-data-dir", default="/app/data/agentcompass")
     parser.add_argument("--split", choices=tuple(SPLIT_FILES), default="validation")
@@ -294,7 +210,8 @@ def main(argv=None):
         if args.prepare:
             if args.catalog or args.output:
                 raise ValueError("--prepare requires --data-dir and cannot use --catalog or --output")
-            print(json.dumps(prepare_shared_data(args.data_dir.resolve(), args.reuse_h5), indent=2))
+            print(json.dumps(prepare_shared_data(args.data_dir.resolve(), args.reuse_h5,
+                                                 args.container_data_dir), indent=2))
             return 0
         if args.reuse_h5 or not args.output:
             raise ValueError("Task selection requires --output; --reuse-h5 is only valid with --prepare")

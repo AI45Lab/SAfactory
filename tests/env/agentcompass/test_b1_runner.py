@@ -1,10 +1,13 @@
 """B1 common runner capabilities: judge routing, shared data and native caches."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
+import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -45,6 +48,7 @@ class SharedDataTests(unittest.TestCase):
     def test_listed_benchmarks_need_mounted_native_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "data"
+            root.mkdir()  # The shared mount exists; only the native files are missing.
             for benchmark, files in runner.NATIVE_DATA_FILES.items():
                 with self.subTest(benchmark=benchmark):
                     with self.assertRaisesRegex(RuntimeError, "explicit mounted data_dir"):
@@ -84,6 +88,27 @@ class SharedDataTests(unittest.TestCase):
             self.assertEqual(Path(data_dir), episode.resolve() / "native-data")
             self.assertNotIn(root, Path(data_dir).parents)
 
+    def test_explicit_data_dir_must_be_an_existing_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "not-mounted"
+            not_dir = Path(tmp) / "file"
+            not_dir.write_text("not a directory\n")
+            for benchmark, harness in (("scicode", "scicode_tool_use"), ("deepsearchqa", "naive_search_agent"),
+                                       ("swebench_verified", "mini_swe_agent")):
+                for path, message in ((missing, "does not exist"), (not_dir, "not a directory")):
+                    with self.subTest(benchmark=benchmark, path=path.name), \
+                            self.assertRaisesRegex(runner.AdapterError, message) as caught:
+                        runner._prepare_native_data(
+                            benchmark, harness, {"data_dir": str(path)}, Path(tmp) / "episode", {}, {})
+                    self.assertEqual(caught.exception.error_type, "asset_missing")
+            self.assertFalse(missing.exists())  # never created to hide a missing mount
+            # A valid directory is accepted where no native files are pinned.
+            self.assertEqual(runner._prepare_native_data(
+                "swebench_verified", "mini_swe_agent", {"data_dir": tmp}, Path(tmp) / "e", {}, {}), tmp)
+        # Combinations that never required data_dir still run without one.
+        self.assertEqual(runner._prepare_native_data(
+            "swebench_verified", "mini_swe_agent", {}, Path("/tmp/e"), {}, {}), "")
+
     def test_native_library_caches_stay_in_episode_results(self):
         episode = Path("/app/results/job/session/task")
         with mock.patch.dict(os.environ, {"HF_HOME": "/shared/hf"}, clear=False):
@@ -118,6 +143,95 @@ class HarnessCredentialTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"SERPER_API_KEY": "set", "JINA_API_KEY": "set"}, clear=False):
             runner._check_harness_credentials("naive_search_agent")
         runner._check_harness_credentials("openai_chat")
+
+
+class SciCodeEpisodeTests(unittest.TestCase):
+    """main() with a stubbed CLI: nothing here starts AgentCompass or a model."""
+
+    registered = (frozenset({"scicode"}), frozenset({"scicode_tool_use"}), frozenset({"host_process"}), frozenset())
+
+    def _request(self, data_dir: str, results: str, session: str) -> dict:
+        return {
+            "job_id": "job-1", "session_id": session, "model": "test-route", "max_steps": -1,
+            "gateway_base_url": "http://gateway.example/v1/sessions", "agent_start_timeout_s": 30,
+            "env_params": {"results_root": results, "dataset": {
+                "task_id": "scicode-validation-1", "sample_id": "1", "benchmark": "scicode",
+                "harness": "scicode_tool_use", "environment": "host_process", "data_dir": data_dir,
+                "benchmark_params": {"split": "validation", "timeout": 1800},
+                "harness_params": {"mode": "naive"}, "environment_params": {},
+                "model_params": {"max_retries": 0}, "timeout_seconds": 20, "contract_only": False,
+            }},
+        }
+
+    def _main(self, request: dict) -> tuple[dict, list[list[str]]]:
+        commands = []
+
+        def stub_cli(command, **kwargs):
+            commands.append(command)
+            return 2, False  # stop right after the command was built
+
+        stdout = io.StringIO()
+        with mock.patch.object(runner, "_registered_components", return_value=self.registered), \
+                mock.patch.object(runner, "_agentcompass_executable", return_value=Path("/opt/venv/bin/agentcompass")), \
+                mock.patch.object(runner, "_run_command", side_effect=stub_cli), \
+                mock.patch.object(runner, "_read_request", return_value=request), \
+                mock.patch.object(sys, "stdout", stdout), mock.patch.object(sys, "stderr", io.StringIO()):
+            self.assertEqual(runner.main(), 0)
+        return json.loads(stdout.getvalue()), commands
+
+    def _data(self, root: Path) -> Path:
+        data = root / "data"
+        (data / "scicode").mkdir(parents=True)
+        for name in ("problems_dev.jsonl", "test_data.h5"):
+            (data / "scicode" / name).touch()  # path checks only, not real assets
+        return data
+
+    def test_injected_params_reach_cli_and_request_is_not_mutated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = self._data(Path(tmp))
+            request = self._request(str(data), f"{tmp}/results", "session-1")
+            original = copy.deepcopy(request)
+            _, commands = self._main(request)
+            self.assertEqual(request, original)  # request, dataset and its param objects unchanged
+            self.assertEqual(len(commands), 1)
+            command = commands[0]
+            bp = json.loads(command[command.index("--benchmark-params") + 1])
+            hp = json.loads(command[command.index("--harness-params") + 1])
+            episode = (Path(tmp) / "results/job-1/session-1/scicode-validation-1").resolve()
+            self.assertEqual(bp["h5py_file"], str(data / "scicode/test_data.h5"))
+            self.assertEqual(bp["workspace_root"], str(episode / "scicode-evaluation"))
+            self.assertEqual(bp["sample_ids"], ["1"])
+            self.assertEqual(hp, {"mode": "naive", "code_workdir": str(episode / "scicode-tools")})
+            self.assertEqual(command[command.index("--data-dir") + 1], str(data))
+
+    def test_sessions_get_separate_workspaces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = self._data(Path(tmp))
+            roots = set()
+            for session in ("session-1", "session-2"):
+                _, (command,) = self._main(self._request(str(data), f"{tmp}/results", session))
+                bp = json.loads(command[command.index("--benchmark-params") + 1])
+                hp = json.loads(command[command.index("--harness-params") + 1])
+                roots.add((bp["workspace_root"], hp["code_workdir"]))
+                self.assertIn(session, bp["workspace_root"])
+            self.assertEqual(len(roots), 2)
+            self.assertEqual(sorted(p.name for p in (data / "scicode").iterdir()),
+                             ["problems_dev.jsonl", "test_data.h5"])  # nothing written to shared data
+
+    def test_bad_data_dir_fails_before_the_cli_starts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            not_dir = Path(tmp) / "file"
+            not_dir.touch()
+            empty = Path(tmp) / "empty"
+            empty.mkdir()
+            for data_dir, message in ((f"{tmp}/missing", "does not exist"), (str(not_dir), "not a directory"),
+                                      (str(empty), "Missing native SciCode asset")):
+                with self.subTest(data_dir=data_dir):
+                    result, commands = self._main(self._request(data_dir, f"{tmp}/results", "session-1"))
+                    self.assertEqual(commands, [])
+                    self.assertEqual(result["status"], "failed")
+                    self.assertIn(message, result["error_text"])
+            self.assertFalse(Path(f"{tmp}/missing").exists())
 
 
 prep_spec = importlib.util.spec_from_file_location(

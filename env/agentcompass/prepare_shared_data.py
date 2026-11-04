@@ -31,6 +31,7 @@ import tempfile
 import time
 import traceback
 import urllib.request
+import zipfile
 from pathlib import Path, PurePosixPath
 
 PINNED_COMMIT = "d2c3e148902e948db3270fa34b2198fb1b10beb7"
@@ -44,6 +45,23 @@ CATALOG_DIR = "manifests/v2"
 # Lock files the datasets/HF libraries leave beside caches; never assets.
 RUNTIME_LOCK_SUFFIXES = (".lock",)
 DEFAULT_JUDGE_MODEL = "Qwen/Qwen3.5-35B-A3B"
+
+# SciCode: only the HDF5 test data comes from the official archive, pinned by
+# size and SHA256 (verified against the archive's size/CRC32 on 2026-10-22).
+# Problem definitions and templates come from the pinned package, never from
+# the mutable archive.
+SCICODE_URL = "http://opencompass.oss-cn-shanghai.aliyuncs.com/datasets/agentcompass/scicode.zip"
+SCICODE_H5_MEMBER = "scicode/test_data.h5"
+SCICODE_H5_SIZE = 1049345865
+SCICODE_H5_SHA256 = "48b0272a88b17dbd29777c217e1b4fb2b019b92e11cc2add847409db9541b890"
+SCICODE_H5_CRC32 = "9fe0ae53"
+SCICODE_ASSET_FILES = ("problems_dev.jsonl", "problems_test.jsonl", "background_comment_template.txt",
+                       "multistep_template.txt", "13.6.txt", "62.1.txt", "76.3.txt")
+SCICODE_PROBLEM_FILES = ("problems_dev.jsonl", "problems_test.jsonl")
+# Official prefilled steps have no HDF5 test groups.
+SCICODE_PREFILLED_STEPS = frozenset({"13.6", "62.1", "76.3"})
+# SHA256 of the SciCodeBenchmark module file at PINNED_COMMIT.
+SCICODE_SOURCE_SHA256 = "fdc4aa30db3ead957b05a7d0135591cb6c5ec7984d86f2af8071371c859a11e1"
 
 
 def _pinned(module: str, name: str):
@@ -239,6 +257,78 @@ def _stage_zip_ref(profile: dict, stage: Path) -> dict:
     return {**provenance, "source_commit": head, "module_default": f"{repo}/archive/refs/heads/main.zip"}
 
 
+def scicode_package_dir() -> Path:
+    """Problem definitions and templates shipped with the pinned SciCode module."""
+    import inspect
+
+    from agentcompass.benchmarks.scicode import SciCodeBenchmark
+
+    module = Path(inspect.getfile(SciCodeBenchmark))
+    if sha256(module) != SCICODE_SOURCE_SHA256:
+        raise ValueError(f"SciCode preparation requires AgentCompass {PINNED_COMMIT}")
+    return module.parent / "data"
+
+
+def verify_scicode_h5(path: Path, digest: str | None = None) -> None:
+    if path.stat().st_size != SCICODE_H5_SIZE or (digest or sha256(path)) != SCICODE_H5_SHA256:
+        raise ValueError(f"{path} is not the verified official SciCode HDF5 asset")
+
+
+def verify_scicode_h5_structure(native_dir: Path) -> dict:
+    """Every non-prefilled substep of the pinned definitions has its HDF5 test groups."""
+    import h5py
+
+    expected = {}
+    for filename in SCICODE_PROBLEM_FILES:
+        for line in (native_dir / filename).read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            for step in json.loads(line)["sub_steps"]:
+                key = str(step["step_number"])
+                if key not in SCICODE_PREFILLED_STEPS:
+                    expected[key] = len(step["test_cases"])
+    with h5py.File(native_dir / "test_data.h5", "r") as data:
+        if set(data) != set(expected):
+            raise ValueError("SciCode HDF5 subproblem groups differ from the pinned definitions")
+        for key, count in expected.items():
+            for index in range(1, count + 1):
+                if not isinstance(data.get(f"{key}/test{index}"), h5py.Group):
+                    raise ValueError(f"Missing SciCode HDF5 group: {key}/test{index}")
+    return {"subproblems": len(expected), "test_groups": sum(expected.values())}
+
+
+def _stage_scicode(profile: dict, stage: Path, source: Path | None) -> dict:
+    """Pinned definitions plus the official HDF5, downloaded once into staging.
+
+    ``source`` may name an existing official ``test_data.h5`` to reuse instead
+    of downloading; it is held to the same size/SHA256 pin.
+    """
+    package_dir = scicode_package_dir()
+    target = stage / profile["root"]
+    target.mkdir(parents=True)
+    for name in SCICODE_ASSET_FILES:
+        shutil.copyfile(package_dir / name, target / name)
+    h5 = target / "test_data.h5"
+    if source is not None:
+        if not source.is_file():
+            raise ValueError(f"--source for scicode must be an official test_data.h5 file: {source}")
+        shutil.copyfile(source, h5)
+        provenance = {"source": "deployer-supplied official HDF5", "source_path": str(source)}
+    else:
+        archive, reused = _fetch_archive(SCICODE_URL, stage.parent / "downloads")
+        # Extract only the pinned member; nothing else in the archive is used.
+        with zipfile.ZipFile(archive) as bundle, bundle.open(SCICODE_H5_MEMBER) as member, h5.open("wb") as out:
+            shutil.copyfileobj(member, out, length=8 * 1024 * 1024)
+        provenance = {"source": SCICODE_URL, "archive_sha256": sha256(archive),
+                      "archive_bytes": archive.stat().st_size, "archive_reused_from_staging": reused}
+    verify_scicode_h5(h5)
+    structure = verify_scicode_h5_structure(target)
+    for path in target.iterdir():
+        path.chmod(0o644)
+    return {**provenance, "hdf5_sha256": SCICODE_H5_SHA256, "official_hdf5_crc32": SCICODE_H5_CRC32,
+            "hdf5_structure": structure, "definitions": f"pinned AgentCompass {PINNED_COMMIT} package files"}
+
+
 def _stage_hf(profile: dict, stage: Path) -> dict:
     from huggingface_hub import HfApi, snapshot_download
 
@@ -345,6 +435,8 @@ def _stage(benchmark: str, profile: dict, stage: Path, source: Path | None = Non
         return _stage_zip(profile, stage)
     if kind == "zip_ref":
         return _stage_zip_ref(profile, stage)
+    if kind == "scicode":
+        return _stage_scicode(profile, stage, source)
     if kind == "hf":
         return _stage_hf(profile, stage)
     if kind == "git":
@@ -489,18 +581,13 @@ def _publish_catalog(data_dir: Path, benchmark: str, variant: str, rows: list[di
 def _adopt_existing(benchmark: str, profile: dict, root: Path) -> dict:
     """Record files published before records existed, only against independent pins."""
     if profile["kind"] == "scicode":
-        import importlib.util
-
-        spec = importlib.util.spec_from_file_location("scicode_prepare", Path(__file__).with_name("generate_dataset.py"))
-        scicode = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(scicode)
-        scicode.verify_h5(root / "test_data.h5")
-        package_dir = Path(_pinned("scicode", "__file__")).parent / "data"
-        for name in scicode.ASSET_FILES:
+        verify_scicode_h5(root / "test_data.h5")
+        package_dir = scicode_package_dir()
+        for name in SCICODE_ASSET_FILES:
             if sha256(root / name) != sha256(package_dir / name):
                 raise ValueError(f"Existing SciCode {name} differs from the pinned package file")
         return {"source": "adopted: official SciCode HDF5 (size+SHA256 pinned) and pinned package definitions",
-                "hdf5_sha256": scicode.H5_SHA256, "official_archive": scicode.SCICODE_URL}
+                "hdf5_sha256": SCICODE_H5_SHA256, "official_archive": SCICODE_URL}
     expected = profile.get("adopt_sha256")
     if not expected:
         raise ValueError(f"Unrecorded {benchmark} data at {root}; publish to a new version directory")
@@ -701,6 +788,10 @@ def prepare(benchmark: str, data_dir: Path, container_data_dir: str, source: Pat
             reconcile: bool = False, verify_content: bool = False) -> dict:
     """Deployment only: publish one benchmark's complete native tree, then its catalogs."""
     profile = PROFILES[benchmark]
+    if profile["kind"] == "scicode":
+        # Every SciCode path (stage, adopt, reuse) loads and catalogs with the
+        # pinned module; refuse any other runtime before touching data_dir.
+        scicode_package_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
     record_path = data_dir / STATE_DIR / f"{benchmark}.json"
     with (data_dir / ".prepare.lock").open("a") as lock:
@@ -805,7 +896,9 @@ def main(argv=None):
     prep.add_argument("--benchmark", choices=sorted(PROFILES), action="append", required=True)
     prep.add_argument("--data-dir", type=Path, required=True)
     prep.add_argument("--container-data-dir", default="/app/data/agentcompass")
-    prep.add_argument("--source", type=Path, help="Deployer-supplied native data (skillsbench, special_pattern_check)")
+    prep.add_argument("--source", type=Path,
+                      help="Deployer-supplied native data (skillsbench, special_pattern_check), or an existing "
+                           "official SciCode test_data.h5 to reuse instead of downloading")
     prep.add_argument("--verify-content", action="store_true",
                       help="Re-hash every published file instead of the fast metadata check")
     prep.add_argument("--reconcile", action="store_true",
