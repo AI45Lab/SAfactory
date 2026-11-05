@@ -1,0 +1,22 @@
+environments:
+  - env_name: quickenv
+    # PLACEHOLDER: build/push the complete delivery image, then replace this tag.
+    env_image: registry.example.com/quickenv-runtime:delivery-v1
+    env_num: 1
+    # One JSONL row is one independently scheduled RJob episode.
+    # This example is deliberately refused by the adapter; generate real rows.
+    dataset: ./datasets/quickenv_tasks.jsonl
+    dataset_load_mode: eager
+    env_params:
+      task_family: quickenv
+      results_root: /app/results
+      quickenv:
+        delivery_root: /opt/quickenv-delivery/exploit_gym
+        offline_root: /opt/exploitgym-offline
+        docker_mode: nested
+        docker_storage_driver: fuse-overlayfs
+        max_turns: 1
+        timeout: 2700
+        # Launcher agent-start-timeout must be larger than this whole-run limit.
+        launch_timeout: 3600
+        budget: 20

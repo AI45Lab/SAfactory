@@ -1,0 +1,52 @@
+agent_name: quickenv
+container:
+  workdir: /opt/quickenv-delivery/exploit_gym
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-quickenv/runner.py
+    command: python3 /tmp/safactory-quickenv/runner.py
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    HTTP_PROXY: ""
+    HTTPS_PROXY: ""
+    ALL_PROXY: ""
+    http_proxy: ""
+    https_proxy: ""
+    all_proxy: ""
+    NO_PROXY: "*"
+    no_proxy: "*"
+rjob:
+  name_prefix: quickenv
+  # Override global defaults: one replica owns one session and network namespace.
+  replicas: 1
+  host_network: false
+  restart_policy: Never
+  user: root
+  private_machine: Group
+  image_pull_policy: Always
+  no_packaging: true
+  # Each RJob owns a nested Docker daemon and its controller/proxy/firewall.
+  # No host Docker socket or node-shared Docker data directory is mounted.
+  privileged: true
+  cleanup_on_finish: true
+  keep_failed_jobs: true
+  poll_interval_s: 5
+  termination_grace_period_seconds: 120
+  resources:
+    # Initial allocation only: tune after checking the largest real case.
+    cpu: 6
+    gpu: 0
+    memory_in_mb: 24576
+    custom_resources:
+      - brainpp.cn/fuse=1
+  mount_config:
+    # The README delivery lives here; the broad mount preserves task symlinks.
+    - "gpfs://gpfs2/trustcyberdata:/mnt/shared-storage-gpfs2/trustcyberdata"
+    # REQUIRED: replace with your writable cluster storage before submission.
+    - "gpfs://CLUSTER_STORAGE/SAfactory/quickenv-results:/app/results"
+  embedded_files:
+    # runner.py is embedded automatically from runner_entrypoint.source.
+    - source: ./adapter.py
+      target: /tmp/safactory-quickenv/adapter.py
+    - source: ./runtime.py
+      target: /tmp/safactory-quickenv/runtime.py

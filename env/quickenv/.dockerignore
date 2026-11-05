@@ -1,0 +1,15 @@
+# Use with the prepared delivery context described in Dockerfile.
+# Keep the offline runtime intact; in particular, do NOT exclude all *.tar
+# files because exploitgym-offline/firewall-image.tar is required.
+**/.git
+**/__pycache__
+**/*.pyc
+exploit_gym/pj-*
+exploit_gym/out
+exploit_gym/results
+exploit_gym/*.tar
+exploit_gym/*.tar.gz
+exploit_gym/*.tgz
+exploit_gym/.env
+exploit_gym/.env.*
+exploit_gym/.launcher.lock

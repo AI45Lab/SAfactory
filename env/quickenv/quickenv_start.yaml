@@ -1,0 +1,38 @@
+agent_name: quickenv
+container:
+  workdir: /opt/quickenv-delivery/exploit_gym
+  runner_entrypoint:
+    source: ./runner.py
+    target: /tmp/safactory-quickenv/runner.py
+    command: python3 /tmp/safactory-quickenv/runner.py
+  mounts:
+    # Bind sources resolve from the repository root; entrypoint source resolves
+    # from this YAML. Never bind the host Docker socket into this environment.
+    - source: ./env/quickenv/adapter.py
+      target: /tmp/safactory-quickenv/adapter.py
+      mode: ro
+    - source: ./env/quickenv/runtime.py
+      target: /tmp/safactory-quickenv/runtime.py
+      mode: ro
+    - source: ./env/quickenv/results
+      target: /app/results
+      mode: rw
+    # Preserve delivery absolute paths and symlink targets on the Linux host.
+    - source: /mnt/shared-storage-gpfs2/trustcyberdata
+      target: /mnt/shared-storage-gpfs2/trustcyberdata
+      mode: ro
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    HTTP_PROXY: ""
+    HTTPS_PROXY: ""
+    ALL_PROXY: ""
+    http_proxy: ""
+    https_proxy: ""
+    all_proxy: ""
+    NO_PROXY: "*"
+    no_proxy: "*"
+  extra_args:
+    - --privileged
+    - --device=/dev/fuse
+    - --add-host=host.docker.internal:host-gateway
+  idle_command: tail -f /dev/null

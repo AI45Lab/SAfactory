@@ -1,0 +1,22 @@
+environments:
+  - env_name: quickenv
+    # Build the delivery runtime described in README.safactory.md first.
+    env_image: quickenv-runtime:local
+    env_num: 1
+    # This file is an explicitly marked schema example, not a real case list.
+    # Generate datasets/mining.jsonl with build_dataset.py and switch this path.
+    dataset: ./datasets/quickenv_tasks.jsonl
+    dataset_load_mode: eager
+    env_params:
+      task_family: quickenv
+      results_root: /app/results
+      quickenv:
+        delivery_root: /opt/quickenv-delivery/exploit_gym
+        offline_root: /opt/exploitgym-offline
+        docker_mode: nested
+        docker_storage_driver: fuse-overlayfs
+        max_turns: 1
+        timeout: 2700
+        # Includes image loading, service preparation and native execution.
+        launch_timeout: 3600
+        budget: 20
