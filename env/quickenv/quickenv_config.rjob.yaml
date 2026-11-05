@@ -1,11 +1,11 @@
 environments:
   - env_name: quickenv
     # PLACEHOLDER: build/push the complete delivery image, then replace this tag.
-    env_image: registry.example.com/quickenv-runtime:delivery-v1
+    env_image: registry.h.pjlab.org.cn/ailab/ml-base:22.04-pjlab-20260323
     env_num: 1
     # One JSONL row is one independently scheduled RJob episode.
-    # This example is deliberately refused by the adapter; generate real rows.
-    dataset: ./datasets/quickenv_tasks.jsonl
+    # This schedules all 400 supplied rows; pool-size only limits concurrency.
+    dataset: ./datasets/harbor_pj_mining_400.jsonl
     dataset_load_mode: eager
     env_params:
       task_family: quickenv
@@ -13,8 +13,16 @@ environments:
       quickenv:
         delivery_root: /opt/quickenv-delivery/exploit_gym
         offline_root: /opt/exploitgym-offline
+        # Locate task_id using the delivered selected_tasks.txt files.
+        # Every configured partition manifest must be mounted and readable.
+        batch_dirs:
+          - /mnt/shared-storage-gpfs2/trustcyberdata/private/CVEDockerGen/wuxuansheng/20261019_deliver/exploit_gym/pj-mining-400
+          - /mnt/shared-storage-gpfs2/trustcyberdata/private/CVEDockerGen/wuxuansheng/20261019_deliver/pj-mining-part2
+          - /mnt/shared-storage-gpfs2/trustcyberdata/private/CVEDockerGen/wuxuansheng/20261019_deliver/pj-mining-part3
         docker_mode: nested
         docker_storage_driver: fuse-overlayfs
+        # Container-local disk, like Harbor RJob; do not place this on GPFS/tmpfs.
+        docker_data_root: /docker-data
         max_turns: 1
         timeout: 2700
         # Launcher agent-start-timeout must be larger than this whole-run limit.

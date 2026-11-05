@@ -16,18 +16,21 @@
     "quickenv": {
       "delivery_root": "/opt/quickenv-delivery/exploit_gym",
       "offline_root": "/opt/exploitgym-offline",
+      "batch_dirs": [
+        "/mnt/shared-storage-gpfs2/trustcyberdata/private/CVEDockerGen/wuxuansheng/20261019_deliver/exploit_gym/pj-mining-400",
+        "/mnt/shared-storage-gpfs2/trustcyberdata/private/CVEDockerGen/wuxuansheng/20261019_deliver/pj-mining-part2",
+        "/mnt/shared-storage-gpfs2/trustcyberdata/private/CVEDockerGen/wuxuansheng/20261019_deliver/pj-mining-part3"
+      ],
       "docker_mode": "nested",
       "docker_storage_driver": "fuse-overlayfs",
+      "docker_data_root": "/docker-data",
       "max_turns": 1,
       "timeout": 2700,
       "launch_timeout": 3600,
       "budget": 20
     },
     "dataset": {
-      "task_id": "quickenv-example",
-      "task_name": "REPLACE_FROM_SELECTED_TASKS",
-      "batch_dir": "/mnt/shared-storage-gpfs2/trustcyberdata/private/CVEDockerGen/wuxuansheng/20261019_deliver/exploit_gym/pj-mining-400",
-      "example": true
+      "task_id": "arvo-368076877-lv0"
     }
   }
 }

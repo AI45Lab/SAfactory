@@ -3,9 +3,9 @@ environments:
     # Build the delivery runtime described in README.safactory.md first.
     env_image: quickenv-runtime:local
     env_num: 1
-    # This file is an explicitly marked schema example, not a real case list.
-    # Generate datasets/mining.jsonl with build_dataset.py and switch this path.
-    dataset: ./datasets/quickenv_tasks.jsonl
+    # The supplied 400 task IDs; one row is one scheduled case.
+    # Use a separate 1-2 row dataset for deployment smoke checks.
+    dataset: ./datasets/harbor_pj_mining_400.jsonl
     dataset_load_mode: eager
     env_params:
       task_family: quickenv
@@ -13,8 +13,15 @@ environments:
       quickenv:
         delivery_root: /opt/quickenv-delivery/exploit_gym
         offline_root: /opt/exploitgym-offline
+        # Rows contain only task_id. Match it uniquely in these manifests at
+        # runtime; never infer the partition from the JSONL row position.
+        batch_dirs:
+          - /mnt/shared-storage-gpfs2/trustcyberdata/private/CVEDockerGen/wuxuansheng/20261019_deliver/exploit_gym/pj-mining-400
+          - /mnt/shared-storage-gpfs2/trustcyberdata/private/CVEDockerGen/wuxuansheng/20261019_deliver/pj-mining-part2
+          - /mnt/shared-storage-gpfs2/trustcyberdata/private/CVEDockerGen/wuxuansheng/20261019_deliver/pj-mining-part3
         docker_mode: nested
         docker_storage_driver: fuse-overlayfs
+        docker_data_root: /docker-data
         max_turns: 1
         timeout: 2700
         # Includes image loading, service preparation and native execution.

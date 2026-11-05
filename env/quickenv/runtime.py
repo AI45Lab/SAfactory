@@ -8,6 +8,7 @@ GPFS Docker data directory is used.  Keep benchmark behavior in adapter.py.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import shutil
@@ -111,13 +112,16 @@ def _wait_ready(
     process: subprocess.Popen | None,
     timeout: float,
     log_path: Path,
-) -> None:
+    *,
+    expected_driver: str | None = None,
+) -> str:
     deadline = time.monotonic() + timeout
     last_error = "no Docker response"
     while time.monotonic() < deadline:
         if process is not None and process.poll() is not None:
             raise RuntimeError(f"nested dockerd exited during startup; see {log_path}")
         try:
+            driver = ""
             for command in (
                 ["docker", "info", "--format", "{{.Driver}}"],
                 ["docker", "compose", "version"],
@@ -137,10 +141,18 @@ def _wait_ready(
                 )
                 if completed.returncode or not completed.stdout.strip():
                     raise RuntimeError(completed.stdout.strip() or "empty Docker response")
-            return
+                if command[1] == "info":
+                    driver = completed.stdout.strip()
         except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
             last_error = str(exc)
             time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+        else:
+            if expected_driver is not None and driver != expected_driver:
+                raise RuntimeError(
+                    f"nested Docker storage driver is {driver!r}, expected {expected_driver!r}; "
+                    f"refusing to run the case; see {log_path}"
+                )
+            return driver
     raise RuntimeError(
         f"Docker/Compose did not become ready within {timeout:g}s: {last_error}; "
         f"see {log_path}"
@@ -193,24 +205,33 @@ def docker_runtime(
         raise RuntimeError("nested Docker needs /dev/fuse; enable privileged RJob and brainpp.cn/fuse=1")
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    # Force local /tmp, irrespective of TMPDIR inherited from GPFS settings.
+    # Match Harbor's RJob storage layout. Large task image layers must not be
+    # forced into /tmp, which can be a small tmpfs in the outer container.
+    # The configured parent must be container-local disk; never use shared GPFS.
+    data_base_value = config.get("docker_data_root", "/docker-data")
+    if not isinstance(data_base_value, str) or not Path(data_base_value).is_absolute():
+        raise ValueError("quickenv.docker_data_root must be an absolute container-local disk path")
+    data_base = Path(data_base_value).resolve()
+    data_base.mkdir(parents=True, exist_ok=True)
+    # Socket/exec state stays local and short enough for a Unix socket name.
     runtime_root = Path(tempfile.mkdtemp(prefix="quickenv-docker-", dir="/tmp"))
-    runtime_env["DOCKER_HOST"] = f"unix://{runtime_root / 'docker.sock'}"
-    runtime_env["DOCKER_CONFIG"] = str(runtime_root / "client")
-    (runtime_root / "client").mkdir()
-    daemon_config = runtime_root / "daemon.json"
-    daemon_config.write_text("{}\n", encoding="utf-8")
-    command = [
-        "dockerd",
-        f"--config-file={daemon_config}",
-        f"--host={runtime_env['DOCKER_HOST']}",
-        f"--pidfile={runtime_root / 'dockerd.pid'}",
-        f"--exec-root={runtime_root / 'exec'}",
-        f"--data-root={runtime_root / 'data'}",
-        f"--storage-driver={driver}",
-    ]
-    process = None
+    data_root = None
     try:
+        data_root = Path(tempfile.mkdtemp(prefix="quickenv-", dir=data_base))
+        runtime_env["DOCKER_HOST"] = f"unix://{runtime_root / 'docker.sock'}"
+        runtime_env["DOCKER_CONFIG"] = str(runtime_root / "client")
+        (runtime_root / "client").mkdir()
+        daemon_config = runtime_root / "daemon.json"
+        daemon_config.write_text("{}\n", encoding="utf-8")
+        command = [
+            "dockerd",
+            f"--config-file={daemon_config}",
+            f"--host={runtime_env['DOCKER_HOST']}",
+            f"--pidfile={runtime_root / 'dockerd.pid'}",
+            f"--exec-root={runtime_root / 'exec'}",
+            f"--data-root={data_root}",
+            f"--storage-driver={driver}",
+        ]
         with _cancel_on_signal(), log_path.open("ab") as log:
             process = subprocess.Popen(
                 command,
@@ -221,9 +242,22 @@ def docker_runtime(
                 start_new_session=True,
             )
             try:
-                _wait_ready(runtime_env, process, timeout, log_path)
+                actual_driver = _wait_ready(
+                    runtime_env, process, timeout, log_path, expected_driver=driver,
+                )
+                usage = shutil.disk_usage(data_root)
+                (log_path.parent / "docker-runtime.json").write_text(json.dumps({
+                    "mode": mode,
+                    "docker_host": runtime_env["DOCKER_HOST"],
+                    "storage_driver": actual_driver,
+                    "data_root": str(data_root),
+                    "disk_total_bytes": usage.total,
+                    "disk_free_bytes_before_case": usage.free,
+                }, indent=2) + "\n", encoding="utf-8")
                 yield runtime_env
             finally:
                 _stop_process_group(process)
     finally:
         shutil.rmtree(runtime_root, ignore_errors=True)
+        if data_root is not None:
+            shutil.rmtree(data_root, ignore_errors=True)

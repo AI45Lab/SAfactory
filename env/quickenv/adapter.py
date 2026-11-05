@@ -27,10 +27,12 @@ def run_case(request: dict[str, Any], task: dict[str, Any], session_url: str
     config = params["quickenv"]
     if task.get("example"):
         raise ValueError("example dataset row is not runnable; generate real rows with build_dataset.py")
-    task_name = _text(task.get("task_name"), "dataset.task_name")
+    task_id = _text(task.get("task_id"), "dataset.task_id")
+    # The delivered 400-row catalog contains only task_id. Keep explicit
+    # task_name support for rows exported by build_dataset.py.
+    task_name = _text(task.get("task_name", task_id), "dataset.task_name (or task_id)")
     if not re.fullmatch(r"arvo-[A-Za-z0-9_.-]+-lv0", task_name):
         raise ValueError("dataset.task_name must be a single ARVO lv0 case name (arvo-...-lv0)")
-    task_id = _text(task.get("task_id"), "dataset.task_id")
     session_id = _text(request.get("session_id"), "session_id")
     job_id = _text(request.get("job_id"), "job_id")
     model = _text(request.get("model"), "model")
@@ -41,7 +43,7 @@ def run_case(request: dict[str, Any], task: dict[str, Any], session_url: str
 
     delivery = _absolute(config.get("delivery_root"), "quickenv.delivery_root")
     offline = _absolute(config.get("offline_root"), "quickenv.offline_root")
-    batch = _absolute(task.get("batch_dir"), "dataset.batch_dir")
+    batch = _resolve_batch_dir(task, config, task_name)
     results = _absolute(params.get("results_root"), "results_root")
     _preflight(delivery, offline, batch, task_name)
 
@@ -122,6 +124,44 @@ def run_case(request: dict[str, Any], task: dict[str, Any], session_url: str
         "step_count_source": "native_result.step_count" if steps == raw_steps and type(raw_steps) is int else "unavailable",
         "evaluation_enabled": False,
     }, steps
+
+
+def _resolve_batch_dir(task: dict[str, Any], config: dict[str, Any], task_name: str) -> Path:
+    """Find this case's partition without assuming catalog order is partition order.
+
+    SAfactory already selected one JSONL row. This lookup reads only delivery
+    manifests; it never loops over the scheduling dataset or executes a batch.
+    Explicit per-row batch_dir remains supported for exported/relocated rows.
+    """
+    if "batch_dir" in task:
+        return _absolute(task["batch_dir"], "dataset.batch_dir")
+    candidates = config.get("batch_dirs")
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError("task_id-only rows require a nonempty env_params.quickenv.batch_dirs list; "
+                         "alternatively set dataset.batch_dir explicitly")
+    matches: list[Path] = []
+    visited: set[Path] = set()
+    for index, value in enumerate(candidates):
+        batch = _absolute(value, f"quickenv.batch_dirs[{index}]")
+        if batch in visited:
+            continue
+        visited.add(batch)
+        manifest = batch / "selected_tasks.txt"
+        try:
+            names = {line.strip() for line in manifest.read_text(encoding="utf-8").splitlines()
+                     if line.strip()}
+        except OSError as exc:
+            raise FileNotFoundError(f"cannot resolve case partition: cannot read {manifest}; "
+                                    "mount all configured batch_dirs or set dataset.batch_dir") from exc
+        if task_name in names:
+            matches.append(batch)
+    if not matches:
+        raise ValueError(f"task {task_name} was not found in any configured batch_dirs selected_tasks.txt")
+    if len(matches) != 1:
+        raise ValueError(f"task {task_name} appears in multiple partitions: "
+                         + ", ".join(str(path) for path in matches)
+                         + "; set dataset.batch_dir explicitly")
+    return matches[0]
 
 
 def _preflight(delivery: Path, offline: Path, batch: Path, task_name: str) -> None:
