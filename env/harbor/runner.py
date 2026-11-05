@@ -9,7 +9,6 @@ import math
 import os
 import re
 import signal
-import shutil
 import subprocess
 import sys
 import time
@@ -23,11 +22,6 @@ RESULT_PATH_ENV = "SAFACTORY_RESULT_PATH"
 RESULT_JSON_PREFIX = "SAFACTORY_RESULT_JSON "
 HARBOR_BIN = "/opt/harbor-env/bin/harbor"
 RUNTIME_DIR = Path("/tmp/safactory-harbor")
-DOCKER_MODE_ENV = "SAFACTORY_DOCKER_MODE"
-DEFAULT_DOCKER_MODE = "rjob"
-DOCKER_MODES = {"docker", "rjob", "sandbox"}
-RJOB_DOCKER_SOCKET = RUNTIME_DIR / "docker.sock"
-SANDBOX_DOCKER_SOCKET = Path("/var/run/docker.sock")
 CODEX_CONFIG_TARGET = "/opt/safactory-codex-config"
 # Profile subdirectory under <bundle_root>/<task_id>/; configurable per run so an
 # upstream layout change does not require touching the runner.
@@ -37,7 +31,19 @@ DEFAULT_PROFILE_SUBDIR = "harbor-runtime-profile"
 # configurable; the default matches the original self-describing layout.
 DEFAULT_SHARED_SUBDIR = "_runtime"
 # The bundle ships its own loaders; the runner delegates image loading to them.
-BUNDLE_LOADERS = ("load_shared_images.py", "load_image.py")
+# image_load_mode picks which of them run:
+#   legacy - bin/load_shared_images.py (whole <shared_images_subdir>) then
+#            bin/load_image.py; both scripts are required (original layout).
+#   task   - only bin/load_image.py --task <task_id> --root <bundle_root>; the
+#            bundle's single loader resolves everything the task needs (e.g. the
+#            merged PJ collections, whose load_image.py dispatches per task to
+#            the source batch loader).
+IMAGE_LOAD_MODES = {
+    "legacy": ("load_shared_images.py", "load_image.py"),
+    "task": ("load_image.py",),
+}
+DEFAULT_IMAGE_LOAD_MODE = "legacy"
+BUNDLE_LOADERS = IMAGE_LOAD_MODES[DEFAULT_IMAGE_LOAD_MODE]
 CANCELLATION_GRACE_S = 30.0
 CANCELLATION_POLL_S = 1.0
 LOAD_TIMEOUT_S = 1800
@@ -118,8 +124,12 @@ def resolve_task_record(
     task_id: str,
     bundle_root: Path,
     profile_subdir: str,
+    loaders: tuple[str, ...] = BUNDLE_LOADERS,
 ) -> TaskRecord:
-    """Locate one task by convention: <bundle_root>/<task_id>/<profile_subdir>."""
+    """Locate one task by convention: <bundle_root>/<task_id>/<profile_subdir>.
+
+    ``loaders`` are the bin/ scripts the selected image_load_mode will run.
+    """
     task_id = _path_segment(task_id, "dataset.task_id")
     profile_subdir = _path_segment(profile_subdir, "profile_subdir")
     if not bundle_root.is_absolute():
@@ -130,7 +140,7 @@ def resolve_task_record(
         raise ValueError(f"bundle_root does not exist: {bundle_root}") from error
     if root == Path(root.anchor) or not root.is_dir():
         raise ValueError("bundle_root must be a directory other than filesystem root")
-    for name in BUNDLE_LOADERS:
+    for name in loaders:
         if not (root / "bin" / name).is_file():
             raise ValueError(f"bundle_root missing loader: bin/{name}")
     # task_id/profile_subdir are single safe segments, so the path stays inside
@@ -163,38 +173,11 @@ def _docker_env(env: dict[str, str]) -> dict[str, str]:
     return {key: value for key, value in env.items() if key not in overrides}
 
 
-def _docker_mode() -> str:
-    """Resolve the outer runtime's Docker connection mode.
-
-    ``rjob`` is the compatibility default.  Docker mode uses an already
-    running daemon (normally a mounted host socket), while Sandbox mode starts
-    the standard Docker-in-Sandbox daemon on ``/var/run/docker.sock``.
-    """
-    value = os.environ.get(DOCKER_MODE_ENV, DEFAULT_DOCKER_MODE).strip().lower()
-    aliases = {"host": "docker", "dind": "rjob", "sandbox-dind": "sandbox"}
-    mode = aliases.get(value, value)
-    if mode not in DOCKER_MODES:
-        allowed = ", ".join(sorted(DOCKER_MODES))
-        raise RuntimeError(
-            f"{DOCKER_MODE_ENV} must be one of {allowed}; got {value!r}"
-        )
-    return mode
-
-
-def _docker_host_for_mode(mode: str) -> str:
-    if mode == "rjob":
-        return f"unix://{RJOB_DOCKER_SOCKET}"
-    if mode == "sandbox":
-        return f"unix://{SANDBOX_DOCKER_SOCKET}"
-    value = os.environ.get("DOCKER_HOST", "").strip()
-    return value or f"unix://{SANDBOX_DOCKER_SOCKET}"
-
-
 def _docker_command(env: dict[str, str], *args: str) -> list[str]:
     host = env.get("DOCKER_HOST", "")
     if not host.startswith("unix:///"):
         raise ValueError("nested Docker requires an explicit Unix DOCKER_HOST")
-    return ["docker", *args]
+    return ["docker", f"--host={host}", *args]
 
 
 def _docker(env: dict[str, str], *args: str, timeout: int = INSPECT_TIMEOUT_S) -> str:
@@ -218,19 +201,23 @@ def _docker(env: dict[str, str], *args: str, timeout: int = INSPECT_TIMEOUT_S) -
 def load_task_images(spec: RunSpec, docker_env: dict[str, str]) -> None:
     """Delegate image loading to the bundle's own loader scripts.
 
-    The bundle ships bin/load_shared_images.py (shared <bundle>/_runtime archives)
-    and bin/load_image.py (per-task <bundle>/<task>/images archives); they handle
-    gzip streaming, pre.tar/post.tar inner archives, and overlay max-depth
+    legacy mode runs bin/load_shared_images.py (shared <bundle>/_runtime archives)
+    and then bin/load_image.py (per-task archives); task mode runs only
+    bin/load_image.py, which must load every image the task needs. The scripts
+    handle gzip streaming, pre.tar/post.tar inner archives, and overlay max-depth
     flatten-import. The runner only wires them to this episode's daemon via
     DOCKER_HOST (already set in docker_env) and runs them isolated (-I) because the
     bundle is untrusted data.
     """
-    loader_args = {
+    all_args = {
         "load_shared_images.py": [
             "--runtime-dir",
             str(spec.bundle_root / spec.shared_images_subdir),
         ],
         "load_image.py": ["--root", str(spec.bundle_root), "--task", spec.task_id],
+    }
+    loader_args = {
+        name: all_args[name] for name in IMAGE_LOAD_MODES[spec.image_load_mode]
     }
     for name in loader_args:
         if not (spec.bundle_root / "bin" / name).is_file():
@@ -282,6 +269,8 @@ class RunSpec:
     agent_env: dict[str, str] = field(default_factory=dict)
     runtime_env: tuple[tuple[str, str], ...] = ()
     shared_images_subdir: str = DEFAULT_SHARED_SUBDIR
+    image_load_mode: str = DEFAULT_IMAGE_LOAD_MODE
+    agent_timeout_multiplier: float | None = None
 
     @property
     def task_id(self) -> str:
@@ -309,9 +298,7 @@ class RunSpec:
 
     @property
     def docker_socket(self) -> Path:
-        # Kept for callers that inspect the legacy RJob endpoint.  The actual
-        # endpoint is selected by ``SAFACTORY_DOCKER_MODE`` in NestedDocker.
-        return RJOB_DOCKER_SOCKET
+        return RUNTIME_DIR / "docker.sock"
 
     @property
     def dockerd_log_path(self) -> Path:
@@ -331,99 +318,61 @@ class NestedDocker:
     process: subprocess.Popen[bytes] | None = None
     harbor_process: subprocess.Popen[bytes] | None = None
     env: dict[str, str] = field(default_factory=dict)
-    mode: str = ""
-    docker_host: str = ""
-    driver: str = ""
 
     def start(self, spec: RunSpec) -> str:
-        self.mode = _docker_mode()
-        self.docker_host = _docker_host_for_mode(self.mode)
-        if not self.docker_host.startswith("unix:///"):
+        if os.geteuid() != 0:
+            raise RuntimeError("nested Docker requires root")
+        if not Path("/dev/fuse").exists():
             raise RuntimeError(
-                f"{DOCKER_MODE_ENV}={self.mode!r} requires a Unix DOCKER_HOST; "
-                f"got {self.docker_host!r}"
+                "nested Docker requires /dev/fuse; use privileged RJob with "
+                "brainpp.cn/fuse:1"
+            )
+
+        spec.dockerd_log_path.parent.mkdir(parents=True, exist_ok=True)
+        spec.docker_socket.unlink(missing_ok=True)
+        (RUNTIME_DIR / "exec").mkdir(parents=True, exist_ok=True)
+        Path("/docker-data").mkdir(parents=True, exist_ok=True)
+
+        with spec.dockerd_log_path.open("ab") as log:
+            self.process = subprocess.Popen(
+                [
+                    "dockerd",
+                    f"--host=unix://{spec.docker_socket}",
+                    f"--pidfile={RUNTIME_DIR / 'dockerd.pid'}",
+                    f"--exec-root={RUNTIME_DIR / 'exec'}",
+                    "--data-root=/docker-data",
+                    "--storage-driver=fuse-overlayfs",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
             )
 
         self.env = {
             **_docker_env(dict(os.environ)),
-            "DOCKER_HOST": self.docker_host,
+            "DOCKER_HOST": f"unix://{spec.docker_socket}",
             "HARBOR_TELEMETRY": "0",
         }
-
-        # Docker mode talks to an already running daemon (normally the mounted
-        # /var/run/docker.sock) and must not start or stop that daemon.
-        if self.mode == "docker":
-            return self._wait_ready(spec)
-
-        if os.geteuid() != 0:
-            raise RuntimeError(f"{self.mode} Docker mode requires root")
-        spec.dockerd_log_path.parent.mkdir(parents=True, exist_ok=True)
-        socket = Path(self.docker_host.removeprefix("unix://"))
-        socket.parent.mkdir(parents=True, exist_ok=True)
-        socket.unlink(missing_ok=True)
-
-        if self.mode == "rjob":
-            for binary in ("docker", "dockerd", "fuse-overlayfs"):
-                if shutil.which(binary) is None:
-                    raise RuntimeError(f"{binary} missing from the RJob image")
-            if not Path("/dev/fuse").exists():
-                raise RuntimeError(
-                    "rjob Docker mode requires /dev/fuse; use privileged RJob with "
-                    "brainpp.cn/fuse:1"
-                )
-            (RUNTIME_DIR / "exec").mkdir(parents=True, exist_ok=True)
-            Path("/docker-data").mkdir(parents=True, exist_ok=True)
-            dockerd_args = [
-                "dockerd",
-                f"--host={self.docker_host}",
-                f"--pidfile={RUNTIME_DIR / 'dockerd.pid'}",
-                f"--exec-root={RUNTIME_DIR / 'exec'}",
-                "--data-root=/docker-data",
-                "--storage-driver=fuse-overlayfs",
-            ]
-        else:
-            # Sandbox DIND follows sandbox/05-docker-in-sandbox.md.  Sysbox
-            # supplies nested-container support; storage and runtime paths are
-            # selected by the Sandbox image instead of RJob-specific flags.
-            for binary in ("docker", "dockerd"):
-                if shutil.which(binary) is None:
-                    raise RuntimeError(f"{binary} missing from the Sandbox image")
-            dockerd_args = ["dockerd", f"--host={self.docker_host}"]
-
-        with spec.dockerd_log_path.open("ab") as log:
-            self.process = subprocess.Popen(
-                dockerd_args,
-                stdin=subprocess.DEVNULL,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                env=self.env,
-                start_new_session=True,
-            )
-        return self._wait_ready(spec)
-
-    def _wait_ready(self, spec: RunSpec) -> str:
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
-            if self.process is not None and self.process.poll() is not None:
+        for _ in range(120):
+            if self._docker_ready():
+                break
+            if self.process.poll() is not None:
                 raise RuntimeError(
                     f"nested dockerd exited during startup; see {spec.dockerd_log_path}"
                 )
-            try:
-                driver = _docker(self.env, "info", "--format", "{{.Driver}}", timeout=5)
-                if not driver:
-                    raise RuntimeError("Docker daemon returned an empty storage driver")
-                _docker(self.env, "compose", "version", timeout=20)
-                self.driver = driver
-                return driver
-            except (OSError, RuntimeError, subprocess.TimeoutExpired):
-                time.sleep(1)
-        tail = ""
-        if spec.dockerd_log_path.is_file():
-            tail = spec.dockerd_log_path.read_text(errors="replace")[-6000:]
-        raise RuntimeError(
-            f"Docker daemon did not become ready in {self.mode} mode; "
-            f"see {spec.dockerd_log_path}\n{tail}"
-        )
+            time.sleep(0.5)
+        else:
+            raise RuntimeError(
+                f"nested dockerd did not become ready; see {spec.dockerd_log_path}"
+            )
+
+        driver = _docker(self.env, "info", "--format", "{{.Driver}}")
+        if driver != "fuse-overlayfs":
+            raise RuntimeError(
+                f"nested dockerd uses {driver!r}, expected 'fuse-overlayfs'"
+            )
+        return driver
 
     def run_harbor(self, spec: RunSpec) -> tuple[int, bool]:
         spec.harbor_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -461,6 +410,13 @@ class NestedDocker:
         if self.process is not None:
             self._stop(self.process)
             self.process = None
+
+    def _docker_ready(self) -> bool:
+        try:
+            _docker(self.env, "info", timeout=5)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+            return False
+        return True
 
     @staticmethod
     def _stop(process: subprocess.Popen[bytes]) -> None:
@@ -506,7 +462,16 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
         params.get("shared_images_subdir", DEFAULT_SHARED_SUBDIR),
         "shared_images_subdir",
     )
-    task_record = resolve_task_record(task_id, bundle_root, profile_subdir)
+    image_load_mode = _clean_text(
+        params.get("image_load_mode", DEFAULT_IMAGE_LOAD_MODE), "image_load_mode"
+    )
+    if image_load_mode not in IMAGE_LOAD_MODES:
+        raise ValueError(
+            "image_load_mode must be one of: " + ", ".join(sorted(IMAGE_LOAD_MODES))
+        )
+    task_record = resolve_task_record(
+        task_id, bundle_root, profile_subdir, IMAGE_LOAD_MODES[image_load_mode]
+    )
     # Optional public run-time variables for the Harbor process (no per-task
     # catalog any more); applies to every task of this run.
     runtime_env = _runtime_env(params.get("runtime_env", {}))
@@ -557,6 +522,12 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
         agent_env=agent_env,
         runtime_env=runtime_env,
         shared_images_subdir=shared_images_subdir,
+        image_load_mode=image_load_mode,
+        agent_timeout_multiplier=(
+            float(params["agent_timeout_multiplier"])
+            if params.get("agent_timeout_multiplier") is not None
+            else None
+        ),
     )
 
 
@@ -601,22 +572,12 @@ def harbor_command(spec: RunSpec) -> list[str]:
         command.extend(["--mounts", json.dumps(mounts, separators=(",", ":"))])
     if spec.capture_http:
         command.extend(["--ak", "capture_http=true"])
-    # The per-session Gateway URL is known only when the runner receives the
-    # request.  Pass it to the Task Agent as well as to Harbor itself, while
-    # allowing a configured API key to override the safe EMPTY default.
-    task_agent_env = {
-        **dict(spec.agent_env),
-        **model_connection_env(spec),
-    }
-    # Keep a configured secret when one is supplied; the dynamic session URL
-    # must always win so the Task Agent follows this episode's Gateway route.
-    prefix = MODEL_ENV_PREFIXES.get(spec.agent)
-    if prefix is not None:
-        api_key_name = f"{prefix}_API_KEY"
-        if api_key_name in spec.agent_env:
-            task_agent_env[api_key_name] = spec.agent_env[api_key_name]
-    for name, value in sorted(task_agent_env.items()):
+    for name, value in sorted(spec.agent_env.items()):
         command.extend(["--ae", f"{name}={value}"])
+    if spec.agent_timeout_multiplier is not None:
+        command.extend(
+            ["--agent-timeout-multiplier", str(spec.agent_timeout_multiplier)]
+        )
     command.extend(
         [
             "--env",
@@ -798,6 +759,7 @@ def _preparation_metrics(spec: RunSpec) -> dict[str, Any]:
         "task_id": spec.task_id,
         "bundle_root": str(spec.bundle_root),
         "task_path": str(spec.task_path),
+        "image_load_mode": spec.image_load_mode,
         "image_load_log_path": str(spec.image_load_log_path),
         "preparation_receipt_path": str(spec.preparation_path),
     }
@@ -930,13 +892,7 @@ def main() -> int:
         load_task_images(spec, nested.env)
         _write_json(
             spec.preparation_path,
-            {
-                **_preparation_metrics(spec),
-                "status": "prepared",
-                "docker_mode": nested.mode,
-                "docker_host": nested.docker_host,
-                "docker_driver": nested.driver,
-            },
+            {**_preparation_metrics(spec), "status": "prepared"},
         )
         return_code, timed_out = nested.run_harbor(spec)
         if timed_out:
