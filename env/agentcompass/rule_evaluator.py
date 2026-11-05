@@ -6,8 +6,10 @@ from typing import Any
 
 NORMALIZATION_BY_BENCHMARK = {
     "browsecomp": "llm_judge",
+    "browsecomp_zh": "llm_judge",
     "deepsearchqa": "deepsearchqa_judge",
     "frontierscience": "frontierscience",
+    "gaia": "llm_judge",
     "hle": "llm_judge",
     "hle_verified": "llm_judge",
     "scicode": "scicode_fractional",
@@ -15,6 +17,7 @@ NORMALIZATION_BY_BENCHMARK = {
     "sgi_deep_research": "llm_judge",
     "special_pattern_check": "special_pattern_correct",
     "swebench_verified": "swebench_resolved",
+    "xbench_deepsearch": "xbench_judge",
 }
 
 
@@ -92,7 +95,7 @@ def evaluate(request: Any, spec: Any, trajectory: Any) -> dict[str, Any]:
     if not isinstance(correct, bool):
         return _failed(benchmark, f"AgentCompass {benchmark} metrics did not contain boolean correct")
     if normalizer in {
-        "llm_judge", "deepsearchqa_judge", "sealqa_judge",
+        "llm_judge", "deepsearchqa_judge", "sealqa_judge", "xbench_judge",
         "special_pattern_correct", "swebench_resolved",
     }:
         raw_score = _number(metrics.get("raw_score"), lower=0.0, upper=1.0)

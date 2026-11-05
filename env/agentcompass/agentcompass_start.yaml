@@ -8,7 +8,8 @@ container:
     target: /tmp/safactory-agentcompass/runner.py
     command: "python /tmp/safactory-agentcompass/runner.py"
   mounts:
-    - source: ./datasets/special_pattern_check
+    # Bind sources are relative to the launcher working directory (repo root).
+    - source: ./env/agentcompass/datasets/special_pattern_check
       target: /app/data/special_pattern_check
       mode: ro
     - source: ./results

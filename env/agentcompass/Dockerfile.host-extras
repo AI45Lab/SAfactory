@@ -1,0 +1,44 @@
+# Host-side AgentCompass runtime for SAfactory, layered on the pinned base image.
+#
+# The base image keeps AgentCompass at the pinned revision and its swebench,
+# mini-swe-agent, scicode and gdpval extras. This layer adds only what native
+# host-side code paths call or declare, following the pinned
+# docs/en/user_guide/dependencies.mdx:
+#   - wget/unzip/git-lfs: invoked by native loaders (ensure_wget_unzip,
+#     terminal_bench_2_verified)
+#   - frontier-engineering, wildclawbench extras: native dependency_spec /
+#     host_process harness requirements
+#   - matplotlib: SciCode problem 80 imports it on the host
+#   - taubench extra, then pinned tau2 without its transitive dependencies
+#     (the documented way to avoid downgrading litellm/tenacity)
+# Agent CLIs and Docker belong in the per-task sandbox images selected by the
+# native recipes, not in this host image.
+ARG BASE_IMAGE=registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches@sha256:61e6f2b7c3e92d51981bcfd48b159964c5a40519c5d0c6b06166a2897ed324f2
+FROM ${BASE_IMAGE}
+
+ARG AGENTCOMPASS_COMMIT=d2c3e148902e948db3270fa34b2198fb1b10beb7
+ARG TAU2_COMMIT=b711c1ead46f55111bf765cf44d5da8bacc2d28c
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
+
+RUN apt-get \
+        -o Acquire::Retries=3 \
+        update \
+    && apt-get \
+        -o Acquire::Retries=3 \
+        install -y --no-install-recommends \
+        git-lfs \
+        unzip \
+        wget \
+    && git lfs install --system \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN test "$(git -C /opt/AgentCompass rev-parse HEAD)" = "${AGENTCOMPASS_COMMIT}" \
+    && "${VIRTUAL_ENV}/bin/python" -m pip install --only-binary=:all: \
+        "/opt/AgentCompass[frontier-engineering,wildclawbench,taubench]" \
+        "matplotlib" \
+    && "${VIRTUAL_ENV}/bin/python" -m pip install --no-deps \
+        "tau2 @ git+https://github.com/sierra-research/tau2-bench@${TAU2_COMMIT}" \
+    && "${VIRTUAL_ENV}/bin/python" -c "import importlib.metadata as m; assert m.version('tau2') == '1.0.1'" \
+    && "${VIRTUAL_ENV}/bin/python" -c \
+        "import agentcompass, h5py, matplotlib, minisweagent, openevolve, openpyxl, pyrage, scipy, swebench, sympy, tau2"

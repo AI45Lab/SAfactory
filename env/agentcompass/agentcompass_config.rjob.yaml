@@ -4,6 +4,8 @@ environments:
     # remain outside this repository.
     env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:agentcompass-02
     env_num: 1
+    # Switch this field to a generated task JSONL for a real benchmark batch.
+    # Keep the same start config and runner; see README data preparation steps.
     dataset: ./datasets/agentcompass_diagnostic.jsonl
     dataset_load_mode: eager
 
