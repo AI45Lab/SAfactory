@@ -11,6 +11,7 @@ from typing import Any
 from clusters.sandbox_cluster import run_sandbox_command, sandbox_results_setup_command
 
 from .episode_common import (
+    RESULT_FILENAME,
     RUNNER_DIAGNOSTIC_PREFIXES,
     normalize_result,
     parse_result_output,
@@ -243,7 +244,7 @@ class SandboxEpisodeRunner:
             Path.cwd() / "results"
             / safe_path_part(request.job_id)
             / safe_path_part(request.session_id)
-            / "safactory-result.json"
+            / RESULT_FILENAME
         )
         local_path.parent.mkdir(parents=True, exist_ok=True)
         local_path.write_text(artifact.stdout, encoding="utf-8")
