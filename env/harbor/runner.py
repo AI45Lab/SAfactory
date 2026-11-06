@@ -37,7 +37,19 @@ DEFAULT_PROFILE_SUBDIR = "harbor-runtime-profile"
 # configurable; the default matches the original self-describing layout.
 DEFAULT_SHARED_SUBDIR = "_runtime"
 # The bundle ships its own loaders; the runner delegates image loading to them.
-BUNDLE_LOADERS = ("load_shared_images.py", "load_image.py")
+# image_load_mode picks which of them run:
+#   legacy - bin/load_shared_images.py (whole <shared_images_subdir>) then
+#            bin/load_image.py; both scripts are required (original layout).
+#   task   - only bin/load_image.py --task <task_id> --root <bundle_root>; the
+#            bundle's single loader resolves everything the task needs (e.g. the
+#            merged PJ collections, whose load_image.py dispatches per task to
+#            the source batch loader).
+IMAGE_LOAD_MODES = {
+    "legacy": ("load_shared_images.py", "load_image.py"),
+    "task": ("load_image.py",),
+}
+DEFAULT_IMAGE_LOAD_MODE = "legacy"
+BUNDLE_LOADERS = IMAGE_LOAD_MODES[DEFAULT_IMAGE_LOAD_MODE]
 CANCELLATION_GRACE_S = 30.0
 CANCELLATION_POLL_S = 1.0
 LOAD_TIMEOUT_S = 1800
@@ -118,8 +130,12 @@ def resolve_task_record(
     task_id: str,
     bundle_root: Path,
     profile_subdir: str,
+    loaders: tuple[str, ...] = BUNDLE_LOADERS,
 ) -> TaskRecord:
-    """Locate one task by convention: <bundle_root>/<task_id>/<profile_subdir>."""
+    """Locate one task by convention: <bundle_root>/<task_id>/<profile_subdir>.
+
+    ``loaders`` are the bin/ scripts the selected image_load_mode will run.
+    """
     task_id = _path_segment(task_id, "dataset.task_id")
     profile_subdir = _path_segment(profile_subdir, "profile_subdir")
     if not bundle_root.is_absolute():
@@ -130,7 +146,7 @@ def resolve_task_record(
         raise ValueError(f"bundle_root does not exist: {bundle_root}") from error
     if root == Path(root.anchor) or not root.is_dir():
         raise ValueError("bundle_root must be a directory other than filesystem root")
-    for name in BUNDLE_LOADERS:
+    for name in loaders:
         if not (root / "bin" / name).is_file():
             raise ValueError(f"bundle_root missing loader: bin/{name}")
     # task_id/profile_subdir are single safe segments, so the path stays inside
@@ -218,19 +234,23 @@ def _docker(env: dict[str, str], *args: str, timeout: int = INSPECT_TIMEOUT_S) -
 def load_task_images(spec: RunSpec, docker_env: dict[str, str]) -> None:
     """Delegate image loading to the bundle's own loader scripts.
 
-    The bundle ships bin/load_shared_images.py (shared <bundle>/_runtime archives)
-    and bin/load_image.py (per-task <bundle>/<task>/images archives); they handle
-    gzip streaming, pre.tar/post.tar inner archives, and overlay max-depth
+    legacy mode runs bin/load_shared_images.py (shared <bundle>/_runtime archives)
+    and then bin/load_image.py (per-task archives); task mode runs only
+    bin/load_image.py, which must load every image the task needs. The scripts
+    handle gzip streaming, pre.tar/post.tar inner archives, and overlay max-depth
     flatten-import. The runner only wires them to this episode's daemon via
     DOCKER_HOST (already set in docker_env) and runs them isolated (-I) because the
     bundle is untrusted data.
     """
-    loader_args = {
+    all_args = {
         "load_shared_images.py": [
             "--runtime-dir",
             str(spec.bundle_root / spec.shared_images_subdir),
         ],
         "load_image.py": ["--root", str(spec.bundle_root), "--task", spec.task_id],
+    }
+    loader_args = {
+        name: all_args[name] for name in IMAGE_LOAD_MODES[spec.image_load_mode]
     }
     for name in loader_args:
         if not (spec.bundle_root / "bin" / name).is_file():
@@ -282,6 +302,8 @@ class RunSpec:
     agent_env: dict[str, str] = field(default_factory=dict)
     runtime_env: tuple[tuple[str, str], ...] = ()
     shared_images_subdir: str = DEFAULT_SHARED_SUBDIR
+    image_load_mode: str = DEFAULT_IMAGE_LOAD_MODE
+    agent_timeout_multiplier: float | None = None
 
     @property
     def task_id(self) -> str:
@@ -506,7 +528,16 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
         params.get("shared_images_subdir", DEFAULT_SHARED_SUBDIR),
         "shared_images_subdir",
     )
-    task_record = resolve_task_record(task_id, bundle_root, profile_subdir)
+    image_load_mode = _clean_text(
+        params.get("image_load_mode", DEFAULT_IMAGE_LOAD_MODE), "image_load_mode"
+    )
+    if image_load_mode not in IMAGE_LOAD_MODES:
+        raise ValueError(
+            "image_load_mode must be one of: " + ", ".join(sorted(IMAGE_LOAD_MODES))
+        )
+    task_record = resolve_task_record(
+        task_id, bundle_root, profile_subdir, IMAGE_LOAD_MODES[image_load_mode]
+    )
     # Optional public run-time variables for the Harbor process (no per-task
     # catalog any more); applies to every task of this run.
     runtime_env = _runtime_env(params.get("runtime_env", {}))
@@ -557,6 +588,12 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
         agent_env=agent_env,
         runtime_env=runtime_env,
         shared_images_subdir=shared_images_subdir,
+        image_load_mode=image_load_mode,
+        agent_timeout_multiplier=(
+            float(params["agent_timeout_multiplier"])
+            if params.get("agent_timeout_multiplier") is not None
+            else None
+        ),
     )
 
 
@@ -617,6 +654,10 @@ def harbor_command(spec: RunSpec) -> list[str]:
             task_agent_env[api_key_name] = spec.agent_env[api_key_name]
     for name, value in sorted(task_agent_env.items()):
         command.extend(["--ae", f"{name}={value}"])
+    if spec.agent_timeout_multiplier is not None:
+        command.extend(
+            ["--agent-timeout-multiplier", str(spec.agent_timeout_multiplier)]
+        )
     command.extend(
         [
             "--env",
@@ -798,6 +839,7 @@ def _preparation_metrics(spec: RunSpec) -> dict[str, Any]:
         "task_id": spec.task_id,
         "bundle_root": str(spec.bundle_root),
         "task_path": str(spec.task_path),
+        "image_load_mode": spec.image_load_mode,
         "image_load_log_path": str(spec.image_load_log_path),
         "preparation_receipt_path": str(spec.preparation_path),
     }
