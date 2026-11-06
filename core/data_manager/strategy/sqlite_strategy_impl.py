@@ -271,6 +271,8 @@ class SqliteStrategy(StorageStrategy):
             rows = rows.filter(job_id=query.job_id)
         if query.env_id:
             rows = rows.filter(env_id=query.env_id)
+        if query.env_ids:
+            rows = rows.filter(env_id__in=query.env_ids)
         if query.after_id:
             rows = rows.filter(id__gt=query.after_id)
         if query.finished is not None:

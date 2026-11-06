@@ -14,6 +14,7 @@ import numpy as np
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional
+from rollout_progress import RolloutProgress, checkpoint_path, database_identity
 
 # Add rl directory to path for utils import
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -34,8 +35,8 @@ if AIEVOBOX_ROOT not in sys.path:
 
 from core.data_manager.manager import DataManager
 
-# Setup logging
-LOG_DIR = os.path.join(AIEVOBOX_ROOT, "logs")
+# Keep scan progress scoped to one training run.
+LOG_DIR = os.environ.get("AIEVOBOX_RUN_DIR") or os.path.join(AIEVOBOX_ROOT, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "buffer_server.log")
 
@@ -73,11 +74,10 @@ atexit.register(gateway_autostart.stop)
 # DataManager for querying the database
 data_manager: Optional[DataManager] = None
 
-# Track last served step ID for cursor-based pagination
-last_served_id: int = 0
-
-# Pending items by instance_id (for grouping)
-pending_items_by_instance: Dict[str, List[Dict[str, Any]]] = {}
+progress: Optional[RolloutProgress] = None
+inflight_batch: Optional["BufferResponse"] = None
+inflight_env_ids: set[str] = set()
+buffer_lock = asyncio.Lock()
 
 # Group size (set by /start_rollout)
 group_size: int = 1
@@ -94,6 +94,10 @@ class BufferResponse(BaseModel):
     success: bool
     message: str = ""
     data: Optional[Dict[str, Any]] = None
+
+
+class BatchAck(BaseModel):
+    batch_id: str
 
 
 def _parse_timestamp(ts: Optional[str]) -> Optional[float]:
@@ -164,7 +168,7 @@ def _assistant_message_from_stored_response(response: Any) -> Optional[Dict[str,
 def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a database row to the expected item format."""
     # Parse stored prompt (JSON serialized messages list)
-    prompt_str = row.get("prompt", "")
+    prompt_str = row.get("prompt") or row.get("messages", "")
     if isinstance(prompt_str, str):
         base_messages = json.loads(prompt_str) if prompt_str else []
     else:
@@ -177,12 +181,12 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
         messages.append(assistant)
 
     session_id = row.get("session_id", "")
-    env_id = row.get("env_id", "")
+    env_id = row.get("env_id") or session_id
     group_id = row.get("group_id", "")
 
     # 从 env_state 中解析 weight_version
     weight_version = 0
-    if env_state_raw := row.get("env_state"):
+    if env_state_raw := row.get("env_state") or row.get("meta_json"):
         try:
             env_state = json.loads(env_state_raw) if isinstance(env_state_raw, str) else env_state_raw
             raw_weight_version = env_state.get("weight_version") if isinstance(env_state, dict) else None
@@ -191,16 +195,17 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
         except (TypeError, ValueError, json.JSONDecodeError):
             weight_version = 0
 
+    truncated = row.get("truncated", row.get("is_truncated", False))
     extra_info = {
-        "timestamp": _parse_timestamp(row.get("session_end_time")) or _parse_timestamp(row.get("timestamp")) or time.time(),
+        "timestamp": _parse_timestamp(row.get("session_end_time") or row.get("created_at")) or _parse_timestamp(row.get("timestamp")) or time.time(),
         "steps": row.get("step_id", 0),
         # 注意：finish_reason 与 truncated 不完全等价，finish_reason 仅用于训练侧标记截断状态
-        "finish_reason": "length" if row.get("truncated", False) else "stop",
+        "finish_reason": "length" if truncated else "stop",
         "session_id": session_id,
         "env_id": env_id,
         "group_id": group_id,
         "weight_version": weight_version,
-        "truncated": row.get("truncated", False),
+        "truncated": truncated,
     }
 
     return {
@@ -213,30 +218,21 @@ def _build_item_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def fetch_new_items_from_db(limit: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Fetch new completed steps from the database using cursor-based pagination."""
-    global data_manager, last_served_id
+    """Scan new envs and retry completed envs until Slime acknowledges them."""
+    if data_manager is None or progress is None:
+        return []
 
-    if data_manager is None:
+    try:
+        rows = await progress.terminal_rows(data_manager, page_size=limit or 500)
+    except Exception as e:
+        logger.error(f"fetch finished env rows error: {e}")
         return []
 
     items = []
-    try:
-        rows = await data_manager.fetch_done_steps_with_context(
-            after_id=last_served_id,
-            limit=limit or 100
-        )
-    except Exception as e:
-        logger.error(f"fetch_done_steps_with_context error: {e}")
-        return []
-
     for row in rows:
-        step_pk = row.get("step_pk")
         try:
             item = _build_item_from_row(row)
             items.append(item)
-            # Update cursor to the latest processed id
-            if not last_served_id or step_pk > last_served_id:
-                last_served_id = step_pk
         except Exception as e:
             logger.error(f"Error building item from row: {e}")
             continue
@@ -246,7 +242,7 @@ async def fetch_new_items_from_db(limit: Optional[int] = None) -> List[Dict[str,
 
 def accumulate_and_pop_ready_groups(new_items: List[Dict[str, Any]]) -> tuple:
     """Accumulate items and return ready groups."""
-    global pending_items_by_instance, group_size
+    pending_items_by_instance: Dict[str, List[Dict[str, Any]]] = {}
 
     ready_groups = []
     finished_instance_ids = []
@@ -277,15 +273,22 @@ def accumulate_and_pop_ready_groups(new_items: List[Dict[str, Any]]) -> tuple:
 
 @app.post("/get_rollout_data", response_model=BufferResponse)
 async def get_rollout_data(request: Request):
-    global pending_items_by_instance
+    global inflight_batch, inflight_env_ids
+    async with buffer_lock:
+        if inflight_batch is not None:
+            return inflight_batch
+        return await _create_rollout_batch()
+
+
+async def _create_rollout_batch() -> BufferResponse:
+    global inflight_batch, inflight_env_ids
 
     # Fetch new items from database and accumulate groups
     new_items = await fetch_new_items_from_db(limit=None)
     ready_groups, finished_ids = accumulate_and_pop_ready_groups(new_items)
 
     # Log pending status
-    pending_counts = {k: len(v) for k, v in pending_items_by_instance.items()}
-    logger.info(f"new_items={len(new_items)}, ready_groups={len(ready_groups)}, pending={pending_counts}")
+    logger.info(f"new_items={len(new_items)}, ready_groups={len(ready_groups)}, pending_envs={len(progress.pending) if progress else 0}")
 
     # Flatten groups to items
     ready_items = [item for _, group in ready_groups for item in group]
@@ -311,6 +314,7 @@ async def get_rollout_data(request: Request):
         max_wv = 0.0
         mean_wv = 0.0
     finished_groups = list(sorted(set(finished_ids)))
+    batch_id = uuid.uuid4().hex if ready_items else None
 
     meta_info = {
         "total_samples": total_samples,
@@ -318,6 +322,7 @@ async def get_rollout_data(request: Request):
         "finished_groups": finished_groups,
         "avg_weight_version": mean_wv,
         "max_weight_version": max_wv,
+        "batch_id": batch_id,
     }
 
     if total_samples == 0:
@@ -329,24 +334,47 @@ async def get_rollout_data(request: Request):
 
     logger.info(f"Returning {total_samples} items")
 
-    return BufferResponse(
+    response = BufferResponse(
         success=True,
         message=f"Successfully read {total_samples} items",
         data={"data": ready_items, "meta_info": meta_info},
     )
+    inflight_env_ids = {str(item["extra_info"]["env_id"]) for item in ready_items}
+    inflight_batch = response
+    return response
+
+
+@app.post("/ack_rollout_data")
+async def ack_rollout_data(ack: BatchAck):
+    global inflight_batch, inflight_env_ids
+    async with buffer_lock:
+        if progress is not None and progress.last_acked_batch == ack.batch_id:
+            return {"message": "Rollout batch already acknowledged"}
+        current = (inflight_batch.data or {}).get("meta_info", {}) if inflight_batch else {}
+        if current.get("batch_id") != ack.batch_id:
+            raise HTTPException(status_code=409, detail="Unknown rollout batch")
+        if progress is None:
+            raise HTTPException(status_code=503, detail="Rollout progress is not initialized")
+        progress.acknowledge(ack.batch_id, inflight_env_ids)
+        inflight_batch = None
+        inflight_env_ids = set()
+    return {"message": "Rollout batch acknowledged"}
 
 
 async def init_data_manager(job_session: str, storage_type: str, db_url: str, restart_training: bool = False):
     """Initialize the DataManager for querying the database."""
-    global data_manager, last_served_id
+    global data_manager, progress, inflight_batch, inflight_env_ids
     data_manager = DataManager(job_id=job_session, storage_type=storage_type, db_url=db_url)
     await data_manager.init()
+    progress = RolloutProgress.load(
+        checkpoint_path(LOG_DIR, db_url), db_url=db_url, job_session=job_session
+    )
+    if restart_training and not progress.loaded:
+        await progress.skip_existing_finished(data_manager)
+    progress.save()
+    inflight_batch = None
+    inflight_env_ids = set()
     logger.info(f"DataManager initialized with {storage_type} DB: {db_url}, job_session: {job_session}")
-
-    # Initialize cursor based on restart_training flag
-    if restart_training:
-        last_served_id = await data_manager.get_max_step_id()
-        logger.info(f"restart_training=True, initialized last_served_id={last_served_id}")
 
 
 def start_aievobox_process(data: dict):
@@ -355,23 +383,23 @@ def start_aievobox_process(data: dict):
     NOTE: LLM Proxy is now hosted in-process by slime_generator.
     It must already be running before this function is called.
     """
-    global aievobox_process, group_size, last_served_id, pending_items_by_instance, data_manager
+    global aievobox_process, group_size, data_manager
 
     # Set group size (num_repeat_per_sample)
     group_size = int(data.get("num_repeat_per_sample", 16))
 
-    # Clear state for new rollout
     restart_training = data.get("restart_training", False)
-    if restart_training:
-        pending_items_by_instance.clear()
-        logger.info("restart_training=True, cleared pending items")
-
-    # Keep a single job_session for both reader and writer process.
-    job_session = str(data.get("job_session") or uuid.uuid4().hex)
 
     # Database path
     storage_type = os.environ.get("STORAGE_TYPE", "sqlite")
     db_url = os.environ.get("AIEVOBOX_DB_URL", f"sqlite:///{AIEVOBOX_ROOT}/rl/rl.db")
+    state_path = checkpoint_path(LOG_DIR, db_url)
+    saved_session = None
+    if state_path.exists():
+        saved = json.loads(state_path.read_text(encoding="utf-8"))
+        if saved.get("db_url") == db_url and saved.get("db_identity") == database_identity(db_url):
+            saved_session = saved.get("job_session")
+    job_session = str(data.get("job_session") or saved_session or uuid.uuid4().hex)
     gateway_base_url = _required_gateway_base_url()
 
     # Run async init in a new event loop (since we're in a thread)
