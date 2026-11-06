@@ -5,18 +5,20 @@ import base64
 import json
 import logging
 import shlex
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from clusters.sandbox_cluster import run_sandbox_command, sandbox_results_setup_command
 
 from .episode_common import (
+    RESULT_FILENAME,
     RUNNER_DIAGNOSTIC_PREFIXES,
     normalize_result,
     parse_result_output,
     request_env,
     request_payload,
     result_artifact_path,
+    safe_path_part,
     tail,
 )
 from .types import SimulationAgentLease, SimulationStartRequest, SimulationStartResult
@@ -191,7 +193,7 @@ class SandboxEpisodeRunner:
         if artifact_required:
             # Native rewards come from the persisted runner result, even when
             # stdout contains another parseable result.
-            body = await self._read_result_artifact(sandbox, artifact_path, timeout_s)
+            body = await self._read_result_artifact(sandbox, artifact_path, timeout_s, request)
             source = "artifact"
             if body.get("session_id") != request.session_id:
                 raise RuntimeError("Sandbox result artifact session_id does not match the current session")
@@ -204,7 +206,7 @@ class SandboxEpisodeRunner:
                 body = parse_result_output(output.stdout)
                 source = "stdout"
             except Exception:
-                body = await self._read_result_artifact(sandbox, artifact_path, timeout_s)
+                body = await self._read_result_artifact(sandbox, artifact_path, timeout_s, request)
                 source = "artifact"
 
         result = normalize_result(body, session_id=request.session_id)
@@ -222,6 +224,7 @@ class SandboxEpisodeRunner:
     @staticmethod
     async def _read_result_artifact(
         sandbox: Any, artifact_path: str, timeout_s: float,
+        request: SimulationStartRequest,
     ) -> dict[str, Any]:
         artifact = await run_sandbox_command(
             sandbox, f"cat -- {shlex.quote(artifact_path)}", timeout_s=min(30.0, timeout_s),
@@ -237,6 +240,14 @@ class SandboxEpisodeRunner:
             raise RuntimeError(f"Sandbox runner result artifact contains invalid JSON: {artifact_path}") from exc
         if not isinstance(body, dict):
             raise RuntimeError("Sandbox runner result artifact must contain a JSON object")
+        local_path = (
+            Path.cwd() / "results"
+            / safe_path_part(request.job_id)
+            / safe_path_part(request.session_id)
+            / RESULT_FILENAME
+        )
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_text(artifact.stdout, encoding="utf-8")
         return body
 
     async def close(self) -> None:

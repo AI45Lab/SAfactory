@@ -19,11 +19,21 @@ class _LeaseRuntimeState:
         self._refills_in_flight = 0
         self._initial_load_done = False
         self._initial_error: Optional[Exception] = None
+        self._stopped = False
         self._cond = asyncio.Condition()
+
+    async def stop(self) -> None:
+        async with self._cond:
+            self._stopped = True
+            self._cond.notify_all()
+
+    async def is_idle(self) -> bool:
+        async with self._cond:
+            return self._is_exhausted_locked()
 
     async def add_ready_lease(self, key: Tuple[str, str], lease: SimulationAgentLease) -> bool:
         async with self._cond:
-            if key in self._known:
+            if self._stopped or key in self._known:
                 return False
             self._known.add(key)
             self._ready.append(lease)
@@ -39,6 +49,8 @@ class _LeaseRuntimeState:
     async def acquire(self) -> Optional[SimulationAgentLease]:
         async with self._cond:
             while True:
+                if self._stopped:
+                    return None
                 if self._initial_error is not None:
                     raise self._initial_error
                 if self._ready:
@@ -67,7 +79,7 @@ class _LeaseRuntimeState:
                 self._refills_in_flight -= 1
 
             added = False
-            if new_key is not None and lease is not None and new_key not in self._known:
+            if not self._stopped and new_key is not None and lease is not None and new_key not in self._known:
                 self._known.add(new_key)
                 self._ready.append(lease)
                 added = True
@@ -114,6 +126,9 @@ class SimulationLeasePool:
         self._closing = False
         self._closed = False
         self._repair_lock = asyncio.Lock()
+        self._repair_deadline: Optional[float] = None
+        self._repair_warn_after = 0.0
+        self.stop_reason = ""
 
     async def start(self) -> None:
         log.debug("starting AgentPoolManager for simulation lease pool")
@@ -147,26 +162,60 @@ class SimulationLeasePool:
             self._startup_ready.set()
 
     async def acquire(self) -> Optional[SimulationAgentLease]:
-        while True:
+        loop = asyncio.get_running_loop()
+        while not self._closing:
             lease = await self._runtime.acquire()
             if lease is not None:
+                self._repair_deadline = None
                 log.debug("acquire(): got %s/%s", lease.agent_name, lease.agent_id)
                 return lease
 
-            if await self.mgr.is_data_exhausted():
+            # A ready callback can publish the final lease while the data-source
+            # exhaustion check is awaiting I/O. Recheck the local state last.
+            if self._closing or (await self.mgr.is_data_exhausted() and await self._runtime.is_idle()):
                 log.debug("acquire(): exhausted")
                 return None
 
-            log.warning(
-                "acquire(): local lease pool is empty before data source exhaustion; "
-                "repairing manager capacity"
-            )
             async with self._repair_lock:
-                if await self.mgr.is_data_exhausted():
+                if self._closing or (await self.mgr.is_data_exhausted() and await self._runtime.is_idle()):
                     log.debug("acquire(): exhausted after repair wait")
                     return None
+                if self._closing:
+                    return None
+                if not await self._runtime.is_idle():
+                    self._repair_deadline = None
+                    continue
+                if self._repair_deadline is None:
+                    self._repair_deadline = loop.time() + self.refill_timeout_s
+                if loop.time() >= self._repair_warn_after:
+                    log.warning(
+                        "acquire(): local lease pool is empty before data source exhaustion; "
+                        "repairing manager capacity"
+                    )
+                    self._repair_warn_after = loop.time() + 30.0
                 await self.mgr.ensure_capacity(wait_for_rows=True)
                 await self._enqueue_manager_leases()
+                if self._closing:
+                    return None
+                if not await self._runtime.is_idle():
+                    self._repair_deadline = None
+                    continue
+                if self.mgr.has_pending_work:
+                    self._repair_deadline = None
+                    await asyncio.sleep(1.0)
+                    continue
+                if await self.mgr.is_data_exhausted() and await self._runtime.is_idle():
+                    return None
+                # Ready callbacks may have made progress during ensure_capacity().
+                if self._repair_deadline is None:
+                    self._repair_deadline = loop.time() + self.refill_timeout_s
+                remaining = self._repair_deadline - loop.time()
+                if remaining <= 0:
+                    log.error("lease pool made no progress for %.1fs; draining active work", self.refill_timeout_s)
+                    await self.stop_refills(reason="pool_stalled")
+                    return None
+                await asyncio.sleep(min(1.0, remaining))
+        return None
 
     async def done(
         self,
@@ -177,8 +226,12 @@ class SimulationLeasePool:
         old_key = (str(lease.agent_name), str(lease.agent_id))
         entered_refill = await self._enter_refill_if_open()
         if not entered_refill:
-            log.debug("done(): pool is closing; skip refill for agent=%s id=%s", lease.agent_name, lease.agent_id)
-            await self._finish_without_replacement(old_key)
+            log.debug("done(): pool is closing; release without refill for agent=%s id=%s", lease.agent_name, lease.agent_id)
+            try:
+                succeeded = bool(reusable) if reusable is not None else result is not None and result.status == "succeeded"
+                await self.mgr.close_and_refill(lease.agent_name, lease.agent_id, succeeded=succeeded)
+            finally:
+                await self._finish_without_replacement(old_key)
             return
 
         refill_started = False
@@ -205,6 +258,8 @@ class SimulationLeasePool:
                     log.debug("SimulationLeasePool.aclose(): already closed")
                     return
                 self._closing = True
+                self.mgr.stop_scheduling()
+                await self._runtime.stop()
                 if self._startup_task is not None:
                     self._startup_task.cancel()
                     await asyncio.gather(self._startup_task, return_exceptions=True)
@@ -226,7 +281,10 @@ class SimulationLeasePool:
         async with self._lifecycle_cond:
             if self._closing or self._closed:
                 return
+            self.mgr.stop_scheduling()
             self._closing = True
+            self.stop_reason = reason
+            await self._runtime.stop()
             log.warning(
                 "SimulationLeasePool.stop_refills(): no more replacement containers will be scheduled%s",
                 f" reason={reason}" if reason else "",
@@ -249,6 +307,7 @@ class SimulationLeasePool:
             return False
         added = await self._runtime.add_ready_lease((lease.agent_name, lease.agent_id), lease)
         if added:
+            self._repair_deadline = None
             self._startup_ready.set()
             log.debug("enqueued agent lease: %s/%s", lease.agent_name, lease.agent_id)
         return added
@@ -324,6 +383,7 @@ class SimulationLeasePool:
         new_key = (new_lease.agent_name, new_lease.agent_id)
         added = await self._runtime.finish_refill(old_key, new_key, new_lease)
         if added:
+            self._repair_deadline = None
             log.debug("registered replacement agent lease: %s/%s", new_key[0], new_key[1])
         return True
 

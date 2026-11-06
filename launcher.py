@@ -40,7 +40,13 @@ async def main(argv: Sequence[str] | None = None) -> int:
         done, _pending = await asyncio.wait({run_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
         if stop_task in done and not run_task.done():
             log.warning("launcher received shutdown signal; cancelling simulation flow")
-            run_task.cancel()
+            try:
+                if flow.lease_pool is not None:
+                    await flow.lease_pool.stop_refills(reason="shutdown")
+            except Exception:
+                log.exception("failed to stop pool refills before cancelling simulation flow")
+            finally:
+                run_task.cancel()
             try:
                 await run_task
             except asyncio.CancelledError:

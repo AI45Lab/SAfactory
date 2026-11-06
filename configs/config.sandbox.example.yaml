@@ -15,6 +15,14 @@ sandbox:
   # Use an address reachable from the Sandbox cluster.
   gateway_base_url: "http://YOUR_GATEWAY_HOST:8000/v1/sessions"
 
+  # Global egress policy for all instances created by launcher --mode sandbox.
+  # Missing/empty allow denies all business egress. Explicitly allow the Gateway
+  # and required services (IP, CIDR, domain or '*.example.com'; no URLs/ports).
+  # deny only narrows allow; agent start configs cannot override this policy.
+  network:
+    allow: []
+    deny: []
+
   lifecycle_minutes: 120
   request_timeout_s: 60
   create_timeout_s: 600

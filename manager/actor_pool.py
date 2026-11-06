@@ -54,6 +54,10 @@ class RuntimeAgentPool:
     def _repo_fetch_batch_size(self, requested: int = 1) -> int:
         return max(1, self._pool_size, int(requested))
 
+    def stop_scheduling(self) -> None:
+        """Stop new allocations while letting published leases finish."""
+        self._closing = True
+
     async def reset(self) -> None:
         async with self._reserve_lock:
             self._closing = True
@@ -80,6 +84,10 @@ class RuntimeAgentPool:
     @property
     def has_pending_work(self) -> bool:
         return bool(self._retry_rows) or any(not task.done() for task in self._pending)
+
+    @property
+    def allocation_error(self) -> Optional[RuntimeConfigurationError]:
+        return self._allocation_error
 
     async def prewarm(
         self,
@@ -116,20 +124,24 @@ class RuntimeAgentPool:
                 return
             tasks = [self._start_fill(row) for row in rows]
         await asyncio.gather(*tasks, return_exceptions=True)
+        if self._closing:
+            return
         if self._allocation_error is not None:
             raise self._allocation_error
         await self.ensure_capacity()
 
     async def ensure_capacity(self, *, wait_for_rows: bool = False) -> None:
-        while True:
+        while not self._closing:
             async with self._reserve_lock:
-                if self._allocation_error is not None:
-                    raise self._allocation_error
                 if self._closing:
                     return
+                if self._allocation_error is not None:
+                    raise self._allocation_error
                 async with self._lock:
                     pending = sum(key not in self._pool and not task.done() for task, key in self._pending.items())
                     deficit = max(0, self._pool_size - len(self._pool) - pending)
+                if self._closing:
+                    return
                 if deficit <= 0:
                     tasks = [task for task in self._pending if not task.done()]
                     if not tasks:
@@ -144,6 +156,8 @@ class RuntimeAgentPool:
                             max_wait_s=self._row_wait_timeout_s if wait_for_rows else None,
                             fetch_timeout_s=self._row_fetch_timeout_s,
                         )
+                    if self._closing:
+                        return
                     if not rows:
                         log.debug(
                             "ensure_capacity: no DB rows available to fill %s pool",
@@ -151,14 +165,20 @@ class RuntimeAgentPool:
                         )
                         return
                     tasks = [self._start_fill(row) for row in rows]
-            if deficit <= 0:
+            if self._on_ready is not None:
+                # Published leases can be consumed while other allocations run.
+                # The pool owns these tasks, including when this waiter exits.
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            elif deficit <= 0:
                 await asyncio.wait(tasks)
-                if self._allocation_error is not None:
-                    raise self._allocation_error
             else:
                 await asyncio.gather(*tasks, return_exceptions=True)
-                if self._allocation_error is not None:
-                    raise self._allocation_error
+            if self._closing:
+                return
+            if self._allocation_error is not None:
+                raise self._allocation_error
+            if self._on_ready is not None:
+                return
 
     async def close_and_refill(
         self,
@@ -174,27 +194,37 @@ class RuntimeAgentPool:
         if old_entry is not None:
             self._schedule_release_entry(old_entry, succeeded=succeeded)
 
+        if self._closing:
+            return None
         async with self._reserve_lock:
-            if self._allocation_error is not None:
-                raise self._allocation_error
             if self._closing:
                 return None
+            if self._allocation_error is not None:
+                raise self._allocation_error
             async with self._lock:
                 pending = sum(key not in self._pool and not task.done() for task, key in self._pending.items())
                 if len(self._pool) + pending >= self._pool_size:
                     return None
+            if self._closing:
+                return None
             next_row = self._retry_rows.popleft() if self._retry_rows else await self._repo.reserve_one(
                 fetch_batch_size=self._repo_fetch_batch_size(),
                 wait_for_rows=True,
                 max_wait_s=self._row_wait_timeout_s,
                 fetch_timeout_s=self._row_fetch_timeout_s,
             )
+            if self._closing:
+                return None
             if not next_row:
                 log.debug("close_and_refill: DB rows exhausted for %s pool", self._allocator.runtime)
                 return None
             task = self._start_fill(next_row)
-        # Cancellation must reach allocation so a timed-out refill cannot leave
-        # an initialized runtime behind without a consumer.
+        if self._on_ready is not None:
+            # _pending owns the allocation; on_ready publishes its lease and
+            # reset() cancels it on shutdown. An old worker's refill deadline
+            # must not cancel a replacement waiting for a startup slot.
+            return None
+        # Without a ready callback, the caller owns the replacement.
         return await task
 
     def _schedule_release_entry(self, entry: PoolEntry, *, succeeded: bool) -> None:
@@ -216,7 +246,18 @@ class RuntimeAgentPool:
             name=f"{self._allocator.runtime}-allocate-{row.get('env_name')}-{row.get('env_id')}",
         )
         self._pending[task] = (str(row.get("env_name", "")).strip(), str(row.get("env_id", "")).strip())
-        task.add_done_callback(lambda completed: self._pending.pop(completed, None))
+
+        def done(completed: asyncio.Task) -> None:
+            key = self._pending.pop(completed, None)
+            if not completed.cancelled():
+                error = completed.exception()
+                if error is not None:
+                    log.error(
+                        "allocation failed for %s: %s", key, error,
+                        exc_info=(type(error), error, error.__traceback__),
+                    )
+
+        task.add_done_callback(done)
         return task
 
     def _track_background_task(self, task: asyncio.Task, *, action: str) -> None:
@@ -257,10 +298,14 @@ class RuntimeAgentPool:
     async def _fill_slot(self, row: Dict[str, Any]) -> Optional[PoolEntry]:
         try:
             async with self._fill_sem:
+                if self._closing:
+                    return None
                 if self._allocation_error is not None:
                     raise self._allocation_error
                 return await self._fill_slot_once(row)
         except RuntimeConfigurationError as exc:
+            if self._closing:
+                return None
             if self._allocation_error is None:
                 self._allocation_error = exc
                 pending = [task for task in self._pending if task is not asyncio.current_task() and not task.done()]
@@ -298,7 +343,12 @@ class RuntimeAgentPool:
                 group_id=str(row.get("group_id") or ""),
             )
             async with self._lock:
-                self._pool[key] = entry
+                discard = self._closing
+                if not discard:
+                    self._pool[key] = entry
+            if discard:
+                await self._allocator.remove(entry)
+                return None
             if self._on_ready is not None:
                 await self._on_ready(entry)
         except asyncio.CancelledError:

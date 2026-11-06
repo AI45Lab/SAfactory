@@ -512,6 +512,8 @@ class InferenceForwarder:
         # Plain OpenAI-compatible upstreams ignore the unknown header.
         if session_id:
             headers["X-Safactory-Session-Id"] = session_id
+            if target.route_model == "glm-5.3-3a":
+                headers["X-Session-Affinity"] = session_id
         return headers
 
     def build_anthropic_headers(
@@ -553,6 +555,8 @@ class InferenceForwarder:
                 headers["x-api-key"] = target.api_key
         if session_id:
             headers["X-Safactory-Session-Id"] = session_id
+            if target.route_model == "glm-5.3-3a":
+                headers["X-Session-Affinity"] = session_id
         if request_id:
             headers["X-Safactory-Request-Id"] = request_id
         if llm_step_index is not None:

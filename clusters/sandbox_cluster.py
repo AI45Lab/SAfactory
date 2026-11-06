@@ -16,7 +16,7 @@ import httpx
 
 from manager.binding_plan import BindingPlan
 from manager.episode_common import safe_path_part
-from manager.simulation_config import _normalize_sandbox_config
+from manager.simulation_config import _build_sandbox_network_policy, _normalize_sandbox_config
 from manager.types import PoolEntry
 
 from .base import ClusterBackend, RuntimeConfigurationError
@@ -220,6 +220,9 @@ class SandboxClusterBackend(ClusterBackend):
                 sandbox.get_endpoint,
                 int(cfg.get("command_port", 44772) or 44772),
             )
+            await self._check_gateway_connectivity(
+                sandbox, cfg, timeout_s=float(cfg["bootstrap_timeout_s"]),
+            )
             run_command, runner_path = await self._prepare_instance(sandbox, cfg)
         except (Exception, asyncio.CancelledError):
             try:
@@ -337,6 +340,9 @@ class SandboxClusterBackend(ClusterBackend):
         cfg = _normalize_sandbox_config(
             self._sandbox_cfg, agent_overrides=env_cfg.get("sandbox", {}) or {},
         )
+        cfg["gateway_base_url"] = cfg["gateway_base_url"] or str(
+            self._cluster_cfg.get("gateway_base_url") or ""
+        ).strip()
         self._resolved_configs[env_name] = cfg
         return cfg
 
@@ -380,8 +386,8 @@ class SandboxClusterBackend(ClusterBackend):
             }],
             "extensions": extensions,
         }
-        if cfg.get("network_policy"):
-            payload["networkPolicy"] = dict(cfg["network_policy"])
+        policy = _build_sandbox_network_policy(cfg["network"])
+        payload["networkPolicy"] = policy
         # Normalization keeps input mounts and adds a writable results volume.
         payload["volumes"] = list(cfg["volumes"])
         deadline = time.monotonic() + float(cfg.get("create_timeout_s", 600.0))
@@ -405,6 +411,10 @@ class SandboxClusterBackend(ClusterBackend):
                 manager=manager,
                 timeout_s=max(0.001, deadline - time.monotonic()),
                 poll_interval_s=float(cfg.get("poll_interval_s", 2.0) or 2.0),
+            )
+            await self._verify_network_policy(
+                sandbox_id, cfg, expected=policy,
+                timeout_s=max(0.001, deadline - time.monotonic()),
             )
             log.info("Sandbox running: id=%s; connecting execd", sandbox_id)
             sandbox = await asyncio.wait_for(
@@ -433,6 +443,81 @@ class SandboxClusterBackend(ClusterBackend):
                 except Exception:
                     log.warning("failed to clean up Sandbox %s after creation error", sandbox_id, exc_info=True)
             raise
+
+    async def _verify_network_policy(
+        self,
+        sandbox_id: str,
+        cfg: Mapping[str, Any],
+        *,
+        expected: Mapping[str, Any],
+        timeout_s: float,
+    ) -> None:
+        # This is a management API, not the SDK's optional egress sidecar API.
+        url = f"{cfg['protocol']}://{cfg['domain']}/v1/sandboxes/{sandbox_id}/network-policy"
+        headers = {"OPEN-SANDBOX-API-KEY": str(cfg["api_key"])}
+        async with asyncio.timeout(timeout_s):
+            async with httpx.AsyncClient(
+                timeout=min(timeout_s, float(cfg["request_timeout_s"])),
+            ) as client:
+                for attempt in range(3):
+                    response = await client.get(url, headers=headers)
+                    if response.status_code in {401, 403, 404, 405, 501}:
+                        raise RuntimeConfigurationError(
+                            f"Sandbox network policy cannot be verified: HTTP {response.status_code}"
+                        )
+                    response.raise_for_status()
+                    try:
+                        actual = response.json()
+                    except ValueError as exc:
+                        raise RuntimeConfigurationError("Invalid Sandbox network policy response") from exc
+                    # Require the policy object we submitted; unknown shapes fail closed.
+                    # Keep rule order: the platform documents order-sensitive matching.
+                    if actual == dict(expected):
+                        return
+                    if attempt < 2:
+                        await asyncio.sleep(float(cfg["poll_interval_s"]))
+        raise RuntimeConfigurationError(
+            f"Sandbox {sandbox_id} network policy does not match the global policy"
+        )
+
+    async def _check_gateway_connectivity(
+        self,
+        sandbox: Any,
+        cfg: Mapping[str, Any],
+        *,
+        timeout_s: float,
+    ) -> None:
+        if not _build_sandbox_network_policy(cfg["network"])["egress"]:
+            raise RuntimeConfigurationError(
+                "Sandbox network denies all egress; explicitly allow the Gateway in sandbox.network.allow"
+            )
+        try:
+            gateway = urlsplit(str(cfg["gateway_base_url"]))
+            if gateway.scheme not in {"http", "https"} or not gateway.hostname:
+                raise ValueError("expected an HTTP(S) Gateway URL")
+            host, port = gateway.hostname, gateway.port or (443 if gateway.scheme == "https" else 80)
+        except ValueError as exc:
+            raise RuntimeConfigurationError("Invalid Sandbox gateway_base_url") from exc
+        if not _build_sandbox_network_policy({
+            "allow": [host], "deny": cfg["network"]["deny"],
+        })["egress"]:
+            raise RuntimeConfigurationError("Sandbox Gateway is explicitly denied by sandbox.network.deny")
+
+        # Harbor already configures its Python interpreter in the runner command.
+        runner = cfg.get("runner_entrypoint") or {}
+        argv = shlex.split(str(runner.get("command") or cfg.get("run_command") or ""))
+        interpreter = argv[0] if argv and Path(argv[0]).name.startswith("python") else "python3"
+        probe = (
+            "import socket, sys; "
+            "socket.create_connection((sys.argv[1], int(sys.argv[2])), "
+            "timeout=float(sys.argv[3])).close()"
+        )
+        command = shlex.join([interpreter, "-c", probe, host, str(port), str(timeout_s)])
+        output = await run_sandbox_command(sandbox, command, timeout_s=timeout_s)
+        if output.exit_code in {126, 127}:
+            raise RuntimeConfigurationError("Sandbox Gateway probe requires the runner's Python interpreter")
+        if output.exit_code != 0:
+            raise RuntimeError(f"Sandbox cannot connect to Gateway {host}:{port}: {output.stderr}")
 
     @staticmethod
     def _post_sandbox(cfg: Mapping[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
