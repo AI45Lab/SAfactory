@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import math
 import os
+import re
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
 import yaml
@@ -64,7 +66,7 @@ _SANDBOX_DEFAULT_CONFIG: Dict[str, Any] = {
     "resource": {},
     "extensions": {},
     "volumes": [],
-    "network_policy": {},
+    "network": {"allow": [], "deny": []},
     "metadata": {},
 }
 
@@ -168,7 +170,70 @@ def load_sandbox_global_config(path: str) -> Dict[str, Any]:
         section.update(cluster.get("sandbox") or {})
     if isinstance(cfg.get("sandbox"), dict):
         section.update(cfg.get("sandbox") or {})
+    for key in ("network_policy", "networkPolicy"):
+        if key in section:
+            raise ValueError(f"sandbox.{key} is not supported; use global sandbox.network.allow/deny")
+    if "network" in section:
+        section["network"] = _normalize_sandbox_network(section["network"])
     return _canonicalize_sandbox_input(section)
+
+
+def _normalize_sandbox_network(value: Any) -> Dict[str, List[str]]:
+    """Normalize global egress targets without resolving DNS or mutating input."""
+    if not isinstance(value, Mapping) or set(value) - {"allow", "deny"}:
+        raise ValueError("sandbox.network must be a mapping containing only allow and deny")
+    result: Dict[str, List[str]] = {"allow": [], "deny": []}
+    for action in result:
+        targets = value.get(action, [])
+        if not isinstance(targets, list):
+            raise ValueError(f"sandbox.network.{action} must be a list of targets")
+        for target in targets:
+            if not isinstance(target, str) or not target.strip():
+                raise ValueError(f"sandbox.network.{action} targets must be non-empty strings")
+            target = target.strip()
+            try:
+                if "%" in target:
+                    raise ValueError("scoped IP addresses are not supported")
+                target = str(ipaddress.ip_network(target) if "/" in target else ipaddress.ip_address(target))
+            except ValueError:
+                wildcard = target.startswith("*.")
+                domain = target[2:] if wildcard else target
+                domain = domain.removesuffix(".").lower()
+                labels = domain.split(".")
+                if (
+                    len(domain) > 253
+                    or all(char in "0123456789." for char in domain)
+                    or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels)
+                ):
+                    raise ValueError(f"invalid sandbox.network.{action} target: {target!r}") from None
+                target = ("*." if wildcard else "") + domain
+            if target not in result[action]:
+                result[action].append(target)
+    return result
+
+
+def _build_sandbox_network_policy(network: Mapping[str, Any]) -> Dict[str, Any]:
+    """Always default-deny; never send the platform a deny-only rule list."""
+    network = _normalize_sandbox_network(network)
+
+    def covered(target: str, denied: str) -> bool:
+        try:
+            candidate, excluded = ipaddress.ip_network(target), ipaddress.ip_network(denied)
+        except ValueError:
+            return target == denied or (denied.startswith("*.") and target.endswith(denied[1:]))
+        return candidate.version == excluded.version and candidate.subnet_of(excluded)
+
+    allowed = [target for target in network["allow"] if not any(
+        covered(target, denied) for denied in network["deny"]
+    )]
+    # A more-specific allow must not defeat a broader deny. If nothing remains,
+    # omit redundant denies: this platform treats deny-only rules as a blacklist.
+    rules = [
+        {"action": action, "target": target}
+        for action, targets in (("deny", network["deny"]), ("allow", allowed))
+        for target in targets
+    ] if allowed else []
+    return {"defaultAction": "deny", "egress": rules}
 
 
 def _canonicalize_sandbox_input(
@@ -209,6 +274,12 @@ def _normalize_sandbox_config(
     """Merge input scopes, then resolve and validate their effective configuration."""
     global_cfg = _canonicalize_sandbox_input(section)
     agent_cfg = _canonicalize_sandbox_input(agent_overrides or {})
+    for key in ("network_policy", "networkPolicy"):
+        if key in global_cfg:
+            raise ValueError(f"sandbox.{key} is not supported; use global sandbox.network.allow/deny")
+    for key in ("network", "network_policy", "networkPolicy"):
+        if key in agent_cfg:
+            raise ValueError(f"agent sandbox.{key} is not supported; network policy must be configured globally")
     merged = {**_SANDBOX_DEFAULT_CONFIG, **global_cfg, **agent_cfg}
     for key in ("env", "resource", "extensions", "metadata"):
         base, override = global_cfg.get(key) or {}, agent_cfg.get(key) or {}
@@ -298,10 +369,7 @@ def _normalize_sandbox_config(
             "mountPath": merged["result_artifact_root"], "readOnly": False,
         })
     merged["volumes"] = volumes
-    network_policy = merged.get("network_policy") or {}
-    if not isinstance(network_policy, dict):
-        raise ValueError("sandbox.network_policy must be a mapping")
-    merged["network_policy"] = dict(network_policy)
+    merged["network"] = _normalize_sandbox_network(global_cfg.get("network", {}))
     merged["domain"] = merged["domain"].rstrip("/")
     if merged["domain"].endswith("/v1"):
         merged["domain"] = merged["domain"][:-3].rstrip("/")
@@ -595,6 +663,7 @@ def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
         "row_fetch_timeout_s": float(cfg.row_fetch_timeout_s),
         "database": database_cfg,
         "cluster": {
+            "gateway_base_url": cfg.gateway_base_url,
             "docker": {
                 "bin": cfg.docker_bin,
                 "pull_policy": cfg.docker_pull_policy,
@@ -904,13 +973,16 @@ def _normalize_agent_start_sandbox(
         if not isinstance(raw_volumes, list):
             raise ValueError(f"sandbox.volumes for {agent_name!r} must be a list in {cfg_path}")
         sandbox["volumes"] = list(raw_volumes)
-    for key in ("network_policy", "metadata"):
-        if key not in raw:
-            continue
-        value = raw.get(key) or {}
+    # Shared by Docker/RJob parsing; Sandbox's effective-config validation rejects
+    # local network overrides. Preserve even null so it cannot be silently ignored.
+    for key in ("network", "network_policy", "networkPolicy"):
+        if key in raw:
+            sandbox[key] = raw[key]
+    if "metadata" in raw:
+        value = raw.get("metadata") or {}
         if not isinstance(value, dict):
-            raise ValueError(f"sandbox.{key} for {agent_name!r} must be a mapping in {cfg_path}")
-        sandbox[key] = dict(value)
+            raise ValueError(f"sandbox.metadata for {agent_name!r} must be a mapping in {cfg_path}")
+        sandbox["metadata"] = dict(value)
     raw_embedded = raw.get("embedded_files", []) or []
     if not isinstance(raw_embedded, list):
         raise ValueError(f"sandbox.embedded_files for {agent_name!r} must be a list in {cfg_path}")
