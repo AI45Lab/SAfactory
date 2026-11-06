@@ -30,14 +30,15 @@ runner 把上游交付的 bundle 视为自描述目录，按约定定位单个�
 
 ```text
 <bundle_root>/<task_id>/<profile_subdir>        ← Harbor --path 指向的 task 目录
-<bundle_root>/bin/load_shared_images.py         ← 必需，加载共享镜像归档
-<bundle_root>/bin/load_image.py                 ← 必需，加载 per-task 镜像归档
-<bundle_root>/<shared_images_subdir>/           ← 共享镜像归档目录
+<bundle_root>/bin/load_shared_images.py         ← legacy 模式必需，加载共享镜像归档
+<bundle_root>/bin/load_image.py                 ← 两种模式都必需，加载本任务镜像
+<bundle_root>/<shared_images_subdir>/           ← 共享镜像归档目录（仅 legacy 模式使用）
 ```
 
 - `task_id`、`profile_subdir`、`shared_images_subdir` 都必须是单个安全路径段（无分隔符、
   无 `.`/`..`、不以 `-` 开头）。task 目录本身可以是指向上游交付的 symlink。
-- `bundle_root` 必须是已存在的绝对目录（不能是文件系统根），且 `bin/` 下两个 loader 都存在。
+- `bundle_root` 必须是已存在的绝对目录（不能是文件系统根），且 `bin/` 下存在
+  `image_load_mode` 所需的 loader（legacy 两个，task 只需 `load_image.py`）。
 - task 目录必须包含 `task.toml`、`instruction.md`、`tests/test.sh` 和 `environment/` 目录，
   缺任一项 runner 在启动 Harbor 前失败。
 
@@ -45,10 +46,21 @@ runner 把上游交付的 bundle 视为自描述目录，按约定定位单个�
 flatten 都由脚本处理）。runner 只把它们接到本 episode 的 dockerd（通过 `DOCKER_HOST`），
 并以隔离模式（`python -I`）运行，因为 bundle 是不可信数据：
 
-| loader | runner 传入参数 |
-| --- | --- |
-| `bin/load_shared_images.py` | `--runtime-dir <bundle_root>/<shared_images_subdir>` |
-| `bin/load_image.py` | `--root <bundle_root> --task <task_id>` |
+| loader | runner 传入参数 | 运行于 |
+| --- | --- | --- |
+| `bin/load_shared_images.py` | `--runtime-dir <bundle_root>/<shared_images_subdir>` | 仅 legacy |
+| `bin/load_image.py` | `--root <bundle_root> --task <task_id>` | legacy、task |
+
+`image_load_mode` 选择调用哪些 loader：
+
+- `legacy`（默认）：先加载整个共享镜像目录，再调用 `load_image.py`。旧 bundle 和现有
+  配置不需要改动。
+- `task`：只调用 `bin/load_image.py --task <task_id> --root <bundle_root>`，由该脚本
+  负责本任务需要的全部镜像。用于合并后的 PJ 任务集合（如
+  `20261019_deliver/exploit_gym/pj-exploit-400`）：其 `bin/load_image.py` 按任务的
+  `harbor-runtime-profile/.pj_source_bundle` 找到来源批次，再调用来源批次的 loader 或
+  直接 `docker load` 声明的归档。task 模式不加载整个共享镜像目录（该集合约 40G），
+  不传 `--load-shared`（该选项走 `sudo -n`，运行镜像内没有 sudo）。
 
 ## 4. Runner 参数（`env_params`）
 
@@ -57,7 +69,8 @@ flatten 都由脚本处理）。runner 只把它们接到本 episode 的 dockerd
 | `bundle_root` | 自描述 bundle 的绝对路径（必填） |
 | `dataset.task_id` | 本 episode 的任务身份，用于拼出 task 目录（必填，单个安全路径段） |
 | `profile_subdir` | task 目录下的 profile 子目录，默认 `harbor-runtime-profile` |
-| `shared_images_subdir` | 共享镜像归档子目录，默认 `_runtime`（部分 bundle 用 `shared-images`） |
+| `shared_images_subdir` | 共享镜像归档子目录，默认 `_runtime`（部分 bundle 用 `shared-images`）；仅 legacy 模式使用 |
+| `image_load_mode` | `legacy`（默认，两个 loader）或 `task`（只调用 `bin/load_image.py`），见 §3 |
 | `runtime_env` | 透传给 Harbor 进程的公开环境变量；禁止覆盖模型凭据、`PATH`/`HOME`/`BASH_ENV`/`ENV`，以及 `DOCKER_`/`SAFACTORY_`/`LD_`/`PYTHON` 前缀；`HARBOR_*` 允许 |
 | `agent` | Harbor agent 名，默认 `oracle`；`oracle` / `nop` 忽略 `model` |
 | `agent_import_path` | 自定义 agent 导入路径，替代 `--agent` 的值 |
@@ -97,6 +110,18 @@ runner 执行的命令骨架（大写变量为运行时值）：
 | 有任一挂载 | 上面两类挂载合并为一个 `--mounts JSON` 列表 |
 | `capture_http: true` | `--ak capture_http=true` |
 | 设置 `agent_env` | 按变量名排序，逐项 `--ae KEY=VALUE` |
+
+挂载约束（依据 Harbor 上游 `ServiceVolumeConfig` 与 adapter 安装逻辑）：
+
+- `--mounts` 中每项的 `read_only` 只能省略或为 `true`：schema 类型是
+  `Literal[True]`，写 `false` 会校验失败。target 为文件的 bind 必须为 `true`，
+  否则 Harbor 在 `compose up` 后对可写挂载执行 `mkdir -p`，破坏文件路径。
+  runner 生成的挂载固定为 `read_only: true`。
+- `agent_runtime.version` 必须与挂载 binary 自报的版本（`claude --version` /
+  `codex --version` 中的 `x.y.z`）完全一致。一致时 adapter 跳过安装；不一致时会
+  联网安装 CLI，RJob 无公网时安装失败；安装成功的 `$HOME/.local/bin/claude` 还会因
+  PATH 前置而遮蔽挂载的 `/usr/local/bin/claude`。版本号写成带引号的三段式字符串，
+  例如 `"2.1.228"`。
 
 Gateway 连接通过环境变量传给 Harbor：`claude-code` 使用 `ANTHROPIC_*`，`codex` /
 `opencode` 使用 `OPENAI_*`，`openhands` 使用 `LLM_*`；`*_BASE_URL` 为本 session 的
@@ -139,3 +164,94 @@ env_params:
 - reward 取 Harbor trial 的 `verifier_result.rewards[reward_key]`，由
   [rule_evaluator.py](rule_evaluator.py) 归一化到 `[0, 10]`。
 - 超时：向 Harbor 发 SIGTERM，最多等待 30s 让取消写入稳定，结果标记 `truncated`。
+
+## 9. runner.py workflow
+
+runner 以 `/opt/harbor-env/bin/python runner.py` 在 RJob 容器内作为 episode 入口运行，
+`main()` 按固定顺序把一条请求跑成一个 SimulationStartResult：
+
+1. **注册信号处理** —— 给 `SIGTERM`/`SIGINT` 装 handler；收到即 `nested.cleanup()`
+   停掉 Harbor 与 dockerd 进程组后退出，保证被 launcher 取消时不留孤儿 daemon。
+2. **读取请求** —— `read_request()` 从 `SAFACTORY_START_REQUEST_JSON` 解析 JSON；
+   先单独取出 `session_id` 和 `env_params.dataset.task_id`，使后续 resolve 阶段的
+   失败也能带上身份信息。
+3. **解析 RunSpec** —— `resolve_run_spec()` 把 `env_params` 规整成一个 `RunSpec`：
+   `resolve_task_record()` 按约定定位 task 目录（见 §3），解析 Gateway URL（§5）、
+   `agent`/`model`/`reasoning_effort`、挂载（`agent_runtime`/`codex_config_dir`）、
+   `agent_env`、`runtime_env`、`reward_key`、`timeout_s`，并算出 episode 目录、
+   Harbor `jobs` 根和 job 名。
+4. **校验 task** —— 建 `episode_dir`，`validate_task_record()` 检查 task 目录存在且
+   含 `task.toml`、`instruction.md`、`tests/test.sh` 和 `environment/`，缺任一项即失败，
+   不启动 dockerd。
+5. **起 nested dockerd** —— `nested.start()` 要求 root 和 `/dev/fuse`，以
+   `--storage-driver=fuse-overlayfs --data-root=/docker-data` 启动 dockerd，最多重试
+   120 次（每轮 `sleep 0.5s`、每次 `docker info` 超时 5s）等 daemon 就绪，并校验实际
+   driver 为 `fuse-overlayfs`。daemon 连接只通过显式的 Unix `DOCKER_HOST` 暴露给后续步骤。
+6. **加载镜像** —— `load_task_images()` 以隔离模式（`python -I`）运行 bundle 自带的
+   loader（legacy：`bin/load_shared_images.py` 和 `bin/load_image.py`；task：只运行
+   `bin/load_image.py`），经 `DOCKER_HOST` 接到本 episode
+   的 daemon；每个 loader 超时 `1800s`，输出写 `infra/image-load.log`。runner 不解析
+   归档格式，镜像加载由 bundle 脚本负责（见 §3）。
+7. **写准备回执** —— `infra/preparation.json` 记 `status=prepared` 及 task 身份、路径，
+   作为“已进入 Harbor 前”的落点。
+8. **运行 Harbor** —— `run_harbor()` 用 daemon env 叠加 `model_connection_env()`
+   （`*_BASE_URL`=Gateway、`*_API_KEY=EMPTY`）和 `runtime_env`，`Popen` 执行
+   `harbor_command()`（§5），`wait(timeout_s)`。超时则对进程组发 SIGTERM，返回码记
+   `124` 并标记 `timed_out`。Harbor 日志写 `harbor/harbor-run.log`。
+9. **取消收尾（仅超时）** —— `wait_for_cancellation_cleanup()` 最多轮询 `30s`，等
+   `result.json`、trajectory 和 `manifest.json` 的大小/mtime 连续两次不变，确保 Harbor
+   的异步取消写入稳定后再解析。
+10. **解析结果** —— `parse_harbor_result()` 读 job `result.json` 和唯一 trial
+    `result.json`，取 `verifier_result.rewards[reward_key]` 作 reward，收集 trial 与各
+    step 的 `exception_info` 为 `fatal_errors`，据此定 `status`：超时为 `truncated`、
+    无致命错误且有数值 reward 为 `succeeded`、否则 `failed`（失败/超时 reward 记 0）。
+11. **异常兜底与清理** —— 任一步抛异常走 `_failure()`，带上已知 `task_id` 和 `timed_out`；
+    `finally` 里 `nested.cleanup()` 停 Harbor 与 dockerd。
+12. **落盘与打印** —— 把结果写到 `SAFACTORY_RESULT_PATH`（原子替换），并在 stdout 打印
+    `SAFACTORY_RESULT_JSON <json>` 供 launcher 回退解析。`main()` 恒返回 0，成败由结果
+    JSON 的 `status` 表达。
+
+## 10. Harbor 镜像内部 workflow
+
+runner 调用的 `harbor run` 在同一个运行时镜像内执行（`harbor_config.rjob.yaml` 的
+`env_image`，含 `/opt/harbor-env` 下的 Harbor CLI 与 Python）。Harbor 把 `--path`
+指向的 task 跑成**一个 trial**，阶段划分与各阶段起止时间可在 trial `result.json` 中看到
+（`environment_setup` / `agent_setup` / `agent_execution` / `verifier`），各阶段预算由
+task 自身 `task.toml` 声明：
+
+1. **读取 task** —— 解析 `task.toml`：`[environment]` 的 `docker_image` 与
+   `build_timeout_sec`、`[agent].timeout_sec`、`[verifier]` 的 `topology` /
+   `environment_mode` / `timeout_sec`，以及 task 目录内的 `docker-compose.yaml`、
+   `instruction.md`、`tests/test.sh`、`environment/`。
+2. **environment_setup** —— 以 `--env docker` 在 nested daemon 上拉起 Compose 服务、
+   网络与容器，挂载 task 工作目录。镜像引用的 tag 必须已由 runner 调用的 bundle loader（§3、§9 第 6 步）加载进 daemon，
+   Harbor 自身不加载归档；
+   `environment_mode=shared` 表示 Agent 与 verifier 共用同一套环境容器。
+3. **agent_setup** —— 把 Agent runtime 以只读 bind 挂进 Agent 容器
+   （`--mounts`，如 claude-code 的 binary 挂到 `/usr/local/bin/claude`），注入经
+   `--ae` 传入的 `agent_env`，并准备 Agent 自身的配置目录（例如 `CLAUDE_CONFIG_DIR`、
+   codex 的 `CODEX_HOME`）。
+4. **agent_execution** —— 在 Agent 容器内启动 Agent 适配器（claude-code 形如
+   `claude --output-format=stream-json --print …`），模型请求经 `*_BASE_URL` 指向的
+   Gateway 转发；Agent 在环境容器里按 `instruction.md` 执行任务。过程写
+   `agent/claude-code.txt`、`agent/trajectory.json`、`agent/sessions`。
+5. **verifier** —— 运行 task 的 `tests/test.sh`，产出 `verifier_result.rewards`
+   （落 `verifier/reward.txt`、`verifier/test-stdout.txt`）；`environment_mode` 决定校验
+   是复用 shared 环境还是起 isolated 容器。runner 从此处的 `rewards[reward_key]` 取分。
+6. **汇总产物** —— Harbor 写 job 级 `result.json`（`stats`、`evals`、`reward_stats`）、
+   trial 级 `result.json`（含各阶段起止、`agent_result` 的 token/cost、
+   `verifier_result`）、`artifacts/manifest.json` 及各容器日志，供 runner 回读（§8）。
+
+单个 trial 目录（`harbor/jobs/<job-name>/<trial-name>/`）布局：
+
+| 路径 | 内容 |
+| --- | --- |
+| `result.json` / `config.json` / `lock.json` | trial 结果、展开后的运行配置、并发锁 |
+| `trial.log` | Harbor 对本 trial 的编排日志 |
+| `agent/` | `claude-code.txt`、`trajectory.json`、`sessions/`、`setup/` 等 Agent 产物 |
+| `verifier/` | `reward.txt`、`test-stdout.txt` 等 verifier 产物 |
+| `artifacts/` | `manifest.json` 与收集到的容器 `logs/` |
+
+Harbor 只按 task 定义创建环境、Agent 与 verifier 并产出 reward；它不从 dataset 推导
+task、不猜错误镜像名、也不补全缺失归档——这些在进入 `harbor run` 前已由 runner 和
+bundle loader 处理完毕。
