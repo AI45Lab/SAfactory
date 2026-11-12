@@ -1,0 +1,72 @@
+# SAfactory Gateway runtime image for Linux/AMD64.
+# Runtime configuration is supplied by mounted .env and Gateway config files.
+# This Dockerfile declares no runtime ENV and does not bake .env into the image.
+# The entrypoint loads /app/configs/.env over the environment supplied by the Pod.
+ARG BASE_IMAGE=registry.h.pjlab.org.cn/ailab/ml-base:22.04-pjlab-20260323
+FROM ${BASE_IMAGE}
+
+# 1. Build-time proxies only. These ARG values are not persisted as runtime ENV.
+ARG HTTP_PROXY=http://httpproxy-headless.kubebrain.svc.pjlab.local:3128
+ARG HTTPS_PROXY=http://httpproxy-headless.kubebrain.svc.pjlab.local:3128
+ARG NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,100.96.0.0/12,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,.cluster.local,.pjlab.local,.pjlab.org.cn,.pjh-service.org.cn,kubernetes.default.svc
+
+# 2. Create application directories. Running Python from /app makes the local
+# packages importable without setting PYTHONPATH.
+RUN mkdir -p /app /app/configs /app/logs /app/results /data /etc/safactory
+WORKDIR /app
+
+# 3. Copy dependency manifests and application sources.
+COPY requirements.txt requirements-cloud.txt ./
+COPY args.py launcher.py log_setup.py ./
+COPY configs/ ./configs/
+COPY clusters/ ./clusters/
+COPY core/ ./core/
+COPY env/ ./env/
+COPY evaluator/ ./evaluator/
+COPY gateway/ ./gateway/
+COPY manager/ ./manager/
+COPY rl/ ./rl/
+COPY utils/ ./utils/
+
+# 4. Install dependencies using build-only pip settings and the laboratory proxy.
+# requirements-cloud.txt includes requirements.txt, so this installs both lists.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if [ -n "${HTTPS_PROXY}" ]; then \
+        PIP_CONFIG_FILE=/dev/null PIP_DISABLE_PIP_VERSION_CHECK=1 \
+        python -m pip install \
+          --index-url https://pypi.org/simple \
+          --proxy "${HTTPS_PROXY}" \
+          --retries 10 \
+          --timeout 300 \
+          --requirement requirements-cloud.txt; \
+    else \
+        PIP_CONFIG_FILE=/dev/null PIP_DISABLE_PIP_VERSION_CHECK=1 \
+        python -m pip install \
+          --index-url https://pypi.org/simple \
+          --retries 10 \
+          --timeout 300 \
+          --requirement requirements-cloud.txt; \
+    fi
+
+# 5. Preserve compatibility with RJob workers that invoke /bin/sh as a login
+# shell; the base image's /etc/profile.d/brain-ulimit.sh requires Bash.
+RUN test -x /bin/bash \
+    && ln -sf /bin/bash /bin/sh \
+    && /bin/sh -lc 'true'
+
+# 6. Install the startup script. It can run directly without command arguments.
+COPY --chmod=0755 scripts/docker-entrypoint.sh /usr/local/bin/safactory-entrypoint
+
+# 7. Gateway networking and storage. Mount /app/configs/gateway.yaml and optionally
+# /app/configs/.env for WT_SDK_*, AWS_*, proxy settings, and other runtime variables.
+# Set listen_host: 0.0.0.0 and listen_port: 8000 in the Gateway config.
+EXPOSE 8000
+# Kubernetes must mount a PVC at /data; VOLUME does not provision one.
+# For SQLite persistence, set storage_config.db_url: sqlite:///data/env_trajs.db.
+VOLUME ["/data", "/app/logs", "/app/results"]
+STOPSIGNAL SIGTERM
+
+# 8. Load the mounted environment, then exec Python so it receives SIGTERM.
+# Override the config path via SAFACTORY_GATEWAY_CONFIG or --config <path>.
+ENTRYPOINT ["/usr/local/bin/safactory-entrypoint"]
+CMD []
