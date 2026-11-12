@@ -28,6 +28,7 @@ class EnvironmentQuery:
 
     job_id: Optional[str] = None
     env_id: Optional[str] = None
+    env_ids: tuple[str, ...] = ()
     after_id: int = 0
     offset: int = 0
     limit: Optional[int] = None
