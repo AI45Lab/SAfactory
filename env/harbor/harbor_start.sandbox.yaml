@@ -16,8 +16,14 @@ container:
     # Standard Docker-in-Sandbox mode. The runner starts dockerd on this socket.
     SAFACTORY_DOCKER_MODE: "sandbox"
     DOCKER_HOST: "unix:///var/run/docker.sock"
+    # Harbor job 模板（agent/model/env/mounts/超时）。runner 把它渲染成
+    # 本次 episode 的 harbor-config.yaml 后执行 `harbor run -c ... --yes`。
+    SAFACTORY_HARBOR_TEMPLATE: "/opt/safactory-harbor/templates/harbor_config.sandbox-2.1.207-GLM-5.3-W4A8C8.yaml"
 
 sandbox:
+  embedded_files:
+    - source: ./templates/harbor_config.sandbox-2.1.207-GLM-5.3-W4A8C8.yaml
+      target: /opt/safactory-harbor/templates/harbor_config.sandbox-2.1.207-GLM-5.3-W4A8C8.yaml
   command_port: 44772
   idle_entrypoint:
     - tail

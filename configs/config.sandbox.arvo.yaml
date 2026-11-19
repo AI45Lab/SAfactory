@@ -1,0 +1,50 @@
+sandbox:
+  # Control-plane settings. domain excludes the scheme and /v1.
+  domain: "deepenv.sandbox.pjlab.org.cn"
+  protocol: "http"
+  # Project is read from OPEN_SANDBOX_PROJECT when empty.
+  project: ""
+  project_env: "OPEN_SANDBOX_PROJECT"
+  # export OPEN_SANDBOX_API_KEY='<access_key_id>:<secret_key>'
+  api_key_env: "OPEN_SANDBOX_API_KEY"
+
+  command_port: 44772
+
+  # Gateway deployed on the H cluster, reachable from the Sandbox cluster via FQDN.
+  gateway_base_url: "http://s-20261102195818-l959j.ailab-evobox.pjh-service.org.cn/v1/sessions"
+
+  # Global egress policy (default deny). Targets are IP, CIDR or domain only.
+  network:
+    allow:
+      - "s-20261102195818-l959j.ailab-evobox.pjh-service.org.cn"
+      - "*.pjh-service.org.cn"
+      - "100.96.0.0/12"
+      - "mirrors.i.h.pjlab.org.cn"
+      - "pypi.i.h.pjlab.org.cn"
+    deny: []
+
+  lifecycle_minutes: 120
+  request_timeout_s: 60
+  create_timeout_s: 600
+  bootstrap_timeout_s: 120
+  cancel_timeout_s: 10
+  # Rollout long command timeout: agent start timeout 33000s + 120s grace, plus margin.
+  command_timeout_s: 33300
+  startup_concurrency: 8
+  idle_entrypoint: ["tail", "-f", "/dev/null"]
+  poll_interval_s: 2
+  result_artifact_root: "/sandbox-data/results"
+  use_server_proxy: true
+  skip_health_check: false
+  cleanup_on_finish: true
+
+  # The project AFS root is mounted at /sandbox-data; results persist under
+  # /sandbox-data/results/<job-id>/<session-id>.
+  volumes:
+    - name: project-default-afs
+      mountPath: /sandbox-data
+      readOnly: false
+    - name: project-default-afs
+      subPath: results
+      mountPath: /sandbox-data/results
+      readOnly: false

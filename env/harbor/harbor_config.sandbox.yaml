@@ -12,18 +12,11 @@ environments:
       bundle_root: /sandbox-data/harbor/test100
       shared_images_subdir: shared-images
       profile_subdir: harbor-runtime-profile
-      agent: claude-code
-      model: GLM-5.3-W4A8C8
-      reasoning_effort: max
-      agent_runtime:
-        source: /sandbox-data/harbor/test100/bin/claude
-        version: "2.1.207"
-      agent_env:
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
-        DISABLE_AUTOUPDATER: "1"
-        IS_SANDBOX: "1"
-        NO_PROXY: "127.0.0.1,localhost,10.0.0.0/8,100.96.0.0/12"
-        no_proxy: "127.0.0.1,localhost,10.0.0.0/8,100.96.0.0/12"
+      # Agent 设置（agent/model/reasoning_effort/agent_runtime/agent_env/超时）
+      # 不在这里配置：它们在 Harbor job 模板里，由 runner 渲染成
+      # <episode>/harbor/harbor-config.yaml 后执行 `harbor run -c ... --yes`。
+      # 启动配置需把该模板投递到下面这个路径（Sandbox 模式用同一路径）。
+      harbor_template: /opt/safactory-harbor/templates/harbor_config.sandbox-2.1.207-GLM-5.3-W4A8C8.yaml
       reward_key: reward
       reward_source: runner
       timeout_s: 30000
