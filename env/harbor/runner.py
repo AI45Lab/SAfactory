@@ -635,6 +635,14 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
         raise RuntimeError(f"{RESULT_PATH_ENV} is required")
     result_path = Path(result_path_text)
     job_name = ("safactory-" + _safe_name(session_id).lower())[:63].strip("-")
+
+    # Auto-select OpenCode offline template if requested
+    harbor_template = params.get("harbor_template")
+    if not harbor_template and params.get("use_opencode_offline"):
+        harbor_template = str(
+            Path(__file__).resolve().parent / TEMPLATE_SUBDIR / "harbor_config.opencode-offline.yaml"
+        )
+
     return RunSpec(
         session_id=session_id,
         task_record=task_record,
@@ -644,7 +652,7 @@ def resolve_run_spec(request: dict[str, Any]) -> RunSpec:
         result_path=result_path,
         jobs_root=result_path.parent / "harbor" / "jobs",
         harbor_job_name=job_name,
-        template_path=resolve_template_path(params.get("harbor_template")),
+        template_path=resolve_template_path(harbor_template),
         runtime_env=runtime_env,
         shared_images_subdir=shared_images_subdir,
         image_load_mode=image_load_mode,
