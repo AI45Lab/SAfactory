@@ -178,6 +178,16 @@ def load_sandbox_global_config(path: str) -> Dict[str, Any]:
     return _canonicalize_sandbox_input(section)
 
 
+def load_input_storage_config(path: str) -> Dict[str, Any]:
+    """Read launcher-only input storage settings; never merge them into Sandbox env."""
+    if not str(path or "").strip():
+        return {}
+    from .sandbox_s3_inputs import normalize_input_storage
+
+    cfg = load_yaml_file(str(_resolve_config_path(path)))
+    return normalize_input_storage(cfg.get("input_storage", {}))
+
+
 def _normalize_sandbox_network(value: Any) -> Dict[str, List[str]]:
     """Normalize global egress targets without resolving DNS or mutating input."""
     if not isinstance(value, Mapping) or set(value) - {"allow", "deny"}:
@@ -274,6 +284,8 @@ def _normalize_sandbox_config(
     """Merge input scopes, then resolve and validate their effective configuration."""
     global_cfg = _canonicalize_sandbox_input(section)
     agent_cfg = _canonicalize_sandbox_input(agent_overrides or {})
+    if "protected_execd" in agent_cfg:
+        raise ValueError("sandbox.protected_execd must be configured globally")
     for key in ("network_policy", "networkPolicy"):
         if key in global_cfg:
             raise ValueError(f"sandbox.{key} is not supported; use global sandbox.network.allow/deny")
@@ -370,6 +382,10 @@ def _normalize_sandbox_config(
         })
     merged["volumes"] = volumes
     merged["network"] = _normalize_sandbox_network(global_cfg.get("network", {}))
+    if "protected_execd" in merged:
+        from clusters.protected_execd import normalize_protected_execd
+
+        merged["protected_execd"] = normalize_protected_execd(merged["protected_execd"])
     merged["domain"] = merged["domain"].rstrip("/")
     if merged["domain"].endswith("/v1"):
         merged["domain"] = merged["domain"][:-3].rstrip("/")
@@ -553,6 +569,10 @@ def load_simulation_run_config(args: Any) -> SimulationRunConfig:
         ),
         rjob_config=rjob_section,
         sandbox_config=sandbox_section,
+        input_storage_config=(
+            load_input_storage_config(str(getattr(args, "sandbox_config", "") or ""))
+            if mode == "sandbox" else {}
+        ),
         cleanup_docker_container=bool(getattr(args, "cleanup_docker_container", True)),
         cleanup_stale_docker_containers=bool(getattr(args, "cleanup_stale_docker_containers", True)),
         max_workers=max_workers,
@@ -916,6 +936,8 @@ def _normalize_agent_start_sandbox(
     if not isinstance(raw, dict):
         raise ValueError(f"sandbox config for {agent_name!r} must be a mapping in {cfg_path}")
     raw = _canonicalize_sandbox_input(raw, context=f" for {agent_name!r} in {cfg_path}")
+    if "protected_execd" in raw:
+        raise ValueError("sandbox.protected_execd must be configured globally")
     if "required_mount_paths" in raw:
         raise ValueError(
             f"sandbox.required_mount_paths for {agent_name!r} is not supported in {cfg_path}: "

@@ -76,6 +76,7 @@ class SimulationRunConfig:
     docker_lifecycle_timeout_s: float = 60.0
     rjob_config: Dict[str, Any] = field(default_factory=dict)
     sandbox_config: Dict[str, Any] = field(default_factory=dict)
+    input_storage_config: Dict[str, Any] = field(default_factory=dict, repr=False)
     cleanup_docker_container: bool = True
     cleanup_stale_docker_containers: bool = True
     max_workers: Optional[int] = None

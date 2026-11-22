@@ -53,6 +53,7 @@ class SimulationFlow:
         self.agent_pool_manager: Optional[AgentPoolManager] = None
         self.lease_pool: Optional[SimulationLeasePool] = None
         self.agent_start_client: Optional[AgentStartClient] = None
+        self.sandbox_input_preparer = None
         self.worker_group: Optional[SimulationWorkerGroup] = None
         self.gateway_client: Optional[GatewayClient] = None
         self.evaluation_service: Optional[EvaluationService] = None
@@ -74,6 +75,13 @@ class SimulationFlow:
             },
         )
         try:
+            if self.cfg.mode == "sandbox" and self.cfg.input_storage_config:
+                from clusters.protected_execd import normalize_protected_execd
+                from .sandbox_input_preparer import SandboxInputPreparer
+
+                if not normalize_protected_execd(self.cfg.sandbox_config.get("protected_execd")):
+                    raise ValueError("S3 inputs require global sandbox.protected_execd")
+                self.sandbox_input_preparer = SandboxInputPreparer(self.cfg.input_storage_config)
             with trace.span("prepare_storage"):
                 await self.prepare_storage()
             with trace.span("check_gateway_ready"):
@@ -340,6 +348,7 @@ class SimulationFlow:
 
         self.agent_start_client = AgentStartClient(
             timeout_s=self.cfg.agent_start_timeout_s + self.cfg.agent_start_timeout_grace_s,
+            sandbox_input_preparer=self.sandbox_input_preparer,
         )
         self.gateway_client = GatewayClient(
             gateway_base_url=self.cfg.gateway_base_url,
@@ -405,6 +414,12 @@ class SimulationFlow:
                     await self.gateway_client.aclose()
             except Exception:
                 log.exception("gateway client close failed (ignored)")
+
+        if self.sandbox_input_preparer is not None:
+            try:
+                await self.sandbox_input_preparer.close()
+            except Exception:
+                log.warning("Sandbox input preparer close failed (ignored)")
 
         try:
             with trace.span("wait_for_pending_inserts"):

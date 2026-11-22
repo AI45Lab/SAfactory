@@ -20,6 +20,11 @@ from manager.simulation_config import _build_sandbox_network_policy, _normalize_
 from manager.types import PoolEntry
 
 from .base import ClusterBackend, RuntimeConfigurationError
+from .protected_execd import (
+    create_protected_execd_transport,
+    normalize_protected_execd,
+    protected_execd_url,
+)
 
 log = logging.getLogger("clusters.sandbox_cluster")
 
@@ -80,15 +85,23 @@ class SandboxRuntimeHandle:
     """One instance's async execd services, separate from lifecycle clients."""
 
     id: str
-    commands: Any
-    files: Any
-    _service: Any
-    _connection: Any
+    commands: Any = field(repr=False)
+    files: Any = field(repr=False)
+    _service: Any = field(repr=False)
+    _connection: Any = field(repr=False)
     cancel_timeout_s: float = 10.0
+    protected_execd: bool = False
+    _execd_port: int | None = None
+    _execd_endpoint: Any = field(default=None, repr=False)
+    _owned_runtime_transport: Any = field(default=None, repr=False)
     _active_commands: set[asyncio.Task] = field(default_factory=set, repr=False)
     _closed: bool = False
 
     def get_endpoint(self, port: int) -> Any:
+        if port == self._execd_port and self._execd_endpoint is not None:
+            return self._execd_endpoint
+        if self.protected_execd:
+            raise ValueError("Protected runtime exposes only its configured execd port")
         return self._service.get_sandbox_endpoint(
             self.id, port, self._connection.use_server_proxy,
         )
@@ -106,7 +119,11 @@ class SandboxRuntimeHandle:
                 timeout=self.cancel_timeout_s + 1.0,
             )
         finally:
-            await self._connection.close_transport_if_owned()
+            try:
+                await self._connection.close_transport_if_owned()
+            finally:
+                if self._owned_runtime_transport is not None:
+                    await self._owned_runtime_transport.aclose()
 
 
 async def run_sandbox_command(sandbox: Any, command: str, *, timeout_s: float) -> SandboxCommandOutput:
@@ -627,15 +644,26 @@ class SandboxClusterBackend(ClusterBackend):
         if connection is None:
             raise RuntimeError("Sandbox connection is not initialized")
         service = AdapterFactorySync(connection).create_sandbox_service()
+        command_port = int(cfg.get("command_port", 44772) or 44772)
+        protected = normalize_protected_execd(cfg.get("protected_execd"))
+        owned_transport = None
         # SandboxSync.connect hardcodes 44772 and also resolves an unused
         # egress endpoint on 18080. Connect the required execd services directly
         # so DeepEnv only needs the configured command port declared.
-        endpoint = await asyncio.to_thread(
-            service.get_sandbox_endpoint,
-            sandbox_id,
-            int(cfg.get("command_port", 44772) or 44772),
-            connection.use_server_proxy,
-        )
+        if protected:
+            from opensandbox.models.sandboxes import SandboxEndpoint
+
+            # The gateway is provisioned externally and owns authorization.
+            # Never discover or fall back to the platform's unauthenticated proxy.
+            endpoint = SandboxEndpoint(endpoint=protected_execd_url(protected, sandbox_id, command_port))
+            owned_transport = create_protected_execd_transport(protected)
+        else:
+            endpoint = await asyncio.to_thread(
+                service.get_sandbox_endpoint,
+                sandbox_id,
+                command_port,
+                connection.use_server_proxy,
+            )
         # DeepEnv can return an absolute proxy URL. SDK service adapters prepend
         # connection.protocol themselves, so supply a scheme-free endpoint.
         protocol = connection.protocol
@@ -649,24 +677,39 @@ class SandboxClusterBackend(ClusterBackend):
             protocol = parsed.scheme
         # Each instance owns its async transport. Cancelling or closing one
         # command must neither occupy lifecycle threads nor close another instance.
-        runtime_connection = ConnectionConfig(
-            domain=connection.domain,
-            protocol=protocol,
-            api_key=connection.api_key,
-            headers=dict(connection.headers),
-            request_timeout=connection.request_timeout,
-            use_server_proxy=connection.use_server_proxy,
-        ).with_transport_if_missing()
-        factory = AdapterFactory(runtime_connection)
-        sandbox = SandboxRuntimeHandle(
-            id=sandbox_id,
-            commands=factory.create_command_service(endpoint),
-            files=factory.create_filesystem_service(endpoint),
-            _service=service,
-            _connection=runtime_connection,
-            cancel_timeout_s=float(cfg.get("cancel_timeout_s", 10.0)),
-        )
-        if bool(cfg.get("skip_health_check", False)):
+        try:
+            runtime_kwargs = {
+                "domain": urlsplit(protected["base_url"]).netloc if protected else connection.domain,
+                "protocol": protocol,
+                "api_key": None if protected else connection.api_key,
+                "headers": {} if protected else dict(connection.headers),
+                "request_timeout": connection.request_timeout,
+                "use_server_proxy": True if protected else connection.use_server_proxy,
+            }
+            if owned_transport is not None:
+                runtime_kwargs["transport"] = owned_transport
+            runtime_connection = ConnectionConfig(**runtime_kwargs).with_transport_if_missing()
+            factory = AdapterFactory(runtime_connection)
+            sandbox = SandboxRuntimeHandle(
+                id=sandbox_id,
+                commands=factory.create_command_service(endpoint),
+                files=factory.create_filesystem_service(endpoint),
+                _service=service,
+                _connection=runtime_connection,
+                cancel_timeout_s=float(cfg.get("cancel_timeout_s", 10.0)),
+                protected_execd=bool(protected),
+                _execd_port=command_port,
+                _execd_endpoint=(
+                    endpoint.model_copy(update={"endpoint": f"{protocol}://{endpoint.endpoint}"})
+                    if protected else None
+                ),
+                _owned_runtime_transport=owned_transport,
+            )
+        except (Exception, asyncio.CancelledError):
+            if owned_transport is not None:
+                await owned_transport.aclose()
+            raise
+        if bool(cfg.get("skip_health_check", False)) and not protected:
             return sandbox
         health = factory.create_health_service(endpoint)
         timeout_s = float(cfg.get("request_timeout_s", 60.0) or 60.0)
