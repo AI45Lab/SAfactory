@@ -1,0 +1,54 @@
+# Opt-in S3 input configuration. Copy and replace deployment placeholders.
+# Long-lived S3 credentials stay in the launcher process.
+input_storage:
+  s3_profiles:
+    harbor_inputs:
+      endpoint_url: https://s3.example.internal
+      region_name: us-east-1
+      addressing_style: path
+      bucket: harbor-data
+      prefix: harbor/releases/v1/
+      access_key_id_env: HARBOR_S3_ACCESS_KEY_ID
+      secret_access_key_env: HARBOR_S3_SECRET_ACCESS_KEY
+      session_token_env: HARBOR_S3_SESSION_TOKEN
+      auth_mode: presigned
+      url_ttl_s: 3600
+      loader_files:
+        - bin/load_image.py
+
+sandbox:
+  domain: deepenv.sandbox.pjlab.org.cn
+  protocol: http
+  project: ""
+  project_env: OPEN_SANDBOX_PROJECT
+  api_key_env: OPEN_SANDBOX_API_KEY
+  command_port: 44772
+  gateway_base_url: http://gateway.example.internal:8000/v1/sessions
+
+  # This gateway must enforce mTLS + project authorization for ALL execd APIs.
+  # Block direct access to the original proxy/Pod port to prevent bypass.
+  protected_execd:
+    base_url: https://execd-gateway.example.internal
+    ca_file: /run/secrets/execd/ca.pem
+    client_cert_file: /run/secrets/execd/client.pem
+    client_key_file: /run/secrets/execd/client.key
+
+  network:
+    allow:
+      - gateway.example.internal
+      - s3.example.internal
+    deny: []
+
+  lifecycle_minutes: 720
+  request_timeout_s: 60
+  create_timeout_s: 600
+  bootstrap_timeout_s: 120
+  cancel_timeout_s: 10
+  command_timeout_s: 36000
+  startup_concurrency: 4
+  idle_entrypoint: [tail, -f, /dev/null]
+  poll_interval_s: 2
+  result_artifact_root: /sandbox-data/results
+  use_server_proxy: true
+  skip_health_check: false
+  cleanup_on_finish: true
