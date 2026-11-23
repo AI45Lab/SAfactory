@@ -5,10 +5,22 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from typing import Any
 
 
 log = logging.getLogger("core.data_manager.cloud_delete_guard")
+
+# Accept the predicates emitted by CloudStrategy's delete methods, rather than
+# trying to prove the safety of arbitrary SQL. Quoted values may contain AND,
+# OR, or apostrophes escaped as two single quotes.
+_SQL_STRING = r"'(?:''|[^'])*'"
+_DELETE_FILTER = re.compile(
+    rf"\s*job_id\s*=\s*(?P<job>{_SQL_STRING})"
+    rf"(?:\s+AND\s+(?:id|session_id)\s+IN\s*\(\s*{_SQL_STRING}"
+    rf"(?:\s*,\s*{_SQL_STRING})*\s*\))*\s*",
+    re.IGNORECASE,
+)
 
 
 class CloudDestructiveOperationError(RuntimeError):
@@ -24,12 +36,14 @@ class CloudDeleteGuard:
         client: Any,
         db_uri: str,
         landing_table: str,
+        profile: str | None = None,
         confirmed_job_id: str = "",
         confirm_production: bool = False,
     ) -> None:
         self.client = client
         self.db_uri = str(db_uri or "").strip()
         self.landing_table = str(landing_table or "").strip()
+        self.profile = profile
         self.confirmed_job_id = str(confirmed_job_id or "").strip()
         self.confirm_production = bool(confirm_production)
 
@@ -44,7 +58,13 @@ class CloudDeleteGuard:
         normalized_job_id = str(job_id or "").strip()
         if not normalized_job_id:
             raise CloudDestructiveOperationError(
-                f"{operation} requires an exact job_id for a partition-scoped cloud delete"
+                f"{operation} requires an exact job_id for a job-scoped cloud delete"
+            )
+        matched = _DELETE_FILTER.fullmatch(str(landing_filter or ""))
+        if matched is None or matched.group("job")[1:-1].replace("''", "'") != normalized_job_id:
+            raise CloudDestructiveOperationError(
+                f"{operation} requires an exact job_id equality filter matching "
+                f"{normalized_job_id!r}, optionally narrowed by id/session_id IN predicates"
             )
         if not self.db_uri or not self.landing_table:
             raise CloudDestructiveOperationError(
@@ -52,17 +72,18 @@ class CloudDeleteGuard:
                 "could not both be resolved explicitly"
             )
 
-        profile = str(os.environ.get("WT_SDK_PROFILE") or "").strip().lower()
+        profile = str(
+            self.profile if self.profile is not None else os.environ.get("WT_SDK_PROFILE") or ""
+        ).strip().lower()
         production = (
             profile in {"prod", "production"}
-            or self.landing_table == "wind_tunnel_landing"
+            or self.landing_table in {"wind_tunnel_landing", "wt_landing"}
         )
         landing_row_count = _row_count(await asyncio.to_thread(
             self.client.query_data,
             filter_query=landing_filter,
             limit=None,
             columns=["id"],
-            partition=normalized_job_id,
             checkout_latest=True,
             deserialize_json=False,
             table=self.landing_table,

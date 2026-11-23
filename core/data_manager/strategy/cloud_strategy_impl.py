@@ -8,6 +8,7 @@ import time
 import uuid
 import base64
 import tempfile
+from dataclasses import replace
 from typing import List, Dict, Optional, Any, Set
 from datetime import date
 
@@ -81,6 +82,27 @@ def _load_wt_sdk() -> None:
     except ModuleNotFoundError as exc:
         raise RuntimeError(_WT_SDK_IMPORT_ERROR) from exc
 
+    try:
+        probe = wt_sdk_models.LandingRecord(
+            dataset_type="RL",
+            id="__json_schema_check__",
+            job_id="__gpfs_schema_check__",
+            created_at=0,
+            messages="[]",
+            response="{}",
+            meta_json="{}",
+        )
+        if probe.sub_job_id != probe.job_id:
+            raise ValueError("LandingRecord must derive sub_job_id from job_id")
+    except Exception as exc:
+        raise RuntimeError(
+            "Installed wt_sdk uses the legacy LandingRecord schema. "
+            "Cloud storage requires GPFS routing and a default sub_job_id; "
+            "reinstall requirements-cloud.txt with --upgrade --force-reinstall. "
+            f"Loaded wt_sdk version={getattr(wt_sdk, '__version__', 'unknown')} "
+            f"from {getattr(wt_sdk, '__file__', 'unknown')}"
+        ) from exc
+
     WTGatewayClient = WTGatewayClient or wt_sdk.WTGatewayClient
     GatewayConfig = GatewayConfig or wt_sdk.GatewayConfig
     EnvConfigManager = EnvConfigManager or wt_sdk.EnvConfigManager
@@ -88,25 +110,6 @@ def _load_wt_sdk() -> None:
     generate_deterministic_id = generate_deterministic_id or wt_sdk_utils.generate_deterministic_id
     S3Uploader = S3Uploader or wt_sdk_utils.S3Uploader
     S3Downloader = S3Downloader or wt_sdk_utils.S3Downloader
-
-    try:
-        LandingRecord(
-            dataset_type="RL",
-            id="__json_schema_check__",
-            created_at=0,
-            messages="[]",
-            response="{}",
-            meta_json="{}",
-        )
-    except Exception as exc:
-        LandingRecord = None
-        raise RuntimeError(
-            "Installed wt_sdk uses the legacy LandingRecord schema. "
-            "Cloud storage requires messages/response/meta_json JSON strings; "
-            "reinstall requirements-cloud.txt with --upgrade --force-reinstall. "
-            f"Loaded wt_sdk version={getattr(wt_sdk, '__version__', 'unknown')} "
-            f"from {getattr(wt_sdk, '__file__', 'unknown')}"
-        ) from exc
 
 
 def _install_mock_wt_sdk_fallbacks() -> None:
@@ -131,7 +134,7 @@ def _install_mock_wt_sdk_fallbacks() -> None:
     class _TableConfig:
         def __init__(
             self,
-            db_uri: str = "",
+            landing_db_uri: str = "",
             landing_table: str = "",
             profile: Optional[str] = None,
         ):
@@ -143,12 +146,16 @@ def _install_mock_wt_sdk_fallbacks() -> None:
                 if raw_profile in {"prod", "production"}
                 else "test"
             )
-            self.db_uri = db_uri
-            self.landing_table = landing_table or (
-                "wind_tunnel_landing"
-                if self.profile == "production"
-                else "v2_landing_test"
+            self.landing_db_uri = landing_db_uri or os.getenv(
+                "WT_SDK_LANDING_DB_URI", "/mnt/shared-storage-user/adpc-share/wt-data-platform/landing"
             )
+            self.serving_db_uri = os.getenv("WT_SDK_SERVING_DB_URI", "s3://wt-data-platform")
+            self.landing_table = landing_table or (
+                "wt_landing"
+                if self.profile == "production"
+                else "landing_test"
+            )
+            self.serving_table = "wt_serving" if self.profile == "production" else "serving_test"
 
     class _S3Config:
         def to_storage_options(self) -> Dict[str, Any]:
@@ -304,6 +311,7 @@ class CloudStrategy(StorageStrategy):
         confirm_production: bool = False,
     ):
         self.db_url = str(db_url or "").strip()
+        self.profile: Optional[str] = None
         self.job_id = job_id
         self.initialized = False
         self.landing_table = str(landing_table or "").strip() or None
@@ -335,7 +343,7 @@ class CloudStrategy(StorageStrategy):
 
         # In-memory caches
         self._env_configs: Dict[str, Dict] = {}
-        self._record_job_ids: Dict[str, str] = {}
+        self._record_job_ids: Dict[str, Optional[str]] = {}
         self._record_session_ids: Dict[str, str] = {}
 
     async def init(self):
@@ -353,38 +361,43 @@ class CloudStrategy(StorageStrategy):
             dldb_metrics_log_path=self.dldb_metrics_log_path,
         )
         if self.db_url:
-            config.tables.db_uri = self.db_url
+            # Existing callers may override Landing without redirecting Serving.
+            config.tables.landing_db_uri = self.db_url
         if self.landing_table:
             config.tables.landing_table = self.landing_table
         self.landing_table = config.tables.landing_table
-        self.db_url = str(config.tables.db_uri or self.db_url)
+        self.db_url = config.tables.landing_db_uri
+        self.profile = config.tables.profile
 
         try:
             self.client = WTGatewayClient(config)
             log.debug(
-                "CloudStrategy initialized with landing_table=%s db_uri=%s",
+                "CloudStrategy landing=%s/%s serving=%s/%s profile=%s",
+                self.db_url,
                 config.tables.landing_table,
-                config.tables.db_uri,
+                config.tables.serving_db_uri,
+                config.tables.serving_table,
+                self.profile,
             )
         except Exception as e:
             log.error(f"Failed to initialize WTGatewayClient: {e}")
             raise
 
-        # 2. Initialize EnvConfigManager (S3)
+        # EnvConfigManager resolves its own URI and filesystem storage options.
         try:
             self.env_manager = EnvConfigManager(
                 table_name=self.env_config_table,
-                storage_options=config.s3.to_storage_options(),
                 dldb_model=self.dldb_model,
                 enable_dldb_timing_logs=self.enable_dldb_timing_logs,
                 dldb_metrics_log_path=self.dldb_metrics_log_path,
-                profile=config.tables.profile,
+                profile=self.profile,
             )
             self.env_config_table = self.env_manager.table_name
             log.debug(
-                "CloudStrategy initialized with env_config_table=%s profile=%s",
+                "CloudStrategy env_config=%s/%s profile=%s",
+                self.env_manager.db_uri,
                 self.env_config_table,
-                config.tables.profile,
+                self.profile,
             )
         except Exception as e:
             log.error(f"Failed to initialize EnvConfigManager: {e}")
@@ -447,7 +460,7 @@ class CloudStrategy(StorageStrategy):
         image: str = "",
         group_id: str = ""
     ) -> str:
-        """Register environment config to S3"""
+        """Register the environment before exposing it in the local cache."""
         await self.init()
         
         env_id = str(uuid.uuid4())
@@ -462,13 +475,7 @@ class CloudStrategy(StorageStrategy):
             "created_at": int(time.time()),
         }
         
-        try:
-            await asyncio.to_thread(self.env_manager.save_config, config_dict)
-            log.debug("Environment config saved to S3: %s", env_id)
-        except Exception as e:
-            log.error(f"Failed to save env config to S3: {e}")
-            
-        # Cache locally
+        await asyncio.to_thread(self.env_manager.save_config, config_dict)
         self._env_configs[env_id] = config_dict
 
         return env_id
@@ -531,6 +538,12 @@ class CloudStrategy(StorageStrategy):
             self._record_job_ids.pop(record_id, None)
             self._record_session_ids.pop(record_id, None)
         return len(record_ids)
+
+    def _remember_record_job(self, record_id: str, job_id: str) -> None:
+        # The SDK identifies rows by (job_id, id). An ID seen in two jobs
+        # cannot safely route a later update without an explicit job.
+        if self._record_job_ids.setdefault(record_id, job_id) != job_id:
+            self._record_job_ids[record_id] = None
 
     async def list_environment_rows(self, query: EnvironmentQuery) -> List[Dict[str, Any]]:
         """Read environment rows from the authoritative config store."""
@@ -679,6 +692,7 @@ class CloudStrategy(StorageStrategy):
             client=self.client,
             db_uri=self.db_url,
             landing_table=str(self.landing_table or ""),
+            profile=self.profile,
             confirmed_job_id=self.confirm_cloud_delete_job_id,
             confirm_production=self.confirm_production,
         )
@@ -767,8 +781,11 @@ class CloudStrategy(StorageStrategy):
             self._env_configs.pop(env_id, None)
 
     def _landing_record_from_row(self, row: Dict[str, Any]) -> tuple[Any, str]:
+        job_id = str(row.get("job_id") or self.job_id or "")
+        if not job_id.strip():
+            raise ValueError("job_id is required for a cloud landing record")
         record_id = str(row.get("record_id") or generate_deterministic_id({
-            "job_id": row.get("job_id"),
+            "job_id": job_id,
             "session_id": row.get("session_id"),
             "step_id": row.get("step_id"),
             "llm_model": row.get("llm_model"),
@@ -786,7 +803,7 @@ class CloudStrategy(StorageStrategy):
             session_id=str(row.get("session_id") or ""),
             step_id=int(row.get("step_id") or 0),
             env_id=str(row.get("env_id") or row.get("session_id") or ""),
-            job_id=str(row.get("job_id") or self.job_id),
+            job_id=job_id,
             created_at=int(row.get("created_at") or time.time()),
             step_reward=float(row.get("step_reward") or 0.0),
             reward=row.get("reward"),
@@ -804,7 +821,6 @@ class CloudStrategy(StorageStrategy):
             ),
             ground_truth_answer=row.get("ground_truth_answer"),
             reference_answer=row.get("reference_answer"),
-            search_text=row.get("search_text"),
             agent_model=str(row.get("llm_model") or ""),
             env_name=str(row.get("env_name") or ""),
             is_terminal=bool(row.get("is_terminal", False)),
@@ -833,7 +849,7 @@ class CloudStrategy(StorageStrategy):
             record_ids.append(record_id)
             job_id = str(row.get("job_id") or self.job_id)
             if job_id:
-                self._record_job_ids[record_id] = job_id
+                self._remember_record_job(record_id, job_id)
                 if row.get("session_id"):
                     self._record_session_ids[record_id] = str(row["session_id"])
         if self._enable_buffer:
@@ -864,7 +880,7 @@ class CloudStrategy(StorageStrategy):
             record, record_id = self._landing_record_from_row(row)
             records.append(record)
             record_ids.append(record_id)
-            self._record_job_ids[record_id] = str(row["job_id"])
+            self._remember_record_job(record_id, str(row["job_id"]))
 
         upsert = getattr(self.client, "upsert_landing_batch", None)
         if not callable(upsert):
@@ -915,7 +931,7 @@ class CloudStrategy(StorageStrategy):
                 values["meta_json"] = json.dumps(meta_json, ensure_ascii=False, default=str)
             records.append(LandingRecord(**values))
             record_ids.append(record_id)
-            self._record_job_ids[record_id] = job_id
+            self._remember_record_job(record_id, job_id)
 
         upsert = getattr(self.client, "upsert_landing_batch", None)
         if not callable(upsert):
@@ -985,7 +1001,6 @@ class CloudStrategy(StorageStrategy):
             filter_query=" AND ".join(clauses),
             limit=query.limit if query.limit is not None else 10000,
             columns=columns,
-            partition=query.job_id or None,
             order_by="step_id" if query.latest_first else None,
             ascending=not query.latest_first,
             checkout_latest=query.checkout_latest,
@@ -1010,7 +1025,7 @@ class CloudStrategy(StorageStrategy):
                 row["request"] = meta_json.get("request")
             rows.append(row)
             if row.get("record_id") and row.get("job_id"):
-                self._record_job_ids[str(row["record_id"])] = str(row["job_id"])
+                self._remember_record_job(str(row["record_id"]), str(row["job_id"]))
         rows.sort(key=lambda row: (
             int(row.get("step_id") or 0),
             str(row.get("created_at") or ""),
@@ -1026,6 +1041,34 @@ class CloudStrategy(StorageStrategy):
         await self.init()
         if self._enable_buffer:
             await self._flush_records()
+
+        record_ids = tuple(dict.fromkeys(query.record_ids))
+        if query.record_id:
+            if record_ids and query.record_id not in record_ids:
+                return 0
+            record_ids = ()
+        query = replace(query, record_ids=record_ids)
+        ids_to_route = (query.record_id,) if query.record_id else record_ids
+        if query.job_id or not ids_to_route:
+            return await self._update_landing_rows(query, updates)
+
+        # Resolve the entire batch before writing. A partially cached batch
+        # must not turn into a cross-job update or a partially applied update.
+        by_job: Dict[str, List[str]] = {}
+        for record_id in ids_to_route:
+            job_id = self._record_job_ids.get(record_id)
+            if not job_id:
+                raise ValueError(f"job_id is required for record {record_id!r} without a unique cached job")
+            by_job.setdefault(job_id, []).append(record_id)
+        updated = 0
+        for job_id, ids in by_job.items():
+            scoped = replace(query, job_id=job_id, record_ids=() if query.record_id else tuple(ids))
+            updated += await self._update_landing_rows(scoped, updates)
+        return updated
+
+    async def _update_landing_rows(
+        self, query: SessionStepQuery, updates: Dict[str, Any]
+    ) -> int:
         clauses: List[str] = []
         if query.job_id:
             clauses.append(f"job_id = '{_escape_sql_literal(query.job_id)}'")
@@ -1046,14 +1089,10 @@ class CloudStrategy(StorageStrategy):
         if not clauses:
             raise ValueError("cloud session-step update requires at least one filter")
         filter_query = " AND ".join(clauses)
-        job_id = query.job_id or next(
-            (self._record_job_ids.get(item) for item in query.record_ids if self._record_job_ids.get(item)),
-            None,
-        ) or (self._record_job_ids.get(query.record_id) if query.record_id else None)
         normalized = self._normalize_session_step_updates_for_cloud(
             updates,
             filter_query=filter_query,
-            job_id=job_id,
+            job_id=query.job_id,
         )
         if not normalized:
             return 0
@@ -1062,8 +1101,7 @@ class CloudStrategy(StorageStrategy):
             self.client.update_landing,
             filter_query,
             normalized,
-            partition=job_id or None,
-            trace_context={"job_id": job_id, "field_count": len(normalized)},
+            trace_context={"job_id": query.job_id, "field_count": len(normalized)},
         )
         return len(query.record_ids) or int(bool(query.record_id)) or 1
 
@@ -1115,7 +1153,6 @@ class CloudStrategy(StorageStrategy):
             "env_id": "env_id",
             "env_name": "env_name",
             "llm_model": "agent_model",
-            "job_id": "job_id",
             "step_reward": "step_reward",
             "reward": "reward",
             "total_reward": "reward",
@@ -1126,7 +1163,7 @@ class CloudStrategy(StorageStrategy):
             "is_trainable": "is_trainable",
         }
         meta_fields = {"group_id", "request"}
-        blocked_fields = {"id", "created_at"}
+        blocked_fields = {"id", "created_at", "job_id", "sub_job_id", "source_updated_at", "serving_updated_at"}
 
         normalized: Dict[str, Any] = {}
         meta_updates: Dict[str, Any] = {}
@@ -1175,18 +1212,13 @@ class CloudStrategy(StorageStrategy):
                 "Loading landing meta_json without job_id; "
                 "falling back to an all-bucket HASH query"
             )
-        try:
-            rows = self.client.query_data(
-                filter_query=filter_query,
-                limit=1,
-                columns=["meta_json"],
-                partition=job_id or None,
-                checkout_latest=True,
-                deserialize_json=True,
-            )
-        except Exception as e:
-            log.warning("Failed to load existing meta_json before cloud update: %s", e)
-            return meta_json
+        rows = self.client.query_data(
+            filter_query=filter_query,
+            limit=1,
+            columns=["meta_json"],
+            checkout_latest=True,
+            deserialize_json=True,
+        )
 
         if not rows:
             return meta_json
