@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -32,6 +33,9 @@ class GatewaySessionBinding:
     llm_step_count_by_model: dict[str, int] = field(default_factory=dict)
     truncated_models: dict[str, str] = field(default_factory=dict)
     stop_response_sent_models: set[str] = field(default_factory=set)
+    dataset: Any = None
+    environment_checked: bool = False
+    environment_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
     def close(self, reason: str, closed_at: datetime) -> None:
         self.status = "closed"
@@ -97,8 +101,9 @@ class GatewayRequestContext:
     created_at: datetime
     llm_step_index: int | None = None
     synthetic_stop: bool = False
-    # Supplied by the job/session URL; never resolved from storage.
+    # Supplied by the job/session URL.
     job_id: str | None = None
+    telemetry_binding: GatewaySessionBinding | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -145,5 +150,4 @@ class GatewayTelemetryRecord:
     is_session_completed: bool = False
     truncate_reason: str | None = None
     synthetic_stop: bool = False
-    # An explicit job uses queued, write-only persistence.
     job_id: str | None = None

@@ -19,14 +19,16 @@ def build_gateway_step_row(
     provider_meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     meta_json = dict(metadata)
-    if dataset is not None:
-        meta_json["dataset"] = dataset
+    job_id = record.job_id or binding.job_id
+    if not job_id or (binding.job_id and binding.job_id != job_id):
+        raise ValueError("Gateway trajectory requires a consistent URL job_id")
+    meta_json["dataset"] = dataset
     if provider_meta:
         meta_json.update(provider_meta)
     record_id = str(uuid.uuid5(
         uuid.NAMESPACE_URL,
         ":".join((
-            str(binding.job_id or "gateway"),
+            job_id,
             record.session_id,
             str(record.seq_id),
             record.requested_model,
@@ -41,7 +43,7 @@ def build_gateway_step_row(
         "env_name": binding.env_name or "gateway",
         "llm_model": record.requested_model,
         "group_id": binding.group_id or "",
-        "job_id": binding.job_id or "gateway",
+        "job_id": job_id,
         "messages": messages,
         "request": record.request,
         "response": response,

@@ -251,7 +251,7 @@ class SimulationFlow:
         session_ids = self._resume_session_ids
         if not session_ids:
             return
-        client = GatewayClient(gateway_base_url=self.cfg.gateway_base_url)
+        client = GatewayClient(gateway_base_url=self.cfg.gateway_base_url, job_id=self.cfg.job_id)
         try:
             result = await client.clear_session_cache(session_ids)
         finally:
@@ -343,6 +343,7 @@ class SimulationFlow:
         )
         self.gateway_client = GatewayClient(
             gateway_base_url=self.cfg.gateway_base_url,
+            job_id=self.cfg.job_id,
             close_timeout_s=self.cfg.gateway_close_timeout_s,
             close_retries=self.cfg.gateway_close_retries,
             retry_backoff_s=self.cfg.gateway_close_retry_backoff_s,

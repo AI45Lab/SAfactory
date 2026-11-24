@@ -19,10 +19,9 @@ from .episode_common import (
     normalize_result,
     parse_result_artifact,
     parse_result_output,
-    request_env,
-    request_payload,
     result_artifact_candidates,
     result_artifact_path,
+    runner_inputs,
     tail,
 )
 from .types import SimulationAgentLease, SimulationStartRequest, SimulationStartResult
@@ -85,22 +84,16 @@ class RJobEpisodeRunner:
             with trace.span("resolve_gateway_base_url"):
                 gateway_base_url = self._cluster.resolve_gateway_base_url(cfg, request)
             with trace.span("build_request_payload"):
-                request_params, payload = request_payload(request)
+                request_params, _, runner_env = runner_inputs(
+                    request, gateway_base_url=gateway_base_url, containerize_local_gateway=False,
+                )
             with trace.span("client_init"):
                 client = self._cluster.client(cfg)
 
             rjob_name = self._cluster.build_job_name(cfg, lease, request)
             trace.update_context(requested_rjob_name=rjob_name)
             with trace.span("build_job", requested_rjob_name=rjob_name):
-                merged_env = _merge_dicts(
-                    cfg.get("env"),
-                    request_env(
-                        request,
-                        payload,
-                        gateway_base_url=gateway_base_url,
-                        containerize_local_gateway=False,
-                    ),
-                )
+                merged_env = _merge_dicts(cfg.get("env"), runner_env)
                 job = self._cluster.build_job(
                     cfg=cfg,
                     lease=lease,

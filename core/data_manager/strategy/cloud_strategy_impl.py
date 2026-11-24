@@ -518,21 +518,23 @@ class CloudStrategy(StorageStrategy):
         self._env_configs[str(config["env_id"])] = config
         return dict(config)
 
-    async def clear_environment_cache(self, env_ids: List[str]) -> int:
+    async def clear_environment_cache(self, env_ids: List[str], *, job_id: Optional[str] = None) -> int:
         """Clear cached environment configs without changing persisted state."""
         removed = 0
         for env_id in env_ids:
+            if job_id is not None and self._env_configs.get(env_id, {}).get("job_id") != job_id:
+                continue
             if self._env_configs.pop(env_id, None) is not None:
                 removed += 1
         return removed
 
-    async def clear_session_cache(self, session_ids: List[str]) -> int:
+    async def clear_session_cache(self, session_ids: List[str], *, job_id: Optional[str] = None) -> int:
         """Forget inserted-record routing for these sessions, leaving cloud rows intact."""
         targets = set(session_ids)
         record_ids = [
             record_id
             for record_id, session_id in self._record_session_ids.items()
-            if session_id in targets
+            if session_id in targets and (job_id is None or self._record_job_ids.get(record_id) == job_id)
         ]
         for record_id in record_ids:
             self._record_job_ids.pop(record_id, None)
@@ -827,6 +829,8 @@ class CloudStrategy(StorageStrategy):
             is_truncated=bool(row.get("is_truncated", False)),
             is_session_completed=bool(row.get("is_session_completed", False)),
             is_trainable=bool(row.get("is_trainable", False)),
+            dataset=(json.dumps(meta_json["dataset"], ensure_ascii=False, default=str)
+                     if meta_json.get("dataset") is not None else None),
             meta_json=json.dumps(meta_json, ensure_ascii=False, default=str),
             tags=row.get("tags"),
             blob_manifest=row.get("blob_manifest") or [],
