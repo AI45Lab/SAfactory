@@ -146,10 +146,8 @@ def _install_mock_wt_sdk_fallbacks() -> None:
                 if raw_profile in {"prod", "production"}
                 else "test"
             )
-            self.landing_db_uri = landing_db_uri or os.getenv(
-                "WT_SDK_LANDING_DB_URI", "/mnt/shared-storage-user/adpc-share/wt-data-platform/landing"
-            )
-            self.serving_db_uri = os.getenv("WT_SDK_SERVING_DB_URI", "s3://wt-data-platform")
+            self.landing_db_uri = landing_db_uri
+            self.serving_db_uri = ""
             self.landing_table = landing_table or (
                 "wt_landing"
                 if self.profile == "production"
@@ -351,6 +349,21 @@ class CloudStrategy(StorageStrategy):
         if self.initialized:
             return
 
+        db_uris = {
+            name: os.getenv(name, "").strip()
+            for name in (
+                "WT_SDK_LANDING_DB_URI",
+                "WT_SDK_SERVING_DB_URI",
+                "WT_SDK_ENV_CONFIG_DB_URI",
+            )
+        }
+        missing = [name for name, uri in db_uris.items() if not uri]
+        if missing:
+            raise RuntimeError(
+                "Cloud storage requires a non-empty value for "
+                + ", ".join(missing)
+            )
+
         os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
         _load_wt_sdk()
 
@@ -360,9 +373,9 @@ class CloudStrategy(StorageStrategy):
             enable_dldb_timing_logs=self.enable_dldb_timing_logs,
             dldb_metrics_log_path=self.dldb_metrics_log_path,
         )
-        if self.db_url:
-            # Existing callers may override Landing without redirecting Serving.
-            config.tables.landing_db_uri = self.db_url
+        # Existing callers may explicitly override Landing only.
+        config.tables.landing_db_uri = self.db_url or db_uris["WT_SDK_LANDING_DB_URI"]
+        config.tables.serving_db_uri = db_uris["WT_SDK_SERVING_DB_URI"]
         if self.landing_table:
             config.tables.landing_table = self.landing_table
         self.landing_table = config.tables.landing_table
@@ -383,10 +396,11 @@ class CloudStrategy(StorageStrategy):
             log.error(f"Failed to initialize WTGatewayClient: {e}")
             raise
 
-        # EnvConfigManager resolves its own URI and filesystem storage options.
+        # EnvConfigManager resolves storage options for the configured URI.
         try:
             self.env_manager = EnvConfigManager(
                 table_name=self.env_config_table,
+                db_uri=db_uris["WT_SDK_ENV_CONFIG_DB_URI"],
                 dldb_model=self.dldb_model,
                 enable_dldb_timing_logs=self.enable_dldb_timing_logs,
                 dldb_metrics_log_path=self.dldb_metrics_log_path,
