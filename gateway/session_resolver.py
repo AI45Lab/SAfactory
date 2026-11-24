@@ -34,11 +34,11 @@ class SessionResolver:
         *,
         endpoint: str,
         path_session_id: str,
-        path_job_id: str | None = None,
+        path_job_id: str,
     ) -> GatewayRequestContext:
         if not path_session_id:
             raise SessionResolutionError("session_id must be supplied in the URL path")
-        if path_job_id is not None and not path_job_id.strip():
+        if not path_job_id.strip():
             raise SessionResolutionError("job_id must be non-empty")
 
         requested_model = payload.get("model")
@@ -72,27 +72,37 @@ class SessionResolver:
                 )
                 self._bindings[ctx.session_id] = binding
             else:
-                if ctx.job_id is not None:
-                    if binding.job_id is not None and binding.job_id != ctx.job_id:
-                        raise SessionResolutionError("session is already bound to a different job_id")
-                    binding.job_id = ctx.job_id
+                self._check_owner(binding, ctx.job_id)
                 binding.model = ctx.requested_model or binding.model
                 binding.last_seen_at = now
         return binding
+
+    @staticmethod
+    def _check_owner(binding: GatewaySessionBinding | None, job_id: str | None) -> None:
+        if binding is not None and binding.job_id != job_id:
+            raise SessionResolutionError("session is already bound to a different job_id")
+
+    async def validate_session_jobs(self, session_ids: list[str], job_id: str) -> None:
+        async with self._lock:
+            for session_id in session_ids:
+                self._check_owner(self._bindings.get(session_id), job_id)
 
     async def begin_close_session(
         self,
         session_id: str,
         *,
+        job_id: str,
         reason: str = "gateway_close",
         completion_mode: str = "complete",
     ) -> tuple[GatewaySessionBinding, bool]:
         now = _utcnow()
         async with self._lock:
             binding = self._bindings.get(session_id)
+            self._check_owner(binding, job_id)
             if binding is None:
                 binding = GatewaySessionBinding(
                     session_id=session_id,
+                    job_id=job_id,
                     model="",
                     upstream_base_url=None,
                     status="active",
@@ -105,33 +115,36 @@ class SessionResolver:
 
     async def finish_close_session(
         self,
-        session_id: str,
+        binding: GatewaySessionBinding,
         *,
         drained: bool,
         telemetry_status: str,
     ) -> GatewaySessionBinding | None:
         now = _utcnow()
         async with self._lock:
-            binding = self._bindings.get(session_id)
-            if binding is not None:
-                binding.finish_close(
-                    drained=drained,
-                    telemetry_status=telemetry_status,
-                    closed_at=now,
-                )
+            if self._bindings.get(binding.session_id) is not binding:
+                return None
+            binding.finish_close(
+                drained=drained,
+                telemetry_status=telemetry_status,
+                closed_at=now,
+            )
             return binding
 
-    async def clear_session_cache(self, session_ids: list[str]) -> int:
+    async def clear_session_cache(self, session_ids: list[str], *, job_id: str) -> int:
         targets = set(session_ids)
         async with self._lock:
+            for session_id in targets:
+                self._check_owner(self._bindings.get(session_id), job_id)
             removed = sum(session_id in self._bindings for session_id in targets)
             for session_id in targets:
                 self._bindings.pop(session_id, None)
             return removed
 
-    async def get_status(self, session_id: str) -> dict[str, Any] | None:
+    async def get_status(self, session_id: str, *, job_id: str) -> dict[str, Any] | None:
         async with self._lock:
             binding = self._bindings.get(session_id)
+            self._check_owner(binding, job_id)
             if binding is None:
                 return None
             return {
@@ -173,7 +186,8 @@ class SessionResolver:
             expired = [
                 session_id
                 for session_id, binding in self._bindings.items()
-                if binding.active_request_count <= 0
+                if binding.status != "closing"
+                and binding.active_request_count <= 0
                 and binding.active_stream_count <= 0
                 and binding.last_seen_at.timestamp() < cutoff_ts
             ]

@@ -15,9 +15,8 @@ from .episode_common import (
     RUNNER_DIAGNOSTIC_PREFIXES,
     normalize_result,
     parse_result_output,
-    request_env,
-    request_payload,
     result_artifact_path,
+    runner_inputs,
     safe_path_part,
     tail,
 )
@@ -48,18 +47,12 @@ class SandboxEpisodeRunner:
         if artifact_required and lease.result_mode == "exit_code":
             raise ValueError("Harbor and runner rewards require a JSON result artifact")
 
-        _, payload = request_payload(request)
         cfg = dict(lease.runtime_config or {})
         gateway_base_url = str(cfg.get("gateway_base_url") or request.gateway_base_url).rstrip("/")
-        env = {
-            **dict(cfg.get("env", {}) or {}),
-            **request_env(
-                request,
-                payload,
-                gateway_base_url=gateway_base_url,
-                containerize_local_gateway=False,
-            ),
-        }
+        _, payload, runner_env = runner_inputs(
+            request, gateway_base_url=gateway_base_url, containerize_local_gateway=False,
+        )
+        env = {**dict(cfg.get("env", {}) or {}), **runner_env}
         artifact_path = result_artifact_path(request).replace(
             "/app/results/", "/sandbox-data/results/", 1,
         )

@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from urllib.parse import quote
 
 import httpx
+
+from core.http.gateway_urls import job_sessions_url
 
 log = logging.getLogger("evaluator.gateway_client")
 
@@ -14,17 +17,21 @@ class GatewayClient:
         self,
         *,
         gateway_base_url: str,
+        job_id: str,
         timeout_s: float = 10.0,
         close_timeout_s: float = 120.0,
         close_retries: int = 1,
         retry_backoff_s: float = 10.0,
     ) -> None:
-        self.gateway_base_url = gateway_base_url.rstrip("/")
+        self.gateway_base_url = job_sessions_url(gateway_base_url, job_id)
         self.timeout_s = timeout_s
         self.close_timeout_s = close_timeout_s
         self.close_retries = max(0, int(close_retries))
         self.retry_backoff_s = max(0.0, float(retry_backoff_s))
         self._client = httpx.AsyncClient(timeout=self.timeout_s)
+
+    def _session_url(self, session_id: str) -> str:
+        return f"{self.gateway_base_url}/{quote(session_id, safe='')}"
 
     async def close_session(
         self,
@@ -56,7 +63,7 @@ class GatewayClient:
             try:
                 request_timeout = min(self.timeout_s, remaining)
                 response = await self._client.post(
-                    f"{self.gateway_base_url}/{session_id}/close",
+                    f"{self._session_url(session_id)}/close",
                     json={"reason": reason, "completion_mode": completion_mode},
                     timeout=httpx.Timeout(request_timeout),
                 )
@@ -84,7 +91,7 @@ class GatewayClient:
 
     async def get_latest_success_step(self, session_id: str, model: str) -> int | None:
         response = await self._client.get(
-            f"{self.gateway_base_url}/{session_id}/latest-success-step",
+            f"{self._session_url(session_id)}/latest-success-step",
             params={"model": model},
         )
         response.raise_for_status()
@@ -93,7 +100,7 @@ class GatewayClient:
         return int(step_id) if step_id is not None else None
 
     async def get_session_status(self, session_id: str) -> dict[str, Any] | None:
-        response = await self._client.get(f"{self.gateway_base_url}/{session_id}")
+        response = await self._client.get(self._session_url(session_id))
         if response.status_code == 404:
             return None
         response.raise_for_status()
@@ -111,7 +118,7 @@ class GatewayClient:
 
     async def clean_session(self, session_id: str) -> dict[str, Any]:
         response = await self._client.post(
-            f"{self.gateway_base_url}/{session_id}/clean",
+            f"{self._session_url(session_id)}/clean",
         )
         response.raise_for_status()
         return response.json()

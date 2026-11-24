@@ -12,6 +12,8 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from core.http.gateway_urls import job_sessions_url
+
 from .types import SimulationRunConfig
 
 log = logging.getLogger("manager.simulation_config")
@@ -652,6 +654,13 @@ def derive_pool_sizing(
 def build_manager_runtime_config(cfg: SimulationRunConfig) -> Dict[str, Any]:
     rjob_cfg = dict(cfg.rjob_config or {})
     env_types = load_agent_start_config(cfg.agent_start_config)
+    # These runners append their session ID to their own configured Gateway base.
+    for runtimes in env_types.values():
+        for runtime in runtimes.values():
+            env = runtime.get("env", {})
+            for key in ("PATCHEVAL_CLAUDE_GATEWAY_BASE_URL", "PATCHEVAL_OPENHANDS_GATEWAY_BASE_URL"):
+                if env.get(key):
+                    env[key] = job_sessions_url(env[key], cfg.job_id)
     database_cfg: Dict[str, Any] = {"driver": cfg.storage_type}
     if cfg.storage_type == "sqlite":
         database_cfg["sqlite_path"] = cfg.db_url

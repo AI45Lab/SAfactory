@@ -12,9 +12,8 @@ from .episode_common import (
     normalize_result,
     parse_result_artifact,
     parse_result_output,
-    request_env,
-    request_payload,
     result_artifact_path,
+    runner_inputs,
     tail,
 )
 from .types import SimulationAgentLease, SimulationStartRequest, SimulationStartResult
@@ -38,8 +37,8 @@ class DockerEpisodeRunner:
         if not lease.run_command:
             raise RuntimeError(f"Docker lease missing run_command: {lease.agent_name}/{lease.agent_id}")
 
-        request_params, payload = request_payload(request)
-        cmd = self._docker_exec_cmd(lease, request, payload)
+        request_params, payload, env = runner_inputs(request, containerize_local_gateway=True)
+        cmd = self._docker_exec_cmd(lease, env)
         log.debug(
             "runner entrypoint docker exec command: env=%s agent_id=%s container=%s command=%s",
             lease.agent_name,
@@ -109,8 +108,7 @@ class DockerEpisodeRunner:
     def _docker_exec_cmd(
         self,
         lease: SimulationAgentLease,
-        request: SimulationStartRequest,
-        payload: str,
+        env: dict[str, str],
     ) -> List[str]:
         cmd = [
             lease.docker_bin or "docker",
@@ -119,7 +117,7 @@ class DockerEpisodeRunner:
         ]
         if lease.workdir:
             cmd.extend(["-w", lease.workdir])
-        for key, value in request_env(request, payload, containerize_local_gateway=True).items():
+        for key, value in env.items():
             cmd.extend(["-e", f"{key}={value}"])
         cmd.extend([lease.container_id, "sh", "-lc", lease.run_command])
         return cmd

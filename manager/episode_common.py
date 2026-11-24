@@ -4,7 +4,9 @@ import json
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Dict
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
+
+from core.http.gateway_urls import job_sessions_url
 
 from .types import SimulationStartRequest, SimulationStartResult
 
@@ -17,33 +19,43 @@ DEFAULT_RESULT_ROOT = "/app/results"
 RESULT_FILENAME = "safactory_result.json"
 
 
-def request_payload(request: SimulationStartRequest) -> tuple[Dict[str, Any], str]:
-    data = asdict(request)
-    return data, json.dumps(data, ensure_ascii=False)
-
-
-def request_env(
+def runner_inputs(
     request: SimulationStartRequest,
-    payload: str,
     *,
     gateway_base_url: str = "",
     containerize_local_gateway: bool,
-) -> Dict[str, str]:
-    env_params = request.env_params if isinstance(request.env_params, dict) else {}
+) -> tuple[Dict[str, Any], str, Dict[str, str]]:
+    """Build runner stdin and environment from the same job-scoped address."""
+    data = asdict(request)
+    base_url = job_sessions_url(gateway_base_url or request.gateway_base_url, request.job_id)
+    runtime_base = containerize_local_gateway_url(base_url) if containerize_local_gateway else base_url
+    data["gateway_base_url"] = runtime_base
+    env_params = data["env_params"] if isinstance(data["env_params"], dict) else {}
     dataset = env_params.get("dataset") if isinstance(env_params.get("dataset"), dict) else {}
+    if request.agent_name == "dtap" or env_params.get("task_family") == "dtap":
+        # DTAP accepts explicit session collection URLs before the common runner
+        # environment. Update only the startup copy, not the stored environment.
+        for source in (env_params, dataset):
+            if source.get("gateway_base_url"):
+                source["gateway_base_url"] = job_sessions_url(source["gateway_base_url"], request.job_id)
+            # The general base_url can also name a standalone model provider.
+            alias = str(source.get("base_url") or "").strip().rstrip("/")
+            if alias and (
+                alias.endswith("/sessions")
+                or base_url.startswith((alias + "/jobs/", alias + "/v1/jobs/"))
+            ):
+                source["base_url"] = job_sessions_url(alias, request.job_id)
+
+    payload = json.dumps(data, ensure_ascii=False)
 
     route_model = first_text(dataset.get("route_model"), env_params.get("route_model"), request.model)
     model_ref = first_text(dataset.get("model_ref"), env_params.get("model_ref"))
     if not model_ref and route_model:
         model_ref = route_model if "/" in route_model else f"safactory/{route_model}"
 
-    base_url = str(gateway_base_url or request.gateway_base_url).rstrip("/")
-    gateway_session_url = f"{base_url}/{request.session_id}"
-    runtime_session_url = (
-        containerize_local_gateway_url(gateway_session_url)
-        if containerize_local_gateway
-        else gateway_session_url
-    )
+    session = quote(request.session_id, safe="")
+    gateway_session_url = f"{base_url}/{session}"
+    runtime_session_url = f"{runtime_base}/{session}"
 
     values: Dict[str, Any] = {
         "SAFACTORY_START_REQUEST_JSON": payload,
@@ -68,7 +80,8 @@ def request_env(
         "SAFACTORY_GATEWAY_SESSION_URL_CONTAINER": runtime_session_url,
         "OPENROUTER_BASE_URL": runtime_session_url,
     }
-    return {key: env_text(value) for key, value in values.items() if env_text(value) != ""}
+    env = {key: env_text(value) for key, value in values.items() if env_text(value) != ""}
+    return data, payload, env
 
 
 def first_text(*values: Any) -> str:

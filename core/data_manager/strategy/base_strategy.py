@@ -63,11 +63,11 @@ class StorageStrategy(ABC):
         """Retrieve one active environment by env_id."""
         pass
 
-    async def clear_environment_cache(self, env_ids: List[str]) -> int:
+    async def clear_environment_cache(self, env_ids: List[str], *, job_id: Optional[str] = None) -> int:
         """Clear backend-local environment cache entries, if any."""
         return 0
 
-    async def clear_session_cache(self, session_ids: List[str]) -> int:
+    async def clear_session_cache(self, session_ids: List[str], *, job_id: Optional[str] = None) -> int:
         """Clear backend-local session caches without changing persisted rows."""
         return 0
 

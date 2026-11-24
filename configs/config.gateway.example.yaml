@@ -7,14 +7,14 @@ max_steps: -1
 storage_type: sqlite
 storage_config:
   db_url: sqlite://env_trajs.db
-  # Cloud mode uses wt-data-gateway default database URIs.
-  # Best practice: omit table names here and set only WT_SDK_PROFILE in .env.
-  # WT_SDK_PROFILE=test selects v2_landing_test and env_config_test;
-  # WT_SDK_PROFILE=production/prod selects wind_tunnel_landing and
-  # evaluation_env_config. Explicit table names override the profile and can
-  # accidentally mix test and production data; use them only when intentional.
-  # landing_table: v2_landing_test
-  # env_config_table: env_config_test
+  # Cloud mode uses GPFS for landing/env-config and S3 for serving.
+  # Omit table names here; use WT_SDK_PROFILE=test in .env for GPFS integration.
+  # Configure WT_SDK_LANDING_DB_URI, WT_SDK_SERVING_DB_URI, and WT_SDK_ENV_CONFIG_DB_URI.
+  # GPFS directories must be mounted read/write at the same paths in the container.
+  # The test profile selects landing_test, serving_test, and env_test.
+  # Explicit table names override the profile; normally omit them.
+  # landing_table: landing_test
+  # env_config_table: env_test
 
 max_inflight_requests: 2048
 max_active_streams: 1024
