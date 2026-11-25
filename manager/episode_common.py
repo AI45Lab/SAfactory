@@ -230,7 +230,11 @@ def normalize_result(result: Any, *, session_id: str) -> SimulationStartResult:
     metrics = body.get("metrics")
     if not isinstance(metrics, dict):
         metrics = {}
-    truncated = bool(body.get("truncated", False))
+    # A runner may report truncation through either field; both must agree
+    # before the result reaches the summary and the reward committer.
+    truncated = bool(body.get("truncated", False)) or (
+        str(body.get("status") or "").strip().lower() == "truncated"
+    )
     reward = body.get("total_reward")
     return SimulationStartResult(
         session_id=str(session_id),

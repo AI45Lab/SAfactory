@@ -280,11 +280,12 @@ class SimulationWorkerGroup:
                 with trace.span("agent_rollout"):
                     result = await self._run_one_episode(lease, session, request, worker_id)
                 metrics = result.metrics if isinstance(result.metrics, dict) else {}
-                if result.truncated or str(metrics.get("timeout_layer") or "") in {
-                    "docker_exec",
-                    "sandbox_command",
-                    "rjob_wait_terminal",
-                }:
+                if (
+                    result.truncated
+                    or str(result.status or "").strip().lower() == "truncated"
+                    or str(metrics.get("timeout_layer") or "")
+                    in {"docker_exec", "sandbox_command", "rjob_wait_terminal"}
+                ):
                     result.status = "truncated"
                     result.truncated = True
                 trace.update_context(
