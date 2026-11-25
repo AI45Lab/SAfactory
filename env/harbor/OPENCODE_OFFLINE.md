@@ -13,7 +13,7 @@ OpenCode 离线挂载功能允许在 Harbor 运行环境中使用预先准备的
 ```yaml
 environments:
   - env_name: harbor
-    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:safactory-harbor-runtime-v0.25.0
+    env_image: registry.h.pjlab.org.cn/ailab-evobox-evobox_cpu/benches:safactory-harbor-runtime-v0.25.0-opencode-mount
     env_num: 1
     dataset: ./datasets/your_tasks.jsonl
     dataset_load_mode: eager
