@@ -493,6 +493,10 @@ class NestedDocker:
                     f"nested dockerd exited during startup; see {spec.dockerd_log_path}"
                 )
             try:
+                # `docker info --format` exits 0 and prints the connection error
+                # when the daemon is unreachable (Docker 26), so it cannot gate
+                # readiness. `docker version` exits non-zero in that case.
+                _docker(self.env, "version", "--format", "{{.Server.Version}}", timeout=5)
                 driver = _docker(self.env, "info", "--format", "{{.Driver}}", timeout=5)
                 if not driver:
                     raise RuntimeError("Docker daemon returned an empty storage driver")
