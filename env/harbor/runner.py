@@ -1330,7 +1330,9 @@ def parse_harbor_result(
     return _result(
         spec.session_id,
         status=status,
-        reward=reward if status == "succeeded" else None,
+        # A truncated episode keeps its valid verifier reward; is_truncated
+        # distinguishes it downstream (issue #127). Failed episodes stay null.
+        reward=reward if status in {"succeeded", "truncated"} else None,
         timed_out=status == "truncated",
         errors=fatal_errors,
         warnings=warnings,

@@ -316,7 +316,7 @@ class SimulationWorkerGroup:
                     release_reusable = False
                 elif completion_mode == "abort":
                     release_reusable = False
-                elif result.truncated:
+                elif result.truncated and not evaluation_requested:
                     if self.reward_committer is None:
                         raise RuntimeError("reward committer is required for truncated sessions")
                     with trace.span("reward_commit_truncated"):
@@ -370,6 +370,11 @@ class SimulationWorkerGroup:
                             eval_score=eval_result.normalized_score_10,
                         )
                         if eval_result.status == "succeeded":
+                            if result.truncated:
+                                # Score the verifier result but keep is_truncated=True.
+                                eval_result = replace(
+                                    eval_result, status=EvalStatus.TRUNCATED.value
+                                )
                             with trace.span("reward_commit"):
                                 await self.reward_committer.commit(
                                     session_id=result.session_id,

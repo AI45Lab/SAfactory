@@ -38,7 +38,7 @@ async def evaluate_rule(
         "grade": metrics.get("grade"),
     }
 
-    if getattr(start_result, "status", None) != "succeeded":
+    if getattr(start_result, "status", None) not in {"succeeded", "truncated"}:
         return EvalResult.failed(
             session_id=request.session_id,
             eval_id=spec.eval_id,
