@@ -27,7 +27,7 @@ HARBOR_BIN = "/opt/harbor-env/bin/harbor"
 # a new passthrough option is a template edit, not a runner change.
 TEMPLATE_ENV = "SAFACTORY_HARBOR_TEMPLATE"
 TEMPLATE_SUBDIR = "templates"
-DEFAULT_TEMPLATE_NAME = "harbor_config.yaml"
+DEFAULT_TEMPLATE_NAME = "harbor_template.yaml"
 # env_params keys that used to become `harbor run` flags. They now belong to
 # the job template; keeping them accepted would silently configure nothing.
 RETIRED_AGENT_PARAMS = frozenset(

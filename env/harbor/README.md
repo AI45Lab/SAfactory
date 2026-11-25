@@ -22,6 +22,8 @@ runner 按 `dataset.task_id` 在 `bundle_root` 下按约定定位 task 目录，
 | [runner.py](runner.py) | 解析 request、定位 bundle 任务、准备 nested Docker、委派镜像加载、渲染 job 模板并运行 Harbor、按证据定状态与 reward |
 | [rule_evaluator.py](rule_evaluator.py) | 校验 Harbor 原生 reward 并归一化到 SAfactory 0–10，透传 `[GRADE]` 判分项 |
 | [templates/](templates/) | Harbor job 模板：agent、model、`kwargs`、`env`、`mounts`、超时倍数（静态部分）。每个批次一份 |
+| [templates/harbor_template.yaml](templates/harbor_template.yaml) | 通用 Harbor job 模板（RJob / Docker 模式），也是未指定 `harbor_template` 时的默认模板 |
+| [templates/harbor_template.sandbox.yaml](templates/harbor_template.sandbox.yaml) | 通用 Harbor job 模板（Sandbox 模式，agent binary 从 `/sandbox-data` 挂载） |
 | [templates/verify_harbor_run.sh](templates/verify_harbor_run.sh) | 不含 SAfactory 框架的复现脚本，执行同一条 `harbor run -c` |
 | `*_config.rjob.yaml` | dataset、bundle、`harbor_template` 和 runner 参数（`env_params`） |
 | `*_start.rjob.yaml` | RJob 资源、挂载、容器环境、runner 注入和模板投递（`embedded_files`） |
@@ -74,7 +76,7 @@ flatten 都由脚本处理）。runner 只把它们接到本 episode 的 dockerd
 | `shared_images_subdir` | 共享镜像归档子目录，默认 `_runtime`（部分 bundle 用 `shared-images`）；仅 legacy 模式使用 |
 | `image_load_mode` | `legacy`（默认，两个 loader）或 `task`（只调用 `bin/load_image.py`），见 §3 |
 | `runtime_env` | 透传给 Harbor 进程的公开环境变量；禁止覆盖模型凭据、`PATH`/`HOME`/`BASH_ENV`/`ENV`，以及 `DOCKER_`/`SAFACTORY_`/`LD_`/`PYTHON` 前缀；`HARBOR_*` 允许 |
-| `harbor_template` | Harbor job 模板的绝对路径；缺省时按 `SAFACTORY_HARBOR_TEMPLATE` → `runner.py` 同级 `templates/harbor_config.yaml` → `/opt/safactory-harbor/templates/harbor_config.yaml` 查找 |
+| `harbor_template` | Harbor job 模板的绝对路径；缺省时按 `SAFACTORY_HARBOR_TEMPLATE` → `runner.py` 同级 `templates/harbor_template.yaml` → `/opt/safactory-harbor/templates/harbor_template.yaml` 查找 |
 | `reward_key` | verifier reward 字段名，默认 `reward` |
 | `timeout_s` | Harbor 超时，默认 900，必须为正 |
 
