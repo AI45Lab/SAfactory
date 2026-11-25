@@ -19,10 +19,14 @@ runner 按 `dataset.task_id` 在 `bundle_root` 下按约定定位 task 目录，
 
 | 文件 | 职责 |
 | --- | --- |
-| [runner.py](runner.py) | 解析 request、定位 bundle 任务、准备 nested Docker、委派镜像加载、构造 Harbor 命令、转换结果 |
-| [rule_evaluator.py](rule_evaluator.py) | 校验 Harbor 原生 reward 并归一化到 SAfactory 0–10 |
-| `*_config.rjob.yaml` | dataset、bundle、Agent、模型和 runner 参数（`env_params`） |
-| `*_start.rjob.yaml` | RJob 资源、挂载、容器环境和 runner 注入 |
+| [runner.py](runner.py) | 解析 request、定位 bundle 任务、准备 nested Docker、委派镜像加载、渲染 job 模板并运行 Harbor、按证据定状态与 reward |
+| [rule_evaluator.py](rule_evaluator.py) | 校验 Harbor 原生 reward 并归一化到 SAfactory 0–10，透传 `[GRADE]` 判分项 |
+| [templates/](templates/) | Harbor job 模板：agent、model、`kwargs`、`env`、`mounts`、超时倍数（静态部分）。每个批次一份 |
+| [templates/harbor_template.yaml](templates/harbor_template.yaml) | 通用 Harbor job 模板（RJob / Docker 模式），也是未指定 `harbor_template` 时的默认模板 |
+| [templates/harbor_template.sandbox.yaml](templates/harbor_template.sandbox.yaml) | 通用 Harbor job 模板（Sandbox 模式，agent binary 从 `/sandbox-data` 挂载） |
+| [templates/verify_harbor_run.sh](templates/verify_harbor_run.sh) | 不含 SAfactory 框架的复现脚本，执行同一条 `harbor run -c` |
+| `*_config.rjob.yaml` | dataset、bundle、`harbor_template` 和 runner 参数（`env_params`） |
+| `*_start.rjob.yaml` | RJob 资源、挂载、容器环境、runner 注入和模板投递（`embedded_files`） |
 
 ## 3. 自描述 bundle 与任务定位
 
@@ -72,80 +76,93 @@ flatten 都由脚本处理）。runner 只把它们接到本 episode 的 dockerd
 | `shared_images_subdir` | 共享镜像归档子目录，默认 `_runtime`（部分 bundle 用 `shared-images`）；仅 legacy 模式使用 |
 | `image_load_mode` | `legacy`（默认，两个 loader）或 `task`（只调用 `bin/load_image.py`），见 §3 |
 | `runtime_env` | 透传给 Harbor 进程的公开环境变量；禁止覆盖模型凭据、`PATH`/`HOME`/`BASH_ENV`/`ENV`，以及 `DOCKER_`/`SAFACTORY_`/`LD_`/`PYTHON` 前缀；`HARBOR_*` 允许 |
-| `agent` | Harbor agent 名，默认 `oracle`；`oracle` / `nop` 忽略 `model` |
-| `agent_import_path` | 自定义 agent 导入路径，替代 `--agent` 的值 |
-| `model` | 模型名，缺省时取 request 的 `model` |
-| `reasoning_effort` | 推理强度 |
-| `agent_runtime` | `{source, version}`，将固定 Agent binary 只读挂到 Task 内 |
-| `codex_config_dir` | 仅 `agent: codex`；绝对路径目录，必须包含 `config.toml` |
-| `capture_http` | `true` 时传 `--ak capture_http=true` |
-| `agent_env` | 透传给 Task Agent 的环境变量（经 Harbor `--ae`） |
+| `harbor_template` | Harbor job 模板的绝对路径；缺省时按 `SAFACTORY_HARBOR_TEMPLATE` → `runner.py` 同级 `templates/harbor_template.yaml` → `/opt/safactory-harbor/templates/harbor_template.yaml` 查找 |
 | `reward_key` | verifier reward 字段名，默认 `reward` |
 | `timeout_s` | Harbor 超时，默认 900，必须为正 |
 
+Agent 相关参数（`agent`、`agent_import_path`、`model`、`reasoning_effort`、
+`capture_http`、`agent_runtime`、`codex_config_dir`、`agent_env`、
+`agent_timeout_multiplier`）已从 `env_params` 移除，改由 job 模板声明。runner 仍收到
+这些键时会直接报错，而不是静默忽略。
+
 ## 5. Harbor 命令
 
-runner 执行的命令骨架（大写变量为运行时值）：
+Runner 只做两件事：渲染模板、执行 `-c`。
 
 ```bash
 /opt/harbor-env/bin/harbor run \
-  --path "$TASK_PATH" \
-  --agent "$AGENT_OR_IMPORT_PATH" \
-  [可选参数] \
-  --env docker --n-attempts 1 --n-concurrent 1 \
-  --jobs-dir "$EPISODE_DIR/harbor/jobs" \
-  --job-name "$HARBOR_JOB_NAME" \
-  --yes --quiet
+  -c "$EPISODE_DIR/harbor/harbor-config.yaml" \
+  --yes
 ```
 
-可选参数按下表顺序插入：
+- 模板见 [templates/](templates/)，只有三个会话相关的占位符会被替换：
+  `{{task_path}}`、`{{job_name}}`、`{{gateway_url}}`。其余内容（agent、model、
+  `kwargs`、`env`、`mounts`、超时倍数）全部静态写在模板里，因此新增透传项只需改
+  模板，不需要改 Runner。
+- 模板由启动配置投递到 `/opt/safactory-harbor/templates/`（RJob 用
+  `rjob.embedded_files`，Sandbox 用 `sandbox.embedded_files`），并用
+  `SAFACTORY_HARBOR_TEMPLATE` 指明文件名。
+- `jobs_dir` 在模板里写成相对路径 `harbor/jobs`：runner 把 Harbor 的 cwd 设为
+  episode 目录，所以 job 仍然落在 `<episode>/harbor/jobs/`。
+- `--yes` 只用于跳过 Harbor 的 host environment access 确认，与 `-c` 不冲突。
+- **不能**再传 `--agent`：Harbor 一旦收到 `--agent` 会清空配置里的整个 `agents`
+  列表（`harbor/cli/jobs.py` 中 `config["agents"] = []`），模板内容随之失效。
+- `agents[].override_timeout_sec` 没有对应的 `harbor run` flag（只有 `trials` /
+  `exec` 子命令有 `--agent-timeout`），这也是必须走配置的原因之一。
+- 已用运行镜像的 Harbor 0.23.0 对全部模板跑过 `harbor run --print-config -c`，
+  确认 `override_timeout_sec`、`environment.mounts[].read_only`、`tasks[].path`
+  均能通过校验。
 
-| 条件 | 传入 Harbor 的参数 |
-| --- | --- |
-| 非 oracle/nop 且 model 非空 | `--model MODEL` |
-| 非 OpenCode 设置推理强度 | `--ak reasoning_effort=VALUE` |
-| OpenCode 设置推理强度 | `--ak opencode_config=JSON`，设置 `small_model` 和模型级 `options.reasoningEffort` |
-| 设置 `agent_runtime` | `--ak version=VERSION`；binary 只读挂到 `/usr/local/bin/codex`（codex）、`/usr/local/bin/claude`（claude-code），其他 agent 为 `/usr/local/bin/agent` |
-| 设置 `codex_config_dir` | `--ak config=DIR/config.toml`；DIR 只读挂到 `/opt/safactory-codex-config` |
-| 有任一挂载 | 上面两类挂载合并为一个 `--mounts JSON` 列表 |
-| `capture_http: true` | `--ak capture_http=true` |
-| 设置 `agent_env` | 按变量名排序，逐项 `--ae KEY=VALUE` |
+单独验证同一条命令：`templates/verify_harbor_run.sh` 不含任何 SAfactory 框架代码，
+只做与 Runner 相同的渲染与执行，可直接交给沙箱团队复现。
 
 挂载约束（依据 Harbor 上游 `ServiceVolumeConfig` 与 adapter 安装逻辑）：
 
-- `--mounts` 中每项的 `read_only` 只能省略或为 `true`：schema 类型是
+- `environment.mounts` 每项的 `read_only` 只能省略或为 `true`：schema 类型是
   `Literal[True]`，写 `false` 会校验失败。target 为文件的 bind 必须为 `true`，
   否则 Harbor 在 `compose up` 后对可写挂载执行 `mkdir -p`，破坏文件路径。
-  runner 生成的挂载固定为 `read_only: true`。
-- `agent_runtime.version` 必须与挂载 binary 自报的版本（`claude --version` /
+- `agents[].kwargs.version` 必须与挂载 binary 自报的版本（`claude --version` /
   `codex --version` 中的 `x.y.z`）完全一致。一致时 adapter 跳过安装；不一致时会
   联网安装 CLI，RJob 无公网时安装失败；安装成功的 `$HOME/.local/bin/claude` 还会因
   PATH 前置而遮蔽挂载的 `/usr/local/bin/claude`。版本号写成带引号的三段式字符串，
   例如 `"2.1.228"`。
 
-Gateway 连接通过环境变量传给 Harbor：`claude-code` 使用 `ANTHROPIC_*`，`codex` /
-`opencode` 使用 `OPENAI_*`，`openhands` 使用 `LLM_*`；`*_BASE_URL` 为本 session 的
-Gateway URL，`*_API_KEY=EMPTY`。继承的同名模型凭据会先被清除。Gateway URL 依次取
+Gateway 连接：模板的 `agents[].env` 里 `ANTHROPIC_BASE_URL` 由 `{{gateway_url}}`
+渲染；`ANTHROPIC_API_KEY` 写成 `"${ANTHROPIC_API_KEY:-EMPTY}"`，由 Harbor 从进程环境
+解析，默认 `EMPTY`。runner 同时把 `*_BASE_URL` / `*_API_KEY` 放进 Harbor 进程环境
+（`model_connection_env`），前缀按模板声明的 agent 选择：`claude-code` 用
+`ANTHROPIC_*`，`codex` / `opencode` 用 `OPENAI_*`，`openhands` 用 `LLM_*`。继承的
+同名模型凭据会先被清除。Gateway URL 依次取
 `SAFACTORY_GATEWAY_SESSION_URL_CONTAINER`、`SAFACTORY_GATEWAY_SESSION_URL`，再回退到
 `gateway_base_url/session_id`。
 
 ## 6. Codex 配置目录
 
-`codex_config_dir` 用于给 Codex 提供基础 `config.toml` 及其引用的附属文件（例如模型
-目录 JSON）：
+Codex 的基础 `config.toml` 及其附属文件（例如模型目录 JSON）在模板里声明：
 
 ```yaml
-env_params:
-  agent: codex
-  codex_config_dir: /abs/path/to/codex-config   # 包含 config.toml
+agents:
+  - name: codex
+    kwargs:
+      config: /opt/safactory-codex-config/config.toml
 ```
 
-- Harbor 在宿主侧读取 `DIR/config.toml`，合并本 session 的 `OPENAI_BASE_URL`，写入
+模板同时需要把源目录只读挂到该 target：
+
+```yaml
+environment:
+  mounts:
+    - type: bind
+      source: /abs/path/to/codex-config
+      target: /opt/safactory-codex-config
+      read_only: true
+```
+
+- Harbor 在宿主侧读取该 `config.toml`，合并本 session 的 `OPENAI_BASE_URL`，写入
   Task 内可写的 `CODEX_HOME`；源目录只读挂载，不作为 `CODEX_HOME`。
 - `config.toml` 中引用附属文件时，使用 Task 内路径
   `/opt/safactory-codex-config/<file>`。
 - 该目录必须在 RJob 内可见：start YAML 需将对应 GPFS 路径挂入 RJob 的同一路径。
-- 非 `codex` agent、相对路径或缺少 `config.toml` 时，runner 在启动 Harbor 前失败。
 
 ## 7. 运行环境前提
 
@@ -160,9 +177,96 @@ env_params:
 - `SAFACTORY_RESULT_PATH`：SimulationStartResult JSON；stdout 同时打印
   `SAFACTORY_RESULT_JSON <json>`。
 - `<episode>/infra/`：`preparation.json`、`dockerd.log`、`image-load.log`。
-- `<episode>/harbor/`：`harbor-run.log` 和 Harbor job 目录（`jobs/<job-name>/`）。
-- reward 取 Harbor trial 的 `verifier_result.rewards[reward_key]`，由
-  [rule_evaluator.py](rule_evaluator.py) 归一化到 `[0, 10]`。
+- `<episode>/harbor/`：`harbor-config.yaml`（本次渲染的 job 配置）、`harbor-run.log`
+  和 Harbor job 目录（`jobs/<job-name>/`）。
+
+### 8.1 状态与 reward
+
+`status` 只取三个值，含义固定（判定表见下方）：
+
+| status | 含义 | `total_reward` |
+| --- | --- | --- |
+| `succeeded` | 沙箱启动、agent 运行、verifier 判分、reward 写出四步全部正常完成 | verifier reward（[0,1]） |
+| `truncated` | agent 已开始运行，之后被时限或轮次上限截断 | `null` |
+| `failed` | 其他所有情况（含判分未产出有效 reward、agent 因 API 错误中断） | `null` |
+
+要点：
+
+- **任何一层的返回码都不是状态依据**：`harbor run` 对 trial 失败恒返回 0，test.sh
+  的退出码 Harbor 不读取，runner 进程恒返回 0。
+- **有效 reward 由 runner 直接读文件判断**，不只看 trial 的 `verifier_result`：
+  要求 `verifier.started_at` 非空、`reward.json`（优先）或 `reward.txt` 存在、文件
+  mtime 不早于 `verifier.started_at`（排除 agent 预先写入的旧文件）、内容按 Harbor
+  规则可解析、值在 `[0,1]` 内。任一不满足即 `harbor_reward=null`、
+  `termination=verifier_failed`、`failure_stage=verifier`。**不写 0 分顶替。**
+  解析规则与 Harbor 0.25 一致：`reward.json` 必须是对象且所有值为有限数，
+  `reward.txt` 只能是一个有限浮点数且固定只提供 `reward` 键（配了自定义
+  `reward_key` 的任务不能用 txt 交分）；空文件、非 UTF-8、标量 JSON 都按
+  `verifier_failed` 记，不会冒成 `prepare_failed`。
+- `0` 分只表示「agent 做了但没做对」；判分无法完成记 `failed`。
+- 判定顺序（命中第一条即停）：
+
+  | 序号 | 条件 | status | termination | failure_stage |
+  | --- | --- | --- | --- | --- |
+  | R1 | runner 准备阶段异常 | failed | `prepare_failed` | `prepare` |
+  | R2 | runner 时限触发，agent 已开始 | truncated | `runner_timeout` | — |
+  | R3 | runner 时限触发，agent 未开始 | failed | `runner_timeout` | 停留的阶段 |
+  | R4 | 无 trial 目录或无 trial result | failed | `harbor_error` | `harbor_start` |
+  | R5 | `environment_setup` 未结束 | failed | `env_failed` | `environment` |
+  | R6 | `agent_setup` 未结束或 agent 未开始 | failed | `agent_setup_failed` | `agent_setup` |
+  | R6b | `exception_info` 属于 verifier 异常类型，或 verifier 已开始但未结束 | failed | `verifier_failed` | `verifier` |
+  | R7 | agent 结束记录为 `completed` | 进 R11 | — | — |
+  | R8 | `max_turns` | truncated | `max_turns` | — |
+  | R9 | `exception_type=AgentTimeoutError` | truncated | `agent_timeout` | — |
+  | R10a | 有解析器的 agent 结束原因是 `api_error` | failed | `api_error` | `agent` |
+  | R10b | agent 日志无结论且 Harbor 未记异常 | 进 R11 | — | — |
+  | R10c | 其余 agent 阶段异常 | failed | `agent_error` | `agent` |
+  | R11 | reward 有效 | succeeded | `completed` | — |
+  | R12 | 其余 | failed | `verifier_failed` | `verifier` |
+
+- **R7 先于 R9**：agent 已正常结束、只是进程晚于时限退出，按 succeeded 处理，
+  `AgentTimeoutError` 记入 `harbor_warnings`。
+- **API 错误只在未截断时生效**（R8/R9 先于 R10a）。运行中报错但重试后正常完成的任务
+  由 R7 先命中，尾部重试痕迹只记 `agent_exit.retrying_at_end` 供统计。
+- `harbor_fatal_errors` **非空当且仅当 `status=failed`**（`rule_evaluator.py` 以它为空
+  作为计分前提）；succeeded / truncated 中的 Harbor 异常进 `harbor_warnings`。
+
+### 8.2 agent 结束原因
+
+`<trial>/agent/claude-code.txt`（或 `codex.txt`）是 stream-json 全量输出，长任务可达
+数十 MB，因此只读末尾 64 KiB 内的最后 20 个非空行：
+
+- **claude-code**：窗口内最后一条 `type=result` 记录。以 `terminal_reason` 为准
+  （`completed` / `max_turns` / `api_error` / `other:<值>`），`subtype=error_max_turns`
+  作后备；记录没有 `terminal_reason` 字段时（旧版 Claude Code），`subtype=success`
+  且 `is_error` 非 true 视为 `completed`，其余记 `other:<subtype>`。API 错误时
+  `subtype` 仍是 `success`，只看它必然误判。错误文本同时查
+  `result` 字段与 `message.model="<synthetic>"` 的 assistant 记录，按
+  `API Error:` 归类为 `model_unavailable` / `connection` / `rate_limit` /
+  `session_closed` / `quota` / `server_error` / `other`，仅用于统计。
+- **codex**：`turn.completed` → `completed`；`turn.failed` / `error` →
+  `api_error`（如 `exceeded retry limit, last status: 429` 归为 `rate_limit`）。
+- 没有解析器的 agent（如 `opencode`，日志 `opencode.txt`）记 `reason=unknown,
+  parser=null`，日志存在时仍填 `source`，作为 agent 阶段已开始的证据（R2/R3）；
+  状态按 R10b/R10c 回退到 Harbor 的 `exception_info`；解析器内部任何异常都捕获为 `unknown` 并记入
+  `harbor_warnings`，不影响 episode 正常写出。
+- Harbor 0.23.0 的 `exception_type` 是对 agent 全量 stdout 做正则首命中，业务文本会被
+  误分类为 `ApiRateLimitError`/`UnknownApiError`，所以 `exception_type` 只记录，不参与
+  判定（例外是 R9 的 `AgentTimeoutError`，它来自 Harbor 自己的计时）。
+
+### 8.3 细粒度判分项 `[GRADE]`
+
+任务侧按沙箱规范逐项打印 `[GRADE] check=... status=... score=... msg=...` 与
+`[GRADE] summary reward=...`。runner 解析 `<trial>/verifier/test-stdout.txt`，写入
+`metrics.grade = {checks: [{check,status,score,msg}], summary, errors, source}`；没有
+`[GRADE]` 行时为 `null`。`rule_evaluator.py` 把它放进 `EvalResult.artifacts.grade`，
+`evaluator/reward_committer.py` 再写成 `meta_json.eval.grade`（与 `eval.status`、
+`normalized_score_10`、`result` 同级）。
+
+`metrics` 还带 `termination`、`failure_stage`、`agent_exit`、`harbor_exception`、
+`stage_timing`、`evidence{trial_result,agent_log,verifier_stdout,reward_file}`，便于从
+结果库回查文件。
+
 - 超时：向 Harbor 发 SIGTERM，最多等待 30s 让取消写入稳定，结果标记 `truncated`。
 
 ## 9. runner.py workflow
@@ -177,9 +281,8 @@ runner 以 `/opt/harbor-env/bin/python runner.py` 在 RJob 容器内作为 episo
    失败也能带上身份信息。
 3. **解析 RunSpec** —— `resolve_run_spec()` 把 `env_params` 规整成一个 `RunSpec`：
    `resolve_task_record()` 按约定定位 task 目录（见 §3），解析 Gateway URL（§5）、
-   `agent`/`model`/`reasoning_effort`、挂载（`agent_runtime`/`codex_config_dir`）、
-   `agent_env`、`runtime_env`、`reward_key`、`timeout_s`，并算出 episode 目录、
-   Harbor `jobs` 根和 job 名。
+   `harbor_template`、`runtime_env`、`reward_key`、`timeout_s`，并算出 episode 目录、
+   Harbor `jobs` 根和 job 名。请求里若还带着已迁移到模板的 agent 参数，直接报错。
 4. **校验 task** —— 建 `episode_dir`，`validate_task_record()` 检查 task 目录存在且
    含 `task.toml`、`instruction.md`、`tests/test.sh` 和 `environment/`，缺任一项即失败，
    不启动 dockerd。
@@ -194,19 +297,22 @@ runner 以 `/opt/harbor-env/bin/python runner.py` 在 RJob 容器内作为 episo
    归档格式，镜像加载由 bundle 脚本负责（见 §3）。
 7. **写准备回执** —— `infra/preparation.json` 记 `status=prepared` 及 task 身份、路径，
    作为“已进入 Harbor 前”的落点。
-8. **运行 Harbor** —— `run_harbor()` 用 daemon env 叠加 `model_connection_env()`
+8. **运行 Harbor** —— `run_harbor()` 先 `render_job_template()` 把模板渲染成
+   `<episode>/harbor/harbor-config.yaml`，再用 `rendered_template_agent()` 回读
+   `agents[0].name` 决定凭据前缀；随后用 daemon env 叠加 `model_connection_env()`
    （`*_BASE_URL`=Gateway、`*_API_KEY=EMPTY`）和 `runtime_env`，`Popen` 执行
-   `harbor_command()`（§5），`wait(timeout_s)`。超时则对进程组发 SIGTERM，返回码记
-   `124` 并标记 `timed_out`。Harbor 日志写 `harbor/harbor-run.log`。
+   `harbor_command(config_path)`（§5），`wait(timeout_s)`。超时则对进程组发 SIGTERM，
+   返回码记 `124` 并标记 `timed_out`。Harbor 日志写 `harbor/harbor-run.log`。
 9. **取消收尾（仅超时）** —— `wait_for_cancellation_cleanup()` 最多轮询 `30s`，等
    `result.json`、trajectory 和 `manifest.json` 的大小/mtime 连续两次不变，确保 Harbor
    的异步取消写入稳定后再解析。
-10. **解析结果** —— `parse_harbor_result()` 读 job `result.json` 和唯一 trial
-    `result.json`，取 `verifier_result.rewards[reward_key]` 作 reward，收集 trial 与各
-    step 的 `exception_info` 为 `fatal_errors`，据此定 `status`：超时为 `truncated`、
-    无致命错误且有数值 reward 为 `succeeded`、否则 `failed`（失败/超时 reward 记 0）。
-11. **异常兜底与清理** —— 任一步抛异常走 `_failure()`，带上已知 `task_id` 和 `timed_out`；
-    `finally` 里 `nested.cleanup()` 停 Harbor 与 dockerd。
+10. **解析结果** —— `parse_harbor_result()` 按 §8.1 的 R1–R12 判定表定 `status`：
+    trial 目录按目录发现（超时被杀时 `result.json` 可能没落盘），agent 结束原因由
+    §8.2 的解析器从尾部窗口得出，reward 由 §8.1 的五项检查从 reward 文件本身得出，
+    `[GRADE]` 由 §8.3 从 `test-stdout.txt` 解析。`total_reward` 仅 succeeded 有值。
+11. **异常兜底与清理** —— 任一步抛异常走 `_failure()`（`termination=prepare_failed`、
+    `total_reward=null`），带上已知 `task_id` 和 `timed_out`；`finally` 里
+    `nested.cleanup()` 停 Harbor 与 dockerd。
 12. **落盘与打印** —— 把结果写到 `SAFACTORY_RESULT_PATH`（原子替换），并在 stdout 打印
     `SAFACTORY_RESULT_JSON <json>` 供 launcher 回退解析。`main()` 恒返回 0，成败由结果
     JSON 的 `status` 表达。

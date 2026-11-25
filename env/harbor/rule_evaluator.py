@@ -27,7 +27,15 @@ async def evaluate_rule(
         "task_id": metrics.get("task_id"),
         "harbor_reward": metrics.get("harbor_reward"),
         "harbor_fatal_errors": metrics.get("harbor_fatal_errors"),
+        "harbor_warnings": metrics.get("harbor_warnings"),
+        "termination": metrics.get("termination"),
+        "failure_stage": metrics.get("failure_stage"),
+        "agent_exit": metrics.get("agent_exit"),
         "total_reward": getattr(start_result, "total_reward", None),
+        # Per-check results parsed from the verifier's [GRADE] lines. Surfaced
+        # through artifacts so the reward committer can persist them into
+        # meta_json.eval.grade without the runner writing meta_json itself.
+        "grade": metrics.get("grade"),
     }
 
     if getattr(start_result, "status", None) != "succeeded":

@@ -1,0 +1,64 @@
+# 三个占位符由外部替换：{{task_path}} {{job_name}} {{gateway_url}}
+# jobs_dir 是相对路径，需在配置所在目录的父级（工作目录）下运行 Harbor。
+
+job_name: {{job_name}}
+jobs_dir: harbor/jobs
+
+n_attempts: 1
+n_concurrent_trials: 1
+quiet: true
+
+# 阶段超时倍数，按需启用。
+# agent_timeout_multiplier: 2.0
+# verifier_timeout_multiplier: 2.0
+# agent_setup_timeout_multiplier: 2.0
+# environment_build_timeout_multiplier: 2.0
+# timeout_multiplier: 1.0
+
+environment:
+  type: docker
+  delete: true
+
+  # Agent 容器挂载。read_only 只能省略或为 true，否则 Harbor 会对文件目标
+  # 执行 mkdir -p，破坏挂载。
+  mounts:
+    - type: bind
+      source: /sandbox-data/harbor/test100/bin/claude
+      target: /usr/local/bin/claude
+      read_only: true
+
+agents:
+  - name: claude-code
+    model_name: GLM-5.3-W4A8C8
+    # 覆盖 task.toml 里的 agent 超时（秒）。
+    override_timeout_sec: 7200
+
+    kwargs:
+      reasoning_effort: max
+      # 必须与所挂载 binary 的版本一致，否则适配器会尝试联网安装。
+      version: "2.1.207"
+
+    env:
+      ANTHROPIC_BASE_URL: {{gateway_url}}
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-EMPTY}"
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: "128000"
+      MAX_THINKING_TOKENS: "127998"
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: "233000"
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      DISABLE_AUTOUPDATER: "1"
+      API_TIMEOUT_MS: "200000000"
+      CLAUDE_CODE_EAGER_FLUSH: "1"
+      CLAUDE_CODE_ATTRIBUTION_HEADER: "0"
+      IS_SANDBOX: "1"
+      CLAUDE_ENABLE_STREAM_WATCHDOG: "0"
+      CLAUDE_STREAM_IDLE_TIMEOUT_MS: "200000000"
+      CLAUDE_CODE_MAX_TURNS: "300"
+      CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: "1"
+      PIP_INDEX_URL: "http://mirrors.i.h.pjlab.org.cn/pypi/simple/"
+      PIP_EXTRA_INDEX_URL: "http://pypi.i.h.pjlab.org.cn/brain/dev/+simple"
+      PIP_TRUSTED_HOST: "mirrors.i.h.pjlab.org.cn pypi.i.h.pjlab.org.cn"
+      NO_PROXY: "100.96.0.0/12,127.0.0.1,localhost"
+      no_proxy: "100.96.0.0/12,127.0.0.1,localhost"
+
+tasks:
+  - path: {{task_path}}

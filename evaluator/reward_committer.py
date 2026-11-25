@@ -312,18 +312,27 @@ class RewardCommitter:
         return rows, target
 
     def _build_reward_metadata(self, *, session_id: str, eval_result: EvalResult) -> str:
-        return json.dumps(
-            {
-                "eval": {
-                    "session_id": session_id,
-                    "status": eval_result.status,
-                    "normalized_score_10": eval_result.normalized_score_10,
-                    "reason": eval_result.reason,
-                    "result": to_jsonable(eval_result),
-                }
-            },
-            ensure_ascii=False,
-        )
+        artifacts = eval_result.artifacts if isinstance(eval_result.artifacts, dict) else {}
+        # The rule evaluator exposes [GRADE] per-check results at
+        # artifacts.grade; the truncated path in simulation_worker passes only
+        # artifacts.metrics, so fall back to the raw runner metrics.
+        grade = artifacts.get("grade")
+        if grade is None:
+            metrics = artifacts.get("metrics")
+            if isinstance(metrics, dict):
+                grade = metrics.get("grade")
+        payload = {
+            "eval": {
+                "session_id": session_id,
+                "status": eval_result.status,
+                "normalized_score_10": eval_result.normalized_score_10,
+                "reason": eval_result.reason,
+                "result": to_jsonable(eval_result),
+            }
+        }
+        if grade is not None:
+            payload["eval"]["grade"] = to_jsonable(grade)
+        return json.dumps(payload, ensure_ascii=False)
 
 
 def _merge_meta_json(existing: Any, new_metadata: str) -> str:
