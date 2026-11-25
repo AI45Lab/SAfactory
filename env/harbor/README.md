@@ -199,6 +199,10 @@ environment:
   mtime 不早于 `verifier.started_at`（排除 agent 预先写入的旧文件）、内容按 Harbor
   规则可解析、值在 `[0,1]` 内。任一不满足即 `harbor_reward=null`、
   `termination=verifier_failed`、`failure_stage=verifier`。**不写 0 分顶替。**
+  解析规则与 Harbor 0.25 一致：`reward.json` 必须是对象且所有值为有限数，
+  `reward.txt` 只能是一个有限浮点数且固定只提供 `reward` 键（配了自定义
+  `reward_key` 的任务不能用 txt 交分）；空文件、非 UTF-8、标量 JSON 都按
+  `verifier_failed` 记，不会冒成 `prepare_failed`。
 - `0` 分只表示「agent 做了但没做对」；判分无法完成记 `failed`。
 - 判定顺序（命中第一条即停）：
 
@@ -210,11 +214,12 @@ environment:
   | R4 | 无 trial 目录或无 trial result | failed | `harbor_error` | `harbor_start` |
   | R5 | `environment_setup` 未结束 | failed | `env_failed` | `environment` |
   | R6 | `agent_setup` 未结束或 agent 未开始 | failed | `agent_setup_failed` | `agent_setup` |
+  | R6b | `exception_info` 属于 verifier 异常类型，或 verifier 已开始但未结束 | failed | `verifier_failed` | `verifier` |
   | R7 | agent 结束记录为 `completed` | 进 R11 | — | — |
   | R8 | `max_turns` | truncated | `max_turns` | — |
   | R9 | `exception_type=AgentTimeoutError` | truncated | `agent_timeout` | — |
   | R10a | 有解析器的 agent 结束原因是 `api_error` | failed | `api_error` | `agent` |
-  | R10b | 无解析器且无 agent 阶段异常 | 进 R11 | — | — |
+  | R10b | agent 日志无结论且 Harbor 未记异常 | 进 R11 | — | — |
   | R10c | 其余 agent 阶段异常 | failed | `agent_error` | `agent` |
   | R11 | reward 有效 | succeeded | `completed` | — |
   | R12 | 其余 | failed | `verifier_failed` | `verifier` |
@@ -233,14 +238,17 @@ environment:
 
 - **claude-code**：窗口内最后一条 `type=result` 记录。以 `terminal_reason` 为准
   （`completed` / `max_turns` / `api_error` / `other:<值>`），`subtype=error_max_turns`
-  作后备；API 错误时 `subtype` 仍是 `success`，只看它必然误判。错误文本同时查
+  作后备；记录没有 `terminal_reason` 字段时（旧版 Claude Code），`subtype=success`
+  且 `is_error` 非 true 视为 `completed`，其余记 `other:<subtype>`。API 错误时
+  `subtype` 仍是 `success`，只看它必然误判。错误文本同时查
   `result` 字段与 `message.model="<synthetic>"` 的 assistant 记录，按
   `API Error:` 归类为 `model_unavailable` / `connection` / `rate_limit` /
   `session_closed` / `quota` / `server_error` / `other`，仅用于统计。
 - **codex**：`turn.completed` → `completed`；`turn.failed` / `error` →
   `api_error`（如 `exceeded retry limit, last status: 429` 归为 `rate_limit`）。
-- 没有解析器的 agent 记 `reason=unknown, parser=null`，按 R10b/R10c 回退到 Harbor
-  的 `exception_info`；解析器内部任何异常都捕获为 `unknown` 并记入
+- 没有解析器的 agent（如 `opencode`，日志 `opencode.txt`）记 `reason=unknown,
+  parser=null`，日志存在时仍填 `source`，作为 agent 阶段已开始的证据（R2/R3）；
+  状态按 R10b/R10c 回退到 Harbor 的 `exception_info`；解析器内部任何异常都捕获为 `unknown` 并记入
   `harbor_warnings`，不影响 episode 正常写出。
 - Harbor 0.23.0 的 `exception_type` 是对 agent 全量 stdout 做正则首命中，业务文本会被
   误分类为 `ApiRateLimitError`/`UnknownApiError`，所以 `exception_type` 只记录，不参与

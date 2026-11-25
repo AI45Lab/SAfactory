@@ -91,6 +91,9 @@ REWARD_MTIME_TOLERANCE_S = 2.0
 AGENT_LOG_NAMES = {
     "claude-code": "claude-code.txt",
     "codex": "codex.txt",
+    # OpenCode has no exit parser; its log is still the proof that the agent
+    # phase began when a runner timeout leaves no result.json (R2 vs R3).
+    "opencode": "opencode.txt",
 }
 # Trial exception types that belong to the verifier phase. When the agent
 # already raised, Harbor keeps only the first exception, so a missing verifier
@@ -902,14 +905,22 @@ def parse_claude_code_exit(path: Path) -> AgentExit:
     status = None
     num_turns = None
     if terminal is not None:
-        value = str(terminal.get("terminal_reason"))
+        raw_reason = terminal.get("terminal_reason")
+        value = str(raw_reason) if raw_reason is not None else None
         subtype = str(terminal.get("subtype") or "")
+        is_error = terminal.get("is_error") is True
         if value == "completed":
             reason = "completed"
         elif value == "max_turns" or subtype == "error_max_turns":
             reason = "max_turns"
         elif value == "api_error":
             reason = "api_error"
+        elif value is None and subtype == "success" and not is_error:
+            # Older Claude Code builds emit no ``terminal_reason``; a plain
+            # subtype=success without is_error is a normal completion.
+            reason = "completed"
+        elif value is None:
+            reason = f"other:{subtype or 'unknown'}"
         else:
             reason = f"other:{value}"
         raw_status = terminal.get("api_error_status")
@@ -982,10 +993,13 @@ AGENT_EXIT_PARSERS = {
 def read_agent_exit(spec: RunSpec, trial_dir: Path, agent: str | None) -> tuple[AgentExit, list[str]]:
     """Resolve the agent's end reason, falling back to ``unknown`` on any error."""
     parser = AGENT_EXIT_PARSERS.get(agent or "")
-    if parser is None:
-        return AgentExit(parser=None, source=None, reason="unknown"), []
     name = AGENT_LOG_NAMES.get(agent or "")
     path = trial_dir / "agent" / name if name else None
+    if parser is None:
+        # No parser for this agent: the reason stays unknown, but an existing
+        # log still proves the agent phase began.
+        source = _relative(spec, path) if path is not None and path.is_file() else None
+        return AgentExit(parser=None, source=source, reason="unknown"), []
     if path is None or not path.is_file():
         return (
             AgentExit(parser=None, source=None, reason="unknown"),
@@ -1029,30 +1043,50 @@ def _parse_time(value: Any) -> float | None:
 
 
 def _read_reward_file(path: Path, reward_key: str) -> float | None:
-    """Parse a reward file exactly like Harbor does (json wins over txt)."""
+    """Parse a reward file the way Harbor 0.25 does, then pick ``reward_key``.
+
+    Harbor's rules (``harbor/verifier/verifier.py``): ``reward.json`` must be an
+    object whose values are all finite numbers; ``reward.txt`` must hold one
+    finite float and always yields the single key ``reward``. Anything else is
+    a verifier failure, so every parse problem maps to ``None`` here and is
+    reported as such by :func:`valid_reward` instead of escaping as an
+    exception.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        # OSError: unreadable file. ValueError covers UnicodeDecodeError, which
+        # Harbor reports as VerifierOutputParseError.
+        return None
+    if not text.strip():
+        # Harbor: RewardFileEmptyError.
+        return None
+    rewards: dict[str, float] = {}
     if path.suffix == ".json":
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            value = json.loads(text)
+        except ValueError:
             return None
         if not isinstance(value, dict):
+            # Harbor's VerifierResult model requires an object; a bare scalar
+            # fails validation there as well.
             return None
-        rewards: dict[str, float] = {}
         for key, item in value.items():
             number = _numeric_reward(item)
             # Harbor rejects the whole file if any value is not a finite number.
             if number is None:
                 return None
             rewards[str(key)] = number
-        return rewards.get(reward_key)
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
-        return _numeric_reward(float(text.strip()))
-    except ValueError:
-        return None
+    else:
+        try:
+            number = _numeric_reward(float(text))
+        except ValueError:
+            return None
+        if number is None:
+            return None
+        # A text file never carries a custom key.
+        rewards["reward"] = number
+    return rewards.get(reward_key)
 
 
 def valid_reward(
@@ -1243,6 +1277,13 @@ def parse_harbor_result(
         # R6
         status, termination, stage = "failed", "agent_setup_failed", "agent_setup"
         detail = "agent setup did not finish"
+    elif exception_type in VERIFIER_EXCEPTION_TYPES or (
+        _dict(trial.get("verifier")).get("started_at") and not _phase_finished(trial, "verifier")
+    ):
+        # R6b: the verifier raised or never finished, so no reward file it may
+        # have left behind is a valid score, whatever the agent did.
+        status, termination, stage = "failed", "verifier_failed", "verifier"
+        detail = str(exception.get("exception_message") or "verifier did not finish")
     elif agent_exit.reason == "completed":
         # R7 falls through to the reward check.
         status, termination, stage, detail = _reward_decision(reward_reject)
@@ -1259,10 +1300,9 @@ def parse_harbor_result(
         # verifier's 0 is not a statement about the model's ability.
         status, termination, stage = "failed", "api_error", "agent"
         detail = _api_error_detail(agent_exit)
-    elif agent_exit.parser is None and (
-        not exception_type or exception_type in VERIFIER_EXCEPTION_TYPES
-    ):
-        # R10b: no parser for this agent, fall back to Harbor's own record.
+    elif not exception_type:
+        # R10b: the agent log gives no verdict and Harbor recorded no
+        # exception, so the reward file decides.
         status, termination, stage, detail = _reward_decision(reward_reject)
     else:
         # R10c
