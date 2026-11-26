@@ -493,6 +493,10 @@ class NestedDocker:
                     f"nested dockerd exited during startup; see {spec.dockerd_log_path}"
                 )
             try:
+                # `docker info --format` exits 0 and prints the connection error
+                # when the daemon is unreachable (Docker 26), so it cannot gate
+                # readiness. `docker version` exits non-zero in that case.
+                _docker(self.env, "version", "--format", "{{.Server.Version}}", timeout=5)
                 driver = _docker(self.env, "info", "--format", "{{.Driver}}", timeout=5)
                 if not driver:
                     raise RuntimeError("Docker daemon returned an empty storage driver")
@@ -1277,11 +1281,16 @@ def parse_harbor_result(
         # R6
         status, termination, stage = "failed", "agent_setup_failed", "agent_setup"
         detail = "agent setup did not finish"
-    elif exception_type in VERIFIER_EXCEPTION_TYPES or (
-        _dict(trial.get("verifier")).get("started_at") and not _phase_finished(trial, "verifier")
+    elif reward is None and (
+        exception_type in VERIFIER_EXCEPTION_TYPES
+        or (
+            _dict(trial.get("verifier")).get("started_at")
+            and not _phase_finished(trial, "verifier")
+        )
     ):
-        # R6b: the verifier raised or never finished, so no reward file it may
-        # have left behind is a valid score, whatever the agent did.
+        # R6b: the verifier raised or never finished and left no valid reward.
+        # A valid reward file means grading finished before the error, so the
+        # score stands and the agent-side rules below decide the status.
         status, termination, stage = "failed", "verifier_failed", "verifier"
         detail = str(exception.get("exception_message") or "verifier did not finish")
     elif agent_exit.reason == "completed":
@@ -1300,9 +1309,12 @@ def parse_harbor_result(
         # verifier's 0 is not a statement about the model's ability.
         status, termination, stage = "failed", "api_error", "agent"
         detail = _api_error_detail(agent_exit)
-    elif not exception_type:
-        # R10b: the agent log gives no verdict and Harbor recorded no
-        # exception, so the reward file decides.
+    elif not exception_type or (
+        agent_exit.parser is None and exception_type in VERIFIER_EXCEPTION_TYPES
+    ):
+        # R10b: the agent log gives no verdict and Harbor recorded no agent
+        # exception, so the reward file decides. A verifier-phase exception
+        # only reaches here with a valid reward (R6b).
         status, termination, stage, detail = _reward_decision(reward_reject)
     else:
         # R10c
@@ -1330,7 +1342,9 @@ def parse_harbor_result(
     return _result(
         spec.session_id,
         status=status,
-        reward=reward if status == "succeeded" else None,
+        # A truncated episode keeps its valid verifier reward; is_truncated
+        # distinguishes it downstream (issue #127). Failed episodes stay null.
+        reward=reward if status in {"succeeded", "truncated"} else None,
         timed_out=status == "truncated",
         errors=fatal_errors,
         warnings=warnings,
